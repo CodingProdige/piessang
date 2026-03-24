@@ -1,0 +1,173 @@
+export const emailMessages = {
+    "welcome": {
+      wrapper: "marketing-wrapper.ejs",
+      template: "welcome.ejs",
+      subjectTemplate: "Welcome to Bevgo, <%= firstName %>!"
+    },
+
+    "account-pending": {
+        wrapper: "corporate-wrapper.ejs",
+        template: "account-pending.ejs",
+        subjectTemplate: "Welcome, <%= companyName %>. Your Bevgo Account is Pending Activation"
+    },
+
+  
+    "credit-approved": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "credit-approved.ejs",
+      subjectTemplate: "Your Bevgo Credit is Approved — Ref <%= code %>"
+    },
+  
+    "credit-rejected": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "credit-rejected.ejs",
+      subjectTemplate: "Your Credit Application Result — Ref <%= code %>"
+    },
+
+    "credit-application-submitted": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "credit-application-submitted.ejs",
+      subjectTemplate: "Your Bevgo Credit Application Has Been Received"
+    },
+
+    "credit-application-submitted-admin": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "credit-application-submitted-admin.ejs",
+      subjectTemplate: "New Credit Application — <%= companyName %>"
+    },
+
+    "seller-registration-success": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-registration-success.ejs",
+      subjectTemplate: "Welcome to Bevgo Marketplace, <%= vendorName %>!"
+    },
+
+    "seller-registration-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-registration-internal.ejs",
+      subjectTemplate: "New Seller Registration — <%= vendorName %>"
+    },
+
+    "seller-account-blocked": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-account-blocked.ejs",
+      subjectTemplate: "Your Bevgo seller account has been blocked — <%= vendorName %>"
+    },
+
+    "seller-account-blocked-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-account-blocked-internal.ejs",
+      subjectTemplate: "Seller account blocked — <%= vendorName %>"
+    },
+
+    "seller-review-request-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-review-request-internal.ejs",
+      subjectTemplate: "Seller review request — <%= vendorName %>"
+    },
+
+    "seller-review-response": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-review-response.ejs",
+      subjectTemplate: "Seller review result — <%= vendorName %> (<%= statusLabel %>)"
+    },
+
+    "seller-team-invite": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-team-invite.ejs",
+      subjectTemplate: "You have been invited to join <%= vendorName %> on Bevgo"
+    },
+
+    "seller-team-access-granted": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-team-access-granted.ejs",
+      subjectTemplate: "Access granted to <%= vendorName %> on Bevgo"
+    },
+
+    "seller-product-status": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-product-status.ejs",
+      subjectTemplate: "Product update for <%= productTitle %> — <%= statusLabel %>"
+    },
+
+    "seller-low-stock": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-low-stock.ejs",
+      subjectTemplate: "Low stock alert — <%= productTitle %>"
+    },
+
+    "seller-billing-reminder": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-billing-reminder.ejs",
+      subjectTemplate: "Seller billing reminder — <%= vendorName %> — due <%= dueDate %>"
+    },
+
+    "seller-inbound-booking-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-inbound-booking-internal.ejs",
+      subjectTemplate: "Inbound stock booking — <%= vendorName %> — <%= productTitle %> on <%= deliveryDate %>"
+    },
+
+    "seller-stock-upliftment-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-stock-upliftment-internal.ejs",
+      subjectTemplate: "Stock upliftment request — <%= vendorName %> — <%= productTitle %> on <%= upliftDate %>"
+    },
+
+    "seller-order-received": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-order-received.ejs",
+      subjectTemplate: "New marketplace order — <%= orderNumber %> — <%= vendorName %>"
+    },
+
+    "brand-request-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "brand-request-internal.ejs",
+      subjectTemplate: "Brand request — <%= brandTitle %> — <%= vendorName %>"
+    },
+  
+    "order-confirmation": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-confirmation.ejs",
+      subjectTemplate: "Order <%= orderNumber %> Confirmed"
+    },
+
+    "order-processing": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-processing.ejs",
+      subjectTemplate: "Order <%= orderNumber || 'your order' %> is Processing"
+    },
+
+    "order-dispatched": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-dispatched.ejs",
+      subjectTemplate: "Order <%= orderNumber || 'your order' %> Dispatched"
+    },
+
+    "order-seller-fulfillment-update": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-seller-fulfillment-update.ejs",
+      subjectTemplate: "Order <%= orderNumber || 'your order' %> update — <%= statusLabel %>"
+    },
+
+    "payment-received": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "payment-received.ejs",
+      subjectTemplate:
+        "Payment received for <%= orderNumber || 'your order' %>"
+    },
+
+    "order-received-admin": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-received-admin.ejs",
+      subjectTemplate:
+        "New order received: <%= orderNumber || merchantTransactionId || 'unknown reference' %>"
+    },
+  
+    "overdue-invoice": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "overdue-invoice.ejs",
+      subjectTemplate: "Invoice <%= invoiceNumber %> is Overdue — <%= daysLate %> Days Late"
+    }
+  };
+  

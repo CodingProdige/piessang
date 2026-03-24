@@ -1,0 +1,36 @@
+<%
+  const safeItems = Array.isArray(items) ? items : [];
+%>
+
+<h2>Order update</h2>
+<p>
+  Your order
+  <% if (typeof orderNumber !== "undefined" && orderNumber) { %>
+    <strong>#<%= orderNumber %></strong>
+  <% } %>
+  has a new fulfilment update for
+  <% if (typeof sellerVendorName !== "undefined" && sellerVendorName) { %>
+    <strong><%= sellerVendorName %></strong>.
+  <% } else { %>
+    one of your sellers.
+  <% } %>
+</p>
+
+<p>
+  New status: <strong><%= statusLabel || "Updated" %></strong>
+</p>
+
+<% if (safeItems.length) { %>
+  <p>The following products were included in this update:</p>
+  <ul>
+    <% safeItems.forEach((item) => { %>
+      <li>
+        <strong><%= item.title || "Product" %></strong>
+        <% if (item.variant) { %>
+          (<%= item.variant %>)
+        <% } %>
+        x <%= item.quantity || 0 %> — <%= item.statusLabel || statusLabel || "Updated" %>
+      </li>
+    <% }) %>
+  </ul>
+<% } %>

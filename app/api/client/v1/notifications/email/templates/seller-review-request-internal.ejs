@@ -1,0 +1,17 @@
+<h2>Seller review request received</h2>
+
+<p>A blocked seller has requested a manual review.</p>
+
+<ul>
+  <li><strong>Vendor:</strong> <%= vendorName %></li>
+  <li><strong>Seller slug:</strong> <%= sellerSlug %></li>
+  <li><strong>Requested by:</strong> <%= requestedByEmail || requestedBy %></li>
+  <li><strong>Reason:</strong> <%= reasonLabel %></li>
+  <% if (message) { %>
+    <li><strong>Message:</strong> <%= message %></li>
+  <% } %>
+</ul>
+
+<p style="margin-top: 16px;">
+Open the seller dashboard admin area to approve or reject the request.
+</p>

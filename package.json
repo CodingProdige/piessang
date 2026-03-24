@@ -9,7 +9,16 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@sendgrid/mail": "^8.1.6",
+    "axios": "^1.13.6",
+    "blurhash": "^2.0.5",
+    "bwip-js": "^4.8.0",
+    "ejs": "^5.0.1",
+    "firebase": "^12.10.0",
+    "firebase-admin": "^13.7.0",
     "next": "16.1.7",
+    "openai": "^6.32.0",
+    "pngjs": "^7.0.0",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },

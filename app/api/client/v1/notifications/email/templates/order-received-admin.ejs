@@ -1,0 +1,76 @@
+<%
+  const snapshot = (typeof order !== "undefined" && order && order.customer_snapshot)
+    ? order.customer_snapshot
+    : {};
+  const account = snapshot?.account || {};
+  const derivedCompanyName =
+    account?.accountName ||
+    account?.companyName ||
+    snapshot?.business?.companyName ||
+    "";
+  const derivedCustomerName =
+    derivedCompanyName ||
+    snapshot?.personal?.fullName ||
+    "";
+  const derivedEmail =
+    snapshot?.email ||
+    snapshot?.personal?.email ||
+    "";
+  const effectiveCompanyName =
+    (typeof companyName !== "undefined" && companyName) ? companyName : derivedCompanyName;
+  const effectiveCustomerName =
+    (typeof customerName !== "undefined" && customerName) ? customerName : derivedCustomerName;
+  const effectiveCustomerEmail =
+    (typeof customerEmail !== "undefined" && customerEmail) ? customerEmail : derivedEmail;
+%>
+
+<h2>New order received</h2>
+
+<p>
+  A new order has been placed.
+</p>
+
+<% if ((typeof orderNumber !== "undefined" && orderNumber) || (typeof merchantTransactionId !== "undefined" && merchantTransactionId)) { %>
+  <p>
+    Order reference: <strong><%= (typeof orderNumber !== "undefined" && orderNumber) ? orderNumber : merchantTransactionId %></strong>
+  </p>
+<% } %>
+
+<% if (effectiveCompanyName) { %>
+  <p>
+    Company: <strong><%= effectiveCompanyName %></strong>
+  </p>
+<% } %>
+
+<% if (effectiveCustomerName || effectiveCustomerEmail) { %>
+  <p>
+    Customer:
+    <strong><%= effectiveCustomerName || "Unknown" %></strong>
+    <% if (effectiveCustomerEmail) { %>
+      (<%= effectiveCustomerEmail %>)
+    <% } %>
+  </p>
+<% } %>
+
+<% if (typeof amount !== "undefined" && typeof currency !== "undefined" && amount && currency) { %>
+  <p>
+    Order total: <strong><%= amount %> <%= currency %></strong>
+  </p>
+<% } %>
+
+<% if (typeof items !== "undefined" && items && items.length) { %>
+  <p style="margin-top: 16px;">
+    Items:
+  </p>
+  <ul>
+    <% items.forEach(item => { %>
+      <li>
+        <%= item.quantity ? `${item.quantity} x ` : "" %><%= item.name || item.title || "Item" %>
+      </li>
+    <% }) %>
+  </ul>
+<% } %>
+
+<p style="margin-top: 20px;">
+  Please review the order in the admin dashboard.
+</p>

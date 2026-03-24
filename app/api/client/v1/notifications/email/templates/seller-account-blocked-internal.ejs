@@ -1,0 +1,18 @@
+<h2>Seller account blocked</h2>
+
+<p>A seller account has been blocked on Bevgo.</p>
+
+<ul>
+  <li><strong>Vendor:</strong> <%= vendorName %></li>
+  <li><strong>Seller slug:</strong> <%= sellerSlug %></li>
+  <li><strong>Reason:</strong> <%= reasonLabel %></li>
+  <% if (reasonMessage) { %>
+    <li><strong>Details:</strong> <%= reasonMessage %></li>
+  <% } %>
+  <li><strong>Blocked at:</strong> <%= blockedAt %></li>
+  <li><strong>Blocked by:</strong> <%= blockedByEmail || blockedBy %></li>
+</ul>
+
+<p style="margin-top: 16px;">
+The seller account and linked product publishing access have been suspended until the issue is resolved.
+</p>

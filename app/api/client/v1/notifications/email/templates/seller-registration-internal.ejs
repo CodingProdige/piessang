@@ -1,0 +1,19 @@
+<h2>New Seller Registration</h2>
+
+<p>A new vendor has registered on Bevgo Marketplace.</p>
+
+<ul>
+  <li><strong>Vendor name:</strong> <%= vendorName %></li>
+  <li><strong>Contact email:</strong> <%= contactEmail %></li>
+  <li><strong>Phone:</strong> +<%= countryCode %> <%= contactPhone %></li>
+  <li><strong>Base location:</strong> <%= baseLocation %></li>
+  <li><strong>Category:</strong> <%= categoryTitle %></li>
+  <% if (subCategory) { %>
+    <li><strong>Sub category:</strong> <%= subCategory %></li>
+  <% } %>
+  <li><strong>User UID:</strong> <%= uid %></li>
+</ul>
+
+<p style="margin-top: 16px;">
+The seller account has been activated and seller access is now enabled.
+</p>

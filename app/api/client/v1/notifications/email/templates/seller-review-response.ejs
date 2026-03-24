@@ -1,0 +1,23 @@
+<h2>Your Bevgo seller review has been processed</h2>
+
+<p>Hi <%= vendorName %>,</p>
+
+<p>
+Your seller review request for <strong><%= vendorName %></strong> has been <strong><%= statusLabel %></strong>.
+</p>
+
+<ul>
+  <li><strong>Status:</strong> <%= statusLabel %></li>
+  <% if (feedback) { %>
+    <li><strong>Feedback:</strong> <%= feedback %></li>
+  <% } %>
+</ul>
+
+<p>
+<%= nextStep %>
+</p>
+
+<p style="margin-top: 20px;">
+Cheers,<br/>
+The Bevgo Team
+</p>

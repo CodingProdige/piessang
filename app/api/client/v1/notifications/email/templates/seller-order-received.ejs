@@ -1,0 +1,34 @@
+<%
+  const safeItems = Array.isArray(items) ? items : [];
+%>
+
+<h2>New marketplace order</h2>
+<p>
+  Hi <strong><%= vendorName || "Seller" %></strong>,
+</p>
+<p>
+  A new marketplace order
+  <strong>#<%= orderNumber %></strong>
+  includes your products.
+</p>
+
+<% if (customerName) { %>
+  <p>Customer: <strong><%= customerName %></strong></p>
+<% } %>
+
+<% if (safeItems.length) { %>
+  <p>Your items on this order:</p>
+  <ul>
+    <% safeItems.forEach((item) => { %>
+      <li>
+        <strong><%= item.title || "Product" %></strong>
+        <% if (item.variant) { %>
+          (<%= item.variant %>)
+        <% } %>
+        x <%= item.quantity || 0 %>
+      </li>
+    <% }) %>
+  </ul>
+<% } %>
+
+<p>Please review the order in your seller dashboard.</p>

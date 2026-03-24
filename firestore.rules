@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function onlyTouchesAllowedUserKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'uid',
+        'email',
+        'created_time',
+        'account',
+        'preferences',
+        'media',
+        'timestamps'
+      ]);
+    }
+
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create: if isSelf(uid);
+      allow update: if isSelf(uid) && onlyTouchesAllowedUserKeys();
+      allow delete: if false;
+    }
+
+    match /carts_v2/{cartId} {
+      allow read, write: if signedIn() &&
+        (
+          request.auth.uid == cartId ||
+          resource.data.customerId == request.auth.uid ||
+          request.resource.data.customerId == request.auth.uid
+        );
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

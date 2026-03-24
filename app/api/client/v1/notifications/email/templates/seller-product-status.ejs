@@ -1,0 +1,24 @@
+<h2>Product status update</h2>
+
+<p>Hi <%= vendorName %>,</p>
+
+<p>
+Your product <strong><%= productTitle %></strong> has changed status on Bevgo.
+</p>
+
+<ul>
+  <li><strong>Status:</strong> <%= statusLabel %></li>
+  <li><strong>Fulfilment:</strong> <%= fulfillmentLabel %></li>
+  <% if (reason) { %>
+    <li><strong>Reason:</strong> <%= reason %></li>
+  <% } %>
+</ul>
+
+<p>
+<%= nextStep %>
+</p>
+
+<p style="margin-top: 20px;">
+Cheers,<br/>
+The Bevgo Team
+</p>

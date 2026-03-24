@@ -1,0 +1,55 @@
+export const dynamic = "force-dynamic";
+
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { NextResponse } from "next/server";
+
+export async function POST(req) {
+  try {
+    const db = getAdminDb();
+    if (!db) {
+      return NextResponse.json(
+        { ok: false, message: "Server Firestore access is not configured." },
+        { status: 500 }
+      );
+    }
+
+    const {
+      userId,
+      token,
+      brand,
+      last4,
+      expiryMonth,
+      expiryYear,
+      peachTransactionId,
+      merchantTransactionId
+    } = await req.json();
+
+    const card = {
+      card_id: `card_${Date.now()}`,
+      token,
+      brand,
+      last4,
+      expiryMonth,
+      expiryYear,
+      peachTransactionId,
+      merchantTransactionId,
+      isActive: true,
+      lastCharged: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await db.collection("users").doc(userId).update({
+      "paymentMethods.cards": FieldValue.arrayUnion(card),
+      "paymentMethods.updatedAt": new Date().toISOString(),
+    });
+
+    return NextResponse.json({ ok: true, data: card });
+  } catch (err) {
+    return NextResponse.json(
+      { ok: false, message: "Failed to save card", error: err },
+      { status: 500 }
+    );
+  }
+}

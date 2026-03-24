@@ -1,0 +1,1504 @@
+"use client";
+
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@/components/auth/auth-provider";
+import CreateProductPage from "@/app/seller/catalogue/new/page";
+import { SellerCustomersWorkspace } from "@/components/seller/customers-workspace";
+import { SellerBillingWorkspace } from "@/components/seller/billing-workspace";
+import { SellerAccountsWorkspace } from "@/components/seller/admin-seller-accounts";
+import { SellerBrandRequestsWorkspace } from "@/components/seller/brand-requests-workspace";
+import { SellerFeesWorkspace } from "@/components/seller/fees-workspace";
+import { SellerMarketingWorkspace } from "@/components/seller/marketing-workspace";
+import { SellerOrdersWorkspace } from "@/components/seller/orders-workspace";
+import { SellerProductsWorkspace } from "@/components/seller/products-workspace";
+import { SellerSettlementsWorkspace } from "@/components/seller/settlements-workspace";
+import { SellerWarehouseWorkspace } from "@/components/seller/warehouse-workspace";
+import { SellerPageIntro } from "@/components/seller/page-intro";
+import { SellerSettingsWorkspace } from "@/components/seller/settings-workspace";
+import SellerTeamPage from "@/app/seller/team/page";
+import {
+  getSellerBlockReasonFix,
+  getSellerBlockReasonLabel,
+  normalizeSellerBlockReasonCode,
+  SELLER_BLOCK_REASONS,
+} from "@/lib/seller/account-status";
+import { toSellerSlug } from "@/lib/seller/vendor-name";
+
+type SidebarSection =
+  | "home"
+  | "products"
+  | "warehouse"
+  | "warehouse-calendar"
+  | "customers"
+  | "billing"
+  | "marketing"
+  | "settlements"
+  | "admin"
+  | "brand-requests"
+  | "fees"
+  | "create-product"
+  | "inventory"
+  | "collections"
+  | "purchase-orders"
+  | "transfers"
+  | "new-orders"
+  | "unfulfilled"
+  | "fulfilled"
+  | "analytics"
+  | "team"
+  | "settings";
+
+type SellerContextItem = {
+  sellerSlug: string;
+  sellerCode: string;
+  vendorName: string;
+  role: string | null;
+  status: string | null;
+  teamOwnerUid: string | null;
+  grantedAt: string | null;
+  blockedReasonCode: string | null;
+  blockedReasonMessage: string | null;
+  blockedAt: string | null;
+  blockedBy: string | null;
+  reviewRequestStatus: string | null;
+  reviewRequestedAt: string | null;
+  reviewRequestedBy: string | null;
+  reviewRequestMessage: string | null;
+  reviewResponseStatus: string | null;
+  reviewResponseAt: string | null;
+  reviewResponseBy: string | null;
+  reviewResponseMessage: string | null;
+};
+
+type SellerAccessRole = "admin" | "manager" | "catalogue" | "orders" | "analytics" | "";
+
+function formatTeamRoleLabel(role?: string | null) {
+  const value = String(role ?? "").trim().toLowerCase();
+  if (value === "owner") return "Seller account owner";
+  if (value === "admin") return "Seller dashboard admin";
+  if (value === "manager") return "Manager";
+  if (value === "catalogue") return "Catalogue";
+  if (value === "orders") return "Orders";
+  if (value === "analytics") return "Analytics";
+  if (value === "settlements") return "Settlements";
+  return value || "Seller account";
+}
+
+function formatRoleValue(role?: string | null) {
+  const value = String(role ?? "").trim().toLowerCase();
+  if (!value) return "seller account";
+  if (value === "owner") return "owner";
+  if (value === "admin") return "admin";
+  if (value === "manager") return "manager";
+  if (value === "catalogue") return "catalogue";
+  if (value === "orders") return "orders";
+  if (value === "analytics") return "analytics";
+  if (value === "settlements") return "settlements";
+  return value;
+}
+
+function formatSellerContextLabel(item: SellerContextItem) {
+  const bits = [item.vendorName || item.sellerSlug, item.role ? formatTeamRoleLabel(item.role) : null]
+    .filter(Boolean)
+    .join(" • ");
+  return bits || item.sellerSlug;
+}
+
+function formatSellerAccessLabel(
+  item: SellerContextItem | null | undefined,
+  homeSlug: string,
+  isSystemAdmin: boolean,
+) {
+  const role = normalizeSellerRole(item?.role || "");
+  const isOwnerContext = Boolean(item && item.sellerSlug === homeSlug);
+  if (isSystemAdmin && isOwnerContext) return "Owner dashboard";
+  if (!role) return "Team dashboard";
+  return `Team dashboard • ${formatTeamRoleLabel(role)}`;
+}
+
+function normalizeSellerRole(role?: string | null): SellerAccessRole {
+  const value = String(role ?? "").trim().toLowerCase();
+  if (value === "owner") return "admin";
+  if (value === "admin") return "admin";
+  if (value === "manager") return "manager";
+  if (value === "catalogue") return "catalogue";
+  if (value === "orders") return "orders";
+  if (value === "analytics") return "analytics";
+  return "";
+}
+
+const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
+  home: ["admin", "manager", "catalogue", "orders", "analytics"],
+  products: ["admin", "manager", "catalogue"],
+  warehouse: ["admin", "manager", "catalogue"],
+  "warehouse-calendar": ["admin"],
+  customers: ["admin", "manager", "orders"],
+  billing: ["admin", "manager", "analytics"],
+  marketing: ["admin"],
+  settlements: ["admin", "manager", "catalogue", "orders", "analytics"],
+  admin: ["admin"],
+  "brand-requests": ["admin"],
+  fees: ["admin"],
+  "create-product": ["admin", "manager", "catalogue"],
+  inventory: ["admin", "manager", "catalogue"],
+  collections: ["admin", "manager", "catalogue"],
+  "purchase-orders": ["admin", "manager"],
+  transfers: ["admin", "manager"],
+  "new-orders": ["admin", "manager", "orders"],
+  unfulfilled: ["admin", "manager", "orders"],
+  fulfilled: ["admin", "manager", "orders"],
+  analytics: ["admin", "manager", "analytics"],
+  team: ["admin"],
+  settings: ["admin", "manager", "catalogue", "orders", "analytics"],
+};
+
+function canAccessSellerSection(role: SellerAccessRole, section: SidebarSection) {
+  return role === "admin" || SECTION_ACCESS[section].includes(role);
+}
+
+function SidebarIcon({ icon }: { icon: string }) {
+  const common = "h-4.5 w-4.5";
+  switch (icon) {
+    case "home":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M4 11.5 12 4l8 7.5" />
+          <path d="M6 10.8V20h12v-9.2" />
+        </svg>
+      );
+    case "box":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M4 7.5 12 4l8 3.5-8 3.5z" />
+          <path d="M4 7.5V17l8 3.5 8-3.5V7.5" />
+          <path d="M12 11v9.5" />
+        </svg>
+      );
+    case "orders":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M4 5h16l-1.5 11h-13z" />
+          <path d="M8 9h8" />
+          <circle cx="9" cy="19" r="1.3" fill="currentColor" stroke="none" />
+          <circle cx="17" cy="19" r="1.3" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "truck":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M3 7h11v10H3z" />
+          <path d="M14 10h3l3 3v4h-6z" />
+          <circle cx="8" cy="19" r="1.5" fill="currentColor" stroke="none" />
+          <circle cx="18" cy="19" r="1.5" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "check":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M4 12.5 9 17 20 6" />
+        </svg>
+      );
+    case "plus":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </svg>
+      );
+    case "inventory":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M4 7.5 12 4l8 3.5-8 3.5z" />
+          <path d="M4 7.5V17l8 3.5 8-3.5V7.5" />
+        </svg>
+      );
+    case "collections":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="4" y="4" width="6.5" height="6.5" rx="1.5" />
+          <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5" />
+          <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5" />
+          <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5" />
+        </svg>
+      );
+    case "purchase":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M4 6h16l-1.5 12h-13z" />
+          <path d="M8 6V4.5A2.5 2.5 0 0 1 10.5 2h3A2.5 2.5 0 0 1 16 4.5V6" />
+        </svg>
+      );
+    case "transfer":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M7 7h10" />
+          <path d="M13 4 16 7l-3 3" />
+          <path d="M17 17H7" />
+          <path d="M11 14 8 17l3 3" />
+        </svg>
+      );
+    case "team":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="9" cy="8" r="3" />
+          <circle cx="17" cy="10" r="2.5" />
+          <path d="M3.5 20c1.2-3.2 3.8-5 5.5-5s4.3 1.8 5.5 5" />
+          <path d="M13.5 20c.7-2.2 2.2-3.5 3.5-3.5s2.8 1.3 3.5 3.5" />
+        </svg>
+      );
+    case "customers":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="9" cy="8" r="3" />
+          <path d="M3.5 20c1.2-3.2 3.8-5 5.5-5s4.3 1.8 5.5 5" />
+          <path d="M16 8h4" />
+          <path d="M18 6v4" />
+        </svg>
+      );
+    case "marketing":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M4 14V10h4l8-5v14l-8-5H4z" />
+          <path d="M15.5 9.5c.9.8 1.4 1.9 1.4 3.1s-.5 2.3-1.4 3.1" />
+          <path d="M17.8 7.2c1.6 1.4 2.5 3.4 2.5 5.4s-.9 4-2.5 5.4" />
+        </svg>
+      );
+    case "cash":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="4" y="7" width="16" height="10" rx="2" />
+          <circle cx="12" cy="12" r="2.5" />
+        </svg>
+      );
+    case "analytics":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M5 19V9" />
+          <path d="M12 19V5" />
+          <path d="M19 19v-7" />
+          <path d="M3 19h18" />
+        </svg>
+      );
+    case "settings":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="3.5" />
+          <path d="M19.4 15a1.2 1.2 0 0 0 .24 1.32l.05.05a1.5 1.5 0 0 1 0 2.12l-1.06 1.06a1.5 1.5 0 0 1-2.12 0l-.05-.05A1.2 1.2 0 0 0 15 19.4a1.2 1.2 0 0 0-.72.18 1.2 1.2 0 0 0-.58 1.1V21a1.5 1.5 0 0 1-1.5 1.5h-1.5A1.5 1.5 0 0 1 9.2 21v-.32a1.2 1.2 0 0 0-.58-1.1 1.2 1.2 0 0 0-.72-.18 1.2 1.2 0 0 0-1.32.24l-.05.05a1.5 1.5 0 0 1-2.12 0L3.35 18.6a1.5 1.5 0 0 1 0-2.12l.05-.05A1.2 1.2 0 0 0 3.64 15a1.2 1.2 0 0 0-.18-.72 1.2 1.2 0 0 0-1.1-.58H2A1.5 1.5 0 0 1 .5 12.2v-1.5A1.5 1.5 0 0 1 2 9.2h.32a1.2 1.2 0 0 0 1.1-.58 1.2 1.2 0 0 0 .18-.72 1.2 1.2 0 0 0-.24-1.32l-.05-.05a1.5 1.5 0 0 1 0-2.12L4.37 3.35a1.5 1.5 0 0 1 2.12 0l.05.05A1.2 1.2 0 0 0 8 3.64c.23 0 .48-.07.72-.18a1.2 1.2 0 0 0 .58-1.1V2A1.5 1.5 0 0 1 10.8.5h1.5A1.5 1.5 0 0 1 13.8 2v.32c0 .44.24.84.58 1.1.24.11.49.18.72.18a1.2 1.2 0 0 0 1.32-.24l.05-.05a1.5 1.5 0 0 1 2.12 0l1.06 1.06a1.5 1.5 0 0 1 0 2.12l-.05.05A1.2 1.2 0 0 0 19.36 9c.34.26.58.66.64 1.1H21a1.5 1.5 0 0 1 1.5 1.5v1.5A1.5 1.5 0 0 1 21 14.6h-.32c-.44 0-.84.24-1.1.58Z" />
+        </svg>
+      );
+    case "shield":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M12 3 19 6v5.5c0 4.8-3.1 8.6-7 10.5-3.9-1.9-7-5.7-7-10.5V6l7-3Z" />
+          <path d="M9 12l2 2 4-4" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
+
+function SidebarButton({
+  active,
+  label,
+  icon,
+  onClick,
+  locked = false,
+  nested = false,
+  badgeCount,
+}: {
+  active: boolean;
+  label: string;
+  icon: string;
+  onClick: () => void;
+  locked?: boolean;
+  nested?: boolean;
+  badgeCount?: number | null;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={locked}
+      aria-disabled={locked}
+      className={`group flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left text-[12px] font-medium transition-colors lg:px-3 ${
+        nested ? "lg:pl-10" : ""
+      } ${
+        locked
+          ? "cursor-not-allowed bg-[rgba(32,32,32,0.04)] text-[#8b8b8b]"
+          : active
+            ? "bg-white text-[#202020] shadow-[0_6px_18px_rgba(20,24,27,0.08)]"
+            : "text-[#4a4545] hover:bg-white/70 hover:text-[#202020]"
+      }`}
+    >
+        <span
+          className={`flex h-[26px] w-[26px] items-center justify-center rounded-[8px] transition-colors ${
+            locked
+              ? "bg-white/70 text-[#a8a8a8]"
+              : active
+                ? "bg-[rgba(203,178,107,0.14)] text-[#907d4c]"
+                : "bg-white/70 text-[#707070] group-hover:text-[#202020]"
+          }`}
+        >
+          <SidebarIcon icon={icon} />
+        </span>
+      <span className="truncate">{label}</span>
+      {!locked && Number(badgeCount || 0) > 0 ? (
+        <span className="ml-auto inline-flex min-w-[20px] items-center justify-center rounded-full bg-[rgba(203,178,107,0.16)] px-1.5 py-0.5 text-[10px] font-semibold text-[#8f7531]">
+          {Number(badgeCount)}
+        </span>
+      ) : null}
+      {locked ? (
+        <span className="ml-auto inline-flex h-4 w-4 items-center justify-center text-[#a8a8a8]">
+          <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M7 11V8a5 5 0 0 1 10 0v3" />
+            <rect x="5" y="11" width="14" height="10" rx="2" />
+          </svg>
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function MenuIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SidebarMenu({
+  mobile = false,
+  userEmail,
+  vendorName,
+  activeSection,
+  sellerRole,
+  sellerRoleLabel,
+  sellerBlocked,
+  showAdminSection,
+  adminBadges,
+  sellerBadges,
+  onNavigate,
+  onClose,
+}: {
+  mobile?: boolean;
+  userEmail: string;
+  vendorName: string;
+  activeSection: SidebarSection;
+  sellerRole: SellerAccessRole;
+  sellerRoleLabel: string;
+  sellerBlocked?: boolean;
+  showAdminSection: boolean;
+  adminBadges?: {
+    sellerReviewCount?: number;
+    brandRequestCount?: number;
+  };
+  sellerBadges?: {
+    newOrders?: number;
+    warehouse?: number;
+  };
+  onNavigate: (nextSection: SidebarSection) => void;
+  onClose?: () => void;
+}) {
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "fees"];
+  const handleNavigate = (nextSection: SidebarSection) => {
+    if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
+    if (!canAccessSellerSection(sellerRole, nextSection)) return;
+    onNavigate(nextSection);
+    onClose?.();
+  };
+
+  const headingClass = mobile
+    ? "px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#7d7d7d]"
+    : "hidden px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#7d7d7d] lg:block";
+
+  const titleBlockClass = mobile
+    ? "px-1 py-1.5"
+    : "px-1 py-1.5";
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className={titleBlockClass}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#907d4c]">Piessang seller</p>
+            <div className="mt-1 space-y-0.5 text-[11px] leading-[1.35] text-[#656565]">
+              <p className="truncate">{userEmail || "Signed in"}</p>
+              <p className="truncate">{formatRoleValue(sellerRoleLabel || sellerRole)}</p>
+              <p className="truncate">{vendorName || "seller account"}</p>
+            </div>
+          </div>
+          {mobile ? (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close menu"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-black/10 bg-white text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.06)]"
+            >
+              <CloseIcon className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <nav className={mobile ? "mt-3 space-y-3 overflow-y-auto pb-4" : "mt-2 space-y-3 lg:mt-3 lg:space-y-4"}>
+        <section className="space-y-1">
+          <p className={headingClass}>Main</p>
+          <div className="space-y-1">
+            <SidebarButton label="Home" icon="home" active={activeSection === "home"} onClick={() => handleNavigate("home")} />
+            <SidebarButton
+              label="Orders"
+              icon="orders"
+              active={["new-orders", "unfulfilled", "fulfilled"].includes(activeSection)}
+              badgeCount={sellerBadges?.newOrders || 0}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "new-orders")}
+              onClick={() => handleNavigate("new-orders")}
+            />
+            <SidebarButton
+              label="Customers"
+              icon="customers"
+              active={activeSection === "customers"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "customers")}
+              onClick={() => handleNavigate("customers")}
+            />
+            <SidebarButton
+              label="Billing"
+              icon="cash"
+              active={activeSection === "billing"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "billing")}
+              onClick={() => handleNavigate("billing")}
+            />
+            <SidebarButton
+              label="Settlements"
+              icon="cash"
+              active={activeSection === "settlements"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "settlements")}
+              onClick={() => handleNavigate("settlements")}
+            />
+            <SidebarButton
+              label="Products"
+              icon="box"
+              active={activeSection === "products" || activeSection === "create-product"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "products")}
+              onClick={() => handleNavigate("products")}
+            />
+            <div className="ml-3 border-l border-black/10 pl-3">
+              <SidebarButton
+                label="Create product"
+                icon="plus"
+                active={activeSection === "create-product"}
+                locked={sellerBlocked || !canAccessSellerSection(sellerRole, "create-product")}
+                onClick={() => handleNavigate("create-product")}
+                nested
+              />
+            </div>
+            <SidebarButton
+              label="Warehouse"
+              icon="truck"
+              active={activeSection === "warehouse"}
+              badgeCount={sellerBadges?.warehouse || 0}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "warehouse")}
+              onClick={() => handleNavigate("warehouse")}
+            />
+            <SidebarButton
+              label="Analytics"
+              icon="analytics"
+              active={activeSection === "analytics"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "analytics")}
+              onClick={() => handleNavigate("analytics")}
+            />
+            <SidebarButton
+              label="Team"
+              icon="team"
+              active={activeSection === "team"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "team")}
+              onClick={() => handleNavigate("team")}
+            />
+          </div>
+        </section>
+
+        <section className="space-y-1">
+          <p className={headingClass}>Marketing</p>
+          <div className="space-y-1">
+            <SidebarButton
+              label="Campaigns"
+              icon="marketing"
+              active={activeSection === "marketing"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "marketing")}
+              onClick={() => handleNavigate("marketing")}
+            />
+          </div>
+        </section>
+
+        {showAdminSection ? (
+          <section className="space-y-1">
+            <p className={headingClass}>Admin</p>
+            <div className="space-y-1">
+              <SidebarButton
+              label="Seller accounts"
+              icon="shield"
+              active={activeSection === "admin"}
+              badgeCount={adminBadges?.sellerReviewCount || 0}
+              onClick={() => handleNavigate("admin")}
+            />
+            <SidebarButton
+              label="Brand requests"
+              icon="box"
+              active={activeSection === "brand-requests"}
+              badgeCount={adminBadges?.brandRequestCount || 0}
+              onClick={() => handleNavigate("brand-requests")}
+            />
+            <SidebarButton
+              label="Warehouse calendar"
+              icon="truck"
+                active={activeSection === "warehouse-calendar"}
+                onClick={() => handleNavigate("warehouse-calendar")}
+              />
+              <SidebarButton
+                label="Fees"
+                icon="cash"
+                active={activeSection === "fees"}
+                onClick={() => handleNavigate("fees")}
+              />
+            </div>
+          </section>
+        ) : null}
+
+        <section className="space-y-1">
+          <p className={headingClass}>Settings</p>
+          <SidebarButton
+            label="Settings"
+            icon="settings"
+            active={activeSection === "settings"}
+            locked={!canAccessSellerSection(sellerRole, "settings")}
+            onClick={() => handleNavigate("settings")}
+          />
+        </section>
+      </nav>
+    </div>
+  );
+}
+
+function SellerDashboardContent() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { authReady, isAuthenticated, isSeller, sellerStatus, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
+  const [activeSection, setActiveSection] = useState<SidebarSection>("home");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0 });
+  const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0 });
+  const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
+  const [reviewRequestReason, setReviewRequestReason] = useState("other");
+  const [reviewRequestMessage, setReviewRequestMessage] = useState("");
+  const [reviewRequestSubmitting, setReviewRequestSubmitting] = useState(false);
+
+  const resolveSection = (value: string | null): SidebarSection => {
+    switch ((value || "").toLowerCase()) {
+      case "create-product":
+      case "create":
+        return "create-product";
+      case "products":
+      case "catalogue":
+      case "all-products":
+        return "products";
+      case "warehouse":
+      case "stock-movements":
+      case "warehouse-movements":
+        return "warehouse";
+      case "warehouse-calendar":
+      case "calendar":
+        return "warehouse-calendar";
+      case "customers":
+        return "customers";
+      case "billing":
+        return "billing";
+      case "marketing":
+        return "marketing";
+      case "settlements":
+        return "settlements";
+      case "admin":
+      case "seller-accounts":
+        return "admin";
+      case "brand-requests":
+      case "brands":
+        return "brand-requests";
+      case "fees":
+      case "marketplace-fees":
+        return "fees";
+      case "inventory":
+        return "inventory";
+      case "collections":
+        return "collections";
+      case "purchase-orders":
+        return "purchase-orders";
+      case "transfers":
+        return "transfers";
+      case "new-orders":
+        return "new-orders";
+      case "unfulfilled":
+        return "unfulfilled";
+      case "fulfilled":
+        return "fulfilled";
+      case "analytics":
+        return "analytics";
+      case "team":
+        return "team";
+      case "settings":
+        return "settings";
+      case "home":
+        return "home";
+      default:
+        return "home";
+    }
+  };
+
+  useEffect(() => {
+    setActiveSection(resolveSection(searchParams.get("section")));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mobileMenuOpen]);
+
+  const vendorName = profile?.sellerVendorName?.trim() || profile?.accountName?.trim() || "";
+  const isSystemAdmin = profile?.systemAccessType === "admin";
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAdminBadges() {
+      if (!isSystemAdmin || !profile?.uid) return;
+      try {
+        const [sellerResponse, brandResponse] = await Promise.all([
+          fetch(`/api/client/v1/accounts/seller/list?uid=${encodeURIComponent(profile.uid)}&filter=review`, { cache: "no-store" }),
+          fetch("/api/client/v1/admin/brand-requests?status=pending", { cache: "no-store" }),
+        ]);
+        const sellerPayload = await sellerResponse.json().catch(() => ({}));
+        const brandPayload = await brandResponse.json().catch(() => ({}));
+        if (cancelled) return;
+        setAdminBadges({
+          sellerReviewCount: sellerResponse.ok && sellerPayload?.ok !== false ? Number(sellerPayload?.count || 0) : 0,
+          brandRequestCount: brandResponse.ok && brandPayload?.ok !== false ? Number(brandPayload?.count || 0) : 0,
+        });
+      } catch {
+        if (!cancelled) {
+          setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0 });
+        }
+      }
+    }
+    void loadAdminBadges();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSystemAdmin, profile?.uid, activeSection]);
+  const sellerContexts = useMemo<SellerContextItem[]>(() => {
+    const items: SellerContextItem[] = [];
+    const seen = new Set<string>();
+
+    const add = (item: Partial<SellerContextItem>) => {
+      const sellerSlug = String(item.sellerSlug ?? "").trim();
+      const sellerCode = String(item.sellerCode ?? "").trim();
+      const key = sellerSlug || sellerCode;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      items.push({
+        sellerSlug: sellerSlug || sellerCode,
+        sellerCode: sellerCode || sellerSlug,
+        vendorName: String(item.vendorName ?? "").trim() || sellerSlug,
+        role: item.role ?? null,
+        status: item.status ?? null,
+        teamOwnerUid: item.teamOwnerUid ?? null,
+        grantedAt: item.grantedAt ?? null,
+        blockedReasonCode: item.blockedReasonCode ?? null,
+        blockedReasonMessage: item.blockedReasonMessage ?? null,
+        blockedAt: item.blockedAt ?? null,
+        blockedBy: item.blockedBy ?? null,
+        reviewRequestStatus: item.reviewRequestStatus ?? null,
+        reviewRequestedAt: item.reviewRequestedAt ?? null,
+        reviewRequestedBy: item.reviewRequestedBy ?? null,
+        reviewRequestMessage: item.reviewRequestMessage ?? null,
+        reviewResponseStatus: item.reviewResponseStatus ?? null,
+        reviewResponseAt: item.reviewResponseAt ?? null,
+        reviewResponseBy: item.reviewResponseBy ?? null,
+        reviewResponseMessage: item.reviewResponseMessage ?? null,
+      });
+    };
+
+    add({
+      sellerSlug: profile?.sellerSlug?.trim() || profile?.sellerActiveSellerSlug?.trim() || toSellerSlug(vendorName),
+      sellerCode: profile?.sellerCode?.trim() || "",
+      vendorName: vendorName || profile?.sellerVendorName || profile?.accountName || "Seller account",
+      role: profile?.sellerTeamRole || "admin",
+      status: profile?.sellerStatus || null,
+      blockedReasonCode: profile?.sellerBlockedReasonCode || null,
+      blockedReasonMessage: profile?.sellerBlockedReasonMessage || null,
+      blockedAt: profile?.sellerBlockedAt || null,
+      blockedBy: profile?.sellerBlockedBy || null,
+      reviewRequestStatus: profile?.sellerReviewRequestStatus || null,
+      reviewRequestedAt: profile?.sellerReviewRequestedAt || null,
+      reviewRequestedBy: profile?.sellerReviewRequestedBy || null,
+      reviewRequestMessage: profile?.sellerReviewRequestMessage || null,
+      reviewResponseStatus: profile?.sellerReviewResponseStatus || null,
+      reviewResponseAt: profile?.sellerReviewResponseAt || null,
+      reviewResponseBy: profile?.sellerReviewResponseBy || null,
+      reviewResponseMessage: profile?.sellerReviewResponseMessage || null,
+    });
+
+    if (isSystemAdmin) {
+      for (const managed of profile?.sellerManagedAccounts ?? []) {
+        add({
+          sellerSlug: managed?.sellerSlug?.trim() || "",
+          sellerCode: managed?.sellerCode?.trim() || "",
+          vendorName: managed?.vendorName?.trim() || vendorName || "Seller account",
+          role: managed?.role ? String(managed.role).trim().toLowerCase() : null,
+          status: managed?.status ? String(managed.status).trim().toLowerCase() : null,
+          teamOwnerUid: managed?.teamOwnerUid ? String(managed.teamOwnerUid).trim() : null,
+          grantedAt: managed?.grantedAt ? String(managed.grantedAt).trim() : null,
+          blockedReasonCode: managed?.blockedReasonCode ? String(managed.blockedReasonCode).trim() : null,
+          blockedReasonMessage: managed?.blockedReasonMessage ? String(managed.blockedReasonMessage).trim() : null,
+          blockedAt: managed?.blockedAt ? String(managed.blockedAt).trim() : null,
+          blockedBy: managed?.blockedBy ? String(managed.blockedBy).trim() : null,
+          reviewRequestStatus: managed?.reviewRequestStatus ? String(managed.reviewRequestStatus).trim().toLowerCase() : null,
+          reviewRequestedAt: managed?.reviewRequestedAt ? String(managed.reviewRequestedAt).trim() : null,
+          reviewRequestedBy: managed?.reviewRequestedBy ? String(managed.reviewRequestedBy).trim() : null,
+          reviewRequestMessage: managed?.reviewRequestMessage ? String(managed.reviewRequestMessage).trim() : null,
+          reviewResponseStatus: managed?.reviewResponseStatus ? String(managed.reviewResponseStatus).trim().toLowerCase() : null,
+          reviewResponseAt: managed?.reviewResponseAt ? String(managed.reviewResponseAt).trim() : null,
+          reviewResponseBy: managed?.reviewResponseBy ? String(managed.reviewResponseBy).trim() : null,
+          reviewResponseMessage: managed?.reviewResponseMessage ? String(managed.reviewResponseMessage).trim() : null,
+        });
+      }
+    }
+
+    return items;
+  }, [
+    profile?.accountName,
+    profile?.sellerActiveSellerSlug,
+    profile?.sellerCode,
+    isSystemAdmin,
+    profile?.sellerManagedAccounts,
+    profile?.sellerSlug,
+    profile?.sellerStatus,
+    profile?.sellerTeamRole,
+    profile?.sellerVendorName,
+    vendorName,
+  ]);
+
+  const resolvedSellerSlug = useMemo(() => {
+    const currentSeller = searchParams.get("seller")?.trim() || "";
+    if (
+      currentSeller &&
+      sellerContexts.some((item) => item.sellerSlug === currentSeller || item.sellerCode === currentSeller)
+    ) {
+      return currentSeller;
+    }
+
+    return sellerContexts[0]?.sellerCode || sellerContexts[0]?.sellerSlug || profile?.sellerCode?.trim() || toSellerSlug(vendorName);
+  }, [profile?.sellerCode, searchParams, sellerContexts, vendorName]);
+
+  const activeSellerContext = useMemo(() => {
+    return sellerContexts.find((item) => item.sellerSlug === resolvedSellerSlug || item.sellerCode === resolvedSellerSlug) ?? sellerContexts[0] ?? null;
+  }, [resolvedSellerSlug, sellerContexts]);
+  const activeVendorName = activeSellerContext?.vendorName || vendorName;
+  const activeSellerRole = normalizeSellerRole(activeSellerContext?.role || profile?.sellerTeamRole || "");
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSellerBadges() {
+      const activeSellerCode = activeSellerContext?.sellerCode || profile?.sellerCode || "";
+      const activeSellerSlug = activeSellerContext?.sellerSlug || "";
+      if (!activeSellerCode && !activeSellerSlug) return;
+      try {
+        const params = new URLSearchParams();
+        if (activeSellerCode) params.set("sellerCode", activeSellerCode);
+        else if (activeSellerSlug) params.set("sellerSlug", activeSellerSlug);
+        const warehouseParams = params.toString();
+        const [ordersResponse, inboundResponse, upliftmentResponse] = await Promise.all([
+          fetch(`/api/client/v1/orders/seller/list?${warehouseParams}&filter=new`, { cache: "no-store" }),
+          fetch(`/api/client/v1/accounts/seller/inbound-bookings?${warehouseParams}`, { cache: "no-store" }),
+          fetch(`/api/client/v1/accounts/seller/stock-upliftments?${warehouseParams}`, { cache: "no-store" }),
+        ]);
+        const ordersPayload = await ordersResponse.json().catch(() => ({}));
+        const inboundPayload = await inboundResponse.json().catch(() => ({}));
+        const upliftmentPayload = await upliftmentResponse.json().catch(() => ({}));
+        if (cancelled) return;
+        const inboundItems = Array.isArray(inboundPayload?.items) ? inboundPayload.items : [];
+        const upliftmentItems = Array.isArray(upliftmentPayload?.items) ? upliftmentPayload.items : [];
+        const inboundPending = inboundItems.filter((item: any) => ["scheduled", "received"].includes(String(item?.status || "").trim().toLowerCase())).length;
+        const upliftmentPending = upliftmentItems.filter((item: any) => ["requested", "released"].includes(String(item?.status || "").trim().toLowerCase())).length;
+        setSellerBadges({
+          newOrders: ordersResponse.ok && ordersPayload?.ok !== false ? Number(ordersPayload?.counts?.new || 0) : 0,
+          warehouse: inboundPending + upliftmentPending,
+        });
+      } catch {
+        if (!cancelled) setSellerBadges({ newOrders: 0, warehouse: 0 });
+      }
+    }
+    void loadSellerBadges();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSellerContext?.sellerCode, activeSellerContext?.sellerSlug, profile?.sellerCode, activeSection]);
+  const activeSellerStatus = String(activeSellerContext?.status || profile?.sellerStatus || "").trim().toLowerCase();
+  const canManageSellerDashboard = isSystemAdmin;
+  const homeSellerSlug = useMemo(() => {
+    const profileSlug = profile?.sellerSlug?.trim() || profile?.sellerActiveSellerSlug?.trim() || "";
+    const adminSlug = isSystemAdmin ? sellerContexts.find((item) => item.role === "admin")?.sellerSlug || "" : "";
+    return profileSlug || adminSlug || sellerContexts[0]?.sellerSlug || "";
+  }, [isSystemAdmin, profile?.sellerActiveSellerSlug, profile?.sellerSlug, sellerContexts]);
+  const showReturnHome = Boolean(homeSellerSlug && homeSellerSlug !== resolvedSellerSlug);
+  const blockedSections: SidebarSection[] = ["products", "warehouse", "customers", "marketing", "settlements", "create-product", "inventory", "collections", "purchase-orders", "transfers", "new-orders", "unfulfilled", "fulfilled", "analytics"];
+  const sellerBlocked = activeSellerStatus === "blocked";
+  const sellerClosed = activeSellerStatus === "closed" || activeSellerStatus === "deleted" || activeSellerStatus === "archived";
+  const sellerUnavailable = sellerBlocked || sellerClosed;
+  const sellerReviewPending = String(activeSellerContext?.reviewRequestStatus || profile?.sellerReviewRequestStatus || "")
+    .trim()
+    .toLowerCase() === "pending";
+  const sellerBlockedReasonCode = activeSellerContext?.blockedReasonCode || profile?.sellerBlockedReasonCode || "other";
+  const sellerBlockedReasonLabel = getSellerBlockReasonLabel(sellerBlockedReasonCode);
+  const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
+  const sectionLocked = sellerUnavailable
+    ? blockedSections.includes(activeSection)
+      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "fees" || activeSection === "warehouse-calendar"
+        ? !canManageSellerDashboard
+        : !canAccessSellerSection(activeSellerRole, activeSection);
+  const firstAllowedSection = useMemo(() => {
+    const preferredOrder: SidebarSection[] = sellerBlocked
+      ? ["home", "settings", "team"]
+      : sellerClosed
+        ? ["home", "settings"]
+      : ["products", "new-orders", "customers", "analytics", "home", "settings"];
+    return preferredOrder.find((section) => canAccessSellerSection(activeSellerRole, section)) || "home";
+  }, [activeSellerRole, sellerBlocked, sellerClosed]);
+  const currentAccessLabel = formatSellerAccessLabel(activeSellerContext, homeSellerSlug, isSystemAdmin);
+
+  async function submitSellerReviewRequest() {
+    if (!profile?.uid || !resolvedSellerSlug) return;
+    setReviewRequestSubmitting(true);
+    try {
+      const response = await fetch("/api/client/v1/accounts/seller/review/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: profile.uid,
+          data: {
+            sellerSlug: resolvedSellerSlug,
+            reasonCode: reviewRequestReason,
+            message: reviewRequestMessage,
+          },
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to request review.");
+      }
+      setReviewRequestOpen(false);
+      setReviewRequestMessage("");
+    } finally {
+      setReviewRequestSubmitting(false);
+    }
+  }
+
+  function setSellerContext(nextSellerSlug: string) {
+    const sellerValue = String(nextSellerSlug ?? "").trim();
+    if (!sellerValue) return;
+
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("seller", sellerValue);
+    nextParams.delete("unique_id");
+    nextParams.delete("id");
+    const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.push(nextUrl, { scroll: false });
+    setMobileMenuOpen(false);
+  }
+
+  useEffect(() => {
+    if (!resolvedSellerSlug) return;
+    const currentSeller = searchParams.get("seller")?.trim() || "";
+    if (currentSeller === resolvedSellerSlug) return;
+
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("seller", resolvedSellerSlug);
+    const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.replace(nextUrl, { scroll: false });
+  }, [pathname, router, resolvedSellerSlug, searchParams]);
+
+  useEffect(() => {
+    const currentId = searchParams.get("unique_id")?.trim() || searchParams.get("id")?.trim() || "";
+    if (!currentId) return;
+    if (activeSection === "create-product") return;
+
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete("unique_id");
+    nextParams.delete("id");
+    const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.replace(nextUrl, { scroll: false });
+  }, [activeSection, pathname, router, searchParams]);
+
+  function setSection(nextSection: SidebarSection) {
+    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
+    if (!canAccessSellerSection(activeSellerRole, nextSection)) return;
+    setActiveSection(nextSection);
+    setMobileMenuOpen(false);
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("section", nextSection);
+    if (nextSection !== "create-product") {
+      nextParams.delete("unique_id");
+      nextParams.delete("id");
+    }
+    const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.push(nextUrl, { scroll: false });
+  }
+
+  function openProductEditor(productId: string) {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("section", "create-product");
+    nextParams.set("unique_id", productId);
+    nextParams.delete("id");
+    const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.push(nextUrl, { scroll: false });
+    setActiveSection("create-product");
+    setMobileMenuOpen(false);
+  }
+
+  const pageTitle = useMemo(() => {
+    switch (activeSection) {
+      case "products":
+        return "Products";
+      case "warehouse":
+        return "Warehouse";
+      case "warehouse-calendar":
+        return "Warehouse calendar";
+      case "customers":
+        return "Customers";
+      case "billing":
+        return "Billing";
+      case "marketing":
+        return "Campaigns";
+      case "settlements":
+        return "Settlements";
+      case "admin":
+        return "Seller accounts";
+      case "brand-requests":
+        return "Brand requests";
+      case "fees":
+        return "Marketplace fees";
+      case "inventory":
+        return "Inventory";
+      case "collections":
+        return "Collections";
+      case "purchase-orders":
+        return "Purchase orders";
+      case "transfers":
+        return "Transfers";
+      case "new-orders":
+        return "New orders";
+      case "unfulfilled":
+        return "Unfulfilled orders";
+      case "fulfilled":
+        return "Fulfilled orders";
+      case "analytics":
+        return "Analytics";
+      case "team":
+        return "Team";
+      case "settings":
+        return "Settings";
+      case "home":
+        return "Home";
+      case "create-product":
+        return "Create product";
+      default:
+        return "Products";
+    }
+  }, [activeSection]);
+
+  const pageDescription = useMemo(() => {
+    switch (activeSection) {
+      case "home":
+        return "Overview of your seller account and quick access to your tools.";
+      case "products":
+        return "Manage and edit your seller catalogue from one table.";
+      case "warehouse":
+        return "Book inbound deliveries to Piessang and request stock upliftments from one workspace.";
+      case "warehouse-calendar":
+        return "Review inbound and outbound warehouse bookings in one admin-only calendar.";
+      case "customers":
+        return "See customers who have ordered from this seller account.";
+      case "billing":
+        return "Review monthly seller billing, due amounts, and fee summaries.";
+      case "marketing":
+        return "Plan and review paid campaigns for this seller account.";
+      case "settlements":
+        return "Track settlements, fulfilment claims, and payout status.";
+      case "admin":
+        return "Switch and manage seller accounts when you are a system admin.";
+      case "brand-requests":
+        return "Review and resolve seller-submitted brand requests before they become canonical brands.";
+      case "fees":
+        return "Manage marketplace fee rules and push updated rates across the catalogue.";
+      case "create-product":
+        return "Create and edit product records, variants, and publishing settings.";
+      case "inventory":
+        return "Keep an eye on stock and warehouse availability.";
+      case "collections":
+        return "Group products into collections for easier browsing.";
+      case "purchase-orders":
+        return "Track purchase orders and supplier intake.";
+      case "transfers":
+        return "Review stock transfers between locations.";
+      case "new-orders":
+        return "Work through newly placed orders.";
+      case "unfulfilled":
+        return "See orders that still need to be fulfilled.";
+      case "fulfilled":
+        return "Review orders that have already been fulfilled.";
+      case "analytics":
+        return "Review seller performance and reporting.";
+      case "team":
+        return "Manage teammate access and roles for this seller account.";
+      case "settings":
+        return "Manage branding, seller account details, and seller access settings.";
+      default:
+        return "Manage your seller tools from one workspace.";
+    }
+  }, [activeSection]);
+
+  if (!authReady) {
+    return (
+      <main className="mx-auto max-w-[1400px] px-3 py-4 lg:px-4 lg:py-6">
+        <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller workspace</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Loading seller workspace</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            We’re checking your account and loading your seller access.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <main className="mx-auto max-w-[1400px] px-4 py-10">
+        <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">My Account</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Sign in to manage seller tools</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            Once you are signed in, you can register your seller account and manage your catalogue from here.
+          </p>
+          <button
+            type="button"
+            onClick={() => openAuthModal("Sign in to access your seller tools.")}
+            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+          >
+            Sign in
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (!isSeller) {
+    if (sellerClosed) {
+      return (
+        <main className="mx-auto max-w-[1400px] px-4 py-10">
+          <section className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller account closed</p>
+            <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">
+              This seller account is no longer open for business.
+            </h1>
+            <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+              {profile?.sellerBlockedReasonMessage ||
+                "Your seller account was closed and the catalogue is no longer public. If this was done in error, please contact Piessang support to review the account."}
+            </p>
+          </section>
+        </main>
+      );
+    }
+    return (
+      <main className="mx-auto max-w-[1400px] px-4 py-10">
+        <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller tools</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Register to sell on Piessang</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            Create your vendor profile to unlock your catalogue, orders, and performance tools.
+          </p>
+          <button
+            type="button"
+            onClick={() => openSellerRegistrationModal("Register your seller account to unlock catalogue tools.")}
+            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+          >
+            Register as seller
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto max-w-[1400px] px-3 py-4 lg:px-4 lg:py-6">
+      <div className="mb-3 flex items-center justify-between gap-3 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileMenuOpen(true)}
+          className="inline-flex h-10 items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 text-[13px] font-semibold text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.06)]"
+        >
+          <MenuIcon className="h-4 w-4" />
+          Seller menu
+        </button>
+        <span className="truncate text-[12px] font-medium text-[#57636c]">{currentAccessLabel}</span>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="hidden rounded-[8px] border border-black/5 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(243,243,243,0.98))] p-3 shadow-[0_8px_24px_rgba(20,24,27,0.05)] lg:sticky lg:top-6 lg:block lg:h-[calc(100vh-3rem)] lg:overflow-y-auto lg:[scrollbar-width:none] lg:[-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+              <SidebarMenu
+                vendorName={vendorName}
+                userEmail={profile?.email || ""}
+                activeSection={activeSection}
+                sellerRole={activeSellerRole}
+                sellerRoleLabel={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                sellerBlocked={sellerBlocked}
+                showAdminSection={canManageSellerDashboard}
+                adminBadges={adminBadges}
+                sellerBadges={sellerBadges}
+                onNavigate={setSection}
+              />
+        </aside>
+
+        <section className="min-w-0">
+          {sellerBlocked ? (
+            <section className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller account blocked</p>
+              <h2 className="mt-2 text-[22px] font-semibold text-[#202020]">
+                {sellerBlockedReasonLabel}
+              </h2>
+              <p className="mt-2 max-w-[760px] text-[13px] leading-[1.6] text-[#57636c]">
+                {activeSellerContext?.blockedReasonMessage || sellerBlockedFixHint}
+              </p>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReviewRequestReason(sellerBlockedReasonCode);
+                    setReviewRequestMessage(activeSellerContext?.blockedReasonMessage || sellerBlockedFixHint);
+                    setReviewRequestOpen(true);
+                  }}
+                  className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+                >
+                  Request review
+                </button>
+                {sellerReviewPending ? (
+                  <span className="inline-flex h-10 items-center rounded-[8px] border border-[#f0e7c9] bg-[rgba(203,178,107,0.08)] px-4 text-[12px] font-semibold text-[#8f7531]">
+                    Review request pending
+                  </span>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+
+          <SellerPageIntro title={pageTitle} description={pageDescription} />
+
+          <div className="mt-4 rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            {sectionLocked ? (
+              <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
+                <div className="max-w-[460px]">
+                  <span className="mx-auto inline-flex h-10 w-10 items-center justify-center rounded-full bg-[rgba(32,32,32,0.06)] text-[#8b8b8b]">
+                    <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M7 11V8a5 5 0 0 1 10 0v3" />
+                      <rect x="5" y="11" width="14" height="10" rx="2" />
+                    </svg>
+                  </span>
+                  <p className="mt-4 text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Access limited</p>
+                  <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">
+                    You do not have permission to open this section
+                  </h3>
+                  <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+                    Your current seller role only allows access to part of this dashboard. The locked items in the
+                    sidebar show what you can and cannot open.
+                  </p>
+                  <div className="mt-5 flex flex-wrap justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSection(firstAllowedSection)}
+                      className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+                    >
+                      Go to allowed section
+                    </button>
+                    {showReturnHome ? (
+                      <button
+                        type="button"
+                        onClick={() => setSellerContext(homeSellerSlug)}
+                        className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+                      >
+                        Back to my seller dashboard
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : activeSection === "admin" && canManageSellerDashboard ? (
+              <SellerAccountsWorkspace
+                activeSellerSlug={resolvedSellerSlug}
+                activeSellerLabel={activeVendorName}
+                activeSellerRoleLabel={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                onSwitchSeller={setSellerContext}
+                onBackToMySeller={showReturnHome ? () => setSellerContext(homeSellerSlug) : undefined}
+              />
+            ) : activeSection === "brand-requests" && canManageSellerDashboard ? (
+              <SellerBrandRequestsWorkspace />
+            ) : activeSection === "fees" && canManageSellerDashboard ? (
+              <SellerFeesWorkspace />
+            ) : activeSection === "warehouse-calendar" && canManageSellerDashboard ? (
+              <SellerWarehouseWorkspace
+                vendorName={activeVendorName}
+                sellerSlug={activeSellerContext?.sellerSlug || ""}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                isSystemAdmin={isSystemAdmin}
+                adminCalendarOnly
+              />
+            ) : activeSection === "warehouse" ? (
+              <SellerWarehouseWorkspace
+                vendorName={activeVendorName}
+                sellerSlug={activeSellerContext?.sellerSlug || ""}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                isSystemAdmin={isSystemAdmin}
+              />
+            ) : activeSection === "new-orders" ? (
+              <SellerOrdersWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                mode="new"
+              />
+            ) : activeSection === "unfulfilled" ? (
+              <SellerOrdersWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                mode="unfulfilled"
+              />
+            ) : activeSection === "fulfilled" ? (
+              <SellerOrdersWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                mode="fulfilled"
+              />
+            ) : activeSection === "products" ? (
+              <SellerProductsWorkspace
+                vendorName={activeVendorName}
+                onCreateProduct={() => setSection("create-product")}
+                onEditProduct={openProductEditor}
+              />
+            ) : activeSection === "customers" ? (
+              <SellerCustomersWorkspace vendorName={activeVendorName} />
+            ) : activeSection === "billing" ? (
+              <SellerBillingWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                vendorName={activeVendorName}
+              />
+            ) : activeSection === "marketing" ? (
+              <SellerMarketingWorkspace />
+            ) : activeSection === "settlements" ? (
+              <SellerSettlementsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                vendorName={activeVendorName}
+                isSystemAdmin={isSystemAdmin}
+              />
+            ) : activeSection === "team" ? (
+              <SellerTeamPage showIntro={false} />
+            ) : activeSection === "settings" ? (
+              <SellerSettingsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                vendorName={activeVendorName}
+                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                isSystemAdmin={isSystemAdmin}
+              />
+            ) : activeSection === "create-product" ? (
+              <div className="space-y-3">
+                <Suspense
+                  fallback={
+                    <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] p-5 text-[13px] text-[#57636c]">
+                      Loading create product form...
+                    </div>
+                  }
+                >
+                  <CreateProductPage />
+                </Suspense>
+              </div>
+            ) : (
+              <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
+                <div className="max-w-[460px]">
+                  <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
+                    Coming soon
+                  </p>
+                  <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">
+                    {pageTitle} will live here
+                  </h3>
+                  <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+                    We&apos;re keeping the dashboard shell ready so we can plug in orders, analytics, inventory, and
+                    other seller tools without changing the layout again.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {reviewRequestOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center px-4 py-6" role="dialog" aria-modal="true">
+          <button
+            type="button"
+            aria-label="Close review request modal"
+            className="absolute inset-0 bg-black/45"
+            onClick={() => setReviewRequestOpen(false)}
+          />
+          <div className="relative h-[90svh] w-full max-w-[760px] overflow-hidden rounded-[8px] bg-white shadow-[0_24px_60px_rgba(20,24,27,0.22)]">
+            <div className="flex h-full flex-col">
+              <div className="flex items-start justify-between gap-4 border-b border-black/5 px-5 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Request review</p>
+                  <h3 className="mt-1 text-[22px] font-semibold text-[#202020]">{activeVendorName}</h3>
+                  <p className="mt-1 text-[13px] leading-[1.6] text-[#57636c]">
+                    Tell us what you fixed and request a manual review of the blocked seller account.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReviewRequestOpen(false)}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#f5f5f5] text-[20px] leading-none text-[#57636c]"
+                  aria-label="Close review request modal"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Reason</span>
+                  <select
+                    value={reviewRequestReason}
+                    onChange={(event) => {
+                      const next = normalizeSellerBlockReasonCode(event.target.value);
+                      setReviewRequestReason(next);
+                      const preset = SELLER_BLOCK_REASONS.find((item) => item.value === next);
+                      if (!reviewRequestMessage.trim() && preset) {
+                        setReviewRequestMessage(preset.fix);
+                      }
+                    }}
+                    className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none focus:border-[#cbb26b]"
+                  >
+                    {SELLER_BLOCK_REASONS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="mt-3 rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] text-[#57636c]">
+                  {sellerBlockedFixHint}
+                </div>
+
+                <label className="mt-4 block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Your update</span>
+                  <textarea
+                    value={reviewRequestMessage}
+                    onChange={(event) => setReviewRequestMessage(event.target.value)}
+                    rows={5}
+                    className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none focus:border-[#cbb26b]"
+                    placeholder="Explain what you fixed before requesting review."
+                  />
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-black/5 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setReviewRequestOpen(false)}
+                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitSellerReviewRequest()}
+                  disabled={reviewRequestSubmitting}
+                  className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {reviewRequestSubmitting ? "Sending..." : "Request review"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        className={`fixed inset-0 z-50 xl:hidden ${mobileMenuOpen ? "pointer-events-auto" : "pointer-events-none"}`}
+        aria-hidden={!mobileMenuOpen}
+      >
+        <div
+          className={`absolute inset-0 bg-black/40 transition-opacity duration-300 lg:hidden ${
+            mobileMenuOpen ? "opacity-100" : "opacity-0"
+          }`}
+          onClick={() => setMobileMenuOpen(false)}
+        />
+        <aside
+          className={`absolute left-0 top-0 h-full w-[min(86vw,320px)] border-r border-black/5 bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,244,244,0.98))] p-3 shadow-[20px_0_32px_rgba(20,24,27,0.12)] transition-transform duration-300 ease-out lg:hidden ${
+            mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+        >
+          <SidebarMenu
+            mobile
+            vendorName={vendorName}
+            userEmail={profile?.email || ""}
+            activeSection={activeSection}
+            sellerRole={activeSellerRole}
+            sellerRoleLabel={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+            sellerBlocked={sellerBlocked}
+            showAdminSection={canManageSellerDashboard}
+            adminBadges={adminBadges}
+            sellerBadges={sellerBadges}
+            onNavigate={setSection}
+            onClose={() => setMobileMenuOpen(false)}
+          />
+        </aside>
+      </div>
+    </main>
+  );
+}
+
+export default function SellerDashboardPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="mx-auto max-w-[1400px] px-3 py-4 lg:px-4 lg:py-6">
+          <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller home</p>
+            <h1 className="mt-2 text-[30px] font-semibold tracking-[-0.03em] text-[#202020]">Loading dashboard</h1>
+            <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+              We’re preparing your seller workspace.
+            </p>
+          </section>
+        </main>
+      }
+    >
+      <SellerDashboardContent />
+    </Suspense>
+  );
+}

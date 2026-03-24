@@ -1,0 +1,4805 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@/components/auth/auth-provider";
+import { SellerPageIntro } from "@/components/seller/page-intro";
+import { clientStorage } from "@/lib/firebase";
+import { getSellerBlockReasonFix, getSellerBlockReasonLabel } from "@/lib/seller/account-status";
+import {
+  buildMarketplaceFeeSnapshot,
+  describeMarketplaceFeeRule,
+  DEFAULT_MARKETPLACE_FEE_CONFIG,
+  getMarketplaceCatalogueSubCategories,
+  marketplaceVariantLogisticsComplete,
+  normalizeMarketplaceVariantLogistics,
+  resolveMarketplaceSuccessFeeRule,
+  estimateMarketplaceSuccessFeePercent,
+} from "@/lib/marketplace/fees";
+import { SELLER_CATALOGUE_CATEGORIES } from "@/lib/seller/catalogue-categories";
+import { decode, encode } from "blurhash";
+import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
+
+type BrandSuggestion = {
+  id: string;
+  slug: string;
+  title: string;
+};
+
+type SelectedBrand = BrandSuggestion & {
+  exact: boolean;
+  mode: "existing" | "new";
+};
+
+type CreatedProductSummary = {
+  uniqueId: string;
+  sku: string;
+  title: string;
+  titleSlug: string;
+  brandSlug: string;
+  brandTitle: string;
+  vendorName: string;
+  moderationStatus: string;
+};
+
+type ProductImage = {
+  imageUrl: string;
+  blurHashUrl: string;
+  fileName: string;
+  altText: string;
+};
+
+type ProductVariantItem = {
+  variant_id?: string;
+  label?: string;
+  sku?: string | null;
+  barcode?: string | null;
+  barcodeImageUrl?: string | null;
+  color?: string | null;
+  media?: {
+    images?: ProductImage[];
+  };
+  inventory?: Array<{
+    warehouse_id?: string | null;
+    in_stock_qty?: number | string | null;
+  }>;
+  placement?: {
+    is_default?: boolean;
+    isActive?: boolean;
+    track_inventory?: boolean;
+    continue_selling_out_of_stock?: boolean;
+  };
+  pack?: {
+    unit_count?: number;
+    volume?: number;
+    volume_unit?: string;
+  };
+  pricing?: {
+    selling_price_incl?: number;
+    selling_price_excl?: number;
+    sale_price_incl?: number;
+    sale_price_excl?: number;
+  };
+  sale?: {
+    is_on_sale?: boolean;
+    discount_percent?: number;
+    sale_price_incl?: number;
+    sale_price_excl?: number;
+  };
+  logistics?: {
+    weight_kg?: number;
+    length_cm?: number;
+    width_cm?: number;
+    height_cm?: number;
+    monthly_sales_30d?: number;
+    stock_qty?: number;
+    warehouse_id?: string | null;
+    volume_cm3?: number;
+  };
+  fees?: {
+    success_fee_percent?: number;
+    success_fee_incl?: number;
+    success_fee_vat_incl?: number;
+    fulfilment_fee_incl?: number;
+    fulfilment_fee_excl_vat?: number;
+    handling_fee_incl?: number;
+    storage_fee_incl?: number;
+    storage_fee_excl_vat?: number;
+    total_fees_incl?: number;
+    total_marketplace_fees?: number;
+    total_warehouse_fees_excl_vat?: number;
+    size_band?: string | null;
+    weight_band?: string | null;
+    storage_band?: string | null;
+    stock_cover_days?: number | null;
+    overstocked?: boolean;
+    fulfilment_mode?: "seller" | "bevgo";
+    config_version?: string | null;
+  };
+};
+
+type VariantDraft = {
+  variantId: string;
+  label: string;
+  sku: string;
+  barcode: string;
+  barcodeImageUrl: string;
+  unitCount: string;
+  volume: string;
+  volumeUnit: string;
+  color: string;
+  hasColor: boolean;
+  sellingPriceIncl: string;
+  isOnSale: boolean;
+  saleDiscountPercent: string;
+  isDefault: boolean;
+  isActive: boolean;
+  continueSellingOutOfStock: boolean;
+  trackInventory: boolean;
+  inventoryQty: string;
+  warehouseId: string;
+  weightKg: string;
+  lengthCm: string;
+  widthCm: string;
+  heightCm: string;
+  monthlySales30d: string;
+};
+
+type SellerContextItem = {
+  sellerSlug: string;
+  sellerCode: string;
+  vendorName: string;
+  status: string | null;
+  blockedReasonCode: string | null;
+  blockedReasonMessage: string | null;
+};
+
+const BRAND_ENDPOINT = "/api/catalogue/v1/brands/get";
+const PRODUCT_GET_ENDPOINT = "/api/catalogue/v1/products/product/get";
+const PRODUCT_UPDATE_ENDPOINT = "/api/catalogue/v1/products/product/update";
+const PRODUCT_DELETE_ENDPOINT = "/api/catalogue/v1/products/product/delete";
+const VARIANT_CREATE_ENDPOINT = "/api/catalogue/v1/products/variants/create";
+const VARIANT_UPDATE_ENDPOINT = "/api/catalogue/v1/products/variants/update";
+const VARIANT_DELETE_ENDPOINT = "/api/catalogue/v1/products/variants/delete";
+const VARIANT_GET_ENDPOINT = "/api/catalogue/v1/products/variants/get";
+const VARIANT_BARCODE_CHECK_ENDPOINT = "/api/catalogue/v1/products/variants/barcodeCheck";
+const VARIANT_BARCODE_GENERATE_UNIQUE_ENDPOINT = "/api/catalogue/v1/products/variants/generateUniqueEanBarcode";
+const VARIANT_BARCODE_GENERATE_IMAGE_ENDPOINT = "/api/catalogue/v1/products/variants/generateBarcode";
+const SELLER_INBOUND_BOOKINGS_ENDPOINT = "/api/client/v1/accounts/seller/inbound-bookings";
+const SELLER_STOCK_UPLIFTMENTS_ENDPOINT = "/api/client/v1/accounts/seller/stock-upliftments";
+const UNIQUE_CODE_ENDPOINT = "/api/catalogue/v1/products/generateUniqueCode";
+const SKU_ENDPOINT = "/api/catalogue/v1/products/sku/generate";
+const SKU_CHECK_ENDPOINT = "/api/catalogue/v1/products/sku/checkSku";
+const VAT_RATE = 0.15;
+const VOLUME_UNITS = ["kg", "ml", "lt", "g", "small", "medium", "large", "each"];
+const COLOR_SWATCHES = [
+  "#ffffff",
+  "#000000",
+  "#e11d48",
+  "#f97316",
+  "#facc15",
+  "#22c55e",
+  "#06b6d4",
+  "#3b82f6",
+  "#8b5cf6",
+  "#ec4899",
+  "#a16207",
+  "#64748b",
+];
+const OVERVIEW_MAX_LENGTH = 160;
+const DESCRIPTION_MAX_LENGTH = 900;
+
+function normalizeSlug(value: string) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/['".]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function sanitizeText(value: string) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function money2(value: string | number) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0;
+}
+
+function inclToExcl(value: string | number) {
+  return money2(Number(value) / (1 + VAT_RATE));
+}
+
+function exclToIncl(value: string | number) {
+  return money2(Number(value) * (1 + VAT_RATE));
+}
+
+function normalizeVolumeUnit(value: string) {
+  const lower = String(value ?? "").trim().toLowerCase();
+  if (["l", "lt", "liter", "litre", "liters", "litres"].includes(lower)) return "lt";
+  if (["kg", "kgs", "kilogram", "kilograms"].includes(lower)) return "kg";
+  if (["g", "grams", "gram"].includes(lower)) return "g";
+  if (["small", "medium", "large", "ml", "each"].includes(lower)) return lower;
+  return "each";
+}
+
+function variantPriceIncl(value?: ProductVariantItem | null) {
+  const explicit = Number(value?.pricing?.selling_price_incl);
+  if (Number.isFinite(explicit) && explicit > 0) return money2(explicit);
+  const legacy = Number(value?.pricing?.selling_price_excl);
+  if (Number.isFinite(legacy) && legacy > 0) return exclToIncl(legacy);
+  return 0;
+}
+
+function variantSalePriceIncl(value?: ProductVariantItem | null) {
+  const explicit = Number(value?.sale?.sale_price_incl);
+  if (Number.isFinite(explicit) && explicit > 0) return money2(explicit);
+  const legacy = Number(value?.sale?.sale_price_excl);
+  if (Number.isFinite(legacy) && legacy > 0) return exclToIncl(legacy);
+  return 0;
+}
+
+function sanitizeProductTitle(value: string) {
+  return sanitizeText(value).slice(0, 120);
+}
+
+function sanitizeKeywords(value: string) {
+  return String(value ?? "")
+    .split(",")
+    .map((item) => sanitizeText(item))
+    .filter(Boolean)
+    .map((item) => item.toLowerCase())
+    .filter((item, index, array) => array.indexOf(item) === index)
+    .slice(0, 12);
+}
+
+function parseKeywordTokens(value: string) {
+  return sanitizeKeywords(value).slice(0, 10);
+}
+
+function stripHtml(value: string) {
+  return String(value ?? "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>\s*<p[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function plainTextToHtml(value: string) {
+  const safe = String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return safe
+    .split(/\n+/)
+    .map((part) => `<p>${part.trim() || "<br>"}</p>`)
+    .join("");
+}
+
+function formatModerationStatus(status: string) {
+  const normalized = String(status ?? "").toLowerCase();
+  if (!normalized) return "draft";
+  if (normalized === "awaiting_stock") return "awaiting stock from supplier";
+  if (normalized === "in_review") return "in review";
+  return normalized.replace(/_/g, " ");
+}
+
+function SparklesIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M12 2.75l1.4 4.1a2 2 0 0 0 1.26 1.26l4.1 1.4-4.1 1.4a2 2 0 0 0-1.26 1.26L12 16.25l-1.4-4.1a2 2 0 0 0-1.26-1.26l-4.1-1.4 4.1-1.4a2 2 0 0 0 1.26-1.26L12 2.75Z"
+        fill="currentColor"
+      />
+      <path
+        d="M5 14.5l.7 2.05a1 1 0 0 0 .63.63L8.38 18l-2.05.82a1 1 0 0 0-.63.63L5 21.5l-.7-2.05a1 1 0 0 0-.63-.63L1.62 18l2.05-.82a1 1 0 0 0 .63-.63L5 14.5Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function SpinnerIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className={className}>
+      <path
+        d="M12 3a9 9 0 1 0 9 9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function CheckIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M20 7L9 18l-5-5" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function InfoIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 10.5v5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="8" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function EyeIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M2.8 12s3.4-6.2 9.2-6.2S21.2 12 21.2 12s-3.4 6.2-9.2 6.2S2.8 12 2.8 12Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="2.8" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function ChevronUpIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M6 14l6-6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M6 10l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DragGripIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01"
+        stroke="currentColor"
+        strokeWidth="3.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function HelpTip({
+  label,
+  children,
+  className = "",
+}: {
+  label: string;
+  children: string;
+  className?: string;
+}) {
+  return (
+    <span className={["group relative inline-flex items-center", className].join(" ")}>
+      <button
+        type="button"
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[#907d4c] transition-colors hover:bg-[rgba(203,178,107,0.12)] hover:text-[#6b5a2d]"
+        aria-label={label}
+      >
+        <InfoIcon className="h-4 w-4" />
+      </button>
+      <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden w-64 -translate-x-1/2 rounded-[8px] border border-black/10 bg-[#202020] px-3 py-2 text-left text-[11px] leading-[1.45] text-white shadow-[0_12px_26px_rgba(20,24,27,0.2)] group-hover:block group-focus-within:block">
+        {children}
+      </span>
+    </span>
+  );
+}
+
+function TrashIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M4.5 6h15M9 6V4.8c0-.44.36-.8.8-.8h4.4c.44 0 .8.36.8.8V6m-7.2 0 .7 12.2c.03.55.49.98 1.04.98h4.88c.55 0 1.01-.43 1.04-.98L15.5 6M10 10v5M14 10v5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function BlurHashPreview({ blurhash, className = "" }: { blurhash: string; className?: string }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!blurhash || !canvasRef.current) return;
+
+    let active = true;
+    let imageData: ImageData | null = null;
+
+    try {
+      const width = 32;
+      const height = 32;
+      const pixels = decode(blurhash, width, height);
+      const context = canvasRef.current.getContext("2d");
+      if (!context) return;
+      imageData = context.createImageData(width, height);
+      imageData.data.set(pixels);
+      if (!active) return;
+      canvasRef.current.width = width;
+      canvasRef.current.height = height;
+      context.putImageData(imageData, 0, 0);
+    } catch {
+      const context = canvasRef.current.getContext("2d");
+      if (!context) return;
+      canvasRef.current.width = 8;
+      canvasRef.current.height = 8;
+      context.fillStyle = "#f3f1eb";
+      context.fillRect(0, 0, 8, 8);
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [blurhash]);
+
+  return <canvas ref={canvasRef} className={className} aria-hidden="true" />;
+}
+
+function ProductImageCard({
+  image,
+  index,
+  onMove,
+  onDropImage,
+  onRemove,
+  onAltChange,
+  onDragStartImage,
+  onDragEndImage,
+  onDragEnterImage,
+  canMoveUp,
+  canMoveDown,
+  isDragging,
+  isDropTarget,
+}: {
+  image: ProductImage;
+  index: number;
+  onMove: (index: number, direction: "up" | "down") => void;
+  onDropImage: (fromIndex: number, toIndex: number) => void;
+  onRemove: (index: number) => void;
+  onAltChange: (index: number, altText: string) => void;
+  onDragStartImage: (index: number) => void;
+  onDragEndImage: () => void;
+  onDragEnterImage: (index: number) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  isDragging: boolean;
+  isDropTarget: boolean;
+}) {
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    setLoaded(false);
+  }, [image.imageUrl, image.blurHashUrl]);
+
+  return (
+    <div
+      className={[
+        "w-[148px] shrink-0 rounded-[8px] border bg-white p-2.5 shadow-[0_6px_16px_rgba(20,24,27,0.06)] transition-all",
+        isDragging ? "border-[#cbb26b] opacity-70 scale-[0.98]" : "border-black/10",
+        isDropTarget ? "ring-2 ring-[#cbb26b] ring-offset-2 ring-offset-white" : "",
+      ].join(" ")}
+      draggable
+      onDragStart={(event) => {
+        onDragStartImage(index);
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", String(index));
+      }}
+      onDragEnd={() => {
+        onDragEndImage();
+      }}
+      onDragEnter={() => {
+        onDragEnterImage(index);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const fromIndex = Number(event.dataTransfer.getData("text/plain"));
+        if (Number.isFinite(fromIndex)) {
+          onDropImage(fromIndex, index);
+        }
+        onDragEndImage();
+      }}
+    >
+      <div className="relative aspect-square overflow-hidden rounded-[8px] bg-[#f4f4f4]">
+        <BlurHashPreview
+          blurhash={image.blurHashUrl}
+          className={[
+            "absolute inset-0 h-full w-full object-cover transition-opacity duration-300",
+            loaded ? "opacity-0" : "opacity-100",
+          ].join(" ")}
+        />
+        <img
+          src={image.imageUrl}
+          alt={image.altText || image.fileName}
+          className={[
+            "absolute inset-0 h-full w-full object-cover transition-opacity duration-300",
+            loaded ? "opacity-100" : "opacity-0",
+          ].join(" ")}
+          onLoad={() => setLoaded(true)}
+        />
+        <div className="absolute left-2 top-2 flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => onMove(index, "up")}
+            disabled={!canMoveUp}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-black/10 bg-white/90 text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.08)] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Move image up"
+          >
+            <ChevronUpIcon className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(index, "down")}
+            disabled={!canMoveDown}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-black/10 bg-white/90 text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.08)] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Move image down"
+          >
+            <ChevronDownIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="absolute left-2 bottom-2 inline-flex items-center gap-1 rounded-[8px] bg-black/72 px-2 py-1 text-[10px] font-semibold text-white">
+          <DragGripIcon className="h-3 w-3" />
+          <span>Drag</span>
+        </div>
+      </div>
+      <div className="mt-2 space-y-2">
+        <p className="truncate text-[11px] font-medium text-[#202020]">{image.fileName}</p>
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Alt text</span>
+          <input
+            value={image.altText}
+            onChange={(event) => onAltChange(index, event.target.value)}
+            className="w-full rounded-[8px] border border-black/10 bg-white px-2.5 py-2 text-[11px] outline-none transition-colors focus:border-[#cbb26b]"
+            placeholder="Describe this image"
+          />
+        </label>
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => onRemove(index)}
+            className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-[8px] border border-black/10 bg-white text-[12px] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#b91c1c]"
+            aria-label={`Remove ${image.fileName}`}
+          >
+            <TrashIcon className="h-3.5 w-3.5" />
+            <span>Remove</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SwatchPicker({
+  value,
+  onChange,
+  className = "",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  className?: string;
+}) {
+  return (
+    <div className={["flex flex-wrap gap-2", className].join(" ")}>
+      {COLOR_SWATCHES.map((swatch) => {
+        const selected = value.toLowerCase() === swatch.toLowerCase();
+        return (
+          <button
+            key={swatch}
+            type="button"
+            onClick={() => onChange(swatch)}
+            className={[
+              "h-8 w-8 rounded-[8px] border transition-transform hover:scale-[1.04]",
+              selected ? "border-[#202020] ring-2 ring-[#cbb26b] ring-offset-2 ring-offset-white" : "border-black/10",
+            ].join(" ")}
+            style={{ backgroundColor: swatch }}
+            aria-label={`Select ${swatch} color`}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function RichTextEditor({
+  value,
+  onChange,
+  placeholder,
+  editorRef,
+  maxLength,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  editorRef: RefObject<HTMLDivElement | null>;
+  maxLength?: number;
+}) {
+  useEffect(() => {
+    const node = editorRef.current;
+    if (!node) return;
+    if (node.innerHTML !== value) {
+      node.innerHTML = value || "<p><br></p>";
+    }
+  }, [editorRef, value]);
+
+  function applyFormat(command: "bold" | "italic" | "underline" | "insertUnorderedList" | "insertOrderedList") {
+    editorRef.current?.focus();
+    document.execCommand(command, false);
+    onChange(editorRef.current?.innerHTML ?? "");
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[8px] border border-black/10 bg-white">
+      <div className="flex flex-wrap items-center gap-1 border-b border-black/5 bg-[#fafafa] px-2 py-2">
+        {[
+          { label: "B", command: "bold" as const },
+          { label: "I", command: "italic" as const },
+          { label: "U", command: "underline" as const },
+          { label: "• List", command: "insertUnorderedList" as const },
+          { label: "1. List", command: "insertOrderedList" as const },
+        ].map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            onClick={() => applyFormat(item.command)}
+            className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c]"
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div
+        ref={editorRef}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={() => {
+          const current = editorRef.current?.innerHTML ?? "";
+          if (typeof maxLength === "number") {
+            const plain = stripHtml(current);
+            if (plain.length > maxLength && editorRef.current) {
+              const truncated = plainTextToHtml(plain.slice(0, maxLength));
+              editorRef.current.innerHTML = truncated;
+              onChange(truncated);
+              return;
+            }
+          }
+          onChange(current);
+        }}
+        className="min-h-[180px] px-4 py-3 text-[13px] leading-[1.6] text-[#202020] outline-none"
+        data-placeholder={placeholder}
+        style={{ whiteSpace: "pre-wrap" }}
+      />
+      <style jsx>{`
+        [contenteditable][data-placeholder]:empty:before {
+          content: attr(data-placeholder);
+          color: #9aa3af;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+export default function SellerCatalogueNewPage() {
+  const { authReady, isAuthenticated, isSeller, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const variantUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const editorProductId = useMemo(
+    () => searchParams.get("unique_id")?.trim() || searchParams.get("id")?.trim() || "",
+    [searchParams],
+  );
+
+  const sellerContexts = useMemo<SellerContextItem[]>(() => {
+    const items: SellerContextItem[] = [];
+    const seen = new Set<string>();
+    const add = (sellerSlug: string, sellerCode: string, vendorName: string, status: string | null, blockedReasonCode: string | null, blockedReasonMessage: string | null) => {
+      const slug = String(sellerSlug ?? "").trim();
+      const code = String(sellerCode ?? "").trim();
+      const name = String(vendorName ?? "").trim();
+      const key = slug || code;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      items.push({
+        sellerSlug: slug || code,
+        sellerCode: code || slug,
+        vendorName: name || slug,
+        status,
+        blockedReasonCode,
+        blockedReasonMessage,
+      });
+    };
+
+    add(
+      profile?.sellerActiveSellerSlug?.trim() || profile?.sellerSlug?.trim() || "",
+      profile?.sellerCode?.trim() || "",
+      profile?.sellerVendorName ?? profile?.accountName ?? "",
+      profile?.sellerStatus ?? null,
+      profile?.sellerBlockedReasonCode ?? null,
+      profile?.sellerBlockedReasonMessage ?? null,
+    );
+
+    for (const managed of profile?.sellerManagedAccounts ?? []) {
+      add(
+        managed?.sellerSlug?.trim() || "",
+        managed?.sellerCode?.trim() || "",
+        managed?.vendorName?.trim() || "",
+        managed?.status ?? null,
+        managed?.blockedReasonCode ?? null,
+        managed?.blockedReasonMessage ?? null,
+      );
+    }
+
+    return items;
+  }, [profile?.accountName, profile?.sellerActiveSellerSlug, profile?.sellerCode, profile?.sellerManagedAccounts, profile?.sellerSlug, profile?.sellerVendorName]);
+
+  const activeSellerSlug = useMemo(() => {
+    const currentSeller = searchParams.get("seller")?.trim() || "";
+    if (currentSeller && sellerContexts.some((item) => item.sellerSlug === currentSeller)) {
+      return currentSeller;
+    }
+    return sellerContexts[0]?.sellerSlug || profile?.sellerActiveSellerSlug?.trim() || profile?.sellerSlug?.trim() || profile?.sellerCode?.trim() || "";
+  }, [profile?.sellerActiveSellerSlug, profile?.sellerCode, profile?.sellerSlug, searchParams, sellerContexts]);
+
+  const activeSellerContext = useMemo(() => {
+    return sellerContexts.find((item) => item.sellerSlug === activeSellerSlug) ?? sellerContexts[0] ?? null;
+  }, [activeSellerSlug, sellerContexts]);
+
+  const vendorName = activeSellerContext?.vendorName ?? profile?.sellerVendorName ?? "";
+  const sellerBlocked = String(activeSellerContext?.status || profile?.sellerStatus || "").trim().toLowerCase() === "blocked";
+  const sellerBlockedReasonCode = activeSellerContext?.blockedReasonCode || profile?.sellerBlockedReasonCode || "other";
+  const sellerBlockedReasonLabel = getSellerBlockReasonLabel(sellerBlockedReasonCode);
+  const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
+
+  const [uniqueId, setUniqueId] = useState("");
+  const [productSku, setProductSku] = useState("");
+  const [title, setTitle] = useState("");
+  const [category, setCategory] = useState("");
+  const [subCategory, setSubCategory] = useState("");
+  const [brandName, setBrandName] = useState("");
+  const [selectedBrand, setSelectedBrand] = useState<SelectedBrand | null>(null);
+  const [brandDropdownOpen, setBrandDropdownOpen] = useState(false);
+  const [overview, setOverview] = useState("");
+  const [description, setDescription] = useState("");
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keywordTags, setKeywordTags] = useState<string[]>([]);
+  const [productImages, setProductImages] = useState<ProductImage[]>([]);
+  const [variantImages, setVariantImages] = useState<ProductImage[]>([]);
+  const [variantItems, setVariantItems] = useState<ProductVariantItem[]>([]);
+  const [variantDraft, setVariantDraft] = useState<VariantDraft>({
+    variantId: "",
+    label: "",
+    sku: "",
+    barcode: "",
+    barcodeImageUrl: "",
+    unitCount: "1",
+    volume: "",
+    volumeUnit: "ml",
+    color: "",
+    hasColor: false,
+    sellingPriceIncl: "",
+    isOnSale: false,
+    saleDiscountPercent: "",
+    isDefault: false,
+    isActive: true,
+    continueSellingOutOfStock: false,
+    trackInventory: false,
+    inventoryQty: "",
+    warehouseId: "",
+    weightKg: "",
+    lengthCm: "",
+    widthCm: "",
+    heightCm: "",
+    monthlySales30d: "",
+  });
+  const [inventoryTracking, setInventoryTracking] = useState(false);
+  const [fulfillmentMode, setFulfillmentMode] = useState<"seller" | "bevgo">("seller");
+  const [leadTimeDays, setLeadTimeDays] = useState("3");
+  const [cutoffTime, setCutoffTime] = useState("10:00");
+  const [draggedImageIndex, setDraggedImageIndex] = useState<number | null>(null);
+  const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
+  const [draggedVariantImageIndex, setDraggedVariantImageIndex] = useState<number | null>(null);
+  const [dropTargetVariantImageIndex, setDropTargetVariantImageIndex] = useState<number | null>(null);
+  const [brandSuggestions, setBrandSuggestions] = useState<BrandSuggestion[]>([]);
+  const [loadingBrands, setLoadingBrands] = useState(false);
+  const [generatingOverview, setGeneratingOverview] = useState(false);
+  const [generatingDescription, setGeneratingDescription] = useState(false);
+  const [generatingKeywords, setGeneratingKeywords] = useState(false);
+  const [generatingSku, setGeneratingSku] = useState(false);
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const [uploadingVariantImages, setUploadingVariantImages] = useState(false);
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [loadingProduct, setLoadingProduct] = useState(false);
+  const [loadingVariants, setLoadingVariants] = useState(false);
+  const [variantFormOpen, setVariantFormOpen] = useState(false);
+  const [editingVariantIndex, setEditingVariantIndex] = useState<number | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showFulfillmentChangeModal, setShowFulfillmentChangeModal] = useState(false);
+  const [showSidebarSummaryDrawer, setShowSidebarSummaryDrawer] = useState(false);
+  const [showPublishDrawer, setShowPublishDrawer] = useState(false);
+  const [showMobileToolsDrawer, setShowMobileToolsDrawer] = useState(false);
+  const [publishChecklistPulse, setPublishChecklistPulse] = useState(false);
+  const [fulfillmentChangeNote, setFulfillmentChangeNote] = useState("");
+  const [skuStatus, setSkuStatus] = useState<"idle" | "checking" | "unique" | "taken" | "error">("idle");
+  const [variantSkuStatus, setVariantSkuStatus] = useState<"idle" | "checking" | "unique" | "taken" | "error">("idle");
+  const [variantBarcodeStatus, setVariantBarcodeStatus] = useState<"idle" | "checking" | "unique" | "taken" | "error">("idle");
+  const [generatingVariantBarcode, setGeneratingVariantBarcode] = useState(false);
+  const [inboundBookings, setInboundBookings] = useState<any[]>([]);
+  const [loadingInboundBookings, setLoadingInboundBookings] = useState(false);
+  const [savingInboundBooking, setSavingInboundBooking] = useState(false);
+  const [inboundDeliveryDate, setInboundDeliveryDate] = useState("");
+  const [inboundNotes, setInboundNotes] = useState("");
+  const [inboundQuantities, setInboundQuantities] = useState<Record<string, string>>({});
+  const [stockUpliftments, setStockUpliftments] = useState<any[]>([]);
+  const [loadingStockUpliftments, setLoadingStockUpliftments] = useState(false);
+  const [savingStockUpliftment, setSavingStockUpliftment] = useState(false);
+  const [upliftDate, setUpliftDate] = useState("");
+  const [upliftNotes, setUpliftNotes] = useState("");
+  const [upliftReason, setUpliftReason] = useState("");
+  const [upliftQuantities, setUpliftQuantities] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [showErrorDialog, setShowErrorDialog] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [createdProduct, setCreatedProduct] = useState<CreatedProductSummary | null>(null);
+  const [loadedProductSku, setLoadedProductSku] = useState("");
+  const [feeConfig, setFeeConfig] = useState(DEFAULT_MARKETPLACE_FEE_CONFIG);
+  const marketplaceCategories = useMemo(
+    () => (feeConfig?.categories?.length ? feeConfig.categories : SELLER_CATALOGUE_CATEGORIES),
+    [feeConfig],
+  );
+  const subCategories = useMemo(() => getMarketplaceCatalogueSubCategories(category, marketplaceCategories), [category, marketplaceCategories]);
+
+  const descriptionEditorRef = useRef<HTMLDivElement | null>(null);
+  const previousReadyRequirementCountRef = useRef(0);
+  const productTitleSlug = useMemo(() => normalizeSlug(title), [title]);
+  const descriptionPlainText = useMemo(() => stripHtml(description), [description]);
+  const titleHasValue = title.trim().length > 0;
+  const aiHelpersEnabled = titleHasValue;
+  const aiHelperPrompt = "Add a product title first to unlock AI help.";
+  const normalizedBrandInput = sanitizeText(brandName).toLowerCase();
+  const matchingBrand = useMemo(
+    () =>
+      brandSuggestions.find((item) => {
+        const titleMatch = item.title.trim().toLowerCase() === normalizedBrandInput;
+        const slugMatch = item.slug.trim().toLowerCase() === normalizeSlug(brandName);
+        return titleMatch || slugMatch;
+      }) ?? null,
+    [brandName, brandSuggestions, normalizedBrandInput],
+  );
+  const filteredBrandSuggestions = useMemo(() => {
+    const term = sanitizeText(brandName).toLowerCase();
+    if (!term) return brandSuggestions.slice(0, 6);
+    return brandSuggestions
+      .filter((item) => {
+        const title = item.title.trim().toLowerCase();
+        const slug = item.slug.trim().toLowerCase();
+        return title.includes(term) || slug.includes(term);
+      })
+      .slice(0, 6);
+  }, [brandName, brandSuggestions]);
+  const brandFieldHasValue = brandName.trim().length > 0;
+  const inventoryTrackingRequired = fulfillmentMode === "bevgo";
+  const inventoryTrackingEnabled = inventoryTrackingRequired || inventoryTracking;
+  const inventoryTrackingForProduct = inventoryTrackingEnabled;
+  const continueSellingAvailable = fulfillmentMode === "seller" && !inventoryTrackingEnabled;
+  const fulfillmentLocked = Boolean(editorProductId || createdProduct?.uniqueId);
+  const activeProcessLabel = useMemo(() => {
+    if (submitting) return "Saving product...";
+    if (loadingProduct) return "Loading product...";
+    if (loadingVariants) return "Loading variants...";
+    if (uploadingImages) return "Uploading images...";
+    if (uploadingVariantImages) return "Uploading variant images...";
+    if (generatingCode) return "Refreshing product code...";
+    if (generatingSku) return "Generating SKU...";
+    if (generatingOverview) return "Generating overview...";
+    if (generatingDescription) return "Generating description...";
+    if (generatingKeywords) return "Generating keywords...";
+    return "";
+  }, [
+    generatingCode,
+    generatingDescription,
+    generatingKeywords,
+    generatingOverview,
+    generatingSku,
+    submitting,
+    uploadingImages,
+    uploadingVariantImages,
+    loadingProduct,
+    loadingVariants,
+  ]);
+  const activeProductId = createdProduct?.uniqueId || editorProductId || "";
+  const isEditingProduct = Boolean(activeProductId);
+  const productStatusLabel = useMemo(() => {
+    if (!isEditingProduct) return "Draft";
+    if (createdProduct?.moderationStatus) return formatModerationStatus(createdProduct.moderationStatus);
+    return "Draft";
+  }, [createdProduct?.moderationStatus, isEditingProduct]);
+  const selectedFeeRule = useMemo(
+    () => resolveMarketplaceSuccessFeeRule(category, subCategory, marketplaceCategories),
+    [category, marketplaceCategories, subCategory],
+  );
+  const selectedFeeRuleLabel = useMemo(
+    () => describeMarketplaceFeeRule(selectedFeeRule.rule),
+    [selectedFeeRule.rule],
+  );
+  const variantBasePriceIncl = money2(variantDraft.sellingPriceIncl || 0);
+  const selectedSuccessFeePercent = useMemo(
+    () => estimateMarketplaceSuccessFeePercent(selectedFeeRule.rule, variantBasePriceIncl || 0),
+    [selectedFeeRule.rule, variantBasePriceIncl],
+  );
+  const variantSaleDiscountPercent = Number(variantDraft.saleDiscountPercent || 0);
+  const variantSalePreviewIncl = variantDraft.isOnSale && variantSaleDiscountPercent > 0
+    ? money2(variantBasePriceIncl * (1 - variantSaleDiscountPercent / 100))
+    : 0;
+  const variantLogisticsReady = useMemo(() => {
+    if (fulfillmentMode !== "bevgo") return true;
+    return marketplaceVariantLogisticsComplete({
+      weightKg: Number(variantDraft.weightKg || 0),
+      lengthCm: Number(variantDraft.lengthCm || 0),
+      widthCm: Number(variantDraft.widthCm || 0),
+      heightCm: Number(variantDraft.heightCm || 0),
+      monthlySales30d: Number(variantDraft.monthlySales30d || 0),
+      stockQty: Number(variantDraft.inventoryQty || 0),
+      warehouseId: variantDraft.warehouseId || null,
+    });
+  }, [
+    fulfillmentMode,
+    variantDraft.heightCm,
+    variantDraft.inventoryQty,
+    variantDraft.lengthCm,
+    variantDraft.monthlySales30d,
+    variantDraft.weightKg,
+    variantDraft.widthCm,
+    variantDraft.warehouseId,
+  ]);
+  const variantFeeSnapshot = useMemo(() => {
+    if (!category || !subCategory || !variantDraft.sellingPriceIncl) return null;
+    return buildMarketplaceFeeSnapshot({
+      categorySlug: category,
+      subCategorySlug: subCategory,
+      sellingPriceIncl: variantBasePriceIncl,
+      weightKg: Number(variantDraft.weightKg || 0),
+      lengthCm: Number(variantDraft.lengthCm || 0),
+      widthCm: Number(variantDraft.widthCm || 0),
+      heightCm: Number(variantDraft.heightCm || 0),
+      stockQty: Number(variantDraft.inventoryQty || 0),
+      monthlySales30d: Number(variantDraft.monthlySales30d || 0),
+      fulfillmentMode,
+      config: feeConfig,
+    });
+  }, [
+    category,
+    feeConfig,
+    fulfillmentMode,
+    subCategory,
+    variantBasePriceIncl,
+    variantDraft.heightCm,
+    variantDraft.inventoryQty,
+    variantDraft.lengthCm,
+    variantDraft.monthlySales30d,
+      variantDraft.weightKg,
+      variantDraft.widthCm,
+  ]);
+  const variantFeePreviewReady = Boolean(variantDraft.sellingPriceIncl.trim()) && (fulfillmentMode === "seller" || variantLogisticsReady);
+  const publishRequirements = useMemo(
+    () => [
+      { label: "Title", ready: title.trim().length > 2 },
+      { label: "Product code", ready: uniqueId.length === 8 },
+      { label: "SKU", ready: productSku.trim().length > 0 },
+      { label: "Category", ready: category.trim().length > 0 },
+      { label: "Sub category", ready: subCategory.trim().length > 0 },
+      { label: "Brand", ready: brandFieldHasValue },
+      { label: "Overview", ready: overview.trim().length > 2 },
+      { label: "Description", ready: descriptionPlainText.trim().length > 10 },
+      { label: "Keywords", ready: keywordTags.length > 0 },
+      { label: "Images", ready: productImages.length > 0 },
+      ...(fulfillmentMode === "seller" ? [{ label: "Lead time", ready: leadTimeDays.trim().length > 0 }] : []),
+      ...(fulfillmentMode === "seller" ? [{ label: "Cutoff time", ready: cutoffTime.trim().length > 0 }] : []),
+      ...(fulfillmentMode === "bevgo" ? [{ label: "Variant logistics", ready: variantLogisticsReady }] : []),
+      { label: "Variants", ready: variantItems.length > 0 },
+    ],
+    [
+      brandFieldHasValue,
+      category,
+      descriptionPlainText,
+      fulfillmentMode,
+      keywordTags.length,
+      leadTimeDays,
+      cutoffTime,
+      overview,
+      productImages.length,
+      productSku,
+      subCategory,
+      title,
+      uniqueId.length,
+      variantItems.length,
+      variantLogisticsReady,
+    ],
+  );
+  const missingRequirements = publishRequirements.filter((item) => !item.ready);
+  const readyRequirementCount = publishRequirements.length - missingRequirements.length;
+
+  useEffect(() => {
+    const previousCount = previousReadyRequirementCountRef.current;
+    if (readyRequirementCount > previousCount) {
+      setPublishChecklistPulse(true);
+      const timeoutId = window.setTimeout(() => setPublishChecklistPulse(false), 550);
+      previousReadyRequirementCountRef.current = readyRequirementCount;
+      return () => window.clearTimeout(timeoutId);
+    }
+    previousReadyRequirementCountRef.current = readyRequirementCount;
+    return undefined;
+  }, [readyRequirementCount]);
+
+  useEffect(() => {
+    if (error) setShowErrorDialog(true);
+  }, [error]);
+
+  const formIsValid =
+    Boolean(authReady) &&
+    Boolean(isAuthenticated) &&
+    Boolean(isSeller) &&
+    Boolean(vendorName) &&
+    uniqueId.length === 8 &&
+    title.trim().length > 2 &&
+    category.trim().length > 0 &&
+    subCategory.trim().length > 0 &&
+    brandFieldHasValue &&
+    overview.trim().length > 2 &&
+    descriptionPlainText.trim().length > 10 &&
+    productSku.trim().length > 0 &&
+    keywordTags.length > 0 &&
+    (fulfillmentMode === "bevgo" || leadTimeDays.trim().length > 0) &&
+    (fulfillmentMode === "bevgo" || cutoffTime.trim().length > 0) &&
+    !submitting;
+
+  const renderPublishingChecklist = () => (
+    <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Publishing</p>
+      <p className="mt-2 text-[12px] leading-[1.55] text-[#57636c]">
+        Your draft stays here until the items below are completed.
+      </p>
+      <div className="mt-4 space-y-2">
+        {publishRequirements.map((item) => (
+          <div
+            key={item.label}
+            className="flex items-center justify-between rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[12px]"
+          >
+            <span className="font-medium text-[#202020]">{item.label}</span>
+            <span
+              className={
+                item.ready
+                  ? "inline-flex items-center gap-1 rounded-full bg-[rgba(26,133,83,0.12)] px-2.5 py-1 text-[11px] font-semibold text-[#1a8553]"
+                  : "inline-flex items-center gap-1 rounded-full bg-[rgba(220,38,38,0.08)] px-2.5 py-1 text-[11px] font-semibold text-[#b91c1c]"
+              }
+            >
+              {item.ready ? <CheckIcon className="h-3.5 w-3.5" /> : null}
+              {item.ready ? "Done" : "Required"}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 rounded-[8px] bg-[#fafafa] px-3 py-2 text-[12px] text-[#57636c]">
+        {missingRequirements.length === 0
+          ? "Ready to save and send for review."
+          : `${missingRequirements.length} item${missingRequirements.length === 1 ? "" : "s"} still need attention before the product can go live.`}
+      </div>
+    </section>
+  );
+
+  const renderSidebarSummary = () => (
+    <>
+      <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Status</p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="rounded-[8px] bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#907d4c]">
+            {productStatusLabel}
+          </span>
+          <span className="text-[12px] text-[#57636c]">
+            {createdProduct ? "Saved as a draft." : "Not yet saved."}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => void submitForReview()}
+          disabled={!activeProductId || variantItems.length === 0 || submitting}
+          className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Submit for review
+        </button>
+        <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+          {variantItems.length === 0
+            ? "Add at least one variant before you can submit this draft."
+            : inventoryTrackingRequired
+              ? "Piessang fulfilment can be submitted now. Once accepted, stock must be shipped to the warehouse before it can go live."
+              : "Your draft can be submitted once you are ready."}
+        </p>
+      </section>
+
+      <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Product organization</p>
+        <div className="mt-3 space-y-3 text-[12px] text-[#57636c]">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Title</p>
+            <p className="mt-1 font-medium text-[#202020]">{title || "Add a title"}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Brand</p>
+            <p className="mt-1 font-medium text-[#202020]">{brandName || "Add brand name"}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Vendor</p>
+            <p className="mt-1 font-medium text-[#202020]">{vendorName || "Piessang"}</p>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Fulfilment & fees</p>
+        <div className="mt-3 space-y-2">
+          <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2">
+            <div className="flex items-center gap-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Fulfillment mode</p>
+              <HelpTip label="Fulfillment help">
+                Self fulfilment means you keep and ship stock yourself. Piessang fulfilment means we hold the stock and publish the listing only after it is booked in.
+              </HelpTip>
+            </div>
+            <p className="mt-1 text-[12px] font-semibold text-[#202020]">
+              {fulfillmentMode === "seller" ? "Seller fulfills" : "Piessang fulfills"}
+            </p>
+          </div>
+          <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2">
+            <div className="flex items-center gap-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Success fee</p>
+              <HelpTip label="Success fee help">
+                Success fees come from the live category fee table and are calculated from the VAT-inclusive selling price when the order is created. If Piessang fulfils the product, separate fulfilment and storage fees may also apply.
+              </HelpTip>
+            </div>
+            <p className="mt-1 text-[12px] font-semibold text-[#202020]">{selectedSuccessFeePercent.toFixed(1)}% per order</p>
+          </div>
+          <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Lead time</p>
+            <p className="mt-1 text-[12px] font-semibold text-[#202020]">
+              {fulfillmentMode === "seller"
+                ? `${leadTimeDays || "3"} day${String(leadTimeDays) === "1" ? "" : "s"}`
+                : "Managed by Piessang"}
+            </p>
+          </div>
+          {fulfillmentMode === "seller" ? (
+            <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Cutoff time</p>
+              <p className="mt-1 text-[12px] font-semibold text-[#202020]">{cutoffTime || "10:00"}</p>
+            </div>
+          ) : null}
+          <p className="text-[11px] leading-[1.5] text-[#57636c]">
+            {fulfillmentMode === "seller"
+              ? "You handle packing and delivery. Marketplace success fees still apply based on the category fee table."
+              : "Piessang handles fulfilment. Marketplace success fees still apply, with fulfilment, handling, and storage fees calculated from the live fee tables."}
+          </p>
+        </div>
+      </section>
+    </>
+  );
+
+  async function fetchUniqueCode() {
+    setGeneratingCode(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(UNIQUE_CODE_ENDPOINT);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to generate a unique product code.");
+      }
+      const code = String(payload?.code ?? "").trim();
+      if (!/^\d{8}$/.test(code)) {
+        throw new Error("Invalid product code returned.");
+      }
+      setUniqueId(code);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate a unique product code.");
+    } finally {
+      setGeneratingCode(false);
+    }
+  }
+
+  async function fetchProductSku() {
+    if (!titleHasValue) {
+      setError("Add a product title first, then we can generate an SKU.");
+      return;
+    }
+
+    setGeneratingSku(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(SKU_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_title: title.trim(),
+          brand_slug: selectedBrand?.slug ?? matchingBrand?.slug ?? normalizeSlug(brandName),
+          vendor_name: vendorName.trim(),
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to generate a unique SKU.");
+      }
+
+      const sku = String(payload?.sku ?? "").trim();
+      if (!sku) {
+        throw new Error("Invalid SKU returned.");
+      }
+
+      setProductSku(sku);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate a unique SKU.");
+    } finally {
+      setGeneratingSku(false);
+    }
+  }
+
+  async function fetchVariantCode() {
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(UNIQUE_CODE_ENDPOINT);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to generate a unique variant ID.");
+      }
+      const code = String(payload?.code ?? "").trim();
+      if (!/^\d{8}$/.test(code)) {
+        throw new Error("Invalid variant ID returned.");
+      }
+      setVariantDraft((current) => ({ ...current, variantId: code }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate a unique variant ID.");
+    }
+  }
+
+  async function fetchVariantSku() {
+    if (!titleHasValue) {
+      setError("Add a product title first, then we can generate the variant SKU.");
+      return;
+    }
+    if (!variantDraft.label.trim()) {
+      setError("Add a variant label first, then we can generate the variant SKU.");
+      return;
+    }
+
+    setGeneratingSku(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(SKU_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_title: title.trim(),
+          variant_label: variantDraft.label.trim(),
+          brand_slug: selectedBrand?.slug ?? matchingBrand?.slug ?? normalizeSlug(brandName),
+          vendor_name: vendorName.trim(),
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to generate a unique variant SKU.");
+      }
+
+      const sku = String(payload?.sku ?? "").trim();
+      if (!sku) {
+        throw new Error("Invalid SKU returned.");
+      }
+
+      setVariantDraft((current) => ({ ...current, sku }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate a unique variant SKU.");
+    } finally {
+      setGeneratingSku(false);
+    }
+  }
+
+  async function openVariantForm() {
+    setVariantFormOpen(true);
+    if (String(variantDraft.variantId ?? "").trim()) return;
+    await fetchVariantCode();
+  }
+
+  useEffect(() => {
+    const sku = productSku.trim();
+    if (!sku) {
+      setSkuStatus("idle");
+      return;
+    }
+
+    if (activeProductId && loadedProductSku && sku.toUpperCase() === loadedProductSku.trim().toUpperCase()) {
+      setSkuStatus("unique");
+      return;
+    }
+
+    let active = true;
+    const timeout = window.setTimeout(async () => {
+      setSkuStatus("checking");
+      try {
+        const response = await fetch(SKU_CHECK_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: { sku, productId: uniqueId } }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!active) return;
+        if (!response.ok || payload?.ok === false) {
+          setSkuStatus("error");
+          return;
+        }
+        setSkuStatus(payload?.unique ? "unique" : "taken");
+      } catch {
+        if (active) setSkuStatus("error");
+      }
+    }, 300);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [activeProductId, loadedProductSku, productSku, uniqueId]);
+
+  useEffect(() => {
+    const sku = variantDraft.sku.trim();
+    if (!sku) {
+      setVariantSkuStatus("idle");
+      return;
+    }
+
+    let active = true;
+    const timeout = window.setTimeout(async () => {
+      setVariantSkuStatus("checking");
+      try {
+        const response = await fetch(SKU_CHECK_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: { sku } }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!active) return;
+        if (!response.ok || payload?.ok === false) {
+          setVariantSkuStatus("error");
+          return;
+        }
+        setVariantSkuStatus(payload?.unique ? "unique" : "taken");
+      } catch {
+        if (active) setVariantSkuStatus("error");
+      }
+    }, 300);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [activeProductId, variantDraft.sku, variantDraft.variantId]);
+
+  useEffect(() => {
+    if (!isSeller || editorProductId) return;
+    void fetchUniqueCode();
+  }, [editorProductId, isSeller]);
+
+  useEffect(() => {
+    if (!editorProductId) return;
+    let cancelled = false;
+
+    async function loadProduct() {
+      setLoadingProduct(true);
+      setError(null);
+      try {
+        const response = await fetch(`${PRODUCT_GET_ENDPOINT}?id=${encodeURIComponent(editorProductId)}&includeUnavailable=true`, {
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || "Unable to load the product.");
+        }
+        const record = payload?.data ?? payload?.product ?? payload ?? {};
+        if (cancelled) return;
+
+        setUniqueId(String(record?.product?.unique_id ?? editorProductId).trim());
+        setProductSku(String(record?.product?.sku ?? "").trim());
+        setTitle(String(record?.product?.title ?? "").trim());
+        setCategory(String(record?.grouping?.category ?? "").trim());
+        setSubCategory(String(record?.grouping?.subCategory ?? "").trim());
+        setBrandName(String(record?.product?.brandTitle ?? record?.product?.brand ?? "").trim().slice(0, 30));
+        setSelectedBrand(
+          record?.product?.brand
+            ? {
+                id: String(record?.product?.brand ?? ""),
+                slug: String(record?.product?.brand ?? ""),
+                title: String(record?.product?.brandTitle ?? record?.product?.brand ?? "").trim(),
+                exact: true,
+                mode: "existing",
+              }
+            : null,
+        );
+        setOverview(String(record?.product?.overview ?? "").trim());
+        setDescription(String(record?.product?.description ?? "").trim());
+        setKeywordTags(
+          Array.isArray(record?.product?.keywords)
+            ? record.product.keywords.map((item: string) => String(item).trim().toLowerCase()).slice(0, 10)
+            : [],
+        );
+        setProductImages(
+          Array.isArray(record?.media?.images)
+            ? record.media.images.map((item: any, index: number) => ({
+                imageUrl: String(item?.imageUrl ?? "").trim(),
+                blurHashUrl: String(item?.blurHashUrl ?? "").trim(),
+                fileName: String(item?.altText ?? item?.imageUrl ?? `image-${index + 1}`).trim(),
+                altText: String(item?.altText ?? "").trim(),
+            }))
+            : [],
+        );
+        const nextFulfillmentMode = String(record?.fulfillment?.mode ?? "seller") === "bevgo" ? "bevgo" : "seller";
+        const nextInventoryTracking = Boolean(record?.placement?.inventory_tracking) || nextFulfillmentMode === "bevgo";
+        setFulfillmentMode(nextFulfillmentMode);
+        setInventoryTracking(nextInventoryTracking);
+        setLeadTimeDays(String(record?.fulfillment?.lead_time_days ?? "3"));
+        setCutoffTime(String(record?.fulfillment?.cutoff_time ?? "10:00"));
+        setVariantDraft((current) => ({
+          ...current,
+          trackInventory: nextInventoryTracking,
+        }));
+        setVariantImages([]);
+        setLoadedProductSku(String(record?.product?.sku ?? "").trim());
+        setCreatedProduct({
+          uniqueId: String(record?.product?.unique_id ?? editorProductId).trim(),
+          sku: String(record?.product?.sku ?? "").trim(),
+          title: String(record?.product?.title ?? "").trim(),
+          titleSlug: String(record?.product?.titleSlug ?? normalizeSlug(String(record?.product?.title ?? ""))).trim(),
+          brandSlug: String(record?.product?.brand ?? "").trim(),
+          brandTitle: String(record?.product?.brandTitle ?? "").trim(),
+          vendorName: String(record?.product?.vendorName ?? vendorName ?? "").trim(),
+          moderationStatus: String(record?.moderation?.status ?? "draft").trim() || "draft",
+        });
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "Unable to load the product.");
+      } finally {
+        if (!cancelled) setLoadingProduct(false);
+      }
+    }
+
+    void loadProduct();
+    return () => {
+      cancelled = true;
+    };
+  }, [editorProductId, vendorName]);
+
+  useEffect(() => {
+    if (!continueSellingAvailable && variantDraft.continueSellingOutOfStock) {
+      setVariantDraft((current) => ({ ...current, continueSellingOutOfStock: false }));
+    }
+  }, [continueSellingAvailable, variantDraft.continueSellingOutOfStock]);
+
+  const loadVariantItems = useMemo(
+    () => async (productId: string) => {
+      if (!productId) return;
+      setLoadingVariants(true);
+      try {
+        const response = await fetch(VARIANT_GET_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ unique_id: productId }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || "Unable to load variants.");
+        }
+        const nextVariants = Array.isArray(payload?.variants) ? payload.variants : [];
+        setVariantItems(nextVariants);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Unable to load variants.");
+      } finally {
+        setLoadingVariants(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!activeProductId) {
+      setVariantItems([]);
+      return;
+    }
+    void loadVariantItems(activeProductId);
+  }, [activeProductId, loadVariantItems]);
+
+  useEffect(() => {
+    if (!activeProductId || fulfillmentMode !== "bevgo") {
+      setInboundBookings([]);
+      setStockUpliftments([]);
+      return;
+    }
+    let cancelled = false;
+    async function loadInboundBookings() {
+      setLoadingInboundBookings(true);
+      try {
+        const response = await fetch(`${SELLER_INBOUND_BOOKINGS_ENDPOINT}?productId=${activeProductId}`, { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || "Unable to load inbound bookings.");
+        }
+        if (!cancelled) {
+          setInboundBookings(Array.isArray(payload?.items) ? payload.items : []);
+        }
+      } catch {
+        if (!cancelled) setInboundBookings([]);
+      } finally {
+        if (!cancelled) setLoadingInboundBookings(false);
+      }
+    }
+    void loadInboundBookings();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProductId, fulfillmentMode]);
+
+  useEffect(() => {
+    if (!activeProductId || fulfillmentMode !== "bevgo") {
+      setStockUpliftments([]);
+      return;
+    }
+    let cancelled = false;
+    async function loadStockUpliftments() {
+      setLoadingStockUpliftments(true);
+      try {
+        const response = await fetch(`${SELLER_STOCK_UPLIFTMENTS_ENDPOINT}?productId=${activeProductId}`, { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || "Unable to load stock upliftments.");
+        }
+        if (!cancelled) {
+          setStockUpliftments(Array.isArray(payload?.items) ? payload.items : []);
+        }
+      } catch {
+        if (!cancelled) setStockUpliftments([]);
+      } finally {
+        if (!cancelled) setLoadingStockUpliftments(false);
+      }
+    }
+    void loadStockUpliftments();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProductId, fulfillmentMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadFeeConfig() {
+      try {
+        const response = await fetch("/api/catalogue/v1/marketplace/fees", { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false || !payload?.config) return;
+        if (!cancelled) {
+          setFeeConfig((current) => ({
+            ...current,
+            ...payload.config,
+            categories: Array.isArray(payload.config?.categories) && payload.config.categories.length ? payload.config.categories : current.categories,
+          }));
+        }
+      } catch {
+        // Keep the local default config if the live copy cannot be loaded.
+      }
+    }
+
+    void loadFeeConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadBrandSuggestions() {
+      setLoadingBrands(true);
+      try {
+        const url = new URL(BRAND_ENDPOINT, window.location.origin);
+        url.searchParams.set("isActive", "true");
+        url.searchParams.set("limit", "all");
+
+        const response = await fetch(url.toString(), { signal: controller.signal });
+        const payload = await response.json().catch(() => ({}));
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+
+        const nextSuggestions = items
+          .map((item: any) => {
+            const slug = String(item?.data?.brand?.slug ?? "").trim();
+            const title = String(item?.data?.brand?.title ?? "").trim();
+            if (!slug || !title) return null;
+            return {
+              id: String(item?.id ?? slug),
+              slug,
+              title,
+            };
+          })
+          .filter(Boolean)
+          .slice(0, 8) as BrandSuggestion[];
+
+        setBrandSuggestions(nextSuggestions);
+        setSelectedBrand((current) => {
+          if (!current) return current;
+          const stillExists = nextSuggestions.some((item) => item.slug === current.slug);
+          return stillExists ? current : null;
+        });
+      } catch {
+        setBrandSuggestions([]);
+        setSelectedBrand(null);
+      } finally {
+        setLoadingBrands(false);
+      }
+    }
+
+    void loadBrandSuggestions();
+    return () => controller.abort();
+  }, []);
+
+  async function generateDescription() {
+    if (!titleHasValue) {
+      setError("Add a product title first, then we can generate the description.");
+      return;
+    }
+
+    setGeneratingDescription(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/catalogue/v1/products/product/descriptionGenerator", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.trim(), word_limit: 40 }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const nextDescription = String(payload?.description ?? payload?.fallback ?? "")
+        .trim()
+        .slice(0, DESCRIPTION_MAX_LENGTH);
+      if (!response.ok && !nextDescription) {
+        throw new Error(payload?.message || "Unable to generate description.");
+      }
+      if (nextDescription) setDescription(plainTextToHtml(nextDescription));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate description.");
+    } finally {
+      setGeneratingDescription(false);
+    }
+  }
+
+  async function generateOverview() {
+    if (!titleHasValue) {
+      setError("Add a product title first, then we can generate the overview.");
+      return;
+    }
+
+    setGeneratingOverview(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/catalogue/v1/products/product/descriptionGenerator", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.trim(), word_limit: 18 }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const nextOverview = String(payload?.description ?? payload?.fallback ?? "")
+        .trim()
+        .slice(0, OVERVIEW_MAX_LENGTH);
+      if (!response.ok && !nextOverview) {
+        throw new Error(payload?.message || "Unable to generate overview.");
+      }
+      if (nextOverview) setOverview(nextOverview);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate overview.");
+    } finally {
+      setGeneratingOverview(false);
+    }
+  }
+
+  async function generateKeywords() {
+    if (!titleHasValue) {
+      setError("Add a product title first, then we can generate keywords.");
+      return;
+    }
+
+    setGeneratingKeywords(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/ai/keywords/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.trim(), max: 10 }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const nextKeywords = String(payload?.keywords ?? payload?.fallback ?? "").trim();
+      if (!response.ok && !nextKeywords) {
+        throw new Error(payload?.message || "Unable to generate keywords.");
+      }
+      if (nextKeywords) setKeywordTags(parseKeywordTokens(nextKeywords));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate keywords.");
+    } finally {
+      setGeneratingKeywords(false);
+    }
+  }
+
+  function addKeywordTokens(input: string) {
+    const tokens = parseKeywordTokens(input);
+    if (!tokens.length) return;
+    setKeywordTags((current) => {
+      const next = [...current];
+      for (const token of tokens) {
+        if (next.length >= 10) break;
+        if (!next.includes(token)) next.push(token);
+      }
+      return next;
+    });
+  }
+
+  function removeKeywordAt(index: number) {
+    setKeywordTags((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  }
+
+  function handleKeywordKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "," || event.key === "Enter") {
+      event.preventDefault();
+      addKeywordTokens(keywordInput);
+      setKeywordInput("");
+    }
+
+    if (event.key === "Backspace" && !keywordInput && keywordTags.length > 0) {
+      event.preventDefault();
+      removeKeywordAt(keywordTags.length - 1);
+    }
+  }
+
+  function commitKeywordInput() {
+    addKeywordTokens(keywordInput);
+    setKeywordInput("");
+  }
+
+  function formatBrandInput(value: string) {
+    return value
+      .trimStart()
+      .replace(/\s+/g, " ")
+      .replace(/\b([a-z])/g, (match) => match.toUpperCase())
+      .slice(0, 30);
+  }
+
+  function selectBrandSuggestion(item: BrandSuggestion) {
+    setBrandName(item.title.slice(0, 30));
+    setSelectedBrand({ ...item, exact: true, mode: "existing" });
+    setBrandDropdownOpen(false);
+    setError(null);
+  }
+
+  function handleBrandChange(value: string) {
+    setBrandName(formatBrandInput(value));
+    setSelectedBrand(null);
+    setBrandDropdownOpen(true);
+  }
+
+  function handleBrandBlur() {
+    window.setTimeout(() => {
+      if (matchingBrand) {
+        setBrandName(formatBrandInput(matchingBrand.title));
+        setSelectedBrand({ ...matchingBrand, exact: true, mode: "existing" });
+        setError(null);
+      } else if (brandName.trim()) {
+        setSelectedBrand(null);
+      }
+      setBrandDropdownOpen(false);
+    }, 150);
+  }
+
+  function removeImageAt(index: number) {
+    setProductImages((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  }
+
+  function reorderImages(fromIndex: number, toIndex: number) {
+    setProductImages((current) => {
+      if (
+        fromIndex === toIndex ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= current.length ||
+        toIndex >= current.length
+      ) {
+        return current;
+      }
+
+      const next = [...current];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, item);
+      return next;
+    });
+  }
+
+  function updateImageAltText(index: number, altText: string) {
+    setProductImages((current) =>
+      current.map((item, currentIndex) =>
+        currentIndex === index
+          ? { ...item, altText: sanitizeText(altText) }
+          : item,
+      ),
+    );
+  }
+
+  function moveImage(index: number, direction: "up" | "down") {
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    reorderImages(index, targetIndex);
+  }
+
+  function removeVariantImageAt(index: number) {
+    setVariantImages((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  }
+
+  function reorderVariantImages(fromIndex: number, toIndex: number) {
+    setVariantImages((current) => {
+      if (
+        fromIndex === toIndex ||
+        fromIndex < 0 ||
+        toIndex < 0 ||
+        fromIndex >= current.length ||
+        toIndex >= current.length
+      ) {
+        return current;
+      }
+
+      const next = [...current];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, item);
+      return next;
+    });
+  }
+
+  function updateVariantImageAltText(index: number, altText: string) {
+    setVariantImages((current) =>
+      current.map((item, currentIndex) =>
+        currentIndex === index
+          ? { ...item, altText: sanitizeText(altText) }
+          : item,
+      ),
+    );
+  }
+
+  function moveVariantImage(index: number, direction: "up" | "down") {
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    reorderVariantImages(index, targetIndex);
+  }
+
+  function beginDragVariantImage(index: number) {
+    setDraggedVariantImageIndex(index);
+    setDropTargetVariantImageIndex(index);
+  }
+
+  function endDragVariantImage() {
+    setDraggedVariantImageIndex(null);
+    setDropTargetVariantImageIndex(null);
+  }
+
+  function hoverDragVariantImage(index: number) {
+    setDropTargetVariantImageIndex(index);
+  }
+
+  function beginDragImage(index: number) {
+    setDraggedImageIndex(index);
+    setDropTargetIndex(index);
+  }
+
+  function endDragImage() {
+    setDraggedImageIndex(null);
+    setDropTargetIndex(null);
+  }
+
+  function hoverDragImage(index: number) {
+    setDropTargetIndex(index);
+  }
+
+  function resetProductForm() {
+    setCreatedProduct(null);
+    setUniqueId("");
+    setTitle("");
+    setProductSku("");
+    setOverview("");
+    setDescription("");
+    setKeywordInput("");
+    setKeywordTags([]);
+    setCategory("");
+    setSubCategory("");
+    setBrandName("");
+    setSelectedBrand(null);
+    setBrandDropdownOpen(false);
+    setProductImages([]);
+    setVariantImages([]);
+    setVariantItems([]);
+    setVariantFormOpen(false);
+    setInventoryTracking(false);
+    setFulfillmentMode("seller");
+    setLeadTimeDays("3");
+    setCutoffTime("10:00");
+    setLoadedProductSku("");
+    setSkuStatus("idle");
+    setVariantSkuStatus("idle");
+    resetVariantDraft({ makeDefault: true });
+    setMessage(null);
+    setError(null);
+    if (editorProductId) {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete("id");
+      router.replace(`${pathname}?${nextUrl.searchParams.toString()}`.replace(/\?$/, ""), { scroll: false });
+    }
+    void fetchUniqueCode();
+  }
+
+  async function fileToBlurHash(file: File) {
+    const bitmap = await createImageBitmap(file);
+    const width = 32;
+    const height = Math.max(1, Math.round((bitmap.height / bitmap.width) * width));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("Unable to process image preview.");
+    context.drawImage(bitmap, 0, 0, width, height);
+    const imageData = context.getImageData(0, 0, width, height);
+    return encode(imageData.data, imageData.width, imageData.height, 4, 3);
+  }
+
+  async function uploadFiles(files: FileList | File[]) {
+    if (!files.length) return;
+    if (!profile?.uid) {
+      setError("Missing seller profile. Please refresh and try again.");
+      return;
+    }
+
+    setUploadingImages(true);
+    setError(null);
+    try {
+      const nextImages: ProductImage[] = [];
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) continue;
+        const blurHashUrl = await fileToBlurHash(file);
+        const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+        const path = `users/${profile.uid}/uploads/${Date.now()}-${safeName}`;
+        const fileRef = storageRef(clientStorage, path);
+        await uploadBytes(fileRef, file, { contentType: file.type });
+        const imageUrl = await getDownloadURL(fileRef);
+        nextImages.push({
+          imageUrl,
+          blurHashUrl,
+          fileName: file.name,
+          altText: file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim(),
+        });
+      }
+      if (nextImages.length) {
+        setProductImages((current) => [...current, ...nextImages]);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to upload images.");
+    } finally {
+      setUploadingImages(false);
+      if (uploadInputRef.current) uploadInputRef.current.value = "";
+    }
+  }
+
+  async function uploadVariantFiles(files: FileList | File[]) {
+    if (!files.length) return;
+    if (!profile?.uid) {
+      setError("Missing seller profile. Please refresh and try again.");
+      return;
+    }
+
+    setUploadingVariantImages(true);
+    setError(null);
+    try {
+      const nextImages: ProductImage[] = [];
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) continue;
+        const blurHashUrl = await fileToBlurHash(file);
+        const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+        const path = `users/${profile.uid}/uploads/${Date.now()}-${safeName}`;
+        const fileRef = storageRef(clientStorage, path);
+        await uploadBytes(fileRef, file, { contentType: file.type });
+        const imageUrl = await getDownloadURL(fileRef);
+        nextImages.push({
+          imageUrl,
+          blurHashUrl,
+          fileName: file.name,
+          altText: file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim(),
+        });
+      }
+      if (nextImages.length) {
+        setVariantImages((current) => [...current, ...nextImages]);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to upload variant images.");
+    } finally {
+      setUploadingVariantImages(false);
+      if (variantUploadInputRef.current) variantUploadInputRef.current.value = "";
+    }
+  }
+
+  function validateProductDraft() {
+    if (!title.trim()) return "Product title is required.";
+    if (!uniqueId.trim() || !/^\d{8}$/.test(uniqueId.trim())) return "Product code is required.";
+    if (!productSku.trim()) return "SKU is required.";
+    if (!category.trim()) return "Primary category is required.";
+    if (!subCategory.trim()) return "Sub category is required.";
+    if (!brandName.trim()) return "Brand name is required.";
+    if (!overview.trim()) return "Product overview is required.";
+    if (descriptionPlainText.trim().length < 10) return "Product description is required.";
+    if (!keywordTags.length) return "Add at least one keyword.";
+    if (fulfillmentMode === "seller" && (!leadTimeDays.trim() || Number(leadTimeDays) < 1 || Number(leadTimeDays) > 14)) {
+      return "Lead time must be between 1 and 14 days for self-fulfilment.";
+    }
+    if (fulfillmentMode === "seller" && !cutoffTime.trim()) return "Cutoff time is required for self-fulfilment.";
+    return "";
+  }
+
+  function validateVariantDraft({
+    variantId = variantDraft.variantId.trim(),
+    sku = variantDraft.sku.trim(),
+    existingVariants = variantItems,
+  }: { variantId?: string; sku?: string; existingVariants?: ProductVariantItem[] } = {}) {
+    if (!variantId || !/^\d{8}$/.test(variantId)) {
+      return "Variant ID is required.";
+    }
+    if (!variantDraft.label.trim()) return "Variant label is required.";
+    if (!sku.trim()) return "Variant SKU is required.";
+    if (variantDraft.hasColor && !variantDraft.color.trim()) return "Choose a variant color or untick the color option.";
+    const duplicateVariantId = existingVariants.some((item) => String(item?.variant_id ?? "").trim() === variantId);
+    if (duplicateVariantId) return "That variant ID already exists for this product.";
+    const duplicateSku = existingVariants.some((item) => String(item?.sku ?? "").trim().toLowerCase() === sku.trim().toLowerCase());
+    if (duplicateSku) return "That variant SKU already exists for this product.";
+    if (!variantDraft.sellingPriceIncl.trim()) return "Variant selling price incl is required.";
+    const price = Number(variantDraft.sellingPriceIncl || 0);
+    if (!Number.isFinite(price) || price <= 0) return "Variant selling price incl must be greater than 0.";
+    if (variantDraft.isOnSale) {
+      const discount = Number(variantDraft.saleDiscountPercent || 0);
+      if (!Number.isFinite(discount) || discount <= 0 || discount > 100) {
+        return "Sale discount percentage must be between 1 and 100.";
+      }
+    }
+    if (fulfillmentMode === "bevgo") {
+      if (!variantDraft.barcode.trim()) return "A barcode is required for Piessang fulfilment variants.";
+      if (!variantDraft.weightKg.trim()) return "Variant weight is required for Piessang fulfilment.";
+      if (!variantDraft.lengthCm.trim()) return "Variant length is required for Piessang fulfilment.";
+      if (!variantDraft.widthCm.trim()) return "Variant width is required for Piessang fulfilment.";
+      if (!variantDraft.heightCm.trim()) return "Variant height is required for Piessang fulfilment.";
+      if (!variantDraft.monthlySales30d.trim()) return "Monthly sales estimate is required for Piessang fulfilment.";
+      if (!variantDraft.inventoryQty.trim()) return "Add public warehouse stock for this Piessang-fulfilled variant.";
+      if (!variantDraft.warehouseId.trim()) return "Add a warehouse or location for this Piessang-fulfilled variant.";
+    } else if (inventoryTrackingEnabled) {
+      if (!variantDraft.inventoryQty.trim()) {
+        return "Add stock quantity for this tracked inventory variant.";
+      }
+      if (!variantDraft.warehouseId.trim()) {
+        return "Add a warehouse or location for this tracked inventory variant.";
+      }
+    }
+    return "";
+  }
+
+  async function checkVariantBarcodeUnique(barcode: string, currentBarcode = "") {
+    const trimmed = barcode.trim();
+    if (!trimmed) {
+      setVariantBarcodeStatus("idle");
+      return true;
+    }
+    setVariantBarcodeStatus("checking");
+    try {
+      const response = await fetch(VARIANT_BARCODE_CHECK_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          barcode: trimmed,
+          exclude_barcode: currentBarcode.trim() || undefined,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const unique = Boolean(response.ok && payload?.ok !== false && payload?.unique !== false);
+      setVariantBarcodeStatus(unique ? "unique" : "taken");
+      return unique;
+    } catch {
+      setVariantBarcodeStatus("error");
+      return false;
+    }
+  }
+
+  async function generateVariantBarcode() {
+    setGeneratingVariantBarcode(true);
+    setError(null);
+    try {
+      const uniqueResponse = await fetch(VARIANT_BARCODE_GENERATE_UNIQUE_ENDPOINT);
+      const uniquePayload = await uniqueResponse.json().catch(() => ({}));
+      const barcode = String(uniquePayload?.data?.barcode ?? uniquePayload?.barcode ?? "").trim();
+      if (!uniqueResponse.ok || !barcode) {
+        throw new Error(uniquePayload?.message || "Unable to generate a barcode.");
+      }
+
+      const imageResponse = await fetch(VARIANT_BARCODE_GENERATE_IMAGE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: barcode }),
+      });
+      const imagePayload = await imageResponse.json().catch(() => ({}));
+      const barcodeImageUrl = String(imagePayload?.data?.barcodeImageUrl ?? "").trim();
+      if (!imageResponse.ok || !barcodeImageUrl) {
+        throw new Error(imagePayload?.message || "Unable to generate a barcode image.");
+      }
+
+      setVariantDraft((current) => ({
+        ...current,
+        barcode,
+        barcodeImageUrl,
+      }));
+      setVariantBarcodeStatus("unique");
+      setMessage("Barcode generated for this variant.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate a barcode.");
+    } finally {
+      setGeneratingVariantBarcode(false);
+    }
+  }
+
+  async function saveProductDraft() {
+    const validationError = validateProductDraft();
+    if (validationError) {
+      throw new Error(validationError);
+    }
+
+    setSubmitting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const isUpdate = Boolean(activeProductId);
+      if (
+        isUpdate &&
+        !window.confirm("Updating this product will move it back to draft and it will need to be resubmitted for review. Continue?")
+      ) {
+        return { savedId: activeProductId, isUpdate };
+      }
+      const payload = buildProductPayload(isUpdate ? "draft" : "draft", !isUpdate);
+      const { normalizedUniqueId, normalizedSku, normalizedTitle, normalizedBrandSlug, normalizedBrandTitle } = payload;
+
+      const response = await fetch(isUpdate ? PRODUCT_UPDATE_ENDPOINT : "/api/catalogue/v1/products/product/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          isUpdate
+            ? {
+                unique_id: normalizedUniqueId,
+                data: payload.data,
+              }
+            : payload,
+        ),
+      });
+
+      const payloadResponse = await response.json().catch(() => ({}));
+      if (!response.ok || payloadResponse?.ok === false) {
+        throw new Error(payloadResponse?.message || (isUpdate ? "Unable to update the product." : "Unable to create the product."));
+      }
+
+      const returnedProduct = payloadResponse?.product?.product ?? payloadResponse?.product ?? {};
+      const savedId = String(
+        returnedProduct?.product?.unique_id ??
+          returnedProduct?.unique_id ??
+          normalizedUniqueId,
+      ).trim();
+      const slug = String(returnedProduct?.product?.titleSlug ?? returnedProduct?.titleSlug ?? productTitleSlug).trim();
+      const moderationStatus = String(
+        returnedProduct?.moderation?.status ?? payloadResponse?.product?.moderation?.status ?? payloadResponse?.moderation?.status ?? (isUpdate ? "draft" : "draft"),
+      ).trim();
+
+      setCreatedProduct({
+        uniqueId: savedId,
+        sku: normalizedSku,
+        title: normalizedTitle,
+        titleSlug: slug,
+        brandSlug: normalizedBrandSlug,
+        brandTitle: normalizedBrandTitle,
+        vendorName: vendorName.trim(),
+        moderationStatus,
+      });
+      const savedBrandSlug = String(returnedProduct?.product?.brand ?? returnedProduct?.brand ?? normalizedBrandSlug).trim();
+      const savedBrandTitle = String(returnedProduct?.product?.brandTitle ?? returnedProduct?.brandTitle ?? normalizedBrandTitle).trim();
+      const brandCreated = Boolean(payloadResponse?.brandCreated);
+      const brandPending = Boolean(payloadResponse?.brandPending || returnedProduct?.product?.brandStatus === "pending");
+      if (savedBrandSlug && savedBrandTitle) {
+        const savedBrand = {
+          id: savedBrandSlug,
+          slug: savedBrandSlug,
+          title: savedBrandTitle,
+          exact: true,
+          mode: "existing" as const,
+        };
+        setBrandName(savedBrandTitle.slice(0, 30));
+        setSelectedBrand(savedBrand);
+        setBrandSuggestions((current) => {
+          const next = current.filter((item) => item.slug !== savedBrandSlug);
+          return [savedBrand, ...next].slice(0, 8);
+        });
+      }
+      setEditingVariantIndex(null);
+      setLoadedProductSku(normalizedSku);
+      setMessage(
+        [
+          isUpdate
+            ? payloadResponse?.resubmissionRequired
+              ? "Product updated. It has been moved back to draft and must be resubmitted for review."
+              : "Draft updated."
+            : "Product saved as draft.",
+          savedBrandTitle
+            ? brandPending
+              ? `Brand "${savedBrandTitle}" has been submitted for approval. The product can still be saved while Piessang reviews the brand request.`
+              : brandCreated
+                ? `Brand "${savedBrandTitle}" was created and linked.`
+                : `Brand "${savedBrandTitle}" is linked to this product.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      );
+
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set("unique_id", savedId);
+      nextUrl.searchParams.delete("id");
+      nextUrl.searchParams.set("section", "create-product");
+      router.replace(`${pathname}?${nextUrl.searchParams.toString()}`, { scroll: false });
+
+      await loadVariantItems(savedId);
+      return { savedId, isUpdate };
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to save the product.");
+      throw cause;
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function buildProductPayload(moderationStatus: "draft" | "in_review" = "draft", includeVariants = true) {
+    const normalizedUniqueId = String(uniqueId).trim();
+    const normalizedSku = String(productSku).trim();
+    const normalizedTitle = sanitizeText(title);
+    const normalizedCategory = sanitizeText(category);
+    const normalizedSubCategory = sanitizeText(subCategory);
+    const normalizedOverview = sanitizeText(overview).slice(0, OVERVIEW_MAX_LENGTH);
+    const normalizedDescription = descriptionPlainText ? description.trim() : null;
+    const normalizedKeywords = keywordTags.slice(0, 10);
+    const normalizedBrandTitle = sanitizeText(selectedBrand?.title ?? matchingBrand?.title ?? brandName).slice(0, 60);
+    const normalizedBrandSlug = selectedBrand?.slug ?? matchingBrand?.slug ?? normalizeSlug(normalizedBrandTitle);
+    const images = productImages.map((item, position) => ({
+      imageUrl: item.imageUrl,
+      blurHashUrl: item.blurHashUrl,
+      altText: item.altText || item.fileName,
+      position: position + 1,
+    }));
+    return {
+      data: {
+        product: {
+          unique_id: normalizedUniqueId,
+          sku: normalizedSku,
+          title: normalizedTitle,
+          overview: normalizedOverview || null,
+          description: normalizedDescription || null,
+          keywords: normalizedKeywords,
+          brandTitle: normalizedBrandTitle || null,
+          brand: normalizedBrandSlug || null,
+          sellerCode: activeSellerContext?.sellerCode || profile?.sellerCode || null,
+          vendorName: vendorName.trim(),
+        },
+        grouping: {
+          category: normalizedCategory,
+          subCategory: normalizedSubCategory,
+          brand: normalizedBrandSlug || null,
+        },
+        placement: {
+          isActive: moderationStatus === "in_review",
+          isFeatured: false,
+          inventory_tracking: inventoryTrackingForProduct,
+        },
+        moderation: {
+          status: moderationStatus,
+        },
+        fulfillment: {
+          mode: fulfillmentMode,
+          success_fee_percent: selectedSuccessFeePercent,
+          success_fee_label: selectedFeeRuleLabel,
+          lead_time_days: fulfillmentMode === "seller" ? Number(leadTimeDays || 0) : null,
+          cutoff_time: fulfillmentMode === "seller" ? cutoffTime.trim() : null,
+        },
+        media: {
+          images,
+        },
+        ...(includeVariants ? { variants: variantItems, inventory: [] } : {}),
+      },
+      normalizedUniqueId,
+      normalizedSku,
+      normalizedTitle,
+      normalizedBrandSlug,
+      normalizedBrandTitle,
+      images,
+    };
+  }
+
+  async function handleSubmit() {
+    try {
+      await saveProductDraft();
+    } catch (cause) {
+      // handled in saveProductDraft
+    }
+  }
+
+  async function submitForReview() {
+    if (!activeProductId) {
+      setError("Save the product draft first.");
+      return;
+    }
+    if (variantItems.length === 0) {
+      setError("Add at least one variant before submitting the product for review.");
+      return;
+    }
+
+    setSubmitting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(PRODUCT_UPDATE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unique_id: activeProductId,
+          data: {
+            moderation: {
+              status: "in_review",
+              reason: null,
+              notes: null,
+              reviewedAt: null,
+              reviewedBy: null,
+            },
+          },
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to submit the product for review.");
+      }
+      setCreatedProduct((current) =>
+        current
+          ? { ...current, moderationStatus: "in_review" }
+          : current,
+      );
+      setMessage("Product submitted for review.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to submit the product for review.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function resetVariantDraft({ makeDefault = variantItems.length === 0 } = {}) {
+    setVariantImages([]);
+    setDraggedVariantImageIndex(null);
+    setDropTargetVariantImageIndex(null);
+    setEditingVariantIndex(null);
+    setVariantDraft({
+      variantId: "",
+      label: "",
+      sku: "",
+      barcode: "",
+      barcodeImageUrl: "",
+      unitCount: "1",
+      volume: "",
+      volumeUnit: "ml",
+      color: "",
+      hasColor: false,
+      sellingPriceIncl: "",
+      isOnSale: false,
+      saleDiscountPercent: "",
+      isDefault: makeDefault,
+      isActive: true,
+      continueSellingOutOfStock: false,
+      trackInventory: inventoryTrackingEnabled,
+      inventoryQty: "",
+      warehouseId: "",
+      weightKg: "",
+      lengthCm: "",
+      widthCm: "",
+      heightCm: "",
+      monthlySales30d: "",
+    });
+  }
+
+  function loadVariantIntoForm(variant: ProductVariantItem, index: number) {
+    setEditingVariantIndex(index);
+    setVariantFormOpen(true);
+    setVariantImages(Array.isArray(variant.media?.images) ? variant.media.images : []);
+    setVariantDraft({
+      variantId: String(variant.variant_id ?? "").trim(),
+      label: String(variant.label ?? "").trim(),
+      sku: String(variant.sku ?? "").trim(),
+      barcode: String(variant.barcode ?? "").trim(),
+      barcodeImageUrl: String(variant.barcodeImageUrl ?? "").trim(),
+      unitCount: String(variant.pack?.unit_count ?? 1),
+      volume: String(variant.pack?.volume ?? ""),
+      volumeUnit: normalizeVolumeUnit(String(variant.pack?.volume_unit ?? "ml")),
+      color: String(variant.color ?? "").trim(),
+      hasColor: Boolean(String(variant.color ?? "").trim()),
+      sellingPriceIncl: String(variant.pricing?.selling_price_incl ?? ""),
+      isOnSale: Boolean(variant.sale?.is_on_sale),
+      saleDiscountPercent: String(variant.sale?.discount_percent ?? ""),
+      isDefault: Boolean(variant.placement?.is_default),
+      isActive: Boolean(variant.placement?.isActive ?? true),
+      continueSellingOutOfStock: Boolean(variant.placement?.continue_selling_out_of_stock),
+      trackInventory: Boolean(variant.inventory?.length) || inventoryTrackingEnabled,
+      inventoryQty: String(variant.inventory?.[0]?.in_stock_qty ?? ""),
+      warehouseId: String(variant.inventory?.[0]?.warehouse_id ?? ""),
+      weightKg: String(variant.logistics?.weight_kg ?? ""),
+      lengthCm: String(variant.logistics?.length_cm ?? ""),
+      widthCm: String(variant.logistics?.width_cm ?? ""),
+      heightCm: String(variant.logistics?.height_cm ?? ""),
+      monthlySales30d: String(variant.logistics?.monthly_sales_30d ?? ""),
+    });
+  }
+
+  async function addVariant() {
+    const productValidationError = validateProductDraft();
+    if (productValidationError) {
+      setError(productValidationError);
+      return;
+    }
+
+    try {
+      let variantId = variantDraft.variantId.trim();
+      if (!variantId) {
+        const codeResponse = await fetch(UNIQUE_CODE_ENDPOINT);
+        const codePayload = await codeResponse.json().catch(() => ({}));
+        variantId = String(codePayload?.code ?? "").trim();
+      }
+      if (!/^\d{8}$/.test(variantId)) {
+        throw new Error("Unable to generate a variant code.");
+      }
+
+      let sku = variantDraft.sku.trim();
+      if (!sku) {
+        const skuResponse = await fetch(SKU_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            product_title: title.trim(),
+            variant_label: variantDraft.label.trim(),
+            brand_slug: selectedBrand?.slug ?? matchingBrand?.slug ?? normalizeSlug(brandName),
+            vendor_name: vendorName.trim(),
+          }),
+        });
+        const skuPayload = await skuResponse.json().catch(() => ({}));
+        sku = String(skuPayload?.sku ?? "").trim();
+      }
+      if (!sku) {
+        throw new Error("Unable to generate a unique SKU.");
+      }
+
+      const variantValidationError = validateVariantDraft({
+        variantId,
+        sku,
+        existingVariants:
+          editingVariantIndex !== null
+            ? variantItems.filter((_, index) => index !== editingVariantIndex)
+            : variantItems,
+      });
+      if (variantValidationError) {
+        setError(variantValidationError);
+        return;
+      }
+      const barcodeUnique = await checkVariantBarcodeUnique(
+        variantDraft.barcode,
+        editingVariantIndex !== null ? String(variantItems[editingVariantIndex]?.barcode ?? "") : "",
+      );
+      if (!barcodeUnique) {
+        setError("That barcode is already assigned to another variant.");
+        return;
+      }
+      if (
+        activeProductId &&
+        !window.confirm(
+          editingVariantIndex !== null
+            ? "Updating this variant will move the product back to draft and it will need to be resubmitted for review. Continue?"
+            : "Adding this variant will move the product back to draft and it will need to be resubmitted for review. Continue?",
+        )
+      ) {
+        return;
+      }
+
+      setSubmitting(true);
+      setMessage(null);
+      setError(null);
+
+      const sellingPriceIncl = money2(variantDraft.sellingPriceIncl || 0);
+      const discountPercent = variantDraft.isOnSale ? Math.max(0, Math.min(100, Number(variantDraft.saleDiscountPercent || 0))) : 0;
+      const saleIsOn = variantDraft.isOnSale && discountPercent > 0;
+      const salePriceIncl = variantDraft.isOnSale && discountPercent > 0 ? money2(sellingPriceIncl * (1 - discountPercent / 100)) : 0;
+      const isBevgoFulfilment = fulfillmentMode === "bevgo";
+      const logistics = isBevgoFulfilment
+        ? normalizeMarketplaceVariantLogistics({
+            weightKg: variantDraft.weightKg,
+            lengthCm: variantDraft.lengthCm,
+            widthCm: variantDraft.widthCm,
+            heightCm: variantDraft.heightCm,
+            monthlySales30d: variantDraft.monthlySales30d,
+            stockQty: variantDraft.inventoryQty,
+            warehouseId: variantDraft.warehouseId,
+          })
+        : null;
+      const inventoryRows = (inventoryTrackingEnabled || isBevgoFulfilment)
+        ? [
+            {
+              warehouse_id: variantDraft.warehouseId.trim() || "main",
+              in_stock_qty: Number(variantDraft.inventoryQty || 0),
+            },
+          ]
+        : [];
+      const feeSnapshot = buildMarketplaceFeeSnapshot({
+        categorySlug: category,
+        subCategorySlug: subCategory,
+        sellingPriceIncl,
+        weightKg: Number(variantDraft.weightKg || 0),
+        lengthCm: Number(variantDraft.lengthCm || 0),
+        widthCm: Number(variantDraft.widthCm || 0),
+        heightCm: Number(variantDraft.heightCm || 0),
+        stockQty: Number(variantDraft.inventoryQty || 0),
+        monthlySales30d: Number(variantDraft.monthlySales30d || 0),
+        fulfillmentMode,
+        config: feeConfig,
+      });
+
+      const nextVariant: ProductVariantItem = {
+        variant_id: variantId,
+        label: variantDraft.label.trim(),
+        sku,
+        barcode: variantDraft.barcode.trim(),
+        barcodeImageUrl: variantDraft.barcodeImageUrl.trim(),
+        color: variantDraft.hasColor ? variantDraft.color.trim() : "",
+        placement: {
+          is_default: variantDraft.isDefault,
+          isActive: variantDraft.isActive,
+          track_inventory: inventoryTrackingEnabled,
+          continue_selling_out_of_stock: continueSellingAvailable ? variantDraft.continueSellingOutOfStock : false,
+        },
+        pricing: {
+          selling_price_incl: sellingPriceIncl,
+        },
+        sale: {
+          is_on_sale: saleIsOn,
+          discount_percent: discountPercent,
+          sale_price_incl: salePriceIncl,
+        },
+        pack: {
+          unit_count: Number(variantDraft.unitCount || 1),
+          volume: Number(variantDraft.volume || 0),
+          volume_unit: normalizeVolumeUnit(variantDraft.volumeUnit || "ml"),
+        },
+        logistics: logistics
+          ? {
+              weight_kg: logistics.weightKg,
+              length_cm: logistics.lengthCm,
+              width_cm: logistics.widthCm,
+              height_cm: logistics.heightCm,
+              monthly_sales_30d: logistics.monthlySales30d,
+              stock_qty: logistics.stockQty,
+              warehouse_id: logistics.warehouseId,
+              volume_cm3: feeSnapshot.volumeCm3,
+            }
+          : undefined,
+        fees: {
+          success_fee_percent: feeSnapshot.successFeePercent,
+          success_fee_incl: feeSnapshot.successFeeIncl,
+          success_fee_vat_incl: feeSnapshot.successFeeVatIncl,
+          fulfilment_fee_incl: feeSnapshot.fulfilmentFeeIncl,
+          fulfilment_fee_excl_vat: feeSnapshot.fulfilmentFeeExclVat,
+          handling_fee_incl: feeSnapshot.handlingFeeIncl,
+          storage_fee_incl: feeSnapshot.storageFeeIncl,
+          storage_fee_excl_vat: feeSnapshot.storageFeeExclVat,
+          total_fees_incl: feeSnapshot.totalFeesIncl,
+          total_marketplace_fees: feeSnapshot.totalMarketplaceFees,
+          total_warehouse_fees_excl_vat: feeSnapshot.totalWarehouseFeesExclVat,
+          size_band: feeSnapshot.sizeBand,
+          weight_band: feeSnapshot.weightBand,
+          storage_band: feeSnapshot.storageBand,
+          stock_cover_days: feeSnapshot.stockCoverDays,
+          overstocked: feeSnapshot.overstocked,
+          fulfilment_mode: feeSnapshot.fulfillmentMode,
+          config_version: feeSnapshot.configVersion,
+        },
+        media: {
+          images: variantImages.map((item, position) => ({
+            imageUrl: item.imageUrl,
+            blurHashUrl: item.blurHashUrl,
+            altText: item.altText || item.fileName,
+            fileName: item.fileName,
+            position: position + 1,
+          })),
+        },
+        inventory: inventoryRows,
+      };
+
+      if (!activeProductId) {
+        setVariantItems((current) => {
+          const next = [...current, nextVariant];
+          return next.map((item, index) => ({
+            ...item,
+            placement: {
+              ...item.placement,
+              is_default: index === 0 ? true : Boolean(item.placement?.is_default),
+            },
+          }));
+        });
+        setMessage("Variant staged. It will be saved with the product.");
+        resetVariantDraft({ makeDefault: variantItems.length === 0 });
+        setVariantFormOpen(false);
+        return;
+      }
+
+      if (editingVariantIndex !== null) {
+        const currentVariant = variantItems[editingVariantIndex];
+        const currentVariantId = String(currentVariant?.variant_id ?? variantId).trim();
+        const response = await fetch(VARIANT_UPDATE_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            unique_id: activeProductId,
+            variant_id: currentVariantId,
+            data: {
+              variant_id: currentVariantId,
+              label: variantDraft.label.trim(),
+              sku,
+              barcode: variantDraft.barcode.trim(),
+              barcodeImageUrl: variantDraft.barcodeImageUrl.trim(),
+              color: variantDraft.hasColor ? variantDraft.color.trim() : "",
+              placement: {
+                is_default: variantDraft.isDefault,
+                isActive: variantDraft.isActive,
+                continue_selling_out_of_stock: continueSellingAvailable ? variantDraft.continueSellingOutOfStock : false,
+                track_inventory: inventoryTrackingEnabled,
+              },
+              pricing: {
+                selling_price_incl: sellingPriceIncl,
+              },
+              sale: {
+                is_on_sale: saleIsOn,
+                discount_percent: discountPercent,
+                sale_price_incl: salePriceIncl,
+              },
+              pack: {
+                unit_count: Number(variantDraft.unitCount || 1),
+                volume: Number(variantDraft.volume || 0),
+                volume_unit: normalizeVolumeUnit(variantDraft.volumeUnit || "ml"),
+              },
+              media: {
+                images: variantImages.map((item, position) => ({
+                  imageUrl: item.imageUrl,
+                  blurHashUrl: item.blurHashUrl,
+                  altText: item.altText || item.fileName,
+                  position: position + 1,
+                })),
+              },
+              logistics: logistics
+                ? {
+                    weightKg: logistics.weightKg,
+                    lengthCm: logistics.lengthCm,
+                    widthCm: logistics.widthCm,
+                    heightCm: logistics.heightCm,
+                    monthlySales30d: logistics.monthlySales30d,
+                    stockQty: logistics.stockQty,
+                    warehouseId: logistics.warehouseId,
+                  }
+                : null,
+              inventory: inventoryRows,
+            },
+          }),
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || "Unable to update the variant.");
+        }
+
+        setMessage(payload?.resubmissionRequired ? "Variant updated. The product is back in draft and must be resubmitted for review." : "Variant updated.");
+        setVariantFormOpen(false);
+        resetVariantDraft({ makeDefault: variantItems.length === 0 });
+        await loadVariantItems(activeProductId);
+        return;
+      }
+
+      const response = await fetch(VARIANT_CREATE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unique_id: activeProductId,
+          data: {
+            variant_id: variantId,
+            label: variantDraft.label.trim(),
+            sku,
+            barcode: variantDraft.barcode.trim(),
+            barcodeImageUrl: variantDraft.barcodeImageUrl.trim(),
+            color: variantDraft.hasColor ? variantDraft.color.trim() : "",
+            placement: {
+              is_default: variantDraft.isDefault,
+              isActive: variantDraft.isActive,
+              continue_selling_out_of_stock: continueSellingAvailable ? variantDraft.continueSellingOutOfStock : false,
+              track_inventory: inventoryTrackingEnabled,
+            },
+            pricing: {
+              selling_price_incl: sellingPriceIncl,
+            },
+            sale: {
+              is_on_sale: saleIsOn,
+              discount_percent: discountPercent,
+              sale_price_incl: salePriceIncl,
+            },
+            pack: {
+              unit_count: Number(variantDraft.unitCount || 1),
+              volume: Number(variantDraft.volume || 0),
+              volume_unit: normalizeVolumeUnit(variantDraft.volumeUnit || "ml"),
+            },
+            media: {
+              images: variantImages.map((item, position) => ({
+                imageUrl: item.imageUrl,
+                blurHashUrl: item.blurHashUrl,
+                altText: item.altText || item.fileName,
+                position: position + 1,
+              })),
+            },
+            logistics: logistics
+              ? {
+                  weightKg: logistics.weightKg,
+                  lengthCm: logistics.lengthCm,
+                  widthCm: logistics.widthCm,
+                  heightCm: logistics.heightCm,
+                  monthlySales30d: logistics.monthlySales30d,
+                  stockQty: logistics.stockQty,
+                  warehouseId: logistics.warehouseId,
+                }
+              : null,
+            inventory: inventoryRows,
+          },
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to add the variant.");
+      }
+
+      setMessage(payload?.resubmissionRequired ? "Variant added. The product is back in draft and must be resubmitted for review." : "Variant added.");
+      setVariantFormOpen(false);
+      resetVariantDraft({ makeDefault: variantItems.length === 0 });
+      await loadVariantItems(activeProductId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to add the variant.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function removeVariant(variantId: string) {
+    if (!activeProductId) {
+      setVariantItems((current) => {
+        const next = current.filter((item) => String(item.variant_id ?? "") !== variantId);
+        return next;
+      });
+      if (String(variantDraft.variantId ?? "").trim() === variantId) {
+        resetVariantDraft({ makeDefault: variantItems.length === 1 });
+      }
+      setMessage("Variant removed from the draft.");
+      return;
+    }
+    if (!window.confirm("Deleting this variant will move the product back to draft and it will need to be resubmitted for review. Continue?")) return;
+
+    setSubmitting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(VARIANT_DELETE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unique_id: activeProductId,
+          variant_id: variantId,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to delete the variant.");
+      }
+      setMessage(payload?.resubmissionRequired ? "Variant removed. The product is back in draft and must be resubmitted for review." : "Variant removed.");
+      await loadVariantItems(activeProductId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to delete the variant.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function saveInboundBooking() {
+    if (!activeProductId) {
+      setError("Save the product first before booking inbound stock.");
+      return;
+    }
+    const variants = variantItems
+      .map((item) => ({
+        variantId: String(item?.variant_id ?? "").trim(),
+        quantity: Number(inboundQuantities[String(item?.variant_id ?? "").trim()] || 0),
+      }))
+      .filter((item) => item.variantId && item.quantity > 0);
+
+    if (!inboundDeliveryDate) {
+      setError("Choose the delivery date for this inbound booking.");
+      return;
+    }
+    if (!variants.length) {
+      setError("Add at least one inbound quantity before saving the booking.");
+      return;
+    }
+
+    setSavingInboundBooking(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(SELLER_INBOUND_BOOKINGS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: activeProductId,
+          deliveryDate: inboundDeliveryDate,
+          notes: inboundNotes,
+          variants,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to save the inbound booking.");
+      }
+      setInboundBookings((current) => [...current, payload.booking].sort((left, right) => String(left?.deliveryDate || "").localeCompare(String(right?.deliveryDate || ""))));
+      setInboundNotes("");
+      setInboundDeliveryDate("");
+      setInboundQuantities({});
+      setMessage("Inbound booking saved.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to save the inbound booking.");
+    } finally {
+      setSavingInboundBooking(false);
+    }
+  }
+
+  async function saveStockUpliftment() {
+    if (!activeProductId) {
+      setError("Save the product first before requesting a stock upliftment.");
+      return;
+    }
+    const variants = variantItems
+      .map((item) => ({
+        variantId: String(item?.variant_id ?? "").trim(),
+        quantity: Number(upliftQuantities[String(item?.variant_id ?? "").trim()] || 0),
+      }))
+      .filter((item) => item.variantId && item.quantity > 0);
+
+    if (!upliftDate) {
+      setError("Choose the date for this stock upliftment.");
+      return;
+    }
+    if (!variants.length) {
+      setError("Add at least one uplift quantity before saving the request.");
+      return;
+    }
+
+    setSavingStockUpliftment(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(SELLER_STOCK_UPLIFTMENTS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: activeProductId,
+          upliftDate,
+          notes: upliftNotes,
+          reason: upliftReason,
+          variants,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to save the stock upliftment request.");
+      }
+      setStockUpliftments((current) => [...current, payload.upliftment].sort((left, right) => String(left?.upliftDate || "").localeCompare(String(right?.upliftDate || ""))));
+      setUpliftDate("");
+      setUpliftNotes("");
+      setUpliftReason("");
+      setUpliftQuantities({});
+      setMessage("Stock upliftment request saved.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to save the stock upliftment request.");
+    } finally {
+      setSavingStockUpliftment(false);
+    }
+  }
+
+  function openDeleteModal() {
+    setShowDeleteModal(true);
+  }
+
+  async function requestFulfillmentChange() {
+    if (!activeProductId) return;
+
+    setSubmitting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const requestedMode = fulfillmentMode === "seller" ? "bevgo" : "seller";
+      const response = await fetch(PRODUCT_UPDATE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unique_id: activeProductId,
+          data: {
+            fulfillment: {
+              change_request: {
+                requested: true,
+                status: "requested",
+                desired_mode: requestedMode,
+                reason: fulfillmentChangeNote.trim(),
+                requestedAt: new Date().toISOString(),
+                requestedBy: profile?.uid ?? null,
+              },
+            },
+          },
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to request a fulfilment change.");
+      }
+
+      setShowFulfillmentChangeModal(false);
+      setFulfillmentChangeNote("");
+      setMessage("Fulfilment change requested.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to request a fulfilment change.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function confirmDeleteProduct() {
+    if (!activeProductId) return;
+
+    setSubmitting(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await fetch(PRODUCT_DELETE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unique_id: activeProductId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to delete the product.");
+      }
+
+      setShowDeleteModal(false);
+      resetProductForm();
+      setCreatedProduct(null);
+      setMessage("Product deleted.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to delete the product.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!authReady) {
+    return (
+      <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+        <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <div className="h-6 w-44 rounded-[8px] bg-[#f4f4f4]" />
+          <div className="mt-4 h-10 w-full rounded-[8px] bg-[#f4f4f4]" />
+          <div className="mt-3 h-10 w-full rounded-[8px] bg-[#f4f4f4]" />
+        </section>
+      </main>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <main className="mx-auto max-w-[960px] px-4 py-10">
+        <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller catalogue</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Sign in to create products</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            Seller catalogue tools live behind your account, so we can keep your product data, vendor name, and orders in one place.
+          </p>
+          <button
+            type="button"
+            onClick={() => openAuthModal("Sign in to access the product creation flow.")}
+            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+          >
+            Sign in
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (!isSeller) {
+    return (
+      <main className="mx-auto max-w-[960px] px-4 py-10">
+        <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller catalogue</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Register as a seller first</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            Once your seller account is approved, this is where you will create and manage products.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => openSellerRegistrationModal("Register your seller account to unlock catalogue tools.")}
+              className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+            >
+              Register as seller
+            </button>
+            <Link
+              href="/seller/catalogue"
+              className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+            >
+              Back to catalogue
+            </Link>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (sellerBlocked) {
+    return (
+      <main className="mx-auto max-w-[960px] px-4 py-10">
+        <section className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller catalogue</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">This seller account is blocked</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            {sellerBlockedReasonLabel}. {sellerBlockedFixHint}
+          </p>
+          <p className="mt-3 text-[13px] leading-[1.6] text-[#57636c]">
+            Fix the issue first, then request a review from your seller dashboard.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Link
+              href="/seller/dashboard?section=home"
+              className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+            >
+              Go to seller dashboard
+            </Link>
+            <Link
+              href="/seller/catalogue"
+              className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+            >
+              Back to catalogue
+            </Link>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+      <section className="rounded-[8px] bg-[#202020] px-4 py-3 text-white shadow-[0_8px_24px_rgba(20,24,27,0.14)]">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center rounded-[8px] border border-white/10 bg-white/10 px-3 py-2 text-[12px] font-semibold">
+              {createdProduct ? formatModerationStatus(createdProduct.moderationStatus || "draft") : "Unsaved product"}
+            </span>
+            <span className="hidden text-[12px] text-white/70 md:inline">
+              {createdProduct ? "Review the saved listing, add variants, or update the draft." : "Add details, review the summary, then save the draft."}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {activeProductId ? (
+              <Link
+                href={`/products/${createdProduct?.titleSlug || productTitleSlug}?unique_id=${encodeURIComponent(activeProductId)}`}
+                className="inline-flex h-10 items-center rounded-[8px] border border-white/10 bg-white/10 px-4 text-[13px] font-semibold text-white transition-colors hover:bg-white/15"
+              >
+                Preview
+              </Link>
+            ) : (
+              <Link
+                href="/seller/catalogue"
+                className="inline-flex h-10 items-center rounded-[8px] border border-white/10 bg-white/10 px-4 text-[13px] font-semibold text-white transition-colors hover:bg-white/15"
+              >
+                Discard
+              </Link>
+            )}
+            {activeProductId ? (
+              <button
+                type="button"
+                onClick={openDeleteModal}
+                className="inline-flex h-10 items-center rounded-[8px] border border-white/10 bg-white/10 px-4 text-[13px] font-semibold text-white transition-colors hover:bg-white/15"
+              >
+                Delete
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void handleSubmit()}
+              disabled={!formIsValid}
+              className="inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#d8be73] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {submitting ? "Saving..." : activeProductId ? "Update draft" : "Save draft"}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <SellerPageIntro
+        title="Create product"
+        description="Start with the product record here. Variants, pricing, and stock are added once the core listing is saved."
+      />
+
+      <div className="mt-4 grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-4">
+          <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+          {createdProduct ? (
+            <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#39a96b]">Product created</p>
+                <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#907d4c]">
+                  {formatModerationStatus(createdProduct.moderationStatus || "draft")}
+                </span>
+              </div>
+              <h2 className="mt-2 text-[18px] font-semibold text-[#202020]">{createdProduct.title}</h2>
+              <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
+                Your listing is saved as a draft. Add variants, then submit it for review when you are ready. If Piessang fulfils this listing, it will move to an awaiting stock state after approval.
+              </p>
+              <p className="mt-2 text-[12px] uppercase tracking-[0.12em] text-[#907d4c]">SKU: {createdProduct.sku}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Link
+                  href={`/products/${createdProduct.titleSlug}?unique_id=${createdProduct.uniqueId}`}
+                  className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+                >
+                  Preview
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setVariantFormOpen((current) => !current)}
+                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+                >
+                  {variantFormOpen ? "Close variants" : "Add variant"}
+                </button>
+                <button
+                  type="button"
+                  onClick={resetProductForm}
+                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+                >
+                  Create another
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-0">
+            <div className="space-y-4">
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Product code <span className="text-[#d11c1c]">*</span></span>
+                <div className="flex gap-2">
+                  <input
+                    value={uniqueId}
+                    readOnly
+                    className="w-full rounded-[8px] border border-black/10 bg-[#fafafa] px-4 py-3 text-[13px] outline-none"
+                    placeholder="Generating..."
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!activeProductId) void fetchUniqueCode();
+                    }}
+                    disabled={generatingCode || Boolean(activeProductId)}
+                    className="inline-flex h-[46px] items-center rounded-[8px] border border-black/10 bg-white px-3 text-[13px] font-semibold text-[#202020]"
+                  >
+                    {activeProductId ? "Locked" : generatingCode ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Product title <span className="text-[#d11c1c]">*</span></span>
+                <input
+                  value={title}
+                  onChange={(event) => setTitle(sanitizeProductTitle(event.target.value))}
+                  className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
+                  placeholder="Coca Cola Original 300ml Cans"
+                />
+                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                  Add the title first to unlock SKU, description, and keyword generation.
+                </p>
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Product SKU <span className="text-[#d11c1c]">*</span></span>
+                <div className="flex gap-2">
+                  <input
+                    value={productSku}
+                    onChange={(event) => setProductSku(event.target.value.toUpperCase())}
+                    className={[
+                      "w-full rounded-[8px] border bg-white px-4 py-3 text-[13px] outline-none transition-colors",
+                      skuStatus === "unique"
+                        ? "border-[#1a8553] focus:border-[#1a8553]"
+                        : skuStatus === "taken"
+                          ? "border-[#d11c1c] focus:border-[#d11c1c]"
+                          : "border-black/10 focus:border-[#cbb26b]",
+                    ].join(" ")}
+                    placeholder="BEVGO-COCA-COLA-300ML-CAN-ZERO-24"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void fetchProductSku()}
+                    disabled={generatingSku || !titleHasValue}
+                    className="inline-flex h-[46px] items-center rounded-[8px] border border-[#202020] bg-[#202020] px-3 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:border-[#d9d9d9] disabled:bg-[#efefef] disabled:text-[#9d9d9d]"
+                  >
+                    {generatingSku ? "Generating..." : "Generate"}
+                  </button>
+                </div>
+                {!titleHasValue ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">Add a title first to generate a unique SKU.</p>
+                ) : skuStatus === "checking" ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#907d4c]">Checking SKU availability...</p>
+                ) : skuStatus === "unique" ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#1a8553]">SKU is available.</p>
+                ) : skuStatus === "taken" ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#d11c1c]">This SKU already exists. Please use another one.</p>
+                ) : skuStatus === "error" ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">Unable to check SKU right now. Try again in a moment.</p>
+                ) : (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                    You can type your own SKU or generate one. SKU values must stay unique across all products and variants on the platform.
+                  </p>
+                )}
+                <p className="mt-1 text-[11px] leading-[1.4] text-[#907d4c]">
+                  Example: BEVGO-COCA-COLA-300ML-CAN-ORIGINAL-1
+                </p>
+              </label>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Primary category <span className="text-[#d11c1c]">*</span></span>
+                  <select
+                    value={category}
+                    onChange={(event) => {
+                      const nextCategory = event.target.value;
+                      setCategory(nextCategory);
+                      setSubCategory("");
+                    }}
+                    className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
+                  >
+                    <option value="">Select a category</option>
+                    {marketplaceCategories.map((item) => (
+                      <option key={item.slug} value={item.slug}>
+                        {item.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Sub category <span className="text-[#d11c1c]">*</span></span>
+                  <select
+                    value={subCategory}
+                    onChange={(event) => setSubCategory(event.target.value)}
+                    className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
+                    disabled={!category}
+                  >
+                    <option value="">{category ? "Select a sub category" : "Select a category first"}</option>
+                    {subCategories.map((item) => (
+                      <option key={item.slug} value={item.slug}>
+                        {item.title}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Success fee</p>
+                    <p className="mt-1 text-[12px] font-semibold text-[#202020]">
+                      {category ? (selectedFeeRuleLabel || "Select a category to preview the fee") : "Select a category to preview the fee"}
+                    </p>
+                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                      Calculated on the VAT-inclusive selling price at the time the order is created.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="relative">
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Brand name <span className="text-[#d11c1c]">*</span></span>
+                  <input
+                    value={brandName}
+                    onFocus={() => setBrandDropdownOpen(true)}
+                    onBlur={handleBrandBlur}
+                    onChange={(event) => handleBrandChange(event.target.value)}
+                    className={[
+                      "w-full rounded-[8px] border bg-white px-4 py-3 text-[13px] outline-none transition-colors",
+                      selectedBrand || matchingBrand
+                        ? "border-[#1a8553] focus:border-[#1a8553]"
+                        : "border-black/10 focus:border-[#cbb26b]",
+                    ].join(" ")}
+                    placeholder="Coca Cola"
+                  />
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                    Choose a recommended brand from Piessang or type a new one. Unknown brands are submitted for approval while you continue creating the product.
+                  </p>
+                </label>
+                {brandDropdownOpen && (loadingBrands || filteredBrandSuggestions.length > 0 || (brandName.trim() && !matchingBrand)) ? (
+                  <div className="absolute z-20 mt-2 w-full rounded-[8px] border border-black/10 bg-white p-2 shadow-[0_16px_36px_rgba(20,24,27,0.12)]">
+                    <div className="flex items-center justify-between px-2 py-1">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Recommended brands</p>
+                      {matchingBrand ? (
+                        <span className="text-[11px] font-semibold text-[#1a8553]">Match found</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 max-h-56 space-y-1 overflow-auto">
+                      {loadingBrands ? (
+                        <div className="rounded-[8px] bg-[#fafafa] px-3 py-2 text-[12px] text-[#57636c]">
+                          Loading brand suggestions...
+                        </div>
+                      ) : filteredBrandSuggestions.length ? (
+                        <>
+                          {brandName.trim() && !matchingBrand ? (
+                            <div className="px-2 pt-1 text-[11px] text-[#57636c]">
+                              No exact match yet. Save the product to submit this brand for approval.
+                            </div>
+                          ) : null}
+                          {filteredBrandSuggestions.map((item) => {
+                            const exact = matchingBrand?.slug === item.slug;
+                            return (
+                              <button
+                                key={item.id}
+                                type="button"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => selectBrandSuggestion(item)}
+                                className={[
+                                  "flex w-full items-center justify-between rounded-[8px] px-3 py-2 text-left text-[12px] transition-colors",
+                                  exact ? "bg-[rgba(26,133,83,0.1)] text-[#1a8553]" : "bg-[#fafafa] text-[#202020] hover:bg-[#f4f4f4]",
+                                ].join(" ")}
+                              >
+                                <span className="font-medium">{item.title}</span>
+                                <span className="text-[11px] text-[#8b94a3]">{item.slug}</span>
+                              </button>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        <>
+                          <div className="rounded-[8px] bg-[#fff7f8] px-3 py-2 text-[12px] text-[#b91c1c]">
+                            No exact brand match yet. Save the product and Piessang will receive a brand approval request.
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Vendor name <span className="text-[#d11c1c]">*</span></span>
+                <input
+                  value={vendorName}
+                  readOnly
+                  className="w-full rounded-[8px] border border-black/10 bg-[#fafafa] px-4 py-3 text-[13px] outline-none"
+                />
+                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                  Read from the seller module on your Piessang account.
+                </p>
+              </label>
+
+              <section className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#202020]">Fulfilment</p>
+                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                      Choose who fulfils the order. Success fees come from the live category fee table, while Piessang fulfilment also adds handling, storage, and fulfilment fees.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#907d4c]">
+                    {selectedSuccessFeePercent.toFixed(1)}% success fee
+                  </span>
+                </div>
+                <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
+                  {fulfillmentLocked
+                    ? "Fulfilment is locked after the first save. If you need to change it, request a fulfilment change from Piessang."
+                    : "Choose fulfilment now. Once the product is saved, this setting is locked to protect order routing and fee rules."}
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {[
+                    {
+                      value: "seller",
+                      title: "Seller fulfils",
+                      desc: "You pack and ship the order from your own operation. Inventory tracking is optional, but if you leave it off you must always have stock available.",
+                      fee: "Category success fee",
+                    },
+                    {
+                      value: "bevgo",
+                      title: "Piessang fulfils",
+                      desc: "Piessang stores and fulfils the product from our warehouse. You can submit the listing now, then stock is booked in once it arrives.",
+                      fee: "Success + fulfilment fees",
+                    },
+                  ].map((option) => {
+                    const selected = fulfillmentMode === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => !fulfillmentLocked && setFulfillmentMode(option.value as "seller" | "bevgo")}
+                        disabled={fulfillmentLocked}
+                        className={[
+                          "rounded-[8px] border px-3 py-3 text-left transition-colors",
+                          selected
+                            ? "border-[#cbb26b] bg-[rgba(203,178,107,0.10)]"
+                            : "border-black/10 bg-white hover:border-[#cbb26b]/60",
+                          fulfillmentLocked ? "cursor-not-allowed opacity-70" : "",
+                        ].join(" ")}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[12px] font-semibold text-[#202020]">{option.title}</p>
+                          <span className="text-[11px] font-semibold text-[#907d4c]">{option.fee}</span>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">{option.desc}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <div className="mb-1 flex items-center gap-1.5">
+                      <span className="block text-[11px] font-semibold text-[#202020]">
+                        Lead time (days) {fulfillmentMode === "seller" ? <span className="text-[#d11c1c]">*</span> : null}
+                      </span>
+                      <HelpTip label="Lead time help">
+                        For self-fulfilment, this is the number of days buyers should expect before dispatch.
+                      </HelpTip>
+                    </div>
+                    <select
+                      value={leadTimeDays}
+                      onChange={(event) => setLeadTimeDays(event.target.value)}
+                      disabled={fulfillmentMode !== "seller" || fulfillmentLocked}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b] disabled:bg-[#f7f7f7] disabled:text-[#9aa3af]"
+                    >
+                      <option value="">Select lead time</option>
+                      {Array.from({ length: 14 }, (_, index) => index + 1).map((day) => (
+                        <option key={day} value={String(day)}>
+                          {day} day{day === 1 ? "" : "s"}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                      This is shown to customers for self-fulfilment listings. Lead time is capped at 14 days.
+                    </p>
+                  </label>
+                  <label className="block">
+                    <div className="mb-1 flex items-center gap-1.5">
+                      <span className="block text-[11px] font-semibold text-[#202020]">
+                        Cutoff time {fulfillmentMode === "seller" ? <span className="text-[#d11c1c]">*</span> : null}
+                      </span>
+                      <HelpTip label="Cutoff time help">
+                        Buyers will see this as the last time they can place an order before the fulfilment window moves forward.
+                      </HelpTip>
+                    </div>
+                    <input
+                      type="time"
+                      value={cutoffTime}
+                      onChange={(event) => setCutoffTime(event.target.value)}
+                      disabled={fulfillmentMode !== "seller" || fulfillmentLocked}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b] disabled:bg-[#f7f7f7] disabled:text-[#9aa3af]"
+                    />
+                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                      Orders placed after this time move into the next delivery promise.
+                    </p>
+                  </label>
+                  {fulfillmentLocked ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowFulfillmentChangeModal(true)}
+                      className="inline-flex h-11 items-center justify-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c]"
+                    >
+                      Request fulfilment change
+                    </button>
+                  ) : (
+                    <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[11px] text-[#57636c]">
+                      You can update fulfilment before the first save.
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#202020]">Inventory tracking</p>
+                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                      {inventoryTrackingRequired
+                        ? "Piessang fulfilment requires tracked warehouse stock before this product can go live."
+                        : "Optional for self-fulfilment. If you leave it off, make sure this item stays available at all times."}
+                    </p>
+                  </div>
+                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${inventoryTrackingEnabled ? "bg-[rgba(26,133,83,0.12)] text-[#166534]" : "bg-[rgba(148,163,184,0.14)] text-[#475569]"}`}>
+                    {inventoryTrackingRequired ? "Required" : inventoryTrackingEnabled ? "Enabled" : "Disabled"}
+                  </span>
+                </div>
+                <label className="mt-3 inline-flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020]">
+                  <input
+                    type="checkbox"
+                    checked={inventoryTrackingEnabled}
+                    disabled={inventoryTrackingRequired}
+                    onChange={(event) => setInventoryTracking(event.target.checked)}
+                  />
+                  Track inventory for this product
+                </label>
+                {inventoryTrackingRequired ? (
+                  <p className="mt-2 text-[11px] leading-[1.4] text-[#907d4c]">
+                    Piessang fulfilment keeps this on. Add stock for each variant below so the listing can be published.
+                  </p>
+                ) : null}
+              </section>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                  Product overview <span className="text-[#d11c1c]">*</span>
+                </span>
+                <textarea
+                  value={overview}
+                  onChange={(event) => setOverview(event.target.value.slice(0, OVERVIEW_MAX_LENGTH))}
+                  rows={3}
+                  maxLength={OVERVIEW_MAX_LENGTH}
+                  className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
+                  placeholder="Short summary of the product..."
+                />
+                <div className="mt-1 flex items-center justify-between gap-3">
+                  <p className="text-[11px] leading-[1.4] text-[#57636c]">
+                    Keep this concise. It should give buyers the quick version at a glance.
+                  </p>
+                  <span className="text-[11px] text-[#57636c]">{overview.length}/{OVERVIEW_MAX_LENGTH}</span>
+                </div>
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={generateOverview}
+                    disabled={generatingOverview || !aiHelpersEnabled}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] border border-[#7c3aed] bg-[linear-gradient(135deg,#7c3aed_0%,#8b5cf6_35%,#ec4899_70%,#f59e0b_100%)] px-4 text-[13px] font-semibold text-white shadow-[0_10px_22px_rgba(139,92,246,0.22)] transition-transform hover:translate-y-[-1px] hover:shadow-[0_12px_26px_rgba(139,92,246,0.28)] disabled:cursor-not-allowed disabled:border-[#e4d7fb] disabled:bg-[#f4f0fb] disabled:text-[#a59b82] disabled:shadow-none"
+                  >
+                    <SparklesIcon className="h-4 w-4" />
+                    {generatingOverview ? "Generating..." : "AI overview"}
+                  </button>
+                </div>
+              </label>
+
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                  Product description <span className="text-[#d11c1c]">*</span>
+                </span>
+                <RichTextEditor
+                  value={description}
+                  onChange={(value) => setDescription(value)}
+                  placeholder="Add a longer product description..."
+                  editorRef={descriptionEditorRef}
+                  maxLength={DESCRIPTION_MAX_LENGTH}
+                />
+                <div className="mt-1 flex items-center justify-between gap-3">
+                  <p className="text-[11px] leading-[1.4] text-[#57636c]">
+                    This is the full product description. Keep it clear and helpful.
+                  </p>
+                  <span className="text-[11px] text-[#57636c]">{descriptionPlainText.length}/{DESCRIPTION_MAX_LENGTH}</span>
+                </div>
+                <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">{aiHelperPrompt}</p>
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={generateDescription}
+                    disabled={generatingDescription || !aiHelpersEnabled}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] border border-[#7c3aed] bg-[linear-gradient(135deg,#7c3aed_0%,#8b5cf6_35%,#ec4899_70%,#f59e0b_100%)] px-4 text-[13px] font-semibold text-white shadow-[0_10px_22px_rgba(139,92,246,0.22)] transition-transform hover:translate-y-[-1px] hover:shadow-[0_12px_26px_rgba(139,92,246,0.28)] disabled:cursor-not-allowed disabled:border-[#e4d7fb] disabled:bg-[#f4f0fb] disabled:text-[#a59b82] disabled:shadow-none"
+                  >
+                    <SparklesIcon className="h-4 w-4" />
+                    {generatingDescription ? "Generating..." : "AI description"}
+                  </button>
+                </div>
+              </label>
+
+              <div className="block">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                    Keywords <span className="text-[#d11c1c]">*</span>
+                  </span>
+                  <span className="text-[11px] text-[#57636c]">{keywordTags.length}/10</span>
+                </div>
+                <div className="rounded-[8px] border border-black/10 bg-white px-3 py-2 transition-colors focus-within:border-[#cbb26b]">
+                  <div className="flex flex-wrap gap-2">
+                    {keywordTags.map((keyword, index) => (
+                      <span
+                        key={`${keyword}-${index}`}
+                        className="inline-flex items-center gap-1 rounded-[8px] border border-black/10 bg-[#fafafa] px-2.5 py-1 text-[12px] font-medium text-[#202020]"
+                      >
+                        {keyword}
+                        <button
+                          type="button"
+                          onClick={() => removeKeywordAt(index)}
+                          className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-black/5 text-[10px] leading-none text-[#57636c] transition-colors hover:bg-[#f0c7cb] hover:text-[#b91c1c]"
+                          aria-label={`Remove ${keyword}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    <input
+                      value={keywordInput}
+                      onChange={(event) => setKeywordInput(event.target.value)}
+                      onKeyDown={handleKeywordKeyDown}
+                      onBlur={commitKeywordInput}
+                      className="min-w-[180px] flex-1 border-0 bg-transparent px-1 py-1 text-[13px] outline-none placeholder:text-[#9aa3af]"
+                      placeholder="Type a keyword and press comma"
+                    />
+                  </div>
+                </div>
+                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                  Use commas or Enter to add keywords. Backspace removes the last pill when the field is empty.
+                </p>
+                <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">{aiHelperPrompt}</p>
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={generateKeywords}
+                    disabled={generatingKeywords || !aiHelpersEnabled}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] border border-[#7c3aed] bg-[linear-gradient(135deg,#7c3aed_0%,#8b5cf6_35%,#ec4899_70%,#f59e0b_100%)] px-4 text-[13px] font-semibold text-white shadow-[0_10px_22px_rgba(139,92,246,0.22)] transition-transform hover:translate-y-[-1px] hover:shadow-[0_12px_26px_rgba(139,92,246,0.28)] disabled:cursor-not-allowed disabled:border-[#e4d7fb] disabled:bg-[#f4f0fb] disabled:text-[#a59b82] disabled:shadow-none"
+                  >
+                    <SparklesIcon className="h-4 w-4" />
+                    {generatingKeywords ? "Generating..." : "AI keywords"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#202020]">Product images</p>
+                    <p className="text-[11px] leading-[1.4] text-[#57636c]">Upload clear product images for the listing.</p>
+                  </div>
+                </div>
+                <input
+                  ref={uploadInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    void uploadFiles(event.target.files ?? []);
+                  }}
+                />
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => uploadInputRef.current?.click()}
+                    disabled={uploadingImages}
+                    className="flex h-[150px] w-[150px] shrink-0 flex-col items-center justify-center gap-2 rounded-[8px] border border-dashed border-[#d7d7d7] bg-[#fafafa] text-center text-[#57636c] transition-colors hover:border-[#cbb26b] hover:bg-[#fffaf0] hover:text-[#907d4c] disabled:cursor-wait disabled:border-[#cbb26b] disabled:bg-[rgba(203,178,107,0.12)] disabled:text-[#907d4c] disabled:opacity-100"
+                  >
+                    {uploadingImages ? (
+                      <>
+                        <SpinnerIcon className="h-5 w-5 animate-spin text-[#907d4c]" />
+                        <span className="text-[12px] font-semibold">Uploading...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[22px] leading-none text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.08)]">
+                          +
+                        </span>
+                        <span className="text-[12px] font-semibold">Upload images</span>
+                        <span className="max-w-[110px] text-[10px] leading-[1.4]">Click to add product photos</span>
+                      </>
+                    )}
+                  </button>
+                  {productImages.map((image, index) => (
+                    <ProductImageCard
+                      key={`${image.fileName}-${index}`}
+                      image={image}
+                      index={index}
+                      onMove={moveImage}
+                      onDropImage={reorderImages}
+                      onRemove={removeImageAt}
+                      onAltChange={updateImageAltText}
+                      onDragStartImage={beginDragImage}
+                      onDragEndImage={endDragImage}
+                      onDragEnterImage={hoverDragImage}
+                      canMoveUp={index > 0}
+                      canMoveDown={index < productImages.length - 1}
+                      isDragging={draggedImageIndex === index}
+                      isDropTarget={dropTargetIndex === index && draggedImageIndex !== null && draggedImageIndex !== index}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <section className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
+                <div className="mb-3 rounded-[8px] border border-[rgba(203,178,107,0.24)] bg-[rgba(203,178,107,0.10)] px-3 py-2 text-[11px] leading-[1.45] text-[#6b5a2d]">
+                  Every product must have at least one variant. The product listing only captures the core product shell, while variants define the pack size, price, stock, and sale settings that customers can actually buy.
+                </div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-[12px] font-semibold text-[#202020]">Variants</p>
+                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                      Add at least one variant before you submit this draft for review.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (variantFormOpen) {
+                        setVariantFormOpen(false);
+                        return;
+                      }
+                      void openVariantForm();
+                    }}
+                    className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white"
+                  >
+                    {variantFormOpen ? "Hide form" : "Add variant"}
+                  </button>
+                </div>
+
+                {variantFormOpen ? (
+                  <div className="mt-4 space-y-3 rounded-[8px] border border-black/5 bg-white p-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant ID <span className="text-[#d11c1c]">*</span></span>
+                        <div className="flex gap-2">
+                          <input
+                            value={variantDraft.variantId}
+                            onChange={(event) =>
+                              setVariantDraft((current) => ({
+                                ...current,
+                                variantId: event.target.value.replace(/\D/g, "").slice(0, 8),
+                              }))
+                            }
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="Generate or enter 8 digits"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void fetchVariantCode()}
+                            disabled={submitting}
+                            className="inline-flex h-[42px] items-center rounded-[8px] border border-black/10 bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Generate
+                          </button>
+                        </div>
+                        <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">Every variant needs its own unique 8-digit code.</p>
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant label <span className="text-[#d11c1c]">*</span></span>
+                        <input
+                          value={variantDraft.label}
+                          onChange={(event) => setVariantDraft((current) => ({ ...current, label: event.target.value }))}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                          placeholder="24 Pack (300ml)"
+                        />
+                      </label>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                          Barcode {fulfillmentMode === "bevgo" ? <span className="text-[#d11c1c]">*</span> : null}
+                        </span>
+                        <input
+                          value={variantDraft.barcode}
+                          onChange={(event) => {
+                            setVariantDraft((current) => ({ ...current, barcode: event.target.value.trim() }));
+                            setVariantBarcodeStatus("idle");
+                          }}
+                          onBlur={() => {
+                            void checkVariantBarcodeUnique(
+                              variantDraft.barcode,
+                              editingVariantIndex !== null ? String(variantItems[editingVariantIndex]?.barcode ?? "") : "",
+                            );
+                          }}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                          placeholder="Scan or paste the variant barcode"
+                        />
+                        <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                          {fulfillmentMode === "bevgo"
+                            ? "Piessang can only receive inbound stock when the barcode on the delivered unit matches this platform variant."
+                            : "Use the supplier barcode or generate one if the item does not already have one."}
+                        </p>
+                        {variantBarcodeStatus === "taken" ? <p className="mt-1 text-[11px] text-[#b91c1c]">That barcode is already used on another variant.</p> : null}
+                        {variantBarcodeStatus === "unique" ? <p className="mt-1 text-[11px] text-[#166534]">Barcode is available.</p> : null}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => void generateVariantBarcode()}
+                        disabled={generatingVariantBarcode || submitting}
+                        className="inline-flex h-[42px] items-center self-end rounded-[8px] border border-black/10 bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {generatingVariantBarcode ? "Generating..." : "Generate barcode"}
+                      </button>
+                    </div>
+                    {variantDraft.barcodeImageUrl ? (
+                      <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Barcode preview</p>
+                        <img src={variantDraft.barcodeImageUrl} alt={`Barcode ${variantDraft.barcode || ""}`} className="mt-2 h-16 w-auto rounded-[6px] bg-white p-2" />
+                      </div>
+                    ) : null}
+                    <div className="space-y-3">
+                      <label className="flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020]">
+                        <input
+                          type="checkbox"
+                          checked={variantDraft.hasColor}
+                          onChange={(event) =>
+                            setVariantDraft((current) => ({
+                              ...current,
+                              hasColor: event.target.checked,
+                              color: event.target.checked ? current.color || "#d1d5db" : "",
+                            }))
+                          }
+                        />
+                        This variant has a color option
+                      </label>
+                      {variantDraft.hasColor ? (
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Color</span>
+                            <div className="flex items-center gap-3 rounded-[8px] border border-black/10 bg-white px-3 py-2.5">
+                              <SwatchPicker
+                                value={variantDraft.color || "#d1d5db"}
+                                onChange={(value) => setVariantDraft((current) => ({ ...current, color: value }))}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Selected</span>
+                                  <span className="text-[12px] text-[#57636c]">
+                                    {variantDraft.color ? variantDraft.color.toUpperCase() : "No color selected"}
+                                  </span>
+                                </div>
+                                <input
+                                  type="color"
+                                  value={variantDraft.color || "#d1d5db"}
+                                  onChange={(event) => setVariantDraft((current) => ({ ...current, color: event.target.value }))}
+                                  className="mt-2 h-8 w-full cursor-pointer rounded-[8px] border border-black/10 bg-transparent p-0"
+                                  aria-label="Pick variant color"
+                                />
+                              </div>
+                            </div>
+                          </label>
+                        </div>
+                      ) : (
+                        <div className="rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-3 py-2 text-[11px] text-[#57636c]">
+                          Leave this off if the variant does not come in different colors.
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-[12px] font-semibold text-[#202020]">Variant images</p>
+                          <p className="text-[11px] leading-[1.4] text-[#57636c]">Upload one or more images for this variant.</p>
+                        </div>
+                      </div>
+                      <input
+                        ref={variantUploadInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={(event) => {
+                          void uploadVariantFiles(event.target.files ?? []);
+                        }}
+                      />
+                      <div className="flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => variantUploadInputRef.current?.click()}
+                          disabled={uploadingVariantImages}
+                          className="flex h-[150px] w-[150px] shrink-0 flex-col items-center justify-center gap-2 rounded-[8px] border border-dashed border-[#d7d7d7] bg-[#fafafa] text-center text-[#57636c] transition-colors hover:border-[#cbb26b] hover:bg-[#fffaf0] hover:text-[#907d4c] disabled:cursor-wait disabled:border-[#cbb26b] disabled:bg-[rgba(203,178,107,0.12)] disabled:text-[#907d4c] disabled:opacity-100"
+                        >
+                          {uploadingVariantImages ? (
+                            <>
+                              <SpinnerIcon className="h-5 w-5 animate-spin text-[#907d4c]" />
+                              <span className="text-[12px] font-semibold">Uploading...</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-[22px] leading-none text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.08)]">
+                                +
+                              </span>
+                              <span className="text-[12px] font-semibold">Upload images</span>
+                              <span className="max-w-[110px] text-[10px] leading-[1.4]">Click to add variant photos</span>
+                            </>
+                          )}
+                        </button>
+                        {variantImages.map((image, index) => (
+                          <ProductImageCard
+                            key={`${image.fileName}-${index}`}
+                            image={image}
+                            index={index}
+                            onMove={moveVariantImage}
+                            onDropImage={reorderVariantImages}
+                            onRemove={removeVariantImageAt}
+                            onAltChange={updateVariantImageAltText}
+                            onDragStartImage={beginDragVariantImage}
+                            onDragEndImage={endDragVariantImage}
+                            onDragEnterImage={hoverDragVariantImage}
+                            canMoveUp={index > 0}
+                            canMoveDown={index < variantImages.length - 1}
+                            isDragging={draggedVariantImageIndex === index}
+                            isDropTarget={dropTargetVariantImageIndex === index && draggedVariantImageIndex !== null && draggedVariantImageIndex !== index}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={variantDraft.unitCount}
+                          onChange={(event) => setVariantDraft((current) => ({ ...current, unitCount: event.target.value }))}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Volume</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={variantDraft.volume}
+                          onChange={(event) => setVariantDraft((current) => ({ ...current, volume: event.target.value }))}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Unit</span>
+                        <select
+                          value={variantDraft.volumeUnit}
+                          onChange={(event) => setVariantDraft((current) => ({ ...current, volumeUnit: event.target.value }))}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                        >
+                          {VOLUME_UNITS.map((unit) => (
+                            <option key={unit} value={unit}>
+                              {unit}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Selling price incl <span className="text-[#d11c1c]">*</span></span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={variantDraft.sellingPriceIncl}
+                          onChange={(event) => setVariantDraft((current) => ({ ...current, sellingPriceIncl: event.target.value }))}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                          placeholder="0.00"
+                        />
+                      </label>
+                      <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Sale</p>
+                            <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">Use a percentage discount only.</p>
+                          </div>
+                          <label className="inline-flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020]">
+                            <input
+                              type="checkbox"
+                              checked={variantDraft.isOnSale}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, isOnSale: event.target.checked }))}
+                            />
+                            On sale
+                          </label>
+                        </div>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <div className="mb-1 flex items-center gap-1.5">
+                              <span className="block text-[11px] font-semibold text-[#202020]">Discount %</span>
+                              <HelpTip label="Sale discount help">
+                                This is the percentage discount off the selling price incl. It is separate from the success fee.
+                              </HelpTip>
+                            </div>
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              step="1"
+                              value={variantDraft.saleDiscountPercent}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, saleDiscountPercent: event.target.value }))}
+                              disabled={!variantDraft.isOnSale}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b] disabled:bg-[#f7f7f7] disabled:text-[#9aa3af]"
+                              placeholder="10"
+                            />
+                          </label>
+                          <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
+                            {variantDraft.isOnSale && variantSaleDiscountPercent > 0 ? (
+                                <>
+                                Sale price incl:{" "}
+                                <strong className="text-[#202020]">
+                                  R {variantSalePreviewIncl.toFixed(2)}
+                                </strong>
+                              </>
+                            ) : (
+                              "Set a discount percentage to calculate the sale price."
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Inventory tracking</p>
+                          <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                            {inventoryTrackingRequired
+                              ? "Piessang fulfilment keeps inventory managed by Piessang after approval. You can still submit this draft now."
+                              : inventoryTracking
+                                ? "Add opening stock and warehouse details for this variant."
+                                : "Enable inventory tracking above to set stock for variants."}
+                          </p>
+                        </div>
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                            inventoryTrackingRequired ? "bg-[rgba(99,102,241,0.12)] text-[#4f46e5]" : inventoryTrackingEnabled ? "bg-[rgba(26,133,83,0.12)] text-[#166534]" : "bg-[rgba(148,163,184,0.14)] text-[#475569]"
+                          }`}
+                        >
+                          {inventoryTrackingRequired ? "Managed by Piessang" : inventoryTrackingEnabled ? "Available" : "Off"}
+                        </span>
+                      </div>
+                      {!inventoryTrackingRequired && inventoryTrackingEnabled ? (
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                              Starting stock <span className="text-[#d11c1c]">*</span>
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              value={variantDraft.inventoryQty}
+                              onChange={(event) =>
+                                setVariantDraft((current) => ({ ...current, inventoryQty: event.target.value }))
+                              }
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              placeholder="0"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                              Warehouse / location <span className="text-[#d11c1c]">*</span>
+                            </span>
+                            <input
+                              value={variantDraft.warehouseId}
+                              onChange={(event) =>
+                                setVariantDraft((current) => ({ ...current, warehouseId: event.target.value }))
+                              }
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              placeholder="main-warehouse"
+                            />
+                          </label>
+                        </div>
+                      ) : (
+                        <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
+                          {inventoryTrackingRequired
+                            ? "Piessang stock will be booked in by Piessang after approval. The product will publish once warehouse stock is received."
+                            : "Stock fields appear here once inventory tracking is enabled."}
+                        </div>
+                      )}
+                    </div>
+                    <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Estimated fees</p>
+                          <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                            {fulfillmentMode === "seller"
+                              ? "Self-fulfilment only shows the success fee."
+                              : variantFeePreviewReady
+                                ? "Fill in the logistics details to calculate fulfilment, handling and storage fees."
+                                : "Enter a selling price and the required logistics details to preview fees."}
+                          </p>
+                        </div>
+                        {variantFeePreviewReady && variantFeeSnapshot ? (
+                          <span className="rounded-full bg-[rgba(26,133,83,0.12)] px-2.5 py-1 text-[11px] font-semibold text-[#166534]">
+                            Ready
+                          </span>
+                        ) : (
+                          <span className="rounded-full bg-[rgba(148,163,184,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#475569]">
+                            Pending
+                          </span>
+                        )}
+                      </div>
+                      {variantFeePreviewReady && variantFeeSnapshot ? (
+                        fulfillmentMode === "seller" ? (
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <div className="rounded-[8px] border border-black/5 bg-white px-3 py-2">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Success fee</p>
+                              <p className="mt-1 text-[12px] font-semibold text-[#202020]">
+                                R {variantFeeSnapshot.successFeeIncl.toFixed(2)}{" "}
+                                <span className="text-[11px] font-normal text-[#57636c]">
+                                  ({variantFeeSnapshot.successFeePercent.toFixed(1)}%)
+                                </span>
+                              </p>
+                              <p className="mt-1 text-[10px] text-[#57636c]">VAT inclusive</p>
+                            </div>
+                            <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] px-3 py-2 sm:col-span-2">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#1a8553]">Total estimated fees</p>
+                              <p className="mt-1 text-[12px] font-semibold text-[#166534]">
+                                R {variantFeeSnapshot.totalFeesIncl.toFixed(2)}
+                              </p>
+                              <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                Only the success fee applies while you fulfil this variant yourself.
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                            <div className="rounded-[8px] border border-black/5 bg-white px-3 py-2">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Success fee</p>
+                              <p className="mt-1 text-[12px] font-semibold text-[#202020]">
+                                R {variantFeeSnapshot.successFeeIncl.toFixed(2)}{" "}
+                                <span className="text-[11px] font-normal text-[#57636c]">
+                                  ({variantFeeSnapshot.successFeePercent.toFixed(1)}%)
+                                </span>
+                              </p>
+                              <p className="mt-1 text-[10px] text-[#57636c]">VAT inclusive</p>
+                            </div>
+                            <div className="rounded-[8px] border border-black/5 bg-white px-3 py-2">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Fulfilment fee</p>
+                              <p className="mt-1 text-[12px] font-semibold text-[#202020]">
+                                R {(variantFeeSnapshot.fulfilmentFeeExclVat ?? variantFeeSnapshot.fulfilmentFeeIncl ?? 0).toFixed(2)}
+                              </p>
+                              <p className="mt-1 text-[10px] text-[#57636c]">VAT exclusive</p>
+                            </div>
+                            <div className="rounded-[8px] border border-black/5 bg-white px-3 py-2">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Storage fee</p>
+                              <p className="mt-1 text-[12px] font-semibold text-[#202020]">
+                                R {(variantFeeSnapshot.storageFeeExclVat ?? variantFeeSnapshot.storageFeeIncl ?? 0).toFixed(2)}
+                              </p>
+                              <p className="mt-1 text-[10px] text-[#57636c]">VAT exclusive</p>
+                            </div>
+                            <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] px-3 py-2 sm:col-span-2">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#1a8553]">Total estimated fees</p>
+                              <p className="mt-1 text-[12px] font-semibold text-[#166534]">
+                                R {variantFeeSnapshot.totalFeesIncl.toFixed(2)}
+                              </p>
+                              <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                Calculated from the {String(variantFeeSnapshot.sizeBand || "selected").toLowerCase()} size band, {variantFeeSnapshot.weightBand} weight band and warehouse stock cover.
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      ) : (
+                        <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
+                          {fulfillmentMode === "bevgo" && !variantLogisticsReady
+                            ? "Add the required logistics metadata to preview fulfilment, handling and storage fees."
+                            : "Enter a selling price to preview this variant’s fee breakdown."}
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      {continueSellingAvailable ? (
+                        <label className="flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020]">
+                          <input
+                            type="checkbox"
+                            checked={variantDraft.continueSellingOutOfStock}
+                            onChange={(event) =>
+                              setVariantDraft((current) => ({ ...current, continueSellingOutOfStock: event.target.checked }))
+                            }
+                          />
+                          Continue selling when out of stock
+                        </label>
+                      ) : (
+                        <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
+                          Continue selling when out of stock is only available for self-fulfilment without inventory tracking.
+                        </div>
+                      )}
+                      <label className="flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020]">
+                        <input
+                          type="checkbox"
+                          checked={variantDraft.isDefault}
+                          onChange={(event) => setVariantDraft((current) => ({ ...current, isDefault: event.target.checked }))}
+                        />
+                        Make this the default variant
+                      </label>
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => resetVariantDraft()}
+                        className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void addVariant()}
+                        disabled={!variantDraft.label.trim()}
+                        className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {editingVariantIndex !== null ? "Update variant" : "Add variant"}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mt-4 space-y-2">
+                  {variantItems.length ? (
+                    variantItems.map((variant, index) => (
+                      <div key={`${variant.variant_id ?? index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/5 bg-white px-3 py-2">
+                        <div>
+                          <p className="text-[13px] font-semibold text-[#202020]">{variant.label || "Untitled variant"}</p>
+                          <p className="mt-1 text-[11px] text-[#57636c]">
+                            {variant.variant_id ? `Code ${variant.variant_id}` : "No code"}
+                          </p>
+                          <p className="mt-1 text-[11px] text-[#57636c]">
+                            {variant.color ? `Color ${variant.color}` : "No color"}
+                            {variant.pack?.volume_unit ? ` • ${variant.pack.volume_unit}` : ""}
+                            {Array.isArray(variant.media?.images) && variant.media.images.length > 0
+                              ? ` • ${variant.media.images.length} image${variant.media.images.length === 1 ? "" : "s"}`
+                              : ""}
+                            {variantPriceIncl(variant) > 0 ? ` • R ${variantPriceIncl(variant).toFixed(2)} incl` : ""}
+                            {variant.sale?.is_on_sale && Number(variant.sale?.discount_percent ?? 0) > 0
+                              ? ` • Sale ${Number(variant.sale?.discount_percent ?? 0).toFixed(0)}% to R ${variantSalePriceIncl(variant).toFixed(2)}`
+                              : ""}
+                          </p>
+                          <p className="mt-1 text-[11px] text-[#57636c]">
+                            {Array.isArray((variant as any)?.inventory) && (variant as any).inventory.length > 0
+                              ? `${(variant as any).inventory[0]?.in_stock_qty ?? 0} in stock`
+                              : "Inventory not tracked"}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {variant.placement?.is_default ? (
+                            <span className="rounded-full bg-[rgba(57,169,107,0.12)] px-2.5 py-1 text-[11px] font-semibold text-[#166534]">
+                              Default
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => loadVariantIntoForm(variant, index)}
+                            className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#202020]"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void removeVariant(String(variant.variant_id ?? ""))}
+                            className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#b91c1c]"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[12px] text-[#57636c]">
+                      No variants added yet.
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              {message ? (
+                <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] px-4 py-3 text-[12px] text-[#166534]">
+                  {message}
+                </div>
+              ) : null}
+
+              {error ? (
+                <div className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
+                  {error}
+                </div>
+              ) : null}
+
+            </div>
+          </div>
+      </section>
+        </div>
+
+        <aside className="space-y-4 xl:sticky xl:top-4">
+          <div className="hidden xl:block">
+            {renderSidebarSummary()}
+          </div>
+
+          {fulfillmentMode === "bevgo" && activeProductId ? (
+            <section className="grid gap-4 lg:grid-cols-2">
+              <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Inbound booking</p>
+                <h3 className="mt-2 text-[16px] font-semibold text-[#202020]">Book your delivery to Piessang</h3>
+                <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                  Tell Piessang when stock will arrive and how many units of each barcode-matched variant to expect.
+                </p>
+                <div className="mt-3 space-y-3">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Delivery date</span>
+                    <input
+                      type="date"
+                      value={inboundDeliveryDate}
+                      onChange={(event) => setInboundDeliveryDate(event.target.value)}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px]"
+                    />
+                  </label>
+                  <div className="space-y-2">
+                    {variantItems.map((variant) => {
+                      const variantId = String(variant?.variant_id ?? "").trim();
+                      return (
+                        <div key={variantId} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-[12px] font-semibold text-[#202020]">{variant?.label || variantId}</p>
+                              <p className="mt-0.5 text-[11px] text-[#57636c]">Barcode: {String(variant?.barcode ?? "Missing") || "Missing"}</p>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              value={inboundQuantities[variantId] ?? ""}
+                              onChange={(event) =>
+                                setInboundQuantities((current) => ({
+                                  ...current,
+                                  [variantId]: event.target.value,
+                                }))
+                              }
+                              className="w-[100px] rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px]"
+                              placeholder="Qty"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Notes</span>
+                    <textarea
+                      value={inboundNotes}
+                      onChange={(event) => setInboundNotes(event.target.value)}
+                      rows={3}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px]"
+                      placeholder="Optional receiving notes"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void saveInboundBooking()}
+                    disabled={savingInboundBooking}
+                    className="inline-flex h-10 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {savingInboundBooking ? "Saving..." : "Save inbound booking"}
+                  </button>
+                  <div className="space-y-2">
+                    {loadingInboundBookings ? (
+                      <p className="text-[11px] text-[#57636c]">Loading inbound bookings...</p>
+                    ) : inboundBookings.length ? (
+                      inboundBookings.map((booking) => (
+                        <div key={String(booking?.id || booking?.bookingId)} className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] text-[#57636c]">
+                          <p className="font-semibold text-[#202020]">{String(booking?.deliveryDate || "No date")}</p>
+                          <p className="mt-1">
+                            {(Array.isArray(booking?.variants) ? booking.variants : [])
+                              .map((item: any) => `${item.label || item.variantId}: ${item.quantity}`)
+                              .join(" • ")}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-[11px] text-[#57636c]">No inbound bookings saved yet.</p>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Stock upliftment</p>
+                <h3 className="mt-2 text-[16px] font-semibold text-[#202020]">Book stock upliftment from Piessang</h3>
+                <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                  Tell Piessang when stock must be prepared for upliftment and how many units of each barcode-matched variant must be released.
+                </p>
+                <div className="mt-3 space-y-3">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Uplift date</span>
+                    <input
+                      type="date"
+                      value={upliftDate}
+                      onChange={(event) => setUpliftDate(event.target.value)}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px]"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Reason</span>
+                    <input
+                      type="text"
+                      value={upliftReason}
+                      onChange={(event) => setUpliftReason(event.target.value)}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px]"
+                      placeholder="Optional reason for upliftment"
+                    />
+                  </label>
+                  <div className="space-y-2">
+                    {variantItems.map((variant) => {
+                      const variantId = String(variant?.variant_id ?? "").trim();
+                      return (
+                        <div key={variantId} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="truncate text-[12px] font-semibold text-[#202020]">{variant?.label || variantId}</p>
+                              <p className="mt-0.5 text-[11px] text-[#57636c]">Barcode: {String(variant?.barcode ?? "Missing") || "Missing"}</p>
+                            </div>
+                            <input
+                              type="number"
+                              min="0"
+                              value={upliftQuantities[variantId] ?? ""}
+                              onChange={(event) =>
+                                setUpliftQuantities((current) => ({
+                                  ...current,
+                                  [variantId]: event.target.value,
+                                }))
+                              }
+                              className="w-[100px] rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px]"
+                              placeholder="Qty"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Notes</span>
+                    <textarea
+                      value={upliftNotes}
+                      onChange={(event) => setUpliftNotes(event.target.value)}
+                      rows={3}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px]"
+                      placeholder="Optional upliftment notes"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void saveStockUpliftment()}
+                    disabled={savingStockUpliftment}
+                    className="inline-flex h-10 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {savingStockUpliftment ? "Saving..." : "Save stock upliftment"}
+                  </button>
+                  <div className="space-y-2">
+                    {loadingStockUpliftments ? (
+                      <p className="text-[11px] text-[#57636c]">Loading stock upliftments...</p>
+                    ) : stockUpliftments.length ? (
+                      stockUpliftments.map((upliftment) => (
+                        <div key={String(upliftment?.id || upliftment?.upliftmentId)} className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] text-[#57636c]">
+                          <p className="font-semibold text-[#202020]">{String(upliftment?.upliftDate || "No date")}</p>
+                          <p className="mt-1">
+                            {(Array.isArray(upliftment?.variants) ? upliftment.variants : [])
+                              .map((item: any) => `${item.label || item.variantId}: ${item.quantity}`)
+                              .join(" • ")}
+                          </p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-[11px] text-[#57636c]">No stock upliftments saved yet.</p>
+                    )}
+                  </div>
+                </div>
+              </section>
+            </section>
+          ) : null}
+
+          <div className="hidden xl:block">
+            {renderPublishingChecklist()}
+          </div>
+        </aside>
+      </div>
+
+      {activeProcessLabel ? (
+        <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
+          <div className="inline-flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-4 py-2 text-[12px] text-[#202020] shadow-[0_12px_30px_rgba(20,24,27,0.14)]">
+            <SpinnerIcon className="h-4 w-4 animate-spin text-[#907d4c]" />
+            <span className="font-medium">{activeProcessLabel}</span>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="fixed bottom-24 right-4 z-40 hidden sm:block xl:hidden">
+        <button
+          type="button"
+          onClick={() => setShowSidebarSummaryDrawer(true)}
+          className="inline-flex items-center gap-3 rounded-full border border-black/10 bg-white px-4 py-3 text-left shadow-[0_12px_30px_rgba(20,24,27,0.14)] transition-all hover:translate-y-[-1px]"
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[rgba(144,125,76,0.12)] text-[#907d4c]">
+            <EyeIcon className="h-5 w-5" />
+          </span>
+          <span>
+            <span className="block text-[12px] font-semibold text-[#202020]">Product summary</span>
+            <span className="mt-0.5 block text-[11px] text-[#57636c]">Organization, fulfilment and fees</span>
+          </span>
+        </button>
+      </div>
+
+      <div className="fixed bottom-4 right-4 z-40 hidden sm:block xl:hidden">
+        <button
+          type="button"
+          onClick={() => setShowPublishDrawer(true)}
+          className={[
+            "inline-flex items-center gap-3 rounded-full border border-black/10 bg-white px-4 py-3 text-left shadow-[0_12px_30px_rgba(20,24,27,0.14)] transition-all",
+            publishChecklistPulse ? "scale-[1.04] border-[#1a8553]/30 shadow-[0_16px_34px_rgba(26,133,83,0.18)]" : "",
+          ].join(" ")}
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[rgba(26,133,83,0.12)] text-[#1a8553]">
+            <CheckIcon className={`h-5 w-5 ${publishChecklistPulse ? "animate-bounce" : ""}`} />
+          </span>
+          <span>
+            <span className="block text-[12px] font-semibold text-[#202020]">Publishing checklist</span>
+            <span className="mt-0.5 block text-[11px] text-[#57636c]">
+              {readyRequirementCount}/{publishRequirements.length} done
+            </span>
+          </span>
+        </button>
+      </div>
+
+      <div className="fixed bottom-4 right-4 z-40 sm:hidden">
+        <button
+          type="button"
+          onClick={() => setShowMobileToolsDrawer(true)}
+          className={[
+            "inline-flex items-center gap-3 rounded-full border border-black/10 bg-white px-4 py-3 text-left shadow-[0_12px_30px_rgba(20,24,27,0.14)] transition-all",
+            publishChecklistPulse ? "scale-[1.04] border-[#1a8553]/30 shadow-[0_16px_34px_rgba(26,133,83,0.18)]" : "",
+          ].join(" ")}
+        >
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[rgba(144,125,76,0.12)] text-[#907d4c]">
+            <EyeIcon className={`h-5 w-5 ${publishChecklistPulse ? "animate-bounce" : ""}`} />
+          </span>
+          <span>
+            <span className="block text-[12px] font-semibold text-[#202020]">Product tools</span>
+            <span className="mt-0.5 block text-[11px] text-[#57636c]">
+              {readyRequirementCount}/{publishRequirements.length} checks done
+            </span>
+          </span>
+        </button>
+      </div>
+
+      {showMobileToolsDrawer ? (
+        <div className="fixed inset-0 z-50 sm:hidden">
+          <button
+            type="button"
+            aria-label="Close product tools"
+            className="absolute inset-0 bg-black/35"
+            onClick={() => setShowMobileToolsDrawer(false)}
+          />
+          <aside className="absolute right-0 top-0 h-full w-full overflow-y-auto bg-[#f6f3ee] p-4 shadow-[-18px_0_50px_rgba(20,24,27,0.22)]">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Product tools</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">Status, summary and publishing requirements in one place.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMobileToolsDrawer(false)}
+                className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-4">
+              {renderSidebarSummary()}
+              {renderPublishingChecklist()}
+            </div>
+          </aside>
+        </div>
+      ) : null}
+
+      {showSidebarSummaryDrawer ? (
+        <div className="fixed inset-0 z-50 xl:hidden">
+          <button
+            type="button"
+            aria-label="Close product summary"
+            className="absolute inset-0 bg-black/35"
+            onClick={() => setShowSidebarSummaryDrawer(false)}
+          />
+          <aside className="absolute right-0 top-0 h-full w-full max-w-[420px] overflow-y-auto bg-[#f6f3ee] p-4 shadow-[-18px_0_50px_rgba(20,24,27,0.22)]">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Product summary</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">Quick access to the details normally shown in the right-hand column.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSidebarSummaryDrawer(false)}
+                className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
+              >
+                Close
+              </button>
+            </div>
+            <div className="space-y-4">
+              {renderSidebarSummary()}
+            </div>
+          </aside>
+        </div>
+      ) : null}
+
+      {showPublishDrawer ? (
+        <div className="fixed inset-0 z-50 xl:hidden">
+          <button
+            type="button"
+            aria-label="Close publishing checklist"
+            className="absolute inset-0 bg-black/35"
+            onClick={() => setShowPublishDrawer(false)}
+          />
+          <aside className="absolute right-0 top-0 h-full w-full max-w-[420px] overflow-y-auto bg-[#f6f3ee] p-4 shadow-[-18px_0_50px_rgba(20,24,27,0.22)]">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Publishing</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">Track what is still needed before this product can go live.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPublishDrawer(false)}
+                className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
+              >
+                Close
+              </button>
+            </div>
+            {renderPublishingChecklist()}
+          </aside>
+        </div>
+      ) : null}
+
+      {showDeleteModal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setShowDeleteModal(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-[8px] bg-white p-5 shadow-[0_18px_50px_rgba(20,24,27,0.22)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d11c1c]">Delete product</p>
+            <h3 className="mt-2 text-[18px] font-semibold text-[#202020]">Are you sure?</h3>
+            <p className="mt-2 text-[13px] leading-[1.55] text-[#57636c]">
+              This will permanently remove the draft and any saved variants from your catalogue.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteModal(false)}
+                className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmDeleteProduct()}
+                disabled={submitting}
+                className="inline-flex h-10 items-center rounded-[8px] bg-[#b91c1c] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showFulfillmentChangeModal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setShowFulfillmentChangeModal(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-[8px] bg-white p-5 shadow-[0_18px_50px_rgba(20,24,27,0.22)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Request fulfilment change</p>
+            <h3 className="mt-2 text-[18px] font-semibold text-[#202020]">Update fulfilment after review</h3>
+            <p className="mt-2 text-[13px] leading-[1.55] text-[#57636c]">
+              Tell Piessang why the fulfilment should change from {fulfillmentMode === "seller" ? "self fulfilment to Piessang fulfilment" : "Piessang fulfilment to self fulfilment"}.
+            </p>
+            <label className="mt-4 block">
+              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Reason</span>
+              <textarea
+                value={fulfillmentChangeNote}
+                onChange={(event) => setFulfillmentChangeNote(event.target.value)}
+                rows={4}
+                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#cbb26b]"
+                placeholder="Optional note for the Piessang review team"
+              />
+            </label>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowFulfillmentChangeModal(false);
+                  setFulfillmentChangeNote("");
+                }}
+                className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void requestFulfillmentChange()}
+                disabled={submitting}
+                className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitting ? "Requesting..." : "Request change"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showErrorDialog && error ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => {
+            setShowErrorDialog(false);
+            setError(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-[8px] bg-white p-5 shadow-[0_18px_50px_rgba(20,24,27,0.22)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d11c1c]">Something went wrong</p>
+            <p className="mt-2 text-[14px] leading-[1.55] text-[#202020]">{error}</p>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowErrorDialog(false);
+                  setError(null);
+                }}
+                className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </main>
+  );
+}

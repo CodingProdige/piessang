@@ -1,0 +1,23 @@
+<h2 style="margin:0 0 16px;">New inbound stock booking</h2>
+<p style="margin:0 0 12px;">A seller has booked inbound stock to the Piessang warehouse.</p>
+<table style="width:100%; border-collapse:collapse; margin:16px 0;">
+  <tr><td style="padding:8px 0; font-weight:600;">Vendor</td><td style="padding:8px 0;"><%= vendorName %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Seller code</td><td style="padding:8px 0;"><%= sellerCode || 'Not provided' %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Product</td><td style="padding:8px 0;"><%= productTitle %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Product ID</td><td style="padding:8px 0;"><%= productId %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Booking ID</td><td style="padding:8px 0;"><%= bookingId %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Delivery date</td><td style="padding:8px 0;"><%= deliveryDate %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Total units</td><td style="padding:8px 0;"><%= totalUnits %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Created by</td><td style="padding:8px 0;"><%= createdByEmail || createdByUid || 'Unknown user' %></td></tr>
+  <tr><td style="padding:8px 0; font-weight:600;">Notes</td><td style="padding:8px 0;"><%= notes || 'No notes added' %></td></tr>
+</table>
+<h3 style="margin:20px 0 10px;">Variants</h3>
+<ul style="padding-left:18px; margin:0;">
+  <% (variants || []).forEach(function(variant){ %>
+    <li style="margin:0 0 8px;">
+      <strong><%= variant.label || variant.variantId %></strong>
+      — Qty: <%= variant.quantity %>
+      <% if (variant.barcode) { %> — Barcode: <%= variant.barcode %><% } %>
+    </li>
+  <% }) %>
+</ul>

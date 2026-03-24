@@ -1,0 +1,341 @@
+import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { collectSellerNotificationEmails, getVariantInventoryTotal, sendSellerNotificationEmails } from "@/lib/seller/notifications";
+import { ensureSkuUnique, ensureUniqueProductCode } from "@/lib/catalogue/sku-uniqueness";
+import {
+  marketplaceVariantLogisticsComplete,
+  normalizeMarketplaceVariantLogistics,
+} from "@/lib/marketplace/fees";
+import { toSellerSlug } from "@/lib/seller/vendor-name";
+
+const ok  =(p={},s=200)=>NextResponse.json({ok:true,...p},{status:s});
+const err =(s,t,m,e={})=>NextResponse.json({ok:false,title:t,message:m,...e},{status:s});
+
+const VAT_RATE = 0.15;
+const ALLOWED_VOLUME_UNITS = new Set(["kg", "ml", "lt", "g", "small", "medium", "large", "each"]);
+
+const money2=(v)=>Number.isFinite(+v)?Math.round(+v*100)/100:0;
+const toInt=(v,f=0)=>Number.isFinite(+v)?Math.trunc(+v):f;
+const toNum=(v,f=0)=>Number.isFinite(+v)?+v:f;
+const toStr=(v,f="")=>(v==null?f:String(v)).trim();
+const toBool=(v,f=false)=>
+  typeof v==="boolean"?v:
+  typeof v==="number"?v!==0:
+  typeof v==="string"?["true","1","yes","y"].includes(v.toLowerCase()):
+  f;
+const is8=(s)=>/^\d{8}$/.test(String(s??"").trim());
+
+function normalizeVolumeUnit(value) {
+  const unit = String(value ?? "").trim().toLowerCase();
+  if (["l", "lt", "liter", "litre", "liters", "litres"].includes(unit)) return "lt";
+  if (["kg", "kgs", "kilogram", "kilograms"].includes(unit)) return "kg";
+  if (["g", "gram", "grams"].includes(unit)) return "g";
+  if (["small", "medium", "large", "ml", "each"].includes(unit)) return unit;
+  return "each";
+}
+
+function moneyInclToExcl(value) {
+  return money2(Number(value) / (1 + VAT_RATE));
+}
+
+function sanitizeUrl(u){
+  if (u == null) return null;
+  const s = String(u).trim();
+  if (!s) return null;
+  if (/^(https?:\/\/|data:)/i.test(s)) return s;
+  return null;
+}
+
+function sanitizeBlurHash(v){
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s.length ? s : null;
+}
+
+function parseImage(input, fallbackPos = null){
+  if (!input) return { imageUrl:null, blurHashUrl:null, altText:null, ...(fallbackPos?{position:fallbackPos}:{}) };
+  if (typeof input==="string"){
+    return { imageUrl:sanitizeUrl(input), blurHashUrl:null, altText:null, ...(fallbackPos?{position:fallbackPos}:{}) };
+  }
+  if (typeof input === "object"){
+    const imageUrl    = sanitizeUrl(input.imageUrl ?? input.url);
+    const blurHashUrl = sanitizeBlurHash(input.blurHashUrl ?? input.blurhash ?? input.blurHash);
+    const altText     = toStr(input.altText ?? input.alt ?? input.alt_text, null) || null;
+    const pos = Number.isFinite(+input?.position)?toInt(input.position):undefined;
+    const base = { imageUrl, blurHashUrl, altText };
+    return pos!=null ? {...base,position:pos} : (fallbackPos?{...base,position:fallbackPos}:base);
+  }
+  return { imageUrl:null, blurHashUrl:null, altText:null, ...(fallbackPos?{position:fallbackPos}:{}) };
+}
+
+function parseImages(value){
+  let arr=[];
+  if (Array.isArray(value)){
+    arr=value.map((v,i)=>parseImage(v,i+1)).filter(o=>o.imageUrl||o.blurHashUrl);
+  } else if (value){
+    const one=parseImage(value,1);
+    if (one.imageUrl||one.blurHashUrl) arr=[one];
+  }
+  if (arr.length){
+    arr = arr
+      .map((it,i)=>({...it,position:Number.isFinite(+it.position)?toInt(it.position,i+1):(i+1)}))
+      .sort((a,b)=>a.position-b.position)
+      .map((it,i)=>({...it,position:i+1}));
+  }
+  return arr;
+}
+
+async function collectAllCodesAndBarcodes(db) {
+  const snap = await db.collection("products_v2").get();
+  const ids = new Set();
+  const barcodes = new Set();
+  for (const d of snap.docs) {
+    const data = d.data() || {};
+    const pCode = String(data?.product?.unique_id ?? "").trim();
+    if (is8(pCode)) ids.add(pCode);
+    const vars = Array.isArray(data?.variants) ? data.variants : [];
+    for (const v of vars) {
+      const vid = String(v?.variant_id ?? "").trim();
+      const bc  = String(v?.barcode ?? "").trim();
+      if (is8(vid)) ids.add(vid);
+      if (bc) barcodes.add(bc.toUpperCase());
+    }
+  }
+  return { ids, barcodes };
+}
+
+function parseInventory(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter(it => it && typeof it === "object")
+    .map(it => ({
+      in_stock_qty: toInt(it.in_stock_qty, 0),
+      warehouse_id: toStr(it.warehouse_id, null) || null
+    }))
+    .filter(it => it.warehouse_id !== null);
+}
+
+export async function POST(req){
+  try{
+    const db = getAdminDb();
+    if (!db) {
+      return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
+    }
+
+    const { unique_id, data } = await req.json();
+    const pid = toStr(unique_id);
+    if (!is8(pid)) return err(400,"Invalid Product ID","'unique_id' must be an 8-digit string.");
+    if (!data || typeof data!=="object") return err(400,"Invalid Variant","Provide a valid 'data' object.");
+
+    const vId = toStr(data?.variant_id);
+    if (!is8(vId)) return err(400,"Invalid Variant ID","'data.variant_id' must be an 8-digit string.");
+
+    await ensureUniqueProductCode(vId);
+    await ensureSkuUnique(toStr(data?.sku), { excludeProductId: pid, excludeVariantId: vId });
+
+    const pref = db.collection("products_v2").doc(pid);
+    const psnap=await pref.get();
+    if(!psnap.exists)return err(404,"Product Not Found",`No product exists with unique_id ${pid}.`);
+
+    const { ids, barcodes } = await collectAllCodesAndBarcodes(db);
+    if (ids.has(vId)) return err(409,"Duplicate Code",`variant_id ${vId} already in use.`);
+    const barcode = toStr(data?.barcode);
+    if (barcode && barcodes.has(barcode.toUpperCase()))
+      return err(409,"Duplicate Barcode",`Barcode '${barcode}' already assigned to another variant.`);
+
+    const current = psnap.data()||{};
+    const productFulfillmentMode = toStr(current?.fulfillment?.mode, "seller") === "bevgo" ? "bevgo" : "seller";
+    if (productFulfillmentMode === "bevgo" && !barcode) {
+      return err(400, "Missing Barcode", "Piessang fulfilment variants must have a barcode before they can be accepted.");
+    }
+    const variants = Array.isArray(current.variants)?[...current.variants]:[];
+    const nextPos=(variants.length
+      ?Math.max(...variants.map(v=>Number.isFinite(+v?.placement?.position)?+v.placement.position:0))
+      :0)+1;
+    const inventoryRows = parseInventory(data?.inventory);
+    const logistics = normalizeMarketplaceVariantLogistics(data?.logistics);
+    const isTrackedInventory = productFulfillmentMode === "bevgo" || Boolean(data?.placement?.track_inventory) || inventoryRows.length > 0;
+    const requiresLogistics = productFulfillmentMode === "bevgo";
+    if (requiresLogistics && !marketplaceVariantLogisticsComplete(logistics)) {
+      return err(
+        400,
+        "Missing Logistics",
+        "Weight, dimensions, stock and monthly sales estimates are required for Bevgo fulfilment variants."
+      );
+    }
+    if (requiresLogistics && inventoryRows.length === 0) {
+      return err(
+        400,
+        "Missing Stock",
+        "Bevgo fulfilment variants require stock quantities and a warehouse or location."
+      );
+    }
+
+    const discountPercent = Math.max(0, Math.min(100, toNum(data?.sale?.discount_percent, 0)));
+    const saleEnabled = toBool(data?.sale?.is_on_sale,false) || discountPercent > 0 || Number.isFinite(+data?.sale?.sale_price_incl) || Number.isFinite(+data?.sale?.sale_price_excl);
+    const sellingPriceIncl = money2(
+      data?.pricing?.selling_price_incl ??
+        (Number.isFinite(+data?.pricing?.selling_price_excl) ? Number(data?.pricing?.selling_price_excl) * (1 + VAT_RATE) : 0)
+    );
+  const variant={
+      variant_id:vId,
+      sku:toStr(data?.sku),
+      label:toStr(data?.label),
+      barcode:barcode,
+      barcodeImageUrl: toStr(data?.barcodeImageUrl, null) || null,
+      color: toStr(data?.color, null) || null,
+      media: {
+        images: parseImages(data?.media?.images),
+      },
+
+      placement:{
+        position:Number.isFinite(+data?.placement?.position)
+          ?Math.trunc(+data.placement.position)
+          :nextPos,
+        isActive:toBool(data?.placement?.isActive,true),
+        isFeatured:toBool(data?.placement?.isFeatured,false),
+        is_default:toBool(data?.placement?.is_default,variants.length===0),
+        is_loyalty_eligible:toBool(data?.placement?.is_loyalty_eligible,true),
+        track_inventory: isTrackedInventory,
+        continue_selling_out_of_stock: isTrackedInventory
+          ? false
+          : toBool(data?.placement?.continue_selling_out_of_stock, false),
+      },
+
+      pricing:{
+        supplier_price_excl:money2(data?.pricing?.supplier_price_excl),
+        selling_price_incl: sellingPriceIncl,
+        selling_price_excl:money2(
+          Number.isFinite(+data?.pricing?.selling_price_excl)
+            ? data?.pricing?.selling_price_excl
+            : moneyInclToExcl(data?.pricing?.selling_price_incl ?? 0)
+        ),
+        cost_price_excl:Number.isFinite(+data?.pricing?.cost_price_excl)
+          ?money2(data.pricing.cost_price_excl)
+          :money2(data?.pricing?.base_price_excl),
+        rebate_eligible:toBool(data?.pricing?.rebate_eligible,true),
+      },
+
+      sale:{
+        is_on_sale:saleEnabled && discountPercent > 0,
+        disabled_by_admin:toBool(data?.sale?.disabled_by_admin,false),
+        discount_percent: discountPercent,
+        sale_price_incl:money2(
+          data?.sale?.sale_price_incl ??
+            (() => {
+              const priceIncl = money2(
+                data?.pricing?.selling_price_incl ??
+                  (Number.isFinite(+data?.pricing?.selling_price_excl) ? Number(data?.pricing?.selling_price_excl) * (1 + VAT_RATE) : 0)
+              );
+              const discount = discountPercent;
+              return discount > 0 ? priceIncl * (1 - discount / 100) : 0;
+            })()
+        ),
+        sale_price_excl:money2(
+          Number.isFinite(+data?.sale?.sale_price_excl)
+            ? data?.sale?.sale_price_excl
+            : moneyInclToExcl(
+                data?.sale?.sale_price_incl ??
+                  (() => {
+                    const priceIncl = money2(
+                      data?.pricing?.selling_price_incl ??
+                        (Number.isFinite(+data?.pricing?.selling_price_excl) ? Number(data?.pricing?.selling_price_excl) * (1 + VAT_RATE) : 0)
+                    );
+                    const discount = Math.max(0, Math.min(100, toNum(data?.sale?.discount_percent, 0)));
+                    return discount > 0 ? priceIncl * (1 - discount / 100) : 0;
+                  })()
+              )
+        ),
+        qty_available:toInt(data?.sale?.qty_available,0),
+      },
+
+      pack:{
+        unit_count:toInt(data?.pack?.unit_count,1),
+        volume:toNum(data?.pack?.volume,0),
+        volume_unit: ALLOWED_VOLUME_UNITS.has(normalizeVolumeUnit(data?.pack?.volume_unit)) ? normalizeVolumeUnit(data?.pack?.volume_unit) : "each",
+      },
+      logistics: {
+        weight_kg: logistics.weightKg,
+        length_cm: logistics.lengthCm,
+        width_cm: logistics.widthCm,
+        height_cm: logistics.heightCm,
+        monthly_sales_30d: logistics.monthlySales30d,
+        stock_qty: getVariantInventoryTotal({ inventory: inventoryRows }),
+        warehouse_id: logistics.warehouseId,
+        volume_cm3: Number((logistics.lengthCm * logistics.widthCm * logistics.heightCm).toFixed(2)),
+      },
+
+      inventory: parseInventory(data?.inventory)
+    };
+
+    /* Ensure only one is_default */
+    if(variant.placement.is_default){
+      for(let i=0;i<variants.length;i++){
+        if(variants[i]?.placement) variants[i].placement.is_default=false;
+      }
+    }
+
+    variants.push(variant);
+
+    await pref.update({
+      variants,
+      moderation: {
+        ...(current?.moderation || {}),
+        status: "draft",
+        reason: "variant_changed",
+        notes: "Variant updates require the listing to be reviewed again before it goes live.",
+        reviewedAt: null,
+        reviewedBy: null,
+      },
+      placement: {
+        ...(current?.placement || {}),
+        isActive: false,
+      },
+      "timestamps.updatedAt":FieldValue.serverTimestamp()
+    });
+
+    const sellerSlug = toStr(
+      current?.seller?.sellerSlug ||
+        current?.seller?.groupSellerSlug ||
+        toSellerSlug(current?.product?.vendorName || current?.product?.brandTitle || current?.product?.brand || current?.product?.vendorName),
+    );
+    const stockTotal = getVariantInventoryTotal(variant);
+    if (
+      sellerSlug &&
+      stockTotal > 0 &&
+      stockTotal <= 10 &&
+      process.env.SENDGRID_API_KEY?.startsWith("SG.")
+    ) {
+      const recipients = await collectSellerNotificationEmails({
+        sellerSlug,
+        fallbackEmails: [current?.seller?.contactEmail, current?.email, current?.product?.vendorEmail].filter(Boolean),
+      });
+      if (recipients.length) {
+        await sendSellerNotificationEmails({
+          origin: new URL(req.url).origin,
+          type: "seller-low-stock",
+          to: recipients,
+          data: {
+            vendorName: current?.product?.vendorName || current?.seller?.vendorName || "Bevgo seller",
+            productTitle: current?.product?.title || "your product",
+            variantLabel: variant.label || "variant",
+            currentStock: String(stockTotal),
+          },
+        });
+      }
+    }
+
+    return ok({
+      message:"Variant added.",
+      unique_id:pid,
+      variant_id:vId,
+      resubmissionRequired: true,
+      variant
+    });
+
+  }catch(e){
+    console.error("variant create failed:",e);
+    return err(500,"Unexpected Error","Failed to add variant.");
+  }
+}
