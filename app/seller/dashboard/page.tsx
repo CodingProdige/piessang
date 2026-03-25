@@ -10,7 +10,10 @@ import { SellerAccountsWorkspace } from "@/components/seller/admin-seller-accoun
 import { SellerBrandRequestsWorkspace } from "@/components/seller/brand-requests-workspace";
 import { SellerFeesWorkspace } from "@/components/seller/fees-workspace";
 import { SellerMarketingWorkspace } from "@/components/seller/marketing-workspace";
+import { SellerLiveCommerceWorkspace } from "@/components/seller/live-commerce-workspace";
 import { SellerOrdersWorkspace } from "@/components/seller/orders-workspace";
+import { SellerProductReportsWorkspace } from "@/components/seller/product-reports-workspace";
+import { SellerProductReviewsWorkspace } from "@/components/seller/product-reviews-workspace";
 import { SellerProductsWorkspace } from "@/components/seller/products-workspace";
 import { SellerSettlementsWorkspace } from "@/components/seller/settlements-workspace";
 import { SellerWarehouseWorkspace } from "@/components/seller/warehouse-workspace";
@@ -36,6 +39,10 @@ type SidebarSection =
   | "settlements"
   | "admin"
   | "brand-requests"
+  | "admin-analytics"
+  | "admin-live-view"
+  | "product-reviews"
+  | "product-reports"
   | "fees"
   | "create-product"
   | "inventory"
@@ -139,6 +146,10 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   settlements: ["admin", "manager", "catalogue", "orders", "analytics"],
   admin: ["admin"],
   "brand-requests": ["admin"],
+  "admin-analytics": ["admin"],
+  "admin-live-view": ["admin"],
+  "product-reviews": ["admin"],
+  "product-reports": ["admin"],
   fees: ["admin"],
   "create-product": ["admin", "manager", "catalogue"],
   inventory: ["admin", "manager", "catalogue"],
@@ -294,6 +305,12 @@ function SidebarIcon({ icon }: { icon: string }) {
           <path d="M9 12l2 2 4-4" />
         </svg>
       );
+    case "flag":
+      return (
+        <svg viewBox="0 0 20 20" className={common} fill="currentColor">
+          <path d="M5 2a1 1 0 0 1 1 1v1h7.38l-.17-.34A1 1 0 0 1 14.1 2h.9a1 1 0 0 1 .89 1.45L15.12 5l.77 1.55A1 1 0 0 1 15 8h-1a1 1 0 0 1-.89-.55L13 7H6v10a1 1 0 1 1-2 0V3a1 1 0 0 1 1-1z" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -402,6 +419,8 @@ function SidebarMenu({
   adminBadges?: {
     sellerReviewCount?: number;
     brandRequestCount?: number;
+    productReviewCount?: number;
+    productReportCount?: number;
   };
   sellerBadges?: {
     newOrders?: number;
@@ -410,7 +429,7 @@ function SidebarMenu({
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "fees"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "admin-analytics", "admin-live-view", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -559,6 +578,35 @@ function SidebarMenu({
               onClick={() => handleNavigate("brand-requests")}
             />
             <SidebarButton
+              label="Analytics"
+              icon="analytics"
+              active={activeSection === "admin-analytics" || activeSection === "admin-live-view"}
+              onClick={() => handleNavigate("admin-live-view")}
+            />
+            <div className="ml-3 border-l border-black/10 pl-3">
+              <SidebarButton
+                label="Live view"
+                icon="analytics"
+                active={activeSection === "admin-live-view"}
+                onClick={() => handleNavigate("admin-live-view")}
+                nested
+              />
+            </div>
+            <SidebarButton
+              label="Product reviews"
+              icon="check"
+              active={activeSection === "product-reviews"}
+              badgeCount={adminBadges?.productReviewCount || 0}
+              onClick={() => handleNavigate("product-reviews")}
+            />
+            <SidebarButton
+              label="Product reports"
+              icon="flag"
+              active={activeSection === "product-reports"}
+              badgeCount={adminBadges?.productReportCount || 0}
+              onClick={() => handleNavigate("product-reports")}
+            />
+            <SidebarButton
               label="Warehouse calendar"
               icon="truck"
                 active={activeSection === "warehouse-calendar"}
@@ -596,7 +644,7 @@ function SellerDashboardContent() {
   const { authReady, isAuthenticated, isSeller, sellerStatus, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
   const [activeSection, setActiveSection] = useState<SidebarSection>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0 });
+  const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0 });
   const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0 });
   const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
   const [reviewRequestReason, setReviewRequestReason] = useState("other");
@@ -604,6 +652,10 @@ function SellerDashboardContent() {
   const [reviewRequestSubmitting, setReviewRequestSubmitting] = useState(false);
 
   const resolveSection = (value: string | null): SidebarSection => {
+    const reviewContext = (searchParams.get("reviewContext") || "").toLowerCase();
+    if (((value || "").toLowerCase() === "create-product" || (value || "").toLowerCase() === "create") && reviewContext === "product-reviews") {
+      return "product-reviews";
+    }
     switch ((value || "").toLowerCase()) {
       case "create-product":
       case "create":
@@ -633,6 +685,20 @@ function SellerDashboardContent() {
       case "brand-requests":
       case "brands":
         return "brand-requests";
+      case "admin-analytics":
+      case "live-analytics":
+        return "admin-analytics";
+      case "admin-live-view":
+      case "live-view":
+        return "admin-live-view";
+      case "product-reviews":
+      case "product-review":
+      case "review-products":
+        return "product-reviews";
+      case "product-reports":
+      case "product-report":
+      case "reported-products":
+        return "product-reports";
       case "fees":
       case "marketplace-fees":
         return "fees";
@@ -679,31 +745,65 @@ function SellerDashboardContent() {
 
   const vendorName = profile?.sellerVendorName?.trim() || profile?.accountName?.trim() || "";
   const isSystemAdmin = profile?.systemAccessType === "admin";
+  async function refreshAdminBadges() {
+    if (!isSystemAdmin || !profile?.uid) return;
+    try {
+      await fetch("/api/client/v1/admin/products/review-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }).catch(() => null);
+
+      const [sellerResponse, brandResponse, productResponse, reportResponse] = await Promise.all([
+        fetch(`/api/client/v1/accounts/seller/list?uid=${encodeURIComponent(profile.uid)}&filter=review`, { cache: "no-store" }),
+        fetch("/api/client/v1/admin/brand-requests?status=pending", { cache: "no-store" }),
+        fetch("/api/catalogue/v1/products/product/get?limit=all&includeUnavailable=true", { cache: "no-store" }),
+        fetch("/api/client/v1/admin/product-reports?status=pending", { cache: "no-store" }),
+      ]);
+      const sellerPayload = await sellerResponse.json().catch(() => ({}));
+      const brandPayload = await brandResponse.json().catch(() => ({}));
+      const productPayload = await productResponse.json().catch(() => ({}));
+      const reportPayload = await reportResponse.json().catch(() => ({}));
+      const productReviewCount =
+        productResponse.ok && productPayload?.ok !== false && Array.isArray(productPayload?.items)
+          ? productPayload.items.filter((item: any) => String(item?.data?.moderation?.status || "").trim().toLowerCase() === "in_review").length
+          : 0;
+      setAdminBadges({
+        sellerReviewCount: sellerResponse.ok && sellerPayload?.ok !== false ? Number(sellerPayload?.count || 0) : 0,
+        brandRequestCount: brandResponse.ok && brandPayload?.ok !== false ? Number(brandPayload?.count || 0) : 0,
+        productReviewCount,
+        productReportCount: reportResponse.ok && reportPayload?.ok !== false ? Number(reportPayload?.count || 0) : 0,
+      });
+    } catch {
+      setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0 });
+    }
+  }
   useEffect(() => {
     let cancelled = false;
     async function loadAdminBadges() {
       if (!isSystemAdmin || !profile?.uid) return;
       try {
-        const [sellerResponse, brandResponse] = await Promise.all([
-          fetch(`/api/client/v1/accounts/seller/list?uid=${encodeURIComponent(profile.uid)}&filter=review`, { cache: "no-store" }),
-          fetch("/api/client/v1/admin/brand-requests?status=pending", { cache: "no-store" }),
-        ]);
-        const sellerPayload = await sellerResponse.json().catch(() => ({}));
-        const brandPayload = await brandResponse.json().catch(() => ({}));
+        await refreshAdminBadges();
         if (cancelled) return;
-        setAdminBadges({
-          sellerReviewCount: sellerResponse.ok && sellerPayload?.ok !== false ? Number(sellerPayload?.count || 0) : 0,
-          brandRequestCount: brandResponse.ok && brandPayload?.ok !== false ? Number(brandPayload?.count || 0) : 0,
-        });
       } catch {
         if (!cancelled) {
-          setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0 });
+          setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0 });
         }
       }
     }
     void loadAdminBadges();
     return () => {
       cancelled = true;
+    };
+  }, [isSystemAdmin, profile?.uid, activeSection]);
+
+  useEffect(() => {
+    function handleAdminBadgeRefresh() {
+      void refreshAdminBadges();
+    }
+
+    window.addEventListener("piessang:refresh-admin-badges", handleAdminBadgeRefresh);
+    return () => {
+      window.removeEventListener("piessang:refresh-admin-badges", handleAdminBadgeRefresh);
     };
   }, [isSystemAdmin, profile?.uid, activeSection]);
   const sellerContexts = useMemo<SellerContextItem[]>(() => {
@@ -819,6 +919,10 @@ function SellerDashboardContent() {
   useEffect(() => {
     let cancelled = false;
     async function loadSellerBadges() {
+      if (!authReady || !isAuthenticated) {
+        if (!cancelled) setSellerBadges({ newOrders: 0, warehouse: 0 });
+        return;
+      }
       const activeSellerCode = activeSellerContext?.sellerCode || profile?.sellerCode || "";
       const activeSellerSlug = activeSellerContext?.sellerSlug || "";
       if (!activeSellerCode && !activeSellerSlug) return;
@@ -852,7 +956,7 @@ function SellerDashboardContent() {
     return () => {
       cancelled = true;
     };
-  }, [activeSellerContext?.sellerCode, activeSellerContext?.sellerSlug, profile?.sellerCode, activeSection]);
+  }, [authReady, isAuthenticated, activeSellerContext?.sellerCode, activeSellerContext?.sellerSlug, profile?.sellerCode, activeSection]);
   const activeSellerStatus = String(activeSellerContext?.status || profile?.sellerStatus || "").trim().toLowerCase();
   const canManageSellerDashboard = isSystemAdmin;
   const homeSellerSlug = useMemo(() => {
@@ -873,7 +977,7 @@ function SellerDashboardContent() {
   const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
   const sectionLocked = sellerUnavailable
     ? blockedSections.includes(activeSection)
-      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "fees" || activeSection === "warehouse-calendar"
+      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "fees" || activeSection === "warehouse-calendar"
         ? !canManageSellerDashboard
         : !canAccessSellerSection(activeSellerRole, activeSection);
   const firstAllowedSection = useMemo(() => {
@@ -943,6 +1047,7 @@ function SellerDashboardContent() {
     if (activeSection === "create-product") return;
 
     const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("section", activeSection);
     nextParams.delete("unique_id");
     nextParams.delete("id");
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
@@ -950,7 +1055,7 @@ function SellerDashboardContent() {
   }, [activeSection, pathname, router, searchParams]);
 
   function setSection(nextSection: SidebarSection) {
-    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
+    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
     if (!canAccessSellerSection(activeSellerRole, nextSection)) return;
     setActiveSection(nextSection);
     setMobileMenuOpen(false);
@@ -959,6 +1064,9 @@ function SellerDashboardContent() {
     if (nextSection !== "create-product") {
       nextParams.delete("unique_id");
       nextParams.delete("id");
+    }
+    if (nextSection !== "product-reviews") {
+      nextParams.delete("reviewContext");
     }
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
     router.push(nextUrl, { scroll: false });
@@ -969,9 +1077,22 @@ function SellerDashboardContent() {
     nextParams.set("section", "create-product");
     nextParams.set("unique_id", productId);
     nextParams.delete("id");
+    nextParams.delete("reviewContext");
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
     router.push(nextUrl, { scroll: false });
     setActiveSection("create-product");
+    setMobileMenuOpen(false);
+  }
+
+  function openReviewProductEditor(productId: string) {
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("section", "create-product");
+    nextParams.set("unique_id", productId);
+    nextParams.set("reviewContext", "product-reviews");
+    nextParams.delete("id");
+    const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    router.push(nextUrl, { scroll: false });
+    setActiveSection("product-reviews");
     setMobileMenuOpen(false);
   }
 
@@ -995,6 +1116,14 @@ function SellerDashboardContent() {
         return "Seller accounts";
       case "brand-requests":
         return "Brand requests";
+      case "admin-analytics":
+        return "Analytics";
+      case "admin-live-view":
+        return "Live view";
+      case "product-reviews":
+        return "Product reviews";
+      case "product-reports":
+        return "Product reports";
       case "fees":
         return "Marketplace fees";
       case "inventory":
@@ -1048,6 +1177,14 @@ function SellerDashboardContent() {
         return "Switch and manage seller accounts when you are a system admin.";
       case "brand-requests":
         return "Review and resolve seller-submitted brand requests before they become canonical brands.";
+      case "admin-analytics":
+        return "View marketplace-wide admin analytics and live commerce insights.";
+      case "admin-live-view":
+        return "Track live marketplace activity across carts, checkouts, and purchases.";
+      case "product-reviews":
+        return "Approve or reject seller product submissions before they become visible on the marketplace.";
+      case "product-reports":
+        return "Review customer product reports, block listings when required, and resolve seller disputes.";
       case "fees":
         return "Manage marketplace fee rules and push updated rates across the catalogue.";
       case "create-product":
@@ -1260,6 +1397,12 @@ function SellerDashboardContent() {
               />
             ) : activeSection === "brand-requests" && canManageSellerDashboard ? (
               <SellerBrandRequestsWorkspace />
+            ) : activeSection === "admin-live-view" && canManageSellerDashboard ? (
+              <SellerLiveCommerceWorkspace />
+            ) : activeSection === "product-reviews" && canManageSellerDashboard ? (
+              <SellerProductReviewsWorkspace onQueueChanged={() => { void refreshAdminBadges(); }} />
+            ) : activeSection === "product-reports" && canManageSellerDashboard ? (
+              <SellerProductReportsWorkspace onQueueChanged={() => { void refreshAdminBadges(); }} />
             ) : activeSection === "fees" && canManageSellerDashboard ? (
               <SellerFeesWorkspace />
             ) : activeSection === "warehouse-calendar" && canManageSellerDashboard ? (
@@ -1298,8 +1441,10 @@ function SellerDashboardContent() {
             ) : activeSection === "products" ? (
               <SellerProductsWorkspace
                 vendorName={activeVendorName}
+                sellerSlug={resolvedSellerSlug}
                 onCreateProduct={() => setSection("create-product")}
                 onEditProduct={openProductEditor}
+                onOpenSettings={() => setSection("settings")}
               />
             ) : activeSection === "customers" ? (
               <SellerCustomersWorkspace vendorName={activeVendorName} />
@@ -1311,6 +1456,20 @@ function SellerDashboardContent() {
               />
             ) : activeSection === "marketing" ? (
               <SellerMarketingWorkspace />
+            ) : activeSection === "analytics" ? (
+              <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
+                <div className="max-w-[460px]">
+                  <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
+                    Coming soon
+                  </p>
+                  <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">
+                    Seller analytics will live here
+                  </h3>
+                  <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+                    We&apos;ll use this space for seller-specific performance, sales, and product insights.
+                  </p>
+                </div>
+              </div>
             ) : activeSection === "settlements" ? (
               <SellerSettlementsWorkspace
                 sellerSlug={resolvedSellerSlug}
@@ -1338,6 +1497,20 @@ function SellerDashboardContent() {
                 >
                   <CreateProductPage />
                 </Suspense>
+              </div>
+            ) : activeSection === "home" ? (
+              <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
+                <div className="max-w-[460px]">
+                  <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
+                    Seller home
+                  </p>
+                  <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">
+                    Your seller overview will live here
+                  </h3>
+                  <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+                    We&apos;ll use this space for seller-specific summaries, tasks, and performance highlights.
+                  </p>
+                </div>
               </div>
             ) : (
               <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">

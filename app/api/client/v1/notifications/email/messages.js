@@ -102,6 +102,12 @@ export const emailMessages = {
       subjectTemplate: "Seller billing reminder — <%= vendorName %> — due <%= dueDate %>"
     },
 
+    "seller-delivery-settings-reminder": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-delivery-settings-reminder.ejs",
+      subjectTemplate: "Action needed: <%= hiddenCount %> product<%= hiddenCount === 1 ? '' : 's' %> hidden on Piessang"
+    },
+
     "seller-inbound-booking-internal": {
       wrapper: "corporate-wrapper.ejs",
       template: "seller-inbound-booking-internal.ejs",
@@ -124,6 +130,18 @@ export const emailMessages = {
       wrapper: "corporate-wrapper.ejs",
       template: "brand-request-internal.ejs",
       subjectTemplate: "Brand request — <%= brandTitle %> — <%= vendorName %>"
+    },
+
+    "product-report-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "product-report-internal.ejs",
+      subjectTemplate: "Product report — <%= productTitle %> — <%= reasonLabel %>"
+    },
+
+    "product-report-dispute-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "product-report-dispute-internal.ejs",
+      subjectTemplate: "Product report dispute — <%= productTitle %> — <%= vendorName %>"
     },
   
     "order-confirmation": {
@@ -148,6 +166,12 @@ export const emailMessages = {
       wrapper: "corporate-wrapper.ejs",
       template: "order-seller-fulfillment-update.ejs",
       subjectTemplate: "Order <%= orderNumber || 'your order' %> update — <%= statusLabel %>"
+    },
+
+    "cart-item-sale": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "cart-item-sale.ejs",
+      subjectTemplate: "Good news: an item in your cart is now on sale"
     },
 
     "payment-received": {

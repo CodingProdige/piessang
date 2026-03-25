@@ -24,12 +24,13 @@ What it does:
 1. Charges card via Peach (`/v1/payments`).
 2. Saves/updates card in `users.paymentMethods.cards`.
 3. Resolves order by `merchantTransactionId` in `orders_v2`.
-4. Applies order payment success via `applyOrderPaymentSuccess(...)`.
-5. Stores redirect mapping in `peach_redirects/{merchantTransactionId}`.
-6. Returns success payload including `paymentId` + `shopperResultUrl`.
+4. Stores redirect/payment mapping in `peach_redirects/{merchantTransactionId}`.
+5. Returns success payload including `paymentId` + `shopperResultUrl`.
 
 Important:
-- This endpoint already applies order success on the server.
+- This endpoint does not finalize the order directly.
+- Order finalization happens through the unified `orders/payment-success` path
+  after Peach payment confirmation.
 - It configures Peach `shopperResultUrl` to this API:
   - `/api/v1/payments/peach/shopper-redirect?merchantTransactionId=...`
 
@@ -41,11 +42,13 @@ Bridge endpoint used when Peach/bank challenge returns the shopper.
 What it does:
 1. Reads `merchantTransactionId` (query or POST body/form).
 2. Loads `peach_redirects/{merchantTransactionId}`.
-3. Builds final redirect URL by appending:
+3. Confirms payment status with Peach.
+4. If payment succeeded, calls `/api/client/v1/orders/payment-success`.
+5. Builds final redirect URL by appending:
    - `paymentId`
    - `merchantTransactionId`
    - `orderNumber` (if present)
-4. Redirects (`302`) to your original `shopperResultUrl`.
+6. Redirects (`302`) to your original `shopperResultUrl`.
 
 Why both methods:
 - Some browser/device return flows hit this URL as `GET`, others as `POST`.
@@ -83,33 +86,6 @@ Expected behavior:
 
 ---
 
-## 3DS Endpoints
-
-These are a dedicated 3DS flow. They can run separately from `charge-card`.
-
-### `POST /3ds/initiate`
-Starts a 3DS session with Peach and stores attempt in `payment_3ds_attempts`.
-
-Returns:
-- `threeDSecureId`
-- `redirect`
-- `startUrl`
-
-### `GET /3ds/status`
-Polls Peach 3DS status and updates `payment_3ds_attempts` state.
-
-### `POST /3ds/finalize`
-Final charge call after successful challenge/authentication.
-
-What it does:
-- Uses stored 3DS attempt + verification data.
-- Charges Peach.
-- Marks attempt finalized.
-- Applies order payment success.
-
-### `GET /3ds/attempt`
-Reads one saved 3DS attempt snapshot by id.
-
 ---
 
 ## Data collections touched
@@ -118,19 +94,18 @@ Reads one saved 3DS attempt snapshot by id.
 - `payments_v2` (via shared payment success logic, where applicable)
 - `users` (saved cards and payment attempts on card profiles)
 - `peach_redirects` (redirect mapping for return flow)
-- `payment_3ds_attempts` (3DS lifecycle state)
 
 ---
 
 ## Recommended client flow (charge-card path)
 
 1. App calls `POST /api/v1/payments/peach/charge-card`.
-2. Backend processes charge + order success.
+2. Backend processes the charge and stores redirect/payment context.
 3. Peach returns shopper to `/api/v1/payments/peach/shopper-redirect`.
-4. `shopper-redirect` forwards to your app result URL/deeplink with `paymentId`.
-5. App handles final UI/cart cleanup using returned params.
+4. `shopper-redirect` confirms payment with Peach and calls `/api/client/v1/orders/payment-success`.
+5. `shopper-redirect` forwards to your app result URL/deeplink with `paymentId`.
+6. App handles final UI/cart cleanup using returned params.
 
 If app UI and backend state disagree, call:
 - `GET /api/v1/payments/peach/payment-status`
 - then refresh order from `/api/v1/orders/get`.
-

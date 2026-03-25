@@ -6,7 +6,9 @@ import { decode, encode } from "blurhash";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/components/auth/auth-provider";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
 import { clientStorage } from "@/lib/firebase";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 
 type SellerBranding = {
   bannerImageUrl: string;
@@ -17,6 +19,57 @@ type SellerBranding = {
   logoBlurHashUrl: string;
   logoAltText: string;
   logoObjectPosition: string;
+};
+
+type PricingRule = {
+  id: string;
+  label: string;
+  minDistanceKm: string;
+  maxDistanceKm: string;
+  minOrderValue: string;
+  maxOrderValue: string;
+  fee: string;
+  freeAboveOrderValue: string;
+};
+
+type ShippingZone = {
+  id: string;
+  label: string;
+  scopeType: string;
+  country: string;
+  region: string;
+  city: string;
+  postalCodes: string;
+  leadTimeDays: string;
+  cutoffTime: string;
+  pricingRules: PricingRule[];
+  isFallback: boolean;
+};
+
+type SellerDeliveryProfile = {
+  origin: {
+    country: string;
+    region: string;
+    city: string;
+    suburb: string;
+    postalCode: string;
+    utcOffsetMinutes: string;
+    latitude: string;
+    longitude: string;
+  };
+  directDelivery: {
+    enabled: boolean;
+    radiusKm: string;
+    leadTimeDays: string;
+    cutoffTime: string;
+    pricingRules: PricingRule[];
+  };
+  shippingZones: ShippingZone[];
+  pickup: {
+    enabled: boolean;
+    leadTimeDays: string;
+  };
+  notes: string;
 };
 
 type SellerSettingsWorkspaceProps = {
@@ -36,6 +89,119 @@ const EMPTY_BRANDING: SellerBranding = {
   logoAltText: "",
   logoObjectPosition: "center center",
 };
+
+const EMPTY_DELIVERY_PROFILE: SellerDeliveryProfile = {
+  origin: {
+    country: "",
+    region: "",
+    city: "",
+    suburb: "",
+    postalCode: "",
+    utcOffsetMinutes: "",
+    latitude: "",
+    longitude: "",
+  },
+  directDelivery: {
+    enabled: false,
+    radiusKm: "",
+    leadTimeDays: "1",
+    cutoffTime: "",
+    pricingRules: [],
+  },
+  shippingZones: [],
+  pickup: {
+    enabled: false,
+    leadTimeDays: "0",
+  },
+  notes: "",
+};
+
+function makePricingRule(seed = Date.now()) {
+  return {
+    id: `pricing-${seed}`,
+    label: "",
+    minDistanceKm: "",
+    maxDistanceKm: "",
+    minOrderValue: "",
+    maxOrderValue: "",
+    fee: "",
+    freeAboveOrderValue: "",
+  };
+}
+
+function makeShippingZone(seed = Date.now()) {
+  return {
+    id: `zone-${seed}`,
+    label: "",
+    scopeType: "country",
+    country: "",
+    region: "",
+    city: "",
+    postalCodes: "",
+    leadTimeDays: "2",
+    cutoffTime: "",
+    pricingRules: [makePricingRule(seed + 1)],
+    isFallback: false,
+  };
+}
+
+function mapPricingRules(rules: any[] = []) {
+  return Array.isArray(rules)
+    ? rules.map((rule) => ({
+        id: toStr(rule.id),
+        label: toStr(rule.label),
+        minDistanceKm: toStr(rule.minDistanceKm),
+        maxDistanceKm: toStr(rule.maxDistanceKm),
+        minOrderValue: toStr(rule.minOrderValue),
+        maxOrderValue: toStr(rule.maxOrderValue),
+        fee: toStr(rule.fee),
+        freeAboveOrderValue: toStr(rule.freeAboveOrderValue),
+      }))
+    : [];
+}
+
+function mapDeliveryProfile(profile: any): SellerDeliveryProfile {
+  const normalized = normalizeSellerDeliveryProfile(profile && typeof profile === "object" ? profile : {});
+  return {
+    origin: {
+      country: toStr(normalized?.origin?.country),
+      region: toStr(normalized?.origin?.region),
+      city: toStr(normalized?.origin?.city),
+      suburb: toStr(normalized?.origin?.suburb),
+      postalCode: toStr(normalized?.origin?.postalCode),
+      utcOffsetMinutes: toStr(normalized?.origin?.utcOffsetMinutes),
+      latitude: toStr(normalized?.origin?.latitude),
+      longitude: toStr(normalized?.origin?.longitude),
+    },
+    directDelivery: {
+      enabled: normalized?.directDelivery?.enabled === true,
+      radiusKm: toStr(normalized?.directDelivery?.radiusKm),
+      leadTimeDays: toStr(normalized?.directDelivery?.leadTimeDays),
+      cutoffTime: toStr(normalized?.directDelivery?.cutoffTime),
+      pricingRules: mapPricingRules(normalized?.directDelivery?.pricingRules || []),
+    },
+    shippingZones: Array.isArray(normalized?.shippingZones)
+      ? normalized.shippingZones.map((zone) => ({
+          id: toStr(zone.id),
+          label: toStr(zone.label),
+          scopeType: toStr(zone.scopeType || "country"),
+          country: toStr(zone.country),
+          region: toStr(zone.region),
+          city: toStr(zone.city),
+          postalCodes: Array.isArray(zone.postalCodes) ? zone.postalCodes.join(", ") : "",
+          leadTimeDays: toStr(zone.leadTimeDays),
+          cutoffTime: toStr(zone.cutoffTime),
+          pricingRules: mapPricingRules(zone.pricingRules || []),
+          isFallback: zone.isFallback === true,
+        }))
+      : [],
+    pickup: {
+      enabled: normalized?.pickup?.enabled === true,
+      leadTimeDays: toStr(normalized?.pickup?.leadTimeDays),
+    },
+    notes: toStr(normalized?.notes).slice(0, 500),
+  };
+}
 
 const BANNER_RATIOS = ["3:1", "16:9", "2:1"];
 const LOGO_RATIOS = ["1:1", "4:3"];
@@ -112,6 +278,24 @@ function useSellerAccessLabel(role: string) {
   }, [role]);
 }
 
+function buildSettingsSnapshot(input: {
+  branding: SellerBranding;
+  deliveryProfile: SellerDeliveryProfile;
+  vendorNameValue: string;
+  vendorDescriptionValue: string;
+}) {
+  return JSON.stringify({
+    branding: input.branding,
+    deliveryProfile: input.deliveryProfile,
+    vendorNameValue: sanitizeVendorName(input.vendorNameValue),
+    vendorDescriptionValue: toStr(input.vendorDescriptionValue).slice(0, 500),
+  });
+}
+
+function formatSellerOriginSummary(origin: SellerDeliveryProfile["origin"]) {
+  return [origin.suburb, origin.city, origin.region, origin.country].filter(Boolean).join(", ");
+}
+
 export function SellerSettingsWorkspace({
   sellerSlug,
   vendorName,
@@ -123,9 +307,11 @@ export function SellerSettingsWorkspace({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [branding, setBranding] = useState<SellerBranding>(EMPTY_BRANDING);
+  const [deliveryProfile, setDeliveryProfile] = useState<SellerDeliveryProfile>(EMPTY_DELIVERY_PROFILE);
   const [vendorNameValue, setVendorNameValue] = useState(vendorName);
   const [vendorDescriptionValue, setVendorDescriptionValue] = useState("");
   const [sellerCodeValue, setSellerCodeValue] = useState("");
+  const [savedSnapshot, setSavedSnapshot] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -148,6 +334,7 @@ export function SellerSettingsWorkspace({
   const bannerStageRef = useRef<HTMLDivElement | null>(null);
   const copyTimeoutRef = useRef<number | null>(null);
   const snackbarTimeoutRef = useRef<number | null>(null);
+  const [originPickerOpen, setOriginPickerOpen] = useState(false);
 
   const canEditSettings = Boolean(isSystemAdmin || ["owner", "admin"].includes(String(sellerRole ?? "").trim().toLowerCase()));
   const canDeleteSeller = Boolean(isSystemAdmin || String(sellerRole ?? "").trim().toLowerCase() === "owner");
@@ -156,6 +343,17 @@ export function SellerSettingsWorkspace({
   const bannerPosition = useMemo(
     () => parsePlacement(branding.bannerObjectPosition || "50% 50%"),
     [branding.bannerObjectPosition],
+  );
+  const hasUnsavedChanges = useMemo(
+    () =>
+      savedSnapshot !== "" &&
+      buildSettingsSnapshot({
+        branding,
+        deliveryProfile,
+        vendorNameValue,
+        vendorDescriptionValue,
+      }) !== savedSnapshot,
+    [branding, deliveryProfile, savedSnapshot, vendorDescriptionValue, vendorNameValue],
   );
   
   function showSnackbar(message: string, tone: "success" | "error" = "success") {
@@ -239,6 +437,9 @@ export function SellerSettingsWorkspace({
 
         const sellerRecord = payload?.seller && typeof payload.seller === "object" ? payload.seller : null;
         const nextBranding = payload?.branding && typeof payload.branding === "object" ? payload.branding : {};
+        const nextDeliveryProfile = normalizeSellerDeliveryProfile(
+          payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {},
+        );
         if (!cancelled && sellerRecord) {
           const nextVendorName = sanitizeVendorName(
             sellerRecord.vendorName || sellerRecord.groupVendorName || vendorName,
@@ -258,6 +459,7 @@ export function SellerSettingsWorkspace({
           });
           setVendorNameValue(nextVendorName || vendorName);
           setVendorDescriptionValue(nextVendorDescription);
+          setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
           setSellerCodeValue(
             toStr(
               sellerRecord.sellerCode ||
@@ -265,6 +467,23 @@ export function SellerSettingsWorkspace({
                 sellerRecord.groupSellerCode ||
                 profile?.sellerCode,
             ),
+          );
+          setSavedSnapshot(
+            buildSettingsSnapshot({
+              branding: {
+                bannerImageUrl: toStr(nextBranding?.bannerImageUrl || nextBranding?.bannerUrl),
+                bannerBlurHashUrl: toStr(nextBranding?.bannerBlurHashUrl || nextBranding?.bannerBlurHash),
+                bannerAltText: toStr(nextBranding?.bannerAltText || nextBranding?.bannerAlt || `${nextVendorName || vendorName} banner`),
+                bannerObjectPosition: normalizePlacement(nextBranding?.bannerObjectPosition),
+                logoImageUrl: toStr(nextBranding?.logoImageUrl || nextBranding?.logoUrl),
+                logoBlurHashUrl: toStr(nextBranding?.logoBlurHashUrl || nextBranding?.logoBlurHash),
+                logoAltText: toStr(nextBranding?.logoAltText || nextBranding?.logoAlt || `${nextVendorName || vendorName} logo`),
+                logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
+              },
+              deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
+              vendorNameValue: nextVendorName || vendorName,
+              vendorDescriptionValue: nextVendorDescription,
+            }),
           );
         }
       } catch (cause) {
@@ -282,6 +501,16 @@ export function SellerSettingsWorkspace({
       cancelled = true;
     };
   }, [sellerSlug, vendorName]);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return undefined;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   useEffect(() => {
     return () => {
@@ -387,6 +616,7 @@ export function SellerSettingsWorkspace({
           sellerSlug,
           data: {
             branding,
+            deliveryProfile,
             vendorName: nextVendorName,
             vendorDescription: vendorDescriptionValue,
           },
@@ -409,9 +639,28 @@ export function SellerSettingsWorkspace({
         logoAltText: toStr(nextBranding?.logoAltText),
         logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
       });
+      const nextDeliveryProfile = normalizeSellerDeliveryProfile(payload?.deliveryProfile || {});
+      setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
       setVendorNameValue(sanitizeVendorName(nextSeller?.vendorName || nextVendorName));
       setVendorDescriptionValue(toStr(nextSeller?.vendorDescription || vendorDescriptionValue).slice(0, 500));
       setSellerCodeValue(toStr(nextSeller?.sellerCode || sellerCodeValue));
+      setSavedSnapshot(
+        buildSettingsSnapshot({
+          branding: {
+            bannerImageUrl: toStr(nextBranding?.bannerImageUrl),
+            bannerBlurHashUrl: toStr(nextBranding?.bannerBlurHashUrl),
+            bannerAltText: toStr(nextBranding?.bannerAltText),
+            bannerObjectPosition: normalizePlacement(nextBranding?.bannerObjectPosition),
+            logoImageUrl: toStr(nextBranding?.logoImageUrl),
+            logoBlurHashUrl: toStr(nextBranding?.logoBlurHashUrl),
+            logoAltText: toStr(nextBranding?.logoAltText),
+            logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
+          },
+          deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
+          vendorNameValue: sanitizeVendorName(nextSeller?.vendorName || nextVendorName),
+          vendorDescriptionValue: toStr(nextSeller?.vendorDescription || vendorDescriptionValue).slice(0, 500),
+        }),
+      );
       setMessage("Seller settings saved.");
       await refreshProfile();
     } catch (cause) {
@@ -751,6 +1000,231 @@ export function SellerSettingsWorkspace({
         </div>
       </div>
 
+      <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Shipping preferences</p>
+            <h4 className="mt-1 text-[18px] font-semibold text-[#202020]">How you ship orders</h4>
+            <p className="mt-1 text-[12px] text-[#57636c]">
+              Add direct delivery rules and shipping zones so shoppers only see options and fees that match their location.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-4">
+          <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[13px] font-semibold text-[#202020]">Your shipping origin</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">This is the location your direct delivery radius and shipping zones are measured from.</p>
+              </div>
+            </div>
+            <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-white px-4 py-4 text-[12px] text-[#57636c]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-semibold text-[#202020]">Chosen origin</p>
+                  <p className="mt-1 text-[13px] text-[#202020]">
+                    {formatSellerOriginSummary(deliveryProfile.origin) || "No shipping origin selected yet."}
+                  </p>
+                  {deliveryProfile.origin.postalCode ? (
+                    <p className="mt-1">Postal code: {deliveryProfile.origin.postalCode}</p>
+                  ) : null}
+                  {deliveryProfile.origin.utcOffsetMinutes ? (
+                    <p className="mt-1">Location UTC offset: {deliveryProfile.origin.utcOffsetMinutes} minutes</p>
+                  ) : null}
+                  {deliveryProfile.origin.latitude && deliveryProfile.origin.longitude ? (
+                    <p className="mt-1">
+                      Pinned map location: {deliveryProfile.origin.latitude}, {deliveryProfile.origin.longitude}
+                    </p>
+                  ) : (
+                    <p className="mt-1">Pick your business location once so your direct delivery and shipping rules can measure from it.</p>
+                  )}
+                </div>
+                <button type="button" onClick={() => setOriginPickerOpen(true)} disabled={!canEditSettings} className="inline-flex h-9 shrink-0 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
+                  {formatSellerOriginSummary(deliveryProfile.origin) ? "Edit location" : "Choose location"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[13px] font-semibold text-[#202020]">Direct delivery</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">Use this when you deliver orders yourself around your shipping origin. Add pricing bands based on order value and optional distance ranges.</p>
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              <label className="inline-flex items-center gap-2 text-[12px] text-[#57636c]">
+                <input type="checkbox" checked={deliveryProfile.directDelivery.enabled} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, enabled: event.target.checked, pricingRules: event.target.checked && current.directDelivery.pricingRules.length === 0 ? [makePricingRule(Date.now())] : current.directDelivery.pricingRules } }))} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
+                Enable direct delivery from your shipping origin
+              </label>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Delivery radius (km)</span>
+                  <input value={deliveryProfile.directDelivery.radiusKm} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, radiusKm: event.target.value.replace(/[^\d]/g, "").slice(0, 4) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="15" />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span>
+                  <input value={deliveryProfile.directDelivery.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="1" />
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Order cutoff time</span>
+                  <input type="time" value={deliveryProfile.directDelivery.cutoffTime} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, cutoffTime: event.target.value } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" />
+                  <p className="mt-1 text-[11px] text-[#7d7d7d]">Leave this blank to use the default cutoff of 10:00.</p>
+                </label>
+              </div>
+              <div className="flex justify-end">
+                <button type="button" disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} onClick={() => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: [...current.directDelivery.pricingRules, makePricingRule(Date.now())] } }))} className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
+                  Add direct pricing rule
+                </button>
+              </div>
+              <p className="text-[12px] text-[#57636c]">
+                Leave a minimum empty to start from 0. Leave a maximum empty to allow any value above that range.
+              </p>
+              <div className="space-y-3">
+                {deliveryProfile.directDelivery.pricingRules.length ? deliveryProfile.directDelivery.pricingRules.map((rule, index) => (
+                  <div key={rule.id || index} className="rounded-[8px] border border-black/10 bg-white p-4">
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Rule label</span><input value={rule.label} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, label: event.target.value.slice(0, 120) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Nearby orders" /></label>
+                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Min distance (km)</span><input value={rule.minDistanceKm} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, minDistanceKm: event.target.value.replace(/[^\d]/g, "").slice(0, 4) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" /></label>
+                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Max distance (km)</span><input value={rule.maxDistanceKm} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, maxDistanceKm: event.target.value.replace(/[^\d]/g, "").slice(0, 4) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="5" /></label>
+                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Fee (R)</span><input value={rule.fee} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, fee: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="60" /></label>
+                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Min order value</span><input value={rule.minOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, minOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" /></label>
+                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Max order value</span><input value={rule.maxOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, maxOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="500" /></label>
+                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Free above order value</span><input value={rule.freeAboveOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, freeAboveOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="750" /></label>
+                    </div>
+                    <div className="mt-3 flex justify-end">
+                      <button type="button" disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} onClick={() => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.filter((_, entryIndex) => entryIndex !== index) } }))} className="text-[12px] font-semibold text-[#b91c1c] disabled:opacity-60">Remove rule</button>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-4 py-5 text-[12px] text-[#57636c]">No direct delivery pricing rules yet.</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[13px] font-semibold text-[#202020]">Shipping zones</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">Add country, region, city, or postal-code based shipping zones for national and international delivery.</p>
+              </div>
+              <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: [...current.shippingZones, makeShippingZone(Date.now())] }))} className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
+                Add shipping zone
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              {deliveryProfile.shippingZones.length ? deliveryProfile.shippingZones.map((zone, index) => (
+                <div key={zone.id || index} className="rounded-[8px] border border-black/10 bg-white p-4">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Zone label</span><input value={zone.label} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, label: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Western Cape courier" /></label>
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Scope</span><select value={zone.scopeType} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, scopeType: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"><option value="country">Country</option><option value="region">Region / state</option><option value="city">City</option><option value="postal">Postal code</option></select></label>
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span><input value={zone.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="2" /></label>
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Order cutoff time</span><input type="time" value={zone.cutoffTime} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, cutoffTime: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" /><p className="mt-1 text-[11px] text-[#7d7d7d]">Leave this blank to use the default cutoff of 10:00.</p></label>
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Country</span><input value={zone.country} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, country: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="South Africa" /></label>
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Region / state</span><input value={zone.region} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, region: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Western Cape" /></label>
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">City</span><input value={zone.city} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, city: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Paarl" /></label>
+                    <label className="block md:col-span-3"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Postal codes</span><input value={zone.postalCodes} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, postalCodes: event.target.value.slice(0, 160) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="7646, 7647" /></label>
+                  </div>
+                  <div className="mt-4 flex justify-end">
+                    <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, pricingRules: [...entry.pricingRules, makePricingRule(Date.now())] } : entry) }))} className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
+                      Add pricing rule
+                    </button>
+                  </div>
+                  <p className="text-[12px] text-[#57636c]">
+                    Leave a minimum empty to start from 0. Leave a maximum empty to allow any value above that range.
+                  </p>
+                  <div className="mt-3 space-y-3">
+                    {zone.pricingRules.map((rule, ruleIndex) => (
+                      <div key={rule.id || ruleIndex} className="rounded-[8px] border border-black/10 bg-[#fafafa] p-3">
+                        <div className="grid gap-3 md:grid-cols-4">
+                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Rule label</span><input value={rule.label} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, label: event.target.value.slice(0, 120) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Standard shipping" /></label>
+                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Min order value</span><input value={rule.minOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, minOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" /></label>
+                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Max order value</span><input value={rule.maxOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, maxOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="9999" /></label>
+                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Fee (R)</span><input value={rule.fee} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, fee: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="120" /></label>
+                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Free above order value</span><input value={rule.freeAboveOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, freeAboveOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="1500" /></label>
+                        </div>
+                        <div className="mt-3 flex justify-end">
+                          <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.filter((_, pricingIndex) => pricingIndex !== ruleIndex) } : zoneEntry) }))} className="text-[12px] font-semibold text-[#b91c1c] disabled:opacity-60">Remove pricing rule</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <label className="inline-flex items-center gap-2 text-[12px] text-[#57636c]">
+                      <input type="checkbox" checked={zone.isFallback} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, isFallback: event.target.checked } : entry) }))} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
+                      Use as fallback when no exact zone matches
+                    </label>
+                    <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.filter((_, entryIndex) => entryIndex !== index) }))} className="text-[12px] font-semibold text-[#b91c1c] disabled:opacity-60">Remove zone</button>
+                  </div>
+                </div>
+              )) : (
+                <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-4 py-5 text-[12px] text-[#57636c]">No shipping zones yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="inline-flex items-center gap-2 text-[12px] text-[#57636c]">
+                <input type="checkbox" checked={deliveryProfile.pickup.enabled} onChange={(event) => setDeliveryProfile((current) => ({ ...current, pickup: { ...current.pickup, enabled: event.target.checked } }))} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
+                Allow customer pickup
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Pickup ready time (days)</span>
+                <input value={deliveryProfile.pickup.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, pickup: { ...current.pickup, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } }))} disabled={!canEditSettings || !deliveryProfile.pickup.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <label className="mt-4 block">
+          <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Delivery notes</span>
+          <textarea
+            value={deliveryProfile.notes}
+            onChange={(event) => setDeliveryProfile((current) => ({ ...current, notes: event.target.value.slice(0, 500) }))}
+            placeholder="Anything Piessang should know about your delivery and shipping setup..."
+            disabled={!canEditSettings}
+            rows={3}
+            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none transition-colors focus:border-[#cbb26b] disabled:bg-[#f7f7f7]"
+          />
+        </label>
+      </div>
+      <GooglePlacePickerModal
+        open={originPickerOpen}
+        title="Choose your shipping origin"
+        initialValue={{
+          country: deliveryProfile.origin.country,
+          region: deliveryProfile.origin.region,
+          city: deliveryProfile.origin.city,
+          suburb: deliveryProfile.origin.suburb,
+          postalCode: deliveryProfile.origin.postalCode,
+          utcOffsetMinutes: Number.isFinite(Number(deliveryProfile.origin.utcOffsetMinutes)) ? Number(deliveryProfile.origin.utcOffsetMinutes) : null,
+          latitude: Number.isFinite(Number(deliveryProfile.origin.latitude)) ? Number(deliveryProfile.origin.latitude) : null,
+          longitude: Number.isFinite(Number(deliveryProfile.origin.longitude)) ? Number(deliveryProfile.origin.longitude) : null,
+        }}
+        onClose={() => setOriginPickerOpen(false)}
+        onSelect={(value) => {
+          setDeliveryProfile((current) => ({
+            ...current,
+            origin: {
+              ...current.origin,
+              country: toStr(value.country),
+              region: toStr(value.region),
+              city: toStr(value.city),
+              suburb: toStr(value.suburb),
+              postalCode: toStr(value.postalCode),
+              utcOffsetMinutes: toStr(value.utcOffsetMinutes),
+              latitude: toStr(value.latitude),
+              longitude: toStr(value.longitude),
+            },
+          }));
+          setOriginPickerOpen(false);
+        }}
+      />
+
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
@@ -769,6 +1243,12 @@ export function SellerSettingsWorkspace({
           Close seller account
         </button>
       </div>
+
+      {hasUnsavedChanges ? (
+        <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.08)] px-4 py-3 text-[13px] text-[#166534]">
+          You have unsaved changes in your seller settings. Save your updates so your new delivery rules and zones can take effect.
+        </div>
+      ) : null}
 
       {message ? (
         <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] px-4 py-3 text-[13px] text-[#166534]">

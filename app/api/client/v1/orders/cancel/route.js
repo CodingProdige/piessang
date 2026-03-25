@@ -78,7 +78,7 @@ export async function POST(req) {
     }
 
     const order = snap.data();
-    const currentStatus = order?.order?.status?.order || null;
+    const currentStatus = order?.lifecycle?.orderStatus || order?.order?.status?.order || null;
 
     if (currentStatus === "cancelled") {
       return ok({
@@ -92,6 +92,11 @@ export async function POST(req) {
 
     const updatePayload = {
       "order.status.order": "cancelled",
+      "lifecycle.orderStatus": "cancelled",
+      "lifecycle.updatedAt": now(),
+      "lifecycle.cancelledAt": now(),
+      "lifecycle.editable": false,
+      "lifecycle.editableReason": cancelMessage,
       "order.editable": false,
       "order.editable_reason": cancelMessage,
       "order.cancel_message": cancelMessage,

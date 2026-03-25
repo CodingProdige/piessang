@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { getServerAuthBootstrap } from "@/lib/auth/server";
 import { collectSellerNotificationEmails, sendSellerNotificationEmails } from "@/lib/seller/notifications";
 import { findBrandRecord, findOrCreatePendingBrandRequest } from "@/lib/catalogue/brand-upsert";
 import { ensureSkuUnique, ensureUniqueProductCode } from "@/lib/catalogue/sku-uniqueness";
@@ -8,6 +9,8 @@ import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
+import { ensureCatalogueTaxonomySeed } from "@/lib/marketplace/fees-store";
+import { refreshCartsForSaleChange } from "@/lib/cart/sale-refresh";
 
 const ok  = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) =>
@@ -26,16 +29,81 @@ const toBool= (v, f = false) =>
   f;
 const toInt = (v, f = 0) => Number.isFinite(+v) ? Math.trunc(+v) : f;
 
-async function findSingleBySlug(db, colName, fieldPath, slug) {
-  const s = toStr(slug);
-  if (!s) return { found: false, item: null, reason: "missing_slug" };
+function normalizeKey(value) {
+  return toStr(value).toLowerCase();
+}
 
-  const rs = await db.collection(colName).where(fieldPath, "==", s).get();
+function buildAllowedSellerKeys(profile) {
+  const keys = new Set();
+  const add = (value) => {
+    const normalized = normalizeKey(value);
+    if (normalized) keys.add(normalized);
+  };
 
-  if (rs.empty) return { found: false, item: null, reason: "not_found" };
-  if (rs.size > 1) return { found: false, item: null, reason: "not_unique" };
+  add(profile?.sellerSlug);
+  add(profile?.sellerCode);
+  add(profile?.sellerActiveSellerSlug);
 
-  return { found: true, item: rs.docs[0].data() || {}, reason: null };
+  const managedAccounts = Array.isArray(profile?.sellerManagedAccounts) ? profile.sellerManagedAccounts : [];
+  for (const item of managedAccounts) {
+    add(item?.sellerSlug);
+    add(item?.sellerCode);
+  }
+
+  return keys;
+}
+
+function canManageProduct(profile, { sellerSlug, sellerCode }) {
+  const systemAccessType = normalizeKey(profile?.systemAccessType);
+  if (systemAccessType === "admin") return true;
+
+  if (!profile?.uid || profile?.isSeller !== true) return false;
+
+  const allowedKeys = buildAllowedSellerKeys(profile);
+  return allowedKeys.has(normalizeKey(sellerSlug)) || allowedKeys.has(normalizeKey(sellerCode));
+}
+
+function normalizeSlugCandidate(value) {
+  return toStr(value).toLowerCase();
+}
+
+function collectSlugCandidates(item, colName) {
+  const candidates = new Set();
+  const add = (value) => {
+    const normalized = normalizeSlugCandidate(value);
+    if (normalized) candidates.add(normalized);
+  };
+
+  add(item?.docId);
+
+  if (colName === "categories") {
+    add(item?.category?.slug);
+    add(item?.category?.title);
+  }
+
+  if (colName === "sub_categories") {
+    add(item?.subCategory?.slug);
+    add(item?.subCategory?.title);
+  }
+
+  return candidates;
+}
+
+async function findSingleBySlug(db, colName, slug) {
+  const wanted = normalizeSlugCandidate(slug);
+  if (!wanted) return { found: false, item: null, reason: "missing_slug" };
+
+  const rs = await db.collection(colName).get();
+  const matches = rs.docs.filter((docSnap) => {
+    const data = docSnap.data() || {};
+    const candidates = collectSlugCandidates({ ...data, docId: data?.docId || docSnap.id }, colName);
+    return candidates.has(wanted);
+  });
+
+  if (matches.length === 0) return { found: false, item: null, reason: "not_found" };
+  if (matches.length > 1) return { found: false, item: null, reason: "not_unique" };
+
+  return { found: true, item: matches[0].data() || {}, reason: null };
 }
 
 async function ensureParentsActive(db, nextProduct) {
@@ -43,8 +111,8 @@ async function ensureParentsActive(db, nextProduct) {
   const subCategorySlug = toStr(nextProduct?.grouping?.subCategory);
 
   const parentChecks = await Promise.all([
-    findSingleBySlug(db, "categories", "category.slug", categorySlug),
-    findSingleBySlug(db, "sub_categories", "subCategory.slug", subCategorySlug),
+    findSingleBySlug(db, "categories", categorySlug),
+    findSingleBySlug(db, "sub_categories", subCategorySlug),
   ]);
 
   const parents = [
@@ -217,6 +285,35 @@ function buildStatusNextStep(status, fulfillmentMode, reason) {
   return "Your product status has been updated.";
 }
 
+function buildProductStatusNextStep(status, fulfillmentMode, reason, { isLiveUpdate = false } = {}) {
+  const normalized = toStr(status).toLowerCase();
+  if (normalized === "awaiting_stock") {
+    return isLiveUpdate
+      ? "Your latest product changes have been approved. Please send any required stock updates to Bevgo so the approved update can go live."
+      : buildStatusNextStep(status, fulfillmentMode, reason);
+  }
+  if (normalized === "published") {
+    return isLiveUpdate
+      ? "Your product changes have been approved and the updated live version is now visible on Piessang."
+      : "Your product is now live and visible on the Piessang store.";
+  }
+  if (normalized === "rejected") {
+    return isLiveUpdate
+      ? "Your product update was rejected. The current live version stays visible while you review the feedback, make changes, and submit the update again."
+      : buildStatusNextStep(status, fulfillmentMode, reason);
+  }
+  if (normalized === "in_review") {
+    return isLiveUpdate
+      ? "Your product changes are with the Piessang review team. The current live version stays visible while the update is reviewed."
+      : "Your listing is now with the Piessang review team.";
+  }
+  return buildStatusNextStep(status, fulfillmentMode, reason);
+}
+
+function hasLiveSnapshotRecord(product) {
+  return Boolean(product?.live_snapshot && typeof product.live_snapshot === "object");
+}
+
 /* ------------------ sanitize patch ------------------ */
 function sanitizePatch(patch){
   const out = {};
@@ -275,8 +372,6 @@ function sanitizePatch(patch){
     out.fulfillment = {};
     if ("mode" in f) out.fulfillment.mode = toStr(f.mode, null) || null;
     if ("commission_rate" in f) out.fulfillment.commission_rate = Number.isFinite(+f.commission_rate) ? Number(f.commission_rate) : null;
-    if ("lead_time_days" in f) out.fulfillment.lead_time_days = Number.isFinite(+f.lead_time_days) ? Math.trunc(+f.lead_time_days) : null;
-    if ("cutoff_time" in f) out.fulfillment.cutoff_time = toStr(f.cutoff_time, null) || null;
     if ("change_request" in f) {
       const request = f.change_request || {};
       out.fulfillment.change_request = {
@@ -314,6 +409,14 @@ export async function POST(req){
       return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     }
 
+    await ensureCatalogueTaxonomySeed();
+
+    const auth = await getServerAuthBootstrap();
+    const profile = auth?.profile || null;
+    if (!profile?.uid) {
+      return err(401, "Unauthorized", "Sign in again to update this product.");
+    }
+
     const { unique_id, data } = await req.json();
 
     const pid = toStr(unique_id);
@@ -346,6 +449,9 @@ export async function POST(req){
       current?.product?.sellerCode ||
       "",
     );
+    if (!canManageProduct(profile, { sellerSlug: currentSellerSlug, sellerCode: currentSellerCode })) {
+      return err(403, "Forbidden", "You do not have permission to update this product.");
+    }
     let sellerOwner = null;
     const currentSellerIdentifier = currentSellerCode || currentSellerSlug;
     if (currentSellerIdentifier) {
@@ -365,9 +471,7 @@ export async function POST(req){
       fulfillmentPatchKeys.includes("change_request");
     if (
       current?.fulfillment?.locked === true &&
-      ((requestedFulfillmentMode && requestedFulfillmentMode !== currentFulfillmentMode) ||
-        Object.prototype.hasOwnProperty.call(patch?.fulfillment || {}, "lead_time_days") ||
-        Object.prototype.hasOwnProperty.call(patch?.fulfillment || {}, "cutoff_time")) &&
+      (requestedFulfillmentMode && requestedFulfillmentMode !== currentFulfillmentMode) &&
       !changeRequestOnly
     ) {
       return err(
@@ -387,19 +491,13 @@ export async function POST(req){
       next.fulfillment.lead_time_days = null;
       next.fulfillment.cutoff_time = null;
     } else {
-      const currentLeadTime = Number.isFinite(+current?.fulfillment?.lead_time_days)
-        ? Math.trunc(+current.fulfillment.lead_time_days)
-        : null;
-      const nextLeadTime = Number.isFinite(+next?.fulfillment?.lead_time_days)
-        ? Math.trunc(+next.fulfillment.lead_time_days)
-        : currentLeadTime ?? 3;
-      next.fulfillment.lead_time_days = nextLeadTime;
-      const currentCutoffTime = toStr(current?.fulfillment?.cutoff_time, "10:00") || "10:00";
-      const nextCutoffTime = toStr(next?.fulfillment?.cutoff_time, "");
-      next.fulfillment.cutoff_time = nextCutoffTime || currentCutoffTime;
+      next.fulfillment.lead_time_days = null;
+      next.fulfillment.cutoff_time = null;
     }
     next.fulfillment.locked = true;
     const currentModerationStatus = toStr(current?.moderation?.status, "draft");
+    const preserveLiveVersionDuringReview =
+      currentModerationStatus === "published" || hasLiveSnapshotRecord(current);
     const nextModerationStatus = toStr(next?.moderation?.status, currentModerationStatus) || currentModerationStatus;
     const meaningfulContentChange = Boolean(
       ("grouping" in patch) ||
@@ -410,17 +508,26 @@ export async function POST(req){
       ("fulfillment" in patch && !changeRequestOnly)
     );
     next.moderation = next.moderation || {};
-    next.moderation.status = meaningfulContentChange ? "draft" : nextModerationStatus;
+    next.moderation.status = meaningfulContentChange
+      ? preserveLiveVersionDuringReview
+        ? "in_review"
+        : "draft"
+      : nextModerationStatus;
     if (meaningfulContentChange) {
       next.moderation.reason = "product_changed";
-      next.moderation.notes = "Product updates require the listing to be reviewed again before it goes live.";
+      next.moderation.notes = preserveLiveVersionDuringReview
+        ? "Product updates are in review. The current live version stays visible until the changes are approved."
+        : "Product updates require the listing to be reviewed again before it goes live.";
       next.moderation.reviewedAt = null;
       next.moderation.reviewedBy = null;
     }
     if (next.moderation.status === "published") {
       next.placement = next.placement || {};
       next.placement.isActive = true;
-    } else if (["draft", "in_review", "awaiting_stock", "rejected"].includes(next.moderation.status)) {
+    } else if (
+      ["draft", "in_review", "awaiting_stock", "rejected"].includes(next.moderation.status) &&
+      !preserveLiveVersionDuringReview
+    ) {
       next.placement = next.placement || {};
       next.placement.isActive = false;
     }
@@ -442,6 +549,8 @@ export async function POST(req){
     const titleChanged =
       ("product" in patch &&
        "title" in (patch.product || {}));
+    let brandRecord = null;
+    let pendingBrandResult = null;
 
     if (groupingChanged || titleChanged){
 
@@ -477,11 +586,11 @@ export async function POST(req){
         );
       }
 
-      const brandRecord = await findBrandRecord({
+      brandRecord = await findBrandRecord({
         title: nextBrandTitle || nextBrandSlug,
         slug: nextBrandSlug,
       });
-      const pendingBrandResult = brandRecord
+      pendingBrandResult = brandRecord
         ? null
         : await findOrCreatePendingBrandRequest({
             title: nextBrandTitle || nextBrandSlug,
@@ -561,10 +670,57 @@ export async function POST(req){
         updatedAt: FieldValue.serverTimestamp(),
       },
     };
+    if (meaningfulContentChange && preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(current)) {
+      updatePayload.live_snapshot = current;
+    }
     await ref.update(updatePayload);
 
     const updatedSnap = await ref.get();
     const updated = normalizeTimestamps(updatedSnap.data());
+    const wasLiveUpdate = hasLiveSnapshotRecord(current);
+
+    const becamePublished =
+      toStr(current?.moderation?.status).toLowerCase() !== "published" &&
+      toStr(updated?.moderation?.status).toLowerCase() === "published" &&
+      updated?.placement?.isActive === true;
+
+    if (becamePublished) {
+      const pendingSaleRefreshes = Array.isArray(current?.meta?.pendingSaleRefreshes)
+        ? current.meta.pendingSaleRefreshes
+        : [];
+      for (const entry of pendingSaleRefreshes) {
+        const variantId = toStr(entry?.variantId);
+        if (!variantId) continue;
+        const variantAfter =
+          Array.isArray(updated?.variants)
+            ? updated.variants.find((variant) => toStr(variant?.variant_id) === variantId) || entry?.variantAfter
+            : entry?.variantAfter;
+        if (!variantAfter) continue;
+        await refreshCartsForSaleChange({
+          origin: new URL(req.url).origin,
+          productId: pid,
+          productSnapshot: updated,
+          variantBefore: entry?.variantBefore,
+          variantAfter,
+        });
+      }
+      if (pendingSaleRefreshes.length) {
+        await ref.set(
+          {
+            meta: {
+              ...(updated?.meta || {}),
+              pendingSaleRefreshes: [],
+            },
+            live_snapshot: FieldValue.delete(),
+          },
+          { merge: true },
+        );
+      } else if (updated?.live_snapshot) {
+        await ref.update({
+          live_snapshot: FieldValue.delete(),
+        });
+      }
+    }
 
     if (currentModerationStatus !== next.moderation.status) {
       const sellerSlug = toStr(
@@ -597,9 +753,24 @@ export async function POST(req){
               vendorName,
               productTitle,
               statusLabel: formatModerationStatusLabel(next.moderation.status),
+              statusHeading:
+                next.moderation.status === "published" && wasLiveUpdate
+                  ? "Product update approved"
+                  : next.moderation.status === "published"
+                    ? "Product approved"
+                    : next.moderation.status === "rejected" && wasLiveUpdate
+                      ? "Product update rejected"
+                      : next.moderation.status === "rejected"
+                        ? "Product rejected"
+                        : next.moderation.status === "in_review" && wasLiveUpdate
+                          ? "Product update submitted"
+                          : "Product status update",
+              isLiveUpdate: wasLiveUpdate,
               fulfillmentLabel: fulfillmentModeForEmail === "bevgo" ? "Bevgo fulfils" : "Seller fulfils",
               reason: next.moderation.status === "rejected" ? reason : "",
-              nextStep: buildStatusNextStep(next.moderation.status, fulfillmentModeForEmail, reason),
+              nextStep: buildProductStatusNextStep(next.moderation.status, fulfillmentModeForEmail, reason, {
+                isLiveUpdate: wasLiveUpdate,
+              }),
             },
           });
         }
@@ -610,6 +781,7 @@ export async function POST(req){
       unique_id: pid,
       message: "Product updated.",
       resubmissionRequired: meaningfulContentChange,
+      liveVersionKept: meaningfulContentChange && preserveLiveVersionDuringReview,
       brandCreated: Boolean(brandRecord?.created),
       brand: brandRecord
         ? {

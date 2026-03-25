@@ -1,11 +1,11 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/firebase";
-import { clientDb } from "@/lib/clientFirebase";
-import { collection, doc, getDoc, getDocs, query, setDoc, where } from "firebase/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } from "@/lib/marketplace/fees";
+import { normalizeSellerDeliveryProfile, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
+import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
 /* ------------------ HELPERS ------------------- */
 
@@ -18,6 +18,7 @@ const DELIVERY_FEE_URL = "https://bevgo-client.vercel.app/api/v1/delivery/fee";
 const r2 = v => Number((+v).toFixed(2));
 const REBATE_TIER_MAX_CAP = 5;
 const CREDIT_NOTE_OPEN_STATUSES = new Set(["open", "partially_used"]);
+const sellerOwnerCache = new Map();
 
 function getVariantInventoryTotal(variant){
   const rows = Array.isArray(variant?.inventory) ? variant.inventory : [];
@@ -25,6 +26,17 @@ function getVariantInventoryTotal(variant){
     const qty = Number(row?.in_stock_qty ?? row?.unit_stock_qty ?? row?.quantity ?? row?.qty ?? 0);
     return Number.isFinite(qty) && qty > 0 ? sum + qty : sum;
   }, 0);
+}
+
+function getVariantAvailableQuantity(variant){
+  const saleActive = Boolean(variant?.sale?.is_on_sale && !variant?.sale?.disabled_by_admin);
+  const saleQty = saleActive ? Math.max(0, Number(variant?.sale?.qty_available || 0)) : 0;
+  const inventoryQty = getVariantInventoryTotal(variant);
+  return Math.max(0, saleQty + inventoryQty);
+}
+
+function isCheckoutCart(cart) {
+  return String(cart?.cart?.status || "").trim().toLowerCase() === "checkout";
 }
 
 function refreshVariantMarketplaceFees(product, variant, feeConfig){
@@ -64,36 +76,199 @@ function refreshVariantMarketplaceFees(product, variant, feeConfig){
   };
 }
 
+function firstSellerIdentity(data) {
+  return String(
+    data?.seller?.sellerCode ||
+      data?.seller?.activeSellerCode ||
+      data?.seller?.groupSellerCode ||
+      data?.seller?.sellerSlug ||
+      data?.product?.sellerCode ||
+      data?.product?.sellerSlug ||
+      data?.product?.vendorSlug ||
+      "",
+  ).trim();
+}
+
+function applySellerDisplayData(data, sellerOwner) {
+  if (!sellerOwner?.data) return data;
+  const seller = sellerOwner.data?.seller && typeof sellerOwner.data.seller === "object" ? sellerOwner.data.seller : {};
+  const sellerCode = String(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode || "").trim();
+  const vendorName = String(seller?.vendorName || seller?.groupVendorName || "").trim();
+  const vendorDescription = String(seller?.vendorDescription || seller?.description || "").trim();
+  const deliveryProfile = normalizeSellerDeliveryProfile(
+    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
+  );
+
+  return {
+    ...data,
+    seller: {
+      ...(data?.seller && typeof data.seller === "object" ? data.seller : {}),
+      sellerCode: sellerCode || null,
+      vendorName: vendorName || null,
+      vendorDescription: vendorDescription || null,
+      baseLocation: String(seller?.baseLocation || data?.seller?.baseLocation || "").trim() || null,
+      sellerSlug: String(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug || "").trim() || null,
+      activeSellerSlug: String(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug || "").trim() || null,
+      groupSellerSlug: String(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug || "").trim() || null,
+      deliveryProfile,
+    },
+    product: {
+      ...(data?.product && typeof data.product === "object" ? data.product : {}),
+      vendorName: vendorName || data?.product?.vendorName || null,
+      vendorDescription: vendorDescription || data?.product?.vendorDescription || null,
+      sellerCode: sellerCode || data?.product?.sellerCode || null,
+      sellerSlug: String(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.product?.sellerSlug || "").trim() || null,
+    },
+  };
+}
+
+async function enrichCartProductSnapshot(data) {
+  const sellerIdentity = firstSellerIdentity(data);
+  if (!sellerIdentity) return data;
+  const cacheKey = sellerIdentity.toLowerCase();
+  if (!sellerOwnerCache.has(cacheKey)) {
+    const sellerOwner = sellerIdentity.toUpperCase().startsWith("SC-")
+      ? await findSellerOwnerByCode(sellerIdentity)
+      : await findSellerOwnerBySlug(sellerIdentity);
+    sellerOwnerCache.set(cacheKey, sellerOwner || null);
+  }
+  return applySellerDisplayData(data, sellerOwnerCache.get(cacheKey));
+}
+
 function computeLineTotals(v, qty){
   qty = Number(qty);
 
-  let price;
-  if (v?.sale?.is_on_sale){
-    price = r2(v.sale.sale_price_excl || 0);
-  }
-  else {
-    price = r2(v.pricing?.selling_price_excl || 0);
+  let unitPriceIncl = 0;
+  if (v?.sale?.is_on_sale && Number.isFinite(Number(v?.sale?.sale_price_incl))){
+    unitPriceIncl = r2(v.sale.sale_price_incl);
+  } else if (Number.isFinite(Number(v?.pricing?.sale_price_incl))) {
+    unitPriceIncl = r2(v.pricing.sale_price_incl);
+  } else if (Number.isFinite(Number(v?.pricing?.selling_price_incl))) {
+    unitPriceIncl = r2(v.pricing.selling_price_incl);
+  } else if (v?.sale?.is_on_sale && Number.isFinite(Number(v?.sale?.sale_price_excl))) {
+    unitPriceIncl = r2(Number(v.sale.sale_price_excl) * (1 + VAT));
+  } else if (Number.isFinite(Number(v?.pricing?.sale_price_excl))) {
+    unitPriceIncl = r2(Number(v.pricing.sale_price_excl) * (1 + VAT));
+  } else {
+    unitPriceIncl = r2(Number(v?.pricing?.selling_price_excl || 0) * (1 + VAT));
   }
 
-  const base = r2(price * qty);
-  const baseVat = r2(base * VAT);
+  const baseIncl = r2(unitPriceIncl * qty);
+  const base = r2(baseIncl / (1 + VAT));
+  const baseVat = r2(baseIncl - base);
 
   return {
-    unit_price_excl: price,
+    unit_price_excl: r2(unitPriceIncl / (1 + VAT)),
+    unit_price_incl: unitPriceIncl,
     line_subtotal_excl: base,
+    line_subtotal_incl: baseIncl,
     returnable_excl: 0,
     total_vat: baseVat,
     final_excl: base,
-    final_incl: r2(base + baseVat),
+    final_incl: baseIncl,
     sale_savings_excl: 0
   };
 }
 
-function computeCartTotals(items, deliveryFee = 0){
+function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelections = []){
+  const groups = new Map();
+  const pickupSet = new Set(
+    (Array.isArray(pickupSelections) ? pickupSelections : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+  const shopperArea = deliveryAddress
+    ? {
+        city: deliveryAddress?.city || deliveryAddress?.suburb || "",
+        suburb: deliveryAddress?.suburb || "",
+        province: deliveryAddress?.province || deliveryAddress?.stateProvinceRegion || "",
+        stateProvinceRegion: deliveryAddress?.stateProvinceRegion || deliveryAddress?.province || "",
+        postalCode: deliveryAddress?.postalCode || "",
+        country: deliveryAddress?.country || "South Africa",
+      }
+    : null;
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const product = item?.product_snapshot || {};
+    const seller = product?.seller || {};
+    const fulfillmentMode = String(product?.fulfillment?.mode || "").trim().toLowerCase();
+    const sellerKey =
+      String(product?.product?.sellerCode || seller?.sellerCode || seller?.sellerSlug || product?.product?.sellerSlug || "").trim();
+    if (!sellerKey || fulfillmentMode !== "seller") continue;
+
+    const existing = groups.get(sellerKey) || {
+      sellerKey,
+      sellerName: String(seller?.vendorName || product?.product?.vendorName || "Seller").trim(),
+      sellerBase: String(seller?.baseLocation || "").trim(),
+      deliveryProfile: seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
+      items: [],
+      subtotalIncl: 0,
+    };
+    existing.items.push(item);
+    existing.subtotalIncl = r2(existing.subtotalIncl + Number(item?.line_totals?.final_incl || 0));
+    groups.set(sellerKey, existing);
+  }
+
+  const breakdown = [];
+  let totalIncl = 0;
+
+  for (const group of groups.values()) {
+    if (pickupSet.has(group.sellerKey) && group?.deliveryProfile?.pickup?.enabled === true) {
+      breakdown.push({
+        seller_key: group.sellerKey,
+        seller_name: group.sellerName,
+        label: "Collection from seller",
+        applicable: true,
+        delivery_type: "collection",
+        lead_time_days: group?.deliveryProfile?.pickup?.leadTimeDays ?? null,
+        matched_rule_id: null,
+        matched_rule_label: "pickup",
+        amount_incl: 0,
+        amount_excl: 0,
+        currency: "ZAR",
+      });
+      continue;
+    }
+
+    const resolved = resolveSellerDeliveryOption({
+      profile: group.deliveryProfile || {},
+      sellerBaseLocation: group.sellerBase,
+      shopperArea,
+      subtotalIncl: group.subtotalIncl,
+    });
+    const amount = r2(Number(resolved?.amountIncl || 0));
+    const label = String(resolved?.label || "Seller delivery unavailable for this address");
+    const applicable = resolved?.available === true;
+
+    totalIncl = r2(totalIncl + amount);
+    breakdown.push({
+      seller_key: group.sellerKey,
+      seller_name: group.sellerName,
+      label,
+      applicable,
+      delivery_type: resolved?.kind || "unavailable",
+      lead_time_days: resolved?.leadTimeDays ?? null,
+      matched_rule_id: resolved?.matchedRule?.id || null,
+      matched_rule_label: resolved?.matchedRule?.label || null,
+      amount_incl: amount,
+      amount_excl: amount,
+      currency: "ZAR",
+    });
+  }
+
+  return {
+    total_incl: totalIncl,
+    total_excl: totalIncl,
+    breakdown,
+  };
+}
+
+function computeCartTotals(items, deliveryFee = 0, sellerDelivery = { total_excl: 0, total_incl: 0, breakdown: [] }){
   let subtotal = 0;
   let savings  = 0;
   let vat_total = 0;
   const delivery = Number(deliveryFee) || 0;
+  const sellerDeliveryExcl = Number(sellerDelivery?.total_excl || 0) || 0;
 
   for (const it of items){
     const v = it.selected_variant_snapshot;
@@ -105,21 +280,25 @@ function computeCartTotals(items, deliveryFee = 0){
 
     // track possible sale saving
     if (v?.sale?.is_on_sale){
-      const normal = r2(v?.pricing?.selling_price_excl || 0);
-      const sale   = r2(v?.sale?.sale_price_excl || 0);
-      if (normal > sale){
-        savings += (normal - sale) * qty;
+      const normalIncl = Number(v?.pricing?.selling_price_incl) || (Number(v?.pricing?.selling_price_excl) || 0) * (1 + VAT);
+      const saleIncl = Number(v?.sale?.sale_price_incl) || (Number(v?.sale?.sale_price_excl) || 0) * (1 + VAT);
+      if (normalIncl > saleIncl){
+        savings += r2(((normalIncl - saleIncl) * qty) / (1 + VAT));
       }
     }
   }
 
-  const final_excl = r2(subtotal + delivery);
+  const final_excl = r2(subtotal + delivery + sellerDeliveryExcl);
   const final_incl = r2(final_excl + vat_total);
 
   return {
     subtotal_excl: r2(subtotal),
     deposit_total_excl: 0,
     delivery_fee_excl: r2(delivery),
+    delivery_fee_incl: r2(delivery),
+    seller_delivery_fee_excl: r2(sellerDeliveryExcl),
+    seller_delivery_fee_incl: r2(Number(sellerDelivery?.total_incl || sellerDeliveryExcl)),
+    seller_delivery_breakdown: Array.isArray(sellerDelivery?.breakdown) ? sellerDelivery.breakdown : [],
     sale_savings_excl: r2(savings),
     vat_total: r2(vat_total),
     final_excl,
@@ -308,9 +487,9 @@ function shouldIncludeCreditNote(note) {
 }
 
 async function fetchAvailableCreditNotes(customerId) {
-  const rs = await getDocs(
-    query(collection(clientDb, "credit_notes_v2"), where("customerId", "==", String(customerId)))
-  );
+  const db = getAdminDb();
+  if (!db) return { notes: [], available_incl: 0, notes_summary: { count: 0, total_available_incl: 0, credit_note_ids: [] } };
+  const rs = await db.collection("credit_notes_v2").where("customerId", "==", String(customerId)).get();
 
   const notes = rs.docs
     .map((d) => ({ id: d.id, ...(d.data() || {}) }))
@@ -373,8 +552,12 @@ function computeCreditApplication({ payableIncl = 0, useCredit = false, notes = 
 
 export async function POST(req){
   try {
+    const db = getAdminDb();
+    if (!db) {
+      return err(500,"Database Unavailable","Admin database is not configured.");
+    }
     const marketplaceFeeConfig = await loadMarketplaceFeeConfig();
-    const { customerId, deliveryAddress, useCredit, onBehalfOfUid } = await req.json();
+    const { customerId, deliveryAddress, useCredit, onBehalfOfUid, pickupSelections } = await req.json();
     if (!customerId)
       return err(400,"Invalid Request","customerId is required.");
 
@@ -385,19 +568,19 @@ export async function POST(req){
       customerId
     );
 
-    const userRef = doc(clientDb, "users", pricingProfileUid);
-    const userSnap = await getDoc(userRef);
-    const userData = userSnap.exists() ? userSnap.data() : null;
+    const userRef = db.collection("users").doc(pricingProfileUid);
+    const userSnap = await userRef.get();
+    const userData = userSnap.exists ? userSnap.data() : null;
     const useCreditFlag = true;
     const creditSnapshot = await fetchAvailableCreditNotes(customerId);
 
-    const cartRef = doc(db,"carts", customerId);
-    const cartSnap = await getDoc(cartRef);
+    const cartRef = db.collection("carts").doc(customerId);
+    const cartSnap = await cartRef.get();
 
     /* ------------------------------------------
        🎯 CART DOES NOT EXIST → NEW EMPTY
     ------------------------------------------- */
-    if (!cartSnap.exists()){
+    if (!cartSnap.exists){
       const emptyCart = {
         docId: customerId,
         cart: {
@@ -419,7 +602,8 @@ export async function POST(req){
         }
       };
 
-      const emptyTotals = computeCartTotals([], deliveryFee);
+      const sellerDelivery = computeSellerDeliveryFees([], deliveryAddress, pickupSelections);
+      const emptyTotals = computeCartTotals([], deliveryFee, sellerDelivery);
       const adjust = computePricingAdjustments(emptyTotals.subtotal_excl, userData?.pricing);
       const rebateNextTier = (
         adjust.type === "rebate" && !userData?.pricing?.rebate?.tierLocked
@@ -430,7 +614,10 @@ export async function POST(req){
       };
       const discountedProductsExcl = r2(emptyTotals.subtotal_excl - adjust.amountExcl);
       const discountedExcl = r2(
-        discountedProductsExcl + emptyTotals.deposit_total_excl + emptyTotals.delivery_fee_excl
+        discountedProductsExcl +
+          emptyTotals.deposit_total_excl +
+          emptyTotals.delivery_fee_excl +
+          r2(emptyTotals.seller_delivery_fee_excl || 0)
       );
       const discountedIncl = r2(discountedExcl + emptyTotals.vat_total);
       const creditCalc = computeCreditApplication({
@@ -472,7 +659,7 @@ export async function POST(req){
         }
       };
 
-      await setDoc(cartRef, emptyCartWithPricing);
+      await cartRef.set(emptyCartWithPricing);
 
       return ok({
         cart: emptyCartWithPricing,
@@ -494,6 +681,7 @@ export async function POST(req){
        🎯 CART EXISTS
     ------------------------------------------- */
     const cart = cartSnap.data();
+    const checkoutLockedCart = isCheckoutCart(cart);
     const items = Array.isArray(cart.items) ? cart.items : [];
 
     // Track warnings and removals
@@ -521,9 +709,9 @@ export async function POST(req){
 
       let liveProd = productCache.get(productId);
       if (!liveProd) {
-        const productRef = doc(db,"products_v2", String(productId));
-        const prodSnap = await getDoc(productRef);
-        liveProd = prodSnap.exists() ? prodSnap.data() : null;
+        const productRef = db.collection("products_v2").doc(String(productId));
+        const prodSnap = await productRef.get();
+        liveProd = prodSnap.exists ? prodSnap.data() : null;
         productCache.set(productId, liveProd);
       }
       if (!liveProd) {
@@ -545,47 +733,91 @@ export async function POST(req){
         continue;
       }
 
-      const clean = { ...it };
+      const enrichedProductSnapshot = await enrichCartProductSnapshot(liveProd);
+      const clean = {
+        ...it,
+        product_snapshot: enrichedProductSnapshot,
+      };
+
+      const variantUnavailable =
+        !liveVar ||
+        liveProd?.placement?.isActive === false ||
+        liveProd?.moderation?.status === "blocked" ||
+        getVariantAvailableQuantity(liveVar) <= 0;
+
+      if (variantUnavailable) {
+        clean.availability = {
+          status: "out_of_stock",
+          message: "This item is now out of stock. Remove it from your cart before continuing to checkout.",
+        };
+        clean.line_totals = computeLineTotals(clean.selected_variant_snapshot, clean.quantity);
+        kept.push(clean);
+        warnings.items.push({
+          cart_item_key: it.cart_item_key || null,
+          variant_id: vSnap.variant_id || null,
+          message: "This item is now out of stock and must be removed before checkout."
+        });
+        continue;
+      }
 
       // If item was on sale in cart, preserve its snapshot/pricing
       if (vSnap?.sale?.is_on_sale) {
+        clean.availability = {
+          status: "available",
+          message: ""
+        };
         clean.line_totals = computeLineTotals(clean.selected_variant_snapshot, clean.quantity);
         kept.push(clean);
         continue;
       }
 
-      // For non-sale items, refresh variant pricing/sale from live data to avoid hoarding stale prices
+      // During checkout, keep the existing snapshot stable while payment is in progress.
+      if (checkoutLockedCart) {
+        clean.availability = {
+          status: "available",
+          message: ""
+        };
+        clean.line_totals = computeLineTotals(clean.selected_variant_snapshot, clean.quantity);
+        kept.push(clean);
+        continue;
+      }
+
+      // For active carts, refresh variant pricing and sale state from live data.
       if (liveVar) {
-        const mergedVariant = refreshVariantMarketplaceFees(liveProd, {
+        const mergedVariant = refreshVariantMarketplaceFees(enrichedProductSnapshot, {
           ...vSnap,
           ...liveVar,
           pricing: liveVar.pricing ?? vSnap.pricing,
-          sale: {
-            ...(vSnap.sale || {}),
-            ...(liveVar.sale || {}),
-            is_on_sale: false
-          },
+          sale: liveVar.sale ?? vSnap.sale,
           pack: liveVar.pack ?? vSnap.pack
         }, marketplaceFeeConfig);
 
         // Detect price change
-        const prevPrice = Number(vSnap?.pricing?.selling_price_excl) || 0;
-        const newPrice = Number(mergedVariant?.pricing?.selling_price_excl) || 0;
+        const prevPrice = Number(vSnap?.pricing?.selling_price_incl) || (Number(vSnap?.pricing?.selling_price_excl) || 0) * (1 + VAT);
+        const newPrice = Number(mergedVariant?.pricing?.selling_price_incl) || (Number(mergedVariant?.pricing?.selling_price_excl) || 0) * (1 + VAT);
         if (newPrice !== prevPrice) {
           warnings.items.push({
             cart_item_key: it.cart_item_key || null,
             variant_id: vSnap.variant_id || null,
-            message: `Price updated from ${prevPrice} to ${newPrice}.`
+            message: `Price updated from ${r2(prevPrice)} to ${r2(newPrice)}.`
           });
         }
 
         clean.selected_variant_snapshot = mergedVariant;
+        clean.availability = {
+          status: "available",
+          message: ""
+        };
         clean.line_totals = computeLineTotals(mergedVariant, clean.quantity);
         kept.push(clean);
         continue;
       }
 
       // Fallback: keep as-is
+      clean.availability = {
+        status: "available",
+        message: ""
+      };
       clean.line_totals = computeLineTotals(clean.selected_variant_snapshot, clean.quantity);
       kept.push(clean);
     }
@@ -593,7 +825,8 @@ export async function POST(req){
     /* ------------------------------------------
        🔄 RECOMPUTE CART TOTALS
     ------------------------------------------- */
-    const totals = computeCartTotals(kept, deliveryFee);
+    const sellerDelivery = computeSellerDeliveryFees(kept, deliveryAddress, pickupSelections);
+    const totals = computeCartTotals(kept, deliveryFee, sellerDelivery);
     const adjust = computePricingAdjustments(totals.subtotal_excl, userData?.pricing);
     const rebateNextTier = (
       adjust.type === "rebate" && !userData?.pricing?.rebate?.tierLocked
@@ -604,7 +837,10 @@ export async function POST(req){
     };
     const discountedProductsExcl = r2(totals.subtotal_excl - adjust.amountExcl);
     const discountedExcl = r2(
-      discountedProductsExcl + totals.deposit_total_excl + totals.delivery_fee_excl
+      discountedProductsExcl +
+        totals.deposit_total_excl +
+        totals.delivery_fee_excl +
+        r2(totals.seller_delivery_fee_excl || 0)
     );
     const discountedIncl = r2(discountedExcl + totals.vat_total);
     const creditCalc = computeCreditApplication({
@@ -653,7 +889,7 @@ export async function POST(req){
       }
     };
 
-    await setDoc(cartRef, finalCart);
+    await cartRef.set(finalCart);
 
     return ok({
       cart: finalCart,

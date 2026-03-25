@@ -2,24 +2,13 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/firebase";
-import { doc, runTransaction, serverTimestamp } from "firebase/firestore";
+import { doc, runTransaction } from "firebase/firestore";
 import { releaseStockLotReservations } from "@/lib/warehouse/stock-lots";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, data: p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
 const now = () => new Date().toISOString();
-const normalizeInventoryReservations = (entries) => {
-  const map = new Map();
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    const location_id = String(entry?.location_id || "").trim();
-    const qty = Math.max(0, Number(entry?.qty) || 0);
-    if (!location_id || qty <= 0) continue;
-    map.set(location_id, (map.get(location_id) || 0) + qty);
-  }
-  return [...map.entries()].map(([location_id, qty]) => ({ location_id, qty }));
-};
-
 export async function POST(req) {
   try {
     const { customerId, channel = "unknown" } = await req.json();
@@ -70,101 +59,13 @@ export async function POST(req) {
       const items = Array.isArray(cart.items) ? cart.items : [];
       const warnings = { global: [], items: [] };
 
-      // Collect all product snapshots first (reads before writes)
-      const productCache = new Map();
-      for (const it of items) {
-        const pSnap = it?.product_snapshot;
-        if (!pSnap) continue;
-        const productId =
-          String(pSnap.product?.unique_id || pSnap.docId || "") ||
-          String(pSnap.product?.product_id || "");
-        if (!productId || productCache.has(productId)) continue;
-        const pref = doc(db, "products_v2", productId);
-        const psnap = await tx.get(pref);
-        productCache.set(productId, psnap.exists() ? { ref: pref, data: psnap.data() || {} } : null);
-      }
-
-      // Apply stock returns using cached products
       for (const it of items) {
         const vSnap = it?.selected_variant_snapshot;
-        const pSnap = it?.product_snapshot;
-        const qty = Number(it?.quantity) || 0;
-        if (!vSnap || !pSnap || qty <= 0) continue;
+        if (!vSnap) continue;
 
         if (Array.isArray(vSnap?.warehouse_lot_reservations) && vSnap.warehouse_lot_reservations.length) {
           await releaseStockLotReservations({ reservations: vSnap.warehouse_lot_reservations });
         }
-
-        const productId =
-          String(pSnap.product?.unique_id || pSnap.docId || "") ||
-          String(pSnap.product?.product_id || "");
-        const variantId = String(vSnap.variant_id || "");
-        if (!productId || !variantId) continue;
-
-        const cacheEntry = productCache.get(productId);
-        if (!cacheEntry) {
-          warnings.items.push({
-            cart_item_key: it.cart_item_key || null,
-            variant_id: variantId,
-            message: "Product not found while clearing cart; stock not restored."
-          });
-          continue;
-        }
-
-        const pdata = cacheEntry.data;
-        const variantsArr = Array.isArray(pdata.variants) ? pdata.variants : [];
-        const vidx = variantsArr.findIndex((v) => String(v?.variant_id) === variantId);
-        if (vidx === -1) {
-          warnings.items.push({
-            cart_item_key: it.cart_item_key || null,
-            variant_id: variantId,
-            message: "Variant not found while clearing cart; stock not restored."
-          });
-          continue;
-        }
-
-        const pv = { ...variantsArr[vidx] };
-
-        // Restore sale stock if this line was a sale item and admin hasn't disabled sale
-        if (vSnap.sale?.is_on_sale && pv.sale && !pv.sale.disabled_by_admin) {
-          const startSale = Math.max(0, Number(pv.sale.qty_available) || 0);
-          pv.sale.qty_available = startSale + qty;
-          pv.sale.is_on_sale = true;
-        }
-
-        // Restore regular inventory stock for non-sale lines.
-        if (!vSnap.sale?.is_on_sale && Array.isArray(pv.inventory) && pv.inventory.length) {
-          const inv = pv.inventory.map((row) => ({ ...row }));
-
-          const reservations = normalizeInventoryReservations(it?.inventory_reservations);
-          if (reservations.length) {
-            for (const rel of reservations) {
-              const idx = inv.findIndex((row) => String(row?.location_id || "") === String(rel.location_id || ""));
-              const targetIdx = idx >= 0 ? idx : 0;
-              const start = Math.max(0, Number(inv[targetIdx]?.in_stock_qty) || 0);
-              inv[targetIdx].in_stock_qty = start + rel.qty;
-            }
-          } else {
-            const idx = inv.findIndex(() => true);
-            if (idx >= 0) {
-              const start = Math.max(0, Number(inv[idx]?.in_stock_qty) || 0);
-              inv[idx].in_stock_qty = start + qty;
-            }
-          }
-          pv.inventory = inv;
-        }
-
-        variantsArr[vidx] = pv;
-        cacheEntry.data.variants = variantsArr;
-      }
-
-      // Write updated products
-      for (const [_, entry] of productCache.entries()) {
-        if (!entry) continue;
-        tx.update(entry.ref, {
-          variants: entry.data.variants || [],
-          "timestamps.updatedAt": serverTimestamp()
-        });
       }
 
       tx.set(cartRef, emptyCart);

@@ -1,99 +1,70 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import axios from "axios";
-import { db } from "@/lib/firebaseConfig";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { findCartLineByProductVariant, normalizeCartForClient, readCartDoc } from "@/lib/cart/public-api";
 
-const ok = (p = {}, s = 200) =>
-  NextResponse.json({ ok: true, ...p }, { status: s });
-
-const err = (s, t, m, e = {}) =>
-  NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
-
-const PRODUCT_BASE =
-  "/api/catalogue/v1/products/sale";
-
-async function releaseSale(unique_id, variant_id, qty, origin) {
-  if (qty > 0) {
-    await axios.post(new URL(`${PRODUCT_BASE}/release`, origin).toString(), {
-      unique_id,
-      variant_id,
-      qty,
-    });
-  }
-}
+const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
+const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
 export async function POST(req) {
   try {
-    const origin = new URL(req.url).origin;
-    const { uid, unique_id, variant_id } = await req.json();
+    const body = await req.json().catch(() => ({}));
+    const uid = String(body?.uid || "").trim();
+    const productUniqueId = String(body?.unique_id || body?.productId || "").trim();
+    const variantId = String(body?.variant_id || body?.variantId || "").trim();
 
-    if (!uid || !unique_id || !variant_id) {
+    if (!uid || !productUniqueId || !variantId) {
+      return err(400, "Invalid Request", "uid, unique_id, and variant_id are required.");
+    }
+
+    const cart = await readCartDoc(uid);
+    const line = findCartLineByProductVariant(cart, productUniqueId, variantId);
+    if (!line?.cart_item_key) {
+      return ok({
+        data: {
+          cart: normalizeCartForClient(cart, uid),
+          message: "Item not found in cart.",
+        },
+      });
+    }
+
+    const origin = new URL(req.url).origin;
+    const response = await fetch(new URL("/api/catalogue/v1/carts/cart/updateAtomic", origin), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        customerId: uid,
+        productId: productUniqueId,
+        variantId,
+        mode: "remove",
+        quantity: 0,
+        cart_item_key: line.cart_item_key,
+        channel: "storefront",
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
       return err(
-        400,
-        "Invalid Request",
-        "uid, unique_id, and variant_id are required."
+        response.status || 500,
+        payload?.title || "Remove Failed",
+        payload?.message || "Unable to remove the item.",
       );
     }
 
-    const cartRef = doc(db, "carts", uid);
-    const snap = await getDoc(cartRef);
-
-    if (!snap.exists()) {
-      return ok({
-        data: { cart: null, message: "Cart already empty." },
-      });
-    }
-
-    let cart = snap.data();
-    let items = cart.items || [];
-
-    // Find matching item
-    const index = items.findIndex(
-      (it) =>
-        it.unique_id === unique_id &&
-        it.selected_variant_id == variant_id
-    );
-
-    if (index < 0) {
-      return ok({
-        data: { cart, message: "Item not found in cart." },
-      });
-    }
-
-    const item = items[index];
-
-    // This *is* your actual reservation quantity
-    const saleQty = item.sale_qty || 0;
-
-    // Restore sale stock
-    if (saleQty > 0) {
-      await releaseSale(unique_id, variant_id, saleQty, origin);
-    }
-
-    // Remove item
-    items.splice(index, 1);
-
-    cart.items = items;
-    cart.timestamps = {
-      ...(cart.timestamps || {}),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await setDoc(cartRef, cart, { merge: true });
-
     return ok({
       data: {
-        cart,
-        message: "Item removed & sale stock restored.",
+        cart: normalizeCartForClient(payload?.data?.cart ?? null, uid),
+        message: "Item removed from cart.",
       },
+      ui: payload?.ui ?? null,
     });
-
   } catch (e) {
     console.error(e);
     return err(500, "Remove Failed", "Unexpected error.", {
-      error: e.toString(),
+      error: e instanceof Error ? e.message : String(e),
     });
   }
 }
+

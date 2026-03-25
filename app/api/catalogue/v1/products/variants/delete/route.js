@@ -8,6 +8,10 @@ const ok  = (p = {}, s = 200) => NextResponse.json({ ok: true,  ...p }, { status
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 const is8 = (s) => /^\d{8}$/.test(String(s ?? "").trim());
 
+function hasLiveSnapshotRecord(product) {
+  return Boolean(product?.live_snapshot && typeof product.live_snapshot === "object");
+}
+
 export async function POST(req) {
   try {
     const db = getAdminDb();
@@ -53,28 +57,39 @@ export async function POST(req) {
     // Remove it — and DO NOT reassign default automatically
     list.splice(idx, 1);
 
-    await ref.update({
+    const preserveLiveVersionDuringReview =
+      String(data?.moderation?.status ?? "").trim().toLowerCase() === "published" || hasLiveSnapshotRecord(data);
+
+    const updatePayload = {
       variants: list,
       moderation: {
         ...(data?.moderation || {}),
-        status: "draft",
+        status: preserveLiveVersionDuringReview ? "in_review" : "draft",
         reason: "variant_changed",
-        notes: "Variant deletion requires the listing to be reviewed again before it goes live.",
+        notes: preserveLiveVersionDuringReview
+          ? "Variant deletion is in review. The current live version stays visible until the changes are approved."
+          : "Variant deletion requires the listing to be reviewed again before it goes live.",
         reviewedAt: null,
         reviewedBy: null,
       },
       placement: {
         ...(data?.placement || {}),
-        isActive: false,
+        isActive: preserveLiveVersionDuringReview ? Boolean(data?.placement?.isActive) : false,
       },
       "timestamps.updatedAt": FieldValue.serverTimestamp()
-    });
+    };
+    if (preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(data)) {
+      updatePayload.live_snapshot = data;
+    }
+    await ref.update(updatePayload);
 
     return ok({
       unique_id: pid,
       deleted_variant_id: deleted?.variant_id ?? null,
       remaining: list.length,
-      message: "Variant deleted. The product has been moved back to draft for review.",
+      message: preserveLiveVersionDuringReview
+        ? "Variant deleted from the pending update. The current live version stays visible while the change is reviewed."
+        : "Variant deleted. The product has been moved back to draft for review.",
       resubmissionRequired: true
     });
   } catch (e) {

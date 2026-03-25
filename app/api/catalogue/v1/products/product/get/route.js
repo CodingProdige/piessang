@@ -1,6 +1,7 @@
 // app/api/catalogue/v1/products/product/get/route.js
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import {
   getSellerUnavailableReason,
@@ -44,6 +45,18 @@ function normalizeTimestamps(doc){
   };
 }
 
+function getPublicMarketplaceSource(doc) {
+  if (!doc || typeof doc !== "object") return doc;
+  const status = normStr(doc?.moderation?.status).toLowerCase();
+  const liveSnapshot = doc?.live_snapshot && typeof doc.live_snapshot === "object"
+    ? normalizeTimestamps(doc.live_snapshot)
+    : null;
+  if (liveSnapshot && ["in_review", "draft", "rejected"].includes(status)) {
+    return liveSnapshot;
+  }
+  return doc;
+}
+
 function getSellerIdentifier(data) {
   return normStr(
     data?.seller?.sellerCode ||
@@ -62,6 +75,9 @@ function applySellerDisplayData(data, sellerOwner) {
   const sellerCode = normStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode);
   const vendorName = normStr(seller?.vendorName || seller?.groupVendorName || "");
   const vendorDescription = normStr(seller?.vendorDescription || seller?.description || "");
+  const deliveryProfile = normalizeSellerDeliveryProfile(
+    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
+  );
 
   return {
     ...data,
@@ -70,17 +86,27 @@ function applySellerDisplayData(data, sellerOwner) {
       sellerCode: sellerCode || null,
       vendorName: vendorName || null,
       vendorDescription: vendorDescription || null,
+      baseLocation: normStr(seller?.baseLocation || data?.seller?.baseLocation) || null,
       sellerSlug: normStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug),
       activeSellerSlug: normStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug),
       groupSellerSlug: normStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug),
+      deliveryProfile,
     },
     product: {
       ...(data?.product && typeof data.product === "object" ? data.product : {}),
       vendorName: vendorName || data?.product?.vendorName || null,
       vendorDescription: vendorDescription || data?.product?.vendorDescription || null,
       sellerCode: sellerCode || data?.product?.sellerCode || null,
+      sellerSlug: normStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.product?.sellerSlug) || null,
     },
   };
+}
+
+function productMissingSellerDeliverySettings(data, sellerOwner) {
+  const fulfillmentMode = String(data?.fulfillment?.mode ?? "seller").trim().toLowerCase();
+  if (fulfillmentMode !== "seller") return false;
+  const seller = sellerOwner?.data?.seller && typeof sellerOwner.data.seller === "object" ? sellerOwner.data.seller : {};
+  return !sellerDeliverySettingsReady(seller?.deliveryProfile || {});
 }
 
 function normText(v){
@@ -288,17 +314,25 @@ export async function GET(req){
       const ref = db.collection("products_v2").doc(byId);
       const snap = await ref.get();
       if (!snap.exists) return err(404,"Not Found",`No product with id '${byId}'.`);
-      const data = normalizeTimestamps(snap.data()||{});
+      const rawData = normalizeTimestamps(snap.data()||{});
+      const data = includeUnavailable ? rawData : getPublicMarketplaceSource(rawData);
       let dataWithVariantAvailability = {
         ...data,
         variants: enrichVariantsWithAvailability(data?.variants)
       };
-      const sellerIdentifier = getSellerIdentifier({
-        seller: data?.seller,
-        product: data?.product,
-      }) || normStr(searchParams.get("sellerCode") || searchParams.get("sellerSlug") || searchParams.get("vendor"));
+      const shouldResolveSellerOwner = includeUnavailable !== true;
+      let singleSellerOwner = null;
+      const sellerIdentifier = shouldResolveSellerOwner
+        ? (
+            getSellerIdentifier({
+              seller: data?.seller,
+              product: data?.product,
+            }) || normStr(searchParams.get("sellerCode") || searchParams.get("sellerSlug") || searchParams.get("vendor"))
+          )
+        : "";
       if (sellerIdentifier) {
         const sellerOwner = await findSellerOwnerByIdentifier(sellerIdentifier);
+        singleSellerOwner = sellerOwner;
         if (sellerOwner && isSellerAccountUnavailable(sellerOwner.data)) {
           const unavailable = getSellerUnavailableReason(sellerOwner.data);
           return ok({
@@ -338,7 +372,17 @@ export async function GET(req){
           is_favorite: isFavorite,
           has_in_stock_variants: hasInStockVariants(dataWithVariantAvailability),
           is_eligible_by_variant_availability: productHasListableAvailability(dataWithVariantAvailability),
-          is_unavailable_for_listing: !productHasListableAvailability(dataWithVariantAvailability)
+          is_unavailable_for_listing:
+            !productHasListableAvailability(dataWithVariantAvailability) ||
+            (sellerIdentifier ? productMissingSellerDeliverySettings(dataWithVariantAvailability, singleSellerOwner) : false),
+          listing_block_reason_code:
+            sellerIdentifier && productMissingSellerDeliverySettings(dataWithVariantAvailability, singleSellerOwner)
+              ? "missing_delivery_settings"
+              : null,
+          listing_block_reason_message:
+            sellerIdentifier && productMissingSellerDeliverySettings(dataWithVariantAvailability, singleSellerOwner)
+              ? "This self-fulfilled product is hidden until delivery settings are completed."
+              : null,
         }
       });
     }
@@ -356,7 +400,7 @@ export async function GET(req){
     const isActive     = toBool(searchParams.get("isActive"));
     const isFeatured   = toBool(searchParams.get("isFeatured"));
     const groupByBrand = toBool(searchParams.get("group_by_brand")) === true;
-    const favoritesOnly = toBool(searchParams.get("favoritesOnly")) !== false;
+    const favoritesOnly = toBool(searchParams.get("favoritesOnly")) === true;
     const onSale       = toBool(searchParams.get("onSale"));
     const inStock      = toBool(searchParams.get("inStock"));
     const numParam = (k)=>{
@@ -383,7 +427,7 @@ export async function GET(req){
 
     let favorites = [];
     if (userId){
-      const userSnap = await getDoc(doc(clientDb, "users", userId));
+      const userSnap = await db.collection("users").doc(userId).get();
       const userData = userSnap.exists ? userSnap.data() : null;
       favorites = Array.isArray(userData?.preferences?.favoriteProducts)
         ? userData.preferences.favoriteProducts.map(v=>String(v).trim()).filter(Boolean)
@@ -431,7 +475,13 @@ export async function GET(req){
     }
 
     // 2) Map + timestamp normalize
-    let items = rs.docs.map(d=>({ id:d.id, data: normalizeTimestamps(d.data()||{}) }));
+    let items = rs.docs.map(d=>({
+      id:d.id,
+      rawData: normalizeTimestamps(d.data()||{}),
+      data: includeUnavailable
+        ? normalizeTimestamps(d.data()||{})
+        : getPublicMarketplaceSource(normalizeTimestamps(d.data()||{})),
+    }));
     const sellerBlockMap = new Map();
     const sellerIdentifierSet = new Set();
     for (const item of items) {
@@ -455,6 +505,11 @@ export async function GET(req){
     items = items.filter(({ data })=>{
       const productSellerIdentifier = getSellerIdentifier(data);
       if (productSellerIdentifier && sellerBlockMap.get(productSellerIdentifier) === true) return false;
+      if (
+        productSellerIdentifier &&
+        !includeUnavailable &&
+        productMissingSellerDeliverySettings(data, sellerMetaMap.get(productSellerIdentifier))
+      ) return false;
       if (!includeUnavailable && !productHasListableAvailability(data)) return false;
       if (!matchesGrouping(data, { category, subCategory, brand })) return false;
       if (vendorName){
@@ -526,6 +581,7 @@ export async function GET(req){
       const uid = String(dataWithSellerDisplay?.product?.unique_id ?? "");
       const isFavorite = userId ? (favorites.length > 0 && uid ? favorites.includes(uid) : false) : false;
       const isEligibleByVariantAvailability = productHasListableAvailability(dataWithSellerDisplay);
+      const hiddenByDeliverySettings = productMissingSellerDeliverySettings(dataWithSellerDisplay, sellerOwner);
       return {
         id,
         data: {
@@ -534,7 +590,11 @@ export async function GET(req){
           is_favorite: isFavorite,
           has_in_stock_variants: hasInStockVariants(dataWithSellerDisplay),
           is_eligible_by_variant_availability: isEligibleByVariantAvailability,
-          is_unavailable_for_listing: !isEligibleByVariantAvailability
+          is_unavailable_for_listing: !isEligibleByVariantAvailability || hiddenByDeliverySettings,
+          listing_block_reason_code: hiddenByDeliverySettings ? "missing_delivery_settings" : null,
+          listing_block_reason_message: hiddenByDeliverySettings
+            ? "This self-fulfilled product is hidden until delivery settings are completed."
+            : null,
         }
       };
     });

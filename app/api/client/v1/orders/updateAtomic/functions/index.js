@@ -9,7 +9,7 @@ const nowIso = () => new Date().toISOString();
 const r2 = (v) => Number((Number(v) || 0).toFixed(2));
 const computeOrderPaymentStatus = (required, paid) => {
   if (required <= 0) return "paid";
-  if (paid <= 0) return "unpaid";
+  if (paid <= 0) return "pending";
   if (paid + 0.0001 >= required) return "paid";
   return "partial";
 };

@@ -88,9 +88,9 @@ function matchesFilters(order, filters) {
   const delivery = order?.delivery || {};
   const createdAt = parseDate(order?.timestamps?.createdAt);
 
-  const paymentStatus = payment?.status || orderBlock?.status?.payment || null;
-  const orderStatus = orderBlock?.status?.order || null;
-  const fulfillmentStatus = orderBlock?.status?.fulfillment || null;
+  const paymentStatus = order?.lifecycle?.paymentStatus || payment?.status || orderBlock?.status?.payment || null;
+  const orderStatus = order?.lifecycle?.orderStatus || orderBlock?.status?.order || null;
+  const fulfillmentStatus = order?.lifecycle?.fulfillmentStatus || orderBlock?.status?.fulfillment || null;
 
   if (filters.orderType && orderBlock.type !== filters.orderType) return false;
   if (filters.channel && orderBlock.channel !== filters.channel) return false;
@@ -134,7 +134,7 @@ function toNum(value) {
 
 function getRefundIncl(order) {
   const paymentStatus =
-    order?.payment?.status || order?.order?.status?.payment || "unknown";
+    order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "unknown";
   if (paymentStatus !== "refunded" && paymentStatus !== "partial_refund") return 0;
   const refundAmount = toNum(order?.payment?.refund_amount_incl);
   if (refundAmount > 0) return refundAmount;
@@ -143,8 +143,8 @@ function getRefundIncl(order) {
 
 function getOutstandingIncl(order) {
   const paymentStatus =
-    order?.payment?.status || order?.order?.status?.payment || "unknown";
-  const orderStatus = order?.order?.status?.order || "unknown";
+    order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "unknown";
+  const orderStatus = order?.lifecycle?.orderStatus || order?.order?.status?.order || "unknown";
 
   if (paymentStatus === "refunded" || paymentStatus === "partial_refund") return 0;
   if (orderStatus === "cancelled") return 0;
@@ -186,8 +186,8 @@ function getFinalPayableIncl(order) {
 
 function getCollectibleFinalIncl(order) {
   const paymentStatus =
-    order?.payment?.status || order?.order?.status?.payment || "unknown";
-  const orderStatus = order?.order?.status?.order || "unknown";
+    order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "unknown";
+  const orderStatus = order?.lifecycle?.orderStatus || order?.order?.status?.order || "unknown";
   if (orderStatus === "cancelled") return 0;
   if (paymentStatus === "refunded" || paymentStatus === "partial_refund") return 0;
   return getFinalPayableIncl(order);
@@ -196,9 +196,9 @@ function getCollectibleFinalIncl(order) {
 function withFinalPayableTotal(order) {
   const totals = order?.totals || {};
   const payment = order?.payment || {};
-  const orderStatus = order?.order?.status?.order || "unknown";
+  const orderStatus = order?.lifecycle?.orderStatus || order?.order?.status?.order || "unknown";
   const paymentStatus =
-    payment?.status || order?.order?.status?.payment || "unknown";
+    order?.lifecycle?.paymentStatus || payment?.status || order?.order?.status?.payment || "unknown";
   const finalPayableIncl = getFinalPayableIncl(order);
   const effectiveRequiredIncl =
     orderStatus === "cancelled" ||
@@ -272,9 +272,9 @@ function buildTotals(orders) {
       const delivery = o?.delivery || {};
       const customerSnapshot = o?.customer_snapshot || {};
 
-      const paymentStatus = payment?.status || orderBlock?.status?.payment || "unknown";
-      const orderStatus = orderBlock?.status?.order || "unknown";
-      const fulfillmentStatus = orderBlock?.status?.fulfillment || "unknown";
+      const paymentStatus = o?.lifecycle?.paymentStatus || payment?.status || orderBlock?.status?.payment || "unknown";
+      const orderStatus = o?.lifecycle?.orderStatus || orderBlock?.status?.order || "unknown";
+      const fulfillmentStatus = o?.lifecycle?.fulfillmentStatus || orderBlock?.status?.fulfillment || "unknown";
       const deliveryProgress = o?.delivery_progress || {};
 
       acc.totalOrders += 1;

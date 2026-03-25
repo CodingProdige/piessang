@@ -144,6 +144,42 @@ function deepMerge(target, patch) {
   return out;
 }
 
+function hasLiveSnapshotRecord(product) {
+  return Boolean(product?.live_snapshot && typeof product.live_snapshot === "object");
+}
+
+function isSaleActive(variant) {
+  return Boolean(variant?.sale?.is_on_sale && !variant?.sale?.disabled_by_admin);
+}
+
+function getUnitPriceIncl(variant) {
+  if (!variant) return 0;
+  if (isSaleActive(variant) && Number.isFinite(Number(variant?.sale?.sale_price_incl))) {
+    return money2(variant.sale.sale_price_incl);
+  }
+  if (Number.isFinite(Number(variant?.pricing?.sale_price_incl))) {
+    return money2(variant.pricing.sale_price_incl);
+  }
+  if (Number.isFinite(Number(variant?.pricing?.selling_price_incl))) {
+    return money2(variant.pricing.selling_price_incl);
+  }
+  if (isSaleActive(variant) && Number.isFinite(Number(variant?.sale?.sale_price_excl))) {
+    return money2(Number(variant.sale.sale_price_excl) * (1 + VAT_RATE));
+  }
+  if (Number.isFinite(Number(variant?.pricing?.sale_price_excl))) {
+    return money2(Number(variant.pricing.sale_price_excl) * (1 + VAT_RATE));
+  }
+  return money2(Number(variant?.pricing?.selling_price_excl || 0) * (1 + VAT_RATE));
+}
+
+function hasSaleImprovement(beforeVariant, afterVariant) {
+  const wasOnSale = isSaleActive(beforeVariant);
+  const isNowOnSale = isSaleActive(afterVariant);
+  const previousPriceIncl = getUnitPriceIncl(beforeVariant);
+  const currentPriceIncl = getUnitPriceIncl(afterVariant);
+  return isNowOnSale && (!wasOnSale || currentPriceIncl < previousPriceIncl);
+}
+
 /** Sanitize inventory array (replaces full array) */
 function parseInventory(arr) {
   if (!Array.isArray(arr)) return [];
@@ -386,7 +422,7 @@ export async function POST(req) {
       return err(
         400,
         "Missing Stock",
-        "Bevgo fulfilment variants require stock quantities and a warehouse or location."
+        "Bevgo fulfilment variants require stock quantities."
       );
     }
     const nextBarcode = toStr(data?.barcode ?? list[idx]?.barcode);
@@ -421,28 +457,18 @@ export async function POST(req) {
     }
     const priceIncl = Number.isFinite(+updated?.pricing?.selling_price_incl)
       ? money2(updated.pricing.selling_price_incl)
-      : Number.isFinite(+updated?.pricing?.selling_price_excl)
-        ? money2(Number(updated.pricing.selling_price_excl) * (1 + VAT_RATE))
-        : 0;
+      : 0;
     if (!updated.pricing) updated.pricing = {};
     if (Object.prototype.hasOwnProperty.call(patch, "pricing") && patch.pricing) {
       if (Object.prototype.hasOwnProperty.call(patch.pricing, "selling_price_incl")) {
         updated.pricing.selling_price_incl = money2(patch.pricing.selling_price_incl);
         updated.pricing.selling_price_excl = money2(moneyInclToExcl(updated.pricing.selling_price_incl));
-      } else if (Object.prototype.hasOwnProperty.call(patch.pricing, "selling_price_excl")) {
-        updated.pricing.selling_price_excl = money2(patch.pricing.selling_price_excl);
-        updated.pricing.selling_price_incl = money2(Number(updated.pricing.selling_price_excl) * (1 + VAT_RATE));
       }
     }
     if (!Number.isFinite(Number(updated.pricing.selling_price_incl)) || Number(updated.pricing.selling_price_incl) <= 0) {
-      const fallbackIncl = Number(updated.pricing.selling_price_excl) > 0
-        ? Number(updated.pricing.selling_price_excl) * (1 + VAT_RATE)
-        : 0;
-      updated.pricing.selling_price_incl = money2(fallbackIncl);
+      return err(400, "Missing Price", "VAT-inclusive selling price is required for every variant.");
     }
-    if (!Number.isFinite(Number(updated.pricing.selling_price_excl)) || Number(updated.pricing.selling_price_excl) <= 0) {
-      updated.pricing.selling_price_excl = money2(moneyInclToExcl(updated.pricing.selling_price_incl));
-    }
+    updated.pricing.selling_price_excl = money2(moneyInclToExcl(updated.pricing.selling_price_incl));
     if (!updated.sale) updated.sale = {};
     const isTrackedInventory = productFulfillmentMode === "bevgo" || Boolean(updated?.placement?.track_inventory) || (Array.isArray(updated?.inventory) && updated.inventory.length > 0);
     if (isTrackedInventory) {
@@ -515,22 +541,50 @@ export async function POST(req) {
 
     list[idx] = updated;
 
-    await ref.update({
+    const pendingSaleRefreshes = Array.isArray(docData?.meta?.pendingSaleRefreshes)
+      ? [...docData.meta.pendingSaleRefreshes]
+      : [];
+    if (hasSaleImprovement(beforeVariant, list[idx])) {
+      const variantId = toStr(list[idx]?.variant_id);
+      const filtered = pendingSaleRefreshes.filter((entry) => toStr(entry?.variantId) !== variantId);
+      filtered.push({
+        variantId,
+        variantBefore: beforeVariant,
+        variantAfter: list[idx],
+        queuedAt: new Date().toISOString(),
+      });
+      pendingSaleRefreshes.splice(0, pendingSaleRefreshes.length, ...filtered);
+    }
+
+    const preserveLiveVersionDuringReview =
+      toStr(docData?.moderation?.status).toLowerCase() === "published" || hasLiveSnapshotRecord(docData);
+
+    const updatePayload = {
       variants: list,
       moderation: {
         ...(docData?.moderation || {}),
-        status: "draft",
+        status: preserveLiveVersionDuringReview ? "in_review" : "draft",
         reason: "variant_changed",
-        notes: "Variant updates require the listing to be reviewed again before it goes live.",
+        notes: preserveLiveVersionDuringReview
+          ? "Variant updates are in review. The current live version stays visible until the changes are approved."
+          : "Variant updates require the listing to be reviewed again before it goes live.",
         reviewedAt: null,
         reviewedBy: null,
       },
       placement: {
         ...(docData?.placement || {}),
-        isActive: false,
+        isActive: preserveLiveVersionDuringReview ? Boolean(docData?.placement?.isActive) : false,
+      },
+      meta: {
+        ...(docData?.meta || {}),
+        pendingSaleRefreshes,
       },
       "timestamps.updatedAt": FieldValue.serverTimestamp(),
-    });
+    };
+    if (preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(docData)) {
+      updatePayload.live_snapshot = docData;
+    }
+    await ref.update(updatePayload);
 
     const default_variant_id =
       (
@@ -578,6 +632,7 @@ export async function POST(req) {
       variant_id: vid,
       default_variant_id,
       resubmissionRequired: true,
+      liveVersionKept: preserveLiveVersionDuringReview,
       variant: list[idx],
     });
   } catch (e) {

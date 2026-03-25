@@ -2,8 +2,10 @@
 
 import { usePathname } from "next/navigation";
 import { PiessangHeader } from "@/components/header/mega-menu";
+import { ClientTitleSync } from "@/components/layout/client-title-sync";
 import { PiessangFooter } from "@/components/footer/site-footer";
 import { AuthProvider } from "@/components/auth/auth-provider";
+import { DisplayCurrencyProvider } from "@/components/currency/display-currency-provider";
 import type { AuthBootstrap } from "@/lib/auth/bootstrap";
 
 export function AppShell({
@@ -18,9 +20,12 @@ export function AppShell({
 
   return (
     <AuthProvider initialAuthBootstrap={initialAuthBootstrap}>
-      <PiessangHeader showMegaMenu={isHome} />
-      {children}
-      <PiessangFooter />
+      <DisplayCurrencyProvider>
+        <ClientTitleSync />
+        <PiessangHeader showMegaMenu={isHome} />
+        {children}
+        <PiessangFooter />
+      </DisplayCurrencyProvider>
     </AuthProvider>
   );
 }

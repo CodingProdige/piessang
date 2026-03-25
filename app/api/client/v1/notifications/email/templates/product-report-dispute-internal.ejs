@@ -1,0 +1,16 @@
+<h2>Product report dispute submitted</h2>
+
+<p>A seller has disputed a blocked product report decision.</p>
+
+<ul>
+  <li><strong>Product:</strong> <%= productTitle %></li>
+  <li><strong>Product ID:</strong> <%= productId %></li>
+  <li><strong>Seller:</strong> <%= vendorName %></li>
+  <li><strong>Seller slug:</strong> <%= sellerSlug %></li>
+  <li><strong>Report ID:</strong> <%= reportId %></li>
+  <% if (disputeMessage) { %>
+    <li><strong>Dispute message:</strong> <%= disputeMessage %></li>
+  <% } %>
+</ul>
+
+<p>Please review the dispute in the product reports admin queue.</p>

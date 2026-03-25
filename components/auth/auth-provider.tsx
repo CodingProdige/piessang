@@ -13,7 +13,7 @@ import {
   updateProfile,
   type User as FirebaseUser,
 } from "firebase/auth";
-import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { clientAuth } from "@/lib/firebase";
 import { clientDb } from "@/lib/firebase";
 import { EMPTY_AUTH_BOOTSTRAP, type AuthBootstrap } from "@/lib/auth/bootstrap";
@@ -133,6 +133,8 @@ type AuthContextValue = {
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   refreshCart: () => Promise<void>;
+  syncFavoriteState: (productId: string, isFavorite: boolean) => void;
+  syncCartState: (cart: unknown) => void;
   leaveSellerTeam: (sellerSlug?: string) => Promise<void>;
 };
 
@@ -328,10 +330,46 @@ function buildClientProfile(user: FirebaseUser, data: Record<string, any>): Auth
   };
 }
 
+function deriveCartStateFromCart(cart: any): CartState {
+  const items = Array.isArray(cart?.items) ? cart.items : [];
+  const productCounts: Record<string, number> = {};
+  const variantCounts: Record<string, number> = {};
+  let itemCount = 0;
+
+  for (const item of items) {
+    const qty = Math.max(0, Number(item?.quantity ?? item?.qty ?? 0));
+    if (!qty) continue;
+    itemCount += qty;
+
+    const productId =
+      String(item?.product_snapshot?.product?.unique_id || "") ||
+      String(item?.product_unique_id || "") ||
+      String(item?.product?.unique_id || "");
+    const variantId =
+      String(item?.selected_variant_snapshot?.variant_id || "") ||
+      String(item?.selected_variant_id || "") ||
+      String(item?.selected_variant?.variant_id || "");
+
+    if (productId) {
+      productCounts[productId] = (productCounts[productId] ?? 0) + qty;
+    }
+    if (productId && variantId) {
+      const key = `${productId}::${variantId}`;
+      variantCounts[key] = (variantCounts[key] ?? 0) + qty;
+    }
+  }
+
+  return { itemCount, productCounts, variantCounts };
+}
+
 async function ensureClientUserDocument(user: FirebaseUser) {
   if (!clientDb) return null;
 
   const ref = doc(clientDb, "users", user.uid);
+  const existing = await getDoc(ref);
+  if (existing.exists()) {
+    return existing.data();
+  }
 
   await setDoc(
     ref,
@@ -513,6 +551,28 @@ export function AuthProvider({
       productCounts: bootstrap.productCounts,
       variantCounts: bootstrap.variantCounts,
     });
+  }, []);
+
+  const syncFavoriteState = useCallback((productId: string, isFavorite: boolean) => {
+    const normalizedId = String(productId ?? "").trim();
+    if (!normalizedId) return;
+
+    setProfile((current) => {
+      if (!current) return current;
+      const currentIds = Array.isArray(current.favoriteIds) ? current.favoriteIds : [];
+      const nextIds = isFavorite
+        ? Array.from(new Set([...currentIds, normalizedId]))
+        : currentIds.filter((entry) => entry !== normalizedId);
+      return {
+        ...current,
+        favoriteIds: nextIds,
+        favoriteCount: nextIds.length,
+      };
+    });
+  }, []);
+
+  const syncCartState = useCallback((cart: unknown) => {
+    setCartState(deriveCartStateFromCart(cart));
   }, []);
 
   useEffect(() => {
@@ -978,6 +1038,8 @@ export function AuthProvider({
       signOut: handleSignOut,
       refreshProfile,
       refreshCart,
+      syncFavoriteState,
+      syncCartState,
       leaveSellerTeam,
     }),
     [
@@ -989,6 +1051,8 @@ export function AuthProvider({
       profile,
       refreshCart,
       refreshProfile,
+      syncFavoriteState,
+      syncCartState,
       leaveSellerTeam,
       signInWithGoogle,
       user,

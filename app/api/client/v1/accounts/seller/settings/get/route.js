@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { NextResponse } from "next/server";
 
@@ -43,6 +44,8 @@ export async function GET(req) {
         ? seller.media
         : {};
 
+    const deliveryProfile = normalizeSellerDeliveryProfile(seller?.deliveryProfile || {});
+
     return ok({
       seller: {
         uid: owner.id,
@@ -51,6 +54,7 @@ export async function GET(req) {
         vendorName: toStr(seller?.vendorName || seller?.groupVendorName || ""),
         vendorDescription: toStr(seller?.vendorDescription || seller?.description || "").slice(0, 500),
       },
+      deliveryProfile,
       branding: {
         bannerImageUrl: toStr(branding?.bannerImageUrl || branding?.bannerUrl),
         bannerBlurHashUrl: toStr(branding?.bannerBlurHashUrl || branding?.bannerBlurHash),

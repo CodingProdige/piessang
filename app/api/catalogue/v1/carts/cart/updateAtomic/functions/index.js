@@ -1,5 +1,3 @@
-import { doc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
 import { computeLineTotals, computeCartTotals } from "./lineCalculator";
 import { capQuantity } from "./stock";
 import { ensureCartItemKey } from "./keyManager";
@@ -13,94 +11,6 @@ function clone(obj) {
   return obj ? JSON.parse(JSON.stringify(obj)) : obj;
 }
 
-function normalizeInventoryReservations(entries) {
-  const map = new Map();
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    const location_id = String(entry?.location_id || "").trim();
-    const qty = Math.max(0, Number(entry?.qty) || 0);
-    if (!location_id || qty <= 0) continue;
-    map.set(location_id, (map.get(location_id) || 0) + qty);
-  }
-  return [...map.entries()].map(([location_id, qty]) => ({ location_id, qty }));
-}
-
-function mergeInventoryReservations(...lists) {
-  return normalizeInventoryReservations(lists.flatMap((l) => (Array.isArray(l) ? l : [])));
-}
-
-function releaseFromReservations(reservations, releaseQty) {
-  let remaining = Math.max(0, Number(releaseQty) || 0);
-  const released = [];
-  const kept = [];
-
-  for (const row of normalizeInventoryReservations(reservations)) {
-    if (remaining <= 0) {
-      kept.push(row);
-      continue;
-    }
-    const take = Math.min(row.qty, remaining);
-    if (take > 0) released.push({ location_id: row.location_id, qty: take });
-    const left = row.qty - take;
-    if (left > 0) kept.push({ location_id: row.location_id, qty: left });
-    remaining -= take;
-  }
-
-  return { released, remaining: kept, unresolved: remaining };
-}
-
-function applyInventoryDelta(variant, { deltaInventory = 0, reservations = [] } = {}) {
-  const delta = Number(deltaInventory) || 0;
-  const rows = Array.isArray(variant?.inventory)
-    ? variant.inventory.map((row) => ({ ...row }))
-    : [];
-  const normalizedReservations = normalizeInventoryReservations(reservations);
-  const result = {
-    consumed: [],
-    remainingReservations: normalizedReservations
-  };
-
-  if (!delta || !rows.length) return result;
-
-  if (delta > 0) {
-    // Consume inventory from rows in order until requested delta is exhausted.
-    let remaining = delta;
-    for (const row of rows) {
-      if (remaining <= 0) break;
-      const start = Math.max(0, Number(row?.in_stock_qty) || 0);
-      const take = Math.min(start, remaining);
-      row.in_stock_qty = start - take;
-      remaining -= take;
-      if (take > 0) {
-        result.consumed.push({ location_id: String(row?.location_id || ""), qty: take });
-      }
-    }
-    result.remainingReservations = mergeInventoryReservations(normalizedReservations, result.consumed);
-  } else {
-    const releaseQty = Math.abs(delta);
-    const { released, remaining, unresolved } = releaseFromReservations(normalizedReservations, releaseQty);
-
-    for (const rel of released) {
-      const idx = rows.findIndex((row) => String(row?.location_id || "") === String(rel.location_id || ""));
-      const targetIdx = idx >= 0 ? idx : 0;
-      const start = Math.max(0, Number(rows[targetIdx]?.in_stock_qty) || 0);
-      rows[targetIdx].in_stock_qty = start + rel.qty;
-    }
-
-    if (unresolved > 0) {
-      const idx = rows.findIndex(() => true);
-      if (idx >= 0) {
-        const start = Math.max(0, Number(rows[idx]?.in_stock_qty) || 0);
-        rows[idx].in_stock_qty = start + unresolved;
-      }
-    }
-
-    result.remainingReservations = remaining;
-  }
-
-  variant.inventory = rows;
-  return result;
-}
-
 const makeCartItemKey = (productId, variantId) =>
   `cki_${String(productId || "p").slice(-4)}_${String(variantId || "v").slice(-4)}_${Date.now()
     .toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -108,7 +18,7 @@ const makeCartItemKey = (productId, variantId) =>
 /* -------------------------------------------------------
    Main transaction handler. Runs inside Firestore tx.
 ------------------------------------------------------- */
-export async function updateCartAtomic(tx, body) {
+export async function updateCartAtomic(tx, body, db) {
   const customerId = String(body?.customerId || "").trim();
   if (!customerId) {
     throw { code: 400, title: "Missing Input", message: "customerId is required." };
@@ -125,7 +35,7 @@ export async function updateCartAtomic(tx, body) {
   const providedKey = String(body?.cart_item_key ?? "").trim();
   const qtyInput = Number(body?.quantity);
 
-  const cartRef = doc(db, "carts", customerId);
+  const cartRef = db.collection("carts").doc(customerId);
   const cartSnap = await tx.get(cartRef);
   const now = nowIso();
 
@@ -147,7 +57,7 @@ export async function updateCartAtomic(tx, body) {
     timestamps: { createdAt: now, updatedAt: now }
   };
 
-  const cart = cartSnap.exists() ? cartSnap.data() : emptyCart;
+  const cart = cartSnap.exists ? cartSnap.data() : emptyCart;
   const baseCartInfo =
     cart && typeof cart.cart === "object" && cart.cart
       ? cart.cart
@@ -183,8 +93,6 @@ export async function updateCartAtomic(tx, body) {
   const existingIndex = items.findIndex((it) => String(it?.cart_item_key || "") === String(cartItemKey));
   const existingItem = existingIndex >= 0 ? items[existingIndex] : null;
   const currentQty = Number(existingItem?.quantity) || 0;
-  const existingInventoryReservations = normalizeInventoryReservations(existingItem?.inventory_reservations);
-
   if (requireKey && !existingItem && mode !== "remove") {
     throw { code: 404, title: "Item Not Found", message: "Cart item not found for provided key." };
   }
@@ -243,9 +151,9 @@ export async function updateCartAtomic(tx, body) {
       throw { code: 400, title: "Missing Input", message: "productId and variantId are required." };
     }
 
-    productRef = doc(db, "products_v2", resolvedProductId);
+    productRef = db.collection("products_v2").doc(resolvedProductId);
     const productSnap = await tx.get(productRef);
-    if (!productSnap.exists()) {
+    if (!productSnap.exists) {
       throw { code: 404, title: "Product Not Found", message: "No product with this productId." };
     }
     productSnapshot = productSnap.data();
@@ -402,71 +310,13 @@ export async function updateCartAtomic(tx, body) {
     deltaSale = delta;
   }
 
-  let deltaInventory = 0;
-  if (increaseAmount > 0) {
-    deltaInventory = regularQtyToAdd;
-  } else if (delta < 0 && !isSaleLine) {
-    deltaInventory = delta;
-  }
-  let inventoryMutationResult = {
-    consumed: [],
-    remainingReservations: existingInventoryReservations
-  };
-
   const adjustedVariantSnapshot = (() => {
     const v = clone(variantSnapshot);
     if (!v) return v;
-
-    // Update sale availability unless disabled by admin
-    if (v.sale) {
-      const adminDisabled = Boolean(v.sale.disabled_by_admin);
-      if (!adminDisabled) {
-        const startQty = Math.max(0, Number(v.sale.qty_available) || 0);
-        const nextQty = Math.max(0, startQty - deltaSale);
-        v.sale.qty_available = nextQty;
-        v.sale.is_on_sale = nextQty > 0;
-      }
-    }
-
     return v;
   })();
 
-  /* -------------------------------------------------------
-     Persist product stock changes when applicable
-  ------------------------------------------------------- */
   let updatedVariant = adjustedVariantSnapshot;
-
-  if (productRef && productSnapshot) {
-    const updatedProduct = clone(productSnapshot);
-    const variantsArr = Array.isArray(updatedProduct.variants) ? [...updatedProduct.variants] : [];
-    const vIdx = variantsArr.findIndex((v) => String(v?.variant_id) === String(resolvedVariantId));
-    if (vIdx >= 0) {
-      const pv = clone(variantsArr[vIdx]) || {};
-
-      if (pv.sale) {
-        const adminDisabled = Boolean(pv.sale.disabled_by_admin);
-        if (!adminDisabled) {
-          const startSale = Math.max(0, Number(pv.sale.qty_available) || 0);
-          const nextSale = Math.max(0, startSale - deltaSale);
-          pv.sale.qty_available = nextSale;
-          pv.sale.is_on_sale = nextSale > 0;
-        }
-      }
-
-      inventoryMutationResult = applyInventoryDelta(pv, {
-        deltaInventory,
-        reservations: existingInventoryReservations
-      });
-
-      variantsArr[vIdx] = pv;
-      updatedVariant = pv;
-      updatedProduct.variants = variantsArr;
-      tx.update(productRef, {
-        variants: variantsArr,
-        "timestamps.updatedAt": now
-      });
-    }
-  }
 
   if (mode === "remove" || nextExistingQty <= 0) {
     if (existingIndex >= 0) items.splice(existingIndex, 1);
@@ -481,12 +331,6 @@ export async function updateCartAtomic(tx, body) {
       selected_variant_snapshot: safeVariantSnapshot,
       line_totals: computeLineTotals(safeVariantSnapshot, nextExistingQty)
     };
-    if (!safeVariantSnapshot?.sale?.is_on_sale) {
-      line.inventory_reservations =
-        deltaInventory < 0
-          ? inventoryMutationResult.remainingReservations
-          : existingInventoryReservations;
-    }
 
     if (existingIndex >= 0) {
       items[existingIndex] = line;
@@ -515,11 +359,7 @@ export async function updateCartAtomic(tx, body) {
         ...line,
         quantity: nextQty,
         selected_variant_snapshot: regularVariant,
-        line_totals: computeLineTotals(regularVariant, nextQty),
-        inventory_reservations: mergeInventoryReservations(
-          line?.inventory_reservations,
-          inventoryMutationResult.consumed
-        )
+        line_totals: computeLineTotals(regularVariant, nextQty)
       };
       items[existingRegularIdx] = mergedLine;
     } else {
@@ -529,8 +369,7 @@ export async function updateCartAtomic(tx, body) {
         cart_item_key: newKey,
         product_snapshot: clone(productSnapshot),
         selected_variant_snapshot: regularVariant,
-        line_totals: computeLineTotals(regularVariant, regularQtyToAdd),
-        inventory_reservations: normalizeInventoryReservations(inventoryMutationResult.consumed)
+        line_totals: computeLineTotals(regularVariant, regularQtyToAdd)
       };
       items.push(newLine);
       if (!generatedKey) generatedKey = newKey;
@@ -551,7 +390,12 @@ export async function updateCartAtomic(tx, body) {
 
   const finalCart = {
     ...cart,
-    cart: { ...baseCartInfo, channel },
+    cart: {
+      ...baseCartInfo,
+      channel,
+      status: item_count > 0 ? "active" : "empty",
+      checkout_started_at: null,
+    },
     items,
     totals,
     item_count,

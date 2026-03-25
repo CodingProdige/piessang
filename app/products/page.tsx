@@ -24,11 +24,14 @@ type ProductVariant = {
     volume_unit?: string | null;
   };
   pricing?: {
+    selling_price_incl?: number;
     selling_price_excl?: number;
+    sale_price_incl?: number;
     sale_price_excl?: number;
   };
   sale?: {
     is_on_sale?: boolean;
+    sale_price_incl?: number;
     sale_price_excl?: number;
   };
   placement?: {
@@ -49,6 +52,7 @@ type ProductItem = {
     product?: {
       unique_id?: string | number;
       title?: string | null;
+      overview?: string | null;
       description?: string | null;
       keywords?: string[];
     };
@@ -161,6 +165,7 @@ type CatalogueBrandItem = {
 };
 
 const VAT_MULTIPLIER = 1.15;
+const VAT_DIVISOR = 1.15;
 
 function humanizeSlug(value: string) {
   return value
@@ -252,6 +257,23 @@ export async function generateMetadata({
         robots: { index: false, follow: false },
       };
     }
+
+    if (payload?.data?.product?.title) {
+      const title = String(payload.data.product.title).trim();
+      const description = String(
+        payload?.data?.product?.overview ||
+        payload?.data?.product?.description ||
+        `Buy ${title} on Piessang.`,
+      )
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 160);
+      return {
+        title: `${title} | Piessang`,
+        description,
+      };
+    }
   } catch {
     // ignore metadata fetch failures and fall back to default indexing
   }
@@ -287,11 +309,20 @@ function formatCurrencyInclVat(value?: number) {
 
 function getVariantPriceExVat(variant?: ProductVariant) {
   if (!variant) return null;
+  if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_incl === "number") {
+    return variant.sale.sale_price_incl / VAT_DIVISOR;
+  }
   if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_excl === "number") {
     return variant.sale.sale_price_excl;
   }
+  if (typeof variant.pricing?.sale_price_incl === "number") {
+    return variant.pricing.sale_price_incl / VAT_DIVISOR;
+  }
   if (typeof variant.pricing?.sale_price_excl === "number") {
     return variant.pricing.sale_price_excl;
+  }
+  if (typeof variant.pricing?.selling_price_incl === "number") {
+    return variant.pricing.selling_price_incl / VAT_DIVISOR;
   }
   if (typeof variant.pricing?.selling_price_excl === "number") {
     return variant.pricing.selling_price_excl;
@@ -1130,42 +1161,6 @@ export async function ProductsPage({
           ) : null}
         </div>
       </section>
-
-      {brandBanner ? (
-        <section className="mt-4 overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-          <div className="grid gap-4 px-4 py-4 sm:px-5 sm:py-5 lg:grid-cols-[minmax(0,1fr)_260px] lg:items-center">
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
-                Brand spotlight
-              </p>
-              <h2 className="mt-1 truncate text-[22px] font-semibold leading-tight text-[#202020]">
-                {brandBanner.title}
-              </h2>
-              <p className="mt-1 text-[12px] font-semibold text-[#907d4c]">
-                {brandBanner.productCount} products available
-              </p>
-              {brandBanner.description ? (
-                <p className="mt-2 max-w-[70ch] text-[13px] leading-[1.55] text-[#57636c]">
-                  {brandBanner.description}
-                </p>
-              ) : null}
-            </div>
-            <div className="overflow-hidden rounded-[8px] bg-[#fafafa] p-3">
-              <div className="relative aspect-[4/3] overflow-hidden rounded-[8px] bg-white shadow-[0_4px_12px_rgba(20,24,27,0.05)]">
-                <BlurhashImage
-                  src={brandBanner.imageUrl ?? ""}
-                  blurHash={brandBanner.blurHashUrl ?? ""}
-                  alt={brandBanner.title}
-                  sizes="260px"
-                  className="h-full w-full"
-                  imageClassName="object-contain p-3"
-                  fallbackClassName="px-3 text-center"
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-      ) : null}
 
       <section className="mt-5 overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <ProductsToolbar

@@ -70,11 +70,11 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const piessangFulfilmentLines = enrichedItems.filter((item) => getLineFulfillmentMode(item) === "bevgo");
   const allQty = items.reduce((sum, item) => sum + getLineQuantity(item), 0);
   const subtotalIncl = Number(items.reduce((sum, item) => sum + getLinePriceIncl(item), 0).toFixed(2));
-  const orderStatus = toLower(order?.order?.status?.order || "");
-  const paymentStatus = toLower(order?.payment?.status || order?.order?.status?.payment || "");
-  const fulfillmentStatus = toLower(order?.order?.status?.fulfillment || "");
+  const orderStatus = toLower(order?.lifecycle?.orderStatus || order?.order?.status?.order || "");
+  const paymentStatus = toLower(order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "");
+  const fulfillmentStatus = toLower(order?.lifecycle?.fulfillmentStatus || order?.order?.status?.fulfillment || "");
   const deliveryProgress = buildOrderDeliveryProgress({ ...order, items: enrichedItems }).progress;
-  const newOrder = ["draft", "confirmed"].includes(orderStatus);
+  const newOrder = ["payment_pending", "confirmed"].includes(orderStatus);
   const fulfilled = orderStatus === "completed" || fulfillmentStatus === "delivered";
   const unfulfilled = !fulfilled && orderStatus !== "cancelled";
 

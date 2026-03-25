@@ -1,20 +1,9 @@
 export const runtime = "nodejs";
 
-import { applyOrderPaymentSuccess } from "@/lib/payments/applyOrderPaymentSuccess";
 import { NextResponse } from "next/server";
 import https from "https";
 import querystring from "querystring";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  setDoc,
-  updateDoc,
-  where
-} from "firebase/firestore";
-import { db } from "@/lib/firebaseConfig";
+import { getAdminDb } from "@/lib/firebase/admin";
 import crypto from "crypto";
 
 /* ───────── HELPERS ───────── */
@@ -132,6 +121,10 @@ function peachRequest(path, form) {
 export async function POST(req) {
   try {
     ensureConfig();
+    const db = getAdminDb();
+    if (!db) {
+      return err(500, "Database Unavailable", "Admin database is not configured.");
+    }
 
     const {
       userId,
@@ -149,10 +142,10 @@ export async function POST(req) {
       return err(400, "Missing Information", "Please check your payment details.");
     }
 
-    const userRef = doc(db, "users", userId);
-    const snap = await getDoc(userRef);
+    const userRef = db.collection("users").doc(userId);
+    const snap = await userRef.get();
 
-    if (!snap.exists()) {
+    if (!snap.exists) {
       return err(404, "User Not Found", "User does not exist.");
     }
 
@@ -174,6 +167,44 @@ export async function POST(req) {
     }
 
     const formattedAmount = Number(amount).toFixed(2);
+
+    const orderSnap = await db
+      .collection("orders_v2")
+      .where("order.merchantTransactionId", "==", merchantTransactionId)
+      .limit(1)
+      .get();
+
+    if (orderSnap.empty) {
+      return err(404, "Order Not Found", "No order matches this transaction.");
+    }
+
+    const orderDoc = orderSnap.docs[0];
+    const orderData = orderDoc.data() || {};
+    const orderCustomerId =
+      orderData?.meta?.orderedFor ||
+      orderData?.order?.customerId ||
+      orderData?.customer_snapshot?.customerId ||
+      null;
+    if (orderCustomerId && String(orderCustomerId) !== String(userId)) {
+      return err(403, "Forbidden", "You cannot pay for another customer's order.");
+    }
+    if (orderData?.order?.status?.payment === "paid" || orderData?.payment?.status === "paid") {
+      return err(409, "Already Paid", "This order has already been paid.");
+    }
+    const expectedAmount = Number(orderData?.payment?.required_amount_incl || 0).toFixed(2);
+    const expectedCurrency = String(orderData?.payment?.currency || currency || "").trim();
+    if (formattedAmount !== expectedAmount) {
+      return err(400, "Amount Mismatch", "The payment amount no longer matches the order total.", {
+        expectedAmount,
+        providedAmount: formattedAmount,
+      });
+    }
+    if (String(currency || "").trim() !== expectedCurrency) {
+      return err(400, "Currency Mismatch", "The payment currency no longer matches the order.", {
+        expectedCurrency,
+        providedCurrency: currency,
+      });
+    }
 
     const redirectUrl = `${BASE_URL}/api/v1/payments/peach/shopper-redirect?merchantTransactionId=${encodeURIComponent(
       merchantTransactionId
@@ -289,69 +320,43 @@ export async function POST(req) {
       updatedCards = cardsList;
     }
 
-    await updateDoc(userRef, {
+    await userRef.update({
       "paymentMethods.cards": updatedCards
     });
 
     /* ───── RESOLVE ORDER ───── */
 
-    const orderSnap = await getDocs(
-      query(
-        collection(db, "orders_v2"),
-        where("order.merchantTransactionId", "==", merchantTransactionId)
-      )
-    );
-
     let orderId = null;
-
     if (!orderSnap.empty) {
       orderId = orderSnap.docs[0].id;
-    } else {
-      const fallbackSnap = await getDocs(
-        query(
-          collection(db, "orders_v2"),
-          where("order.orderNumber", "==", merchantTransactionId)
-        )
-      );
-      if (!fallbackSnap.empty) {
-        orderId = fallbackSnap.docs[0].id;
-      }
     }
 
     if (!orderId) {
       throw new Error(`Order not found in orders_v2: ${merchantTransactionId}`);
     }
 
-    /* ───── APPLY ORDER PAYMENT SUCCESS ───── */
-
-    await applyOrderPaymentSuccess({
-      orderId,
-
-      provider: "peach",
-      method: "card",
-      chargeType: "card",
-
-      threeDSecureId: null,
-
-      merchantTransactionId,
-      peachTransactionId: gateway.id,
-
-      amount_incl: Number(formattedAmount),
-      currency
-    });
-
     const orderNumberFromUrl = getQueryParam(
       shopperResultUrlBase,
       "orderNumber"
     );
 
-    await setDoc(
-      doc(db, "peach_redirects", merchantTransactionId),
+    await db.collection("peach_redirects").doc(merchantTransactionId).set(
       {
         merchantTransactionId,
+        orderId,
         paymentId: gateway.id,
         shopperResultUrl: shopperResultUrlBase,
         orderNumber: orderNumberFromUrl,
+        payment: {
+          provider: "peach",
+          method: "card",
+          chargeType: "card",
+          merchantTransactionId,
+          peachTransactionId: gateway.id,
+          threeDSecureId: null,
+          amount_incl: Number(formattedAmount),
+          currency,
+        },
         createdAt: now(),
         updatedAt: now()
       },

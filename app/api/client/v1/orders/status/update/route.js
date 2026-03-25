@@ -17,7 +17,7 @@ const now = () => new Date().toISOString();
 const r2 = value => Number((Number(value) || 0).toFixed(2));
 
 const allowedOrderStatuses = [
-  "draft",
+  "payment_pending",
   "confirmed",
   "processing",
   "dispatched",
@@ -26,7 +26,7 @@ const allowedOrderStatuses = [
 ];
 
 const defaultOrderReasons = {
-  draft: "Order set to draft.",
+  payment_pending: "Order is awaiting payment confirmation.",
   confirmed: "Order confirmed.",
   processing: "Order is being processed.",
   dispatched: "Order dispatched.",

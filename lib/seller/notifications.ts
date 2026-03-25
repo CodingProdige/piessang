@@ -1,5 +1,4 @@
-import { collection, getDocs } from "firebase/firestore";
-import { db } from "@/lib/firebaseConfig";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { sanitizeInviteEmail } from "@/lib/seller/team";
 
 function toStr(value: unknown, fallback = "") {
@@ -22,8 +21,11 @@ export async function collectSellerNotificationEmails(params: {
   for (const email of fallbackEmails) addEmail(emails, email);
   if (!sellerSlug) return Array.from(emails);
 
-  const snap = await getDocs(collection(db, "users"));
-  snap.forEach((docSnap) => {
+  const db = getAdminDb();
+  if (!db) return Array.from(emails);
+
+  const snap = await db.collection("users").get();
+  snap.forEach((docSnap: any) => {
     const data = docSnap.data() || {};
     const seller = data?.seller && typeof data.seller === "object" ? data.seller : {};
     const team = seller?.team && typeof seller.team === "object" ? seller.team : {};
@@ -47,6 +49,28 @@ export async function collectSellerNotificationEmails(params: {
       addEmail(emails, email);
       addEmail(emails, seller?.contactEmail);
     }
+  });
+
+  return Array.from(emails);
+}
+
+export async function collectSystemAdminNotificationEmails(params?: {
+  fallbackEmails?: string[];
+}) {
+  const fallbackEmails = Array.isArray(params?.fallbackEmails) ? params.fallbackEmails : [];
+  const emails = new Set<string>();
+  for (const email of fallbackEmails) addEmail(emails, email);
+
+  const db = getAdminDb();
+  if (!db) return Array.from(emails);
+
+  const snap = await db.collection("users").get();
+  snap.forEach((docSnap: any) => {
+    const data = docSnap.data() || {};
+    const systemAccessType = toStr(data?.system?.accessType || data?.systemAccessType).toLowerCase();
+    if (systemAccessType !== "admin") return;
+    addEmail(emails, data?.email);
+    addEmail(emails, data?.seller?.contactEmail);
   });
 
   return Array.from(emails);

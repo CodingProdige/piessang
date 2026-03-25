@@ -40,6 +40,9 @@ export async function POST(req) {
         return {
           ...loc,
           ...updates,
+          suburb: updates.suburb ?? loc.suburb ?? "",
+          latitude: typeof updates.latitude === "number" ? updates.latitude : loc.latitude ?? null,
+          longitude: typeof updates.longitude === "number" ? updates.longitude : loc.longitude ?? null,
           updatedAt: now(),
         };
       }

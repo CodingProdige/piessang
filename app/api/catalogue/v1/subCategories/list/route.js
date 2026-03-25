@@ -1,7 +1,8 @@
-// app/api/sub_categories/slugs/route.js
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 import { NextResponse } from "next/server";
-import { db } from "@/lib/firebase";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -9,15 +10,20 @@ const toBool=v=>typeof v==="boolean"?v:v==null?null:["true","1","yes"].includes(
 
 export async function GET(req){
   try{
+    const db = getAdminDb();
+    if (!db) {
+      return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
+    }
+
     const { searchParams } = new URL(req.url);
     const category = (searchParams.get("category")||"").trim();
     const isActive = toBool(searchParams.get("isActive"));
 
-    const filters = [];
-    if (category)        filters.push(where("grouping.category","==", category));
-    if (isActive!==null) filters.push(where("placement.isActive","==", isActive));
+    let queryRef = db.collection("sub_categories");
+    if (category) queryRef = queryRef.where("grouping.category","==", category);
+    if (isActive!==null) queryRef = queryRef.where("placement.isActive","==", isActive);
 
-    const rs   = await getDocs(query(collection(db,"sub_categories"), ...filters));
+    const rs   = await queryRef.get();
     const rows = rs.docs.map(d => d.data() || {});
     rows.sort((a,b)=>{
       const ap = Number(a?.placement?.position ?? Number.POSITIVE_INFINITY);

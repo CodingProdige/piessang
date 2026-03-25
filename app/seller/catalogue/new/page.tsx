@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { SellerPageIntro } from "@/components/seller/page-intro";
 import { clientStorage } from "@/lib/firebase";
 import { getSellerBlockReasonFix, getSellerBlockReasonLabel } from "@/lib/seller/account-status";
+import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
 import {
   buildMarketplaceFeeSnapshot,
   describeMarketplaceFeeRule,
@@ -41,6 +42,7 @@ type CreatedProductSummary = {
   brandTitle: string;
   vendorName: string;
   moderationStatus: string;
+  moderationReason?: string;
 };
 
 type ProductImage = {
@@ -216,6 +218,25 @@ function exclToIncl(value: string | number) {
   return money2(Number(value) * (1 + VAT_RATE));
 }
 
+function variantEffectiveSellingPriceIncl(variantLike: {
+  pricing?: { selling_price_incl?: number | string | null };
+  sale?: { is_on_sale?: boolean; discount_percent?: number | string | null; sale_price_incl?: number | string | null };
+}) {
+  const basePriceIncl = money2(variantLike?.pricing?.selling_price_incl || 0);
+  const salePriceIncl = money2(variantLike?.sale?.sale_price_incl || 0);
+  const discountPercent = Math.max(0, Math.min(100, Number(variantLike?.sale?.discount_percent || 0)));
+  const isOnSale = Boolean(variantLike?.sale?.is_on_sale) && discountPercent > 0;
+
+  if (isOnSale && salePriceIncl > 0) return salePriceIncl;
+  if (isOnSale) return money2(basePriceIncl * (1 - discountPercent / 100));
+  return basePriceIncl;
+}
+
+function notifyAdminBadgeRefresh() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("piessang:refresh-admin-badges"));
+}
+
 function normalizeVolumeUnit(value: string) {
   const lower = String(value ?? "").trim().toLowerCase();
   if (["l", "lt", "liter", "litre", "liters", "litres"].includes(lower)) return "lt";
@@ -281,6 +302,7 @@ function formatModerationStatus(status: string) {
   if (!normalized) return "draft";
   if (normalized === "awaiting_stock") return "awaiting stock from supplier";
   if (normalized === "in_review") return "in review";
+  if (normalized === "blocked") return "blocked";
   return normalized.replace(/_/g, " ");
 }
 
@@ -698,6 +720,20 @@ function RichTextEditor({
 }
 
 export default function SellerCatalogueNewPage() {
+  return <SellerCatalogueEditor />;
+}
+
+type SellerCatalogueEditorProps = {
+  editorProductIdOverride?: string;
+  sellerOverride?: string;
+  embeddedMode?: boolean;
+};
+
+export function SellerCatalogueEditor({
+  editorProductIdOverride,
+  sellerOverride,
+  embeddedMode = false,
+}: SellerCatalogueEditorProps = {}) {
   const { authReady, isAuthenticated, isSeller, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
@@ -705,8 +741,15 @@ export default function SellerCatalogueNewPage() {
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const variantUploadInputRef = useRef<HTMLInputElement | null>(null);
   const editorProductId = useMemo(
-    () => searchParams.get("unique_id")?.trim() || searchParams.get("id")?.trim() || "",
-    [searchParams],
+    () => {
+      const nextId =
+        editorProductIdOverride ??
+        searchParams.get("unique_id")?.trim() ??
+        searchParams.get("id")?.trim() ??
+        "";
+      return String(nextId).trim();
+    },
+    [editorProductIdOverride, searchParams],
   );
 
   const sellerContexts = useMemo<SellerContextItem[]>(() => {
@@ -753,17 +796,19 @@ export default function SellerCatalogueNewPage() {
   }, [profile?.accountName, profile?.sellerActiveSellerSlug, profile?.sellerCode, profile?.sellerManagedAccounts, profile?.sellerSlug, profile?.sellerVendorName]);
 
   const activeSellerSlug = useMemo(() => {
-    const currentSeller = searchParams.get("seller")?.trim() || "";
+    const currentSeller = String(sellerOverride ?? searchParams.get("seller")?.trim() ?? "").trim();
     if (currentSeller && sellerContexts.some((item) => item.sellerSlug === currentSeller)) {
       return currentSeller;
     }
     return sellerContexts[0]?.sellerSlug || profile?.sellerActiveSellerSlug?.trim() || profile?.sellerSlug?.trim() || profile?.sellerCode?.trim() || "";
-  }, [profile?.sellerActiveSellerSlug, profile?.sellerCode, profile?.sellerSlug, searchParams, sellerContexts]);
+  }, [profile?.sellerActiveSellerSlug, profile?.sellerCode, profile?.sellerSlug, searchParams, sellerContexts, sellerOverride]);
 
   const activeSellerContext = useMemo(() => {
     return sellerContexts.find((item) => item.sellerSlug === activeSellerSlug) ?? sellerContexts[0] ?? null;
   }, [activeSellerSlug, sellerContexts]);
 
+  const isSystemAdmin = String(profile?.systemAccessType ?? "").trim().toLowerCase() === "admin";
+  const canUseSellerEditor = isSeller || isSystemAdmin;
   const vendorName = activeSellerContext?.vendorName ?? profile?.sellerVendorName ?? "";
   const sellerBlocked = String(activeSellerContext?.status || profile?.sellerStatus || "").trim().toLowerCase() === "blocked";
   const sellerBlockedReasonCode = activeSellerContext?.blockedReasonCode || profile?.sellerBlockedReasonCode || "other";
@@ -813,8 +858,6 @@ export default function SellerCatalogueNewPage() {
   });
   const [inventoryTracking, setInventoryTracking] = useState(false);
   const [fulfillmentMode, setFulfillmentMode] = useState<"seller" | "bevgo">("seller");
-  const [leadTimeDays, setLeadTimeDays] = useState("3");
-  const [cutoffTime, setCutoffTime] = useState("10:00");
   const [draggedImageIndex, setDraggedImageIndex] = useState<number | null>(null);
   const [dropTargetIndex, setDropTargetIndex] = useState<number | null>(null);
   const [draggedVariantImageIndex, setDraggedVariantImageIndex] = useState<number | null>(null);
@@ -834,6 +877,9 @@ export default function SellerCatalogueNewPage() {
   const [editingVariantIndex, setEditingVariantIndex] = useState<number | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showFulfillmentChangeModal, setShowFulfillmentChangeModal] = useState(false);
+  const [showDraftImpactModal, setShowDraftImpactModal] = useState(false);
+  const [draftImpactModalTitle, setDraftImpactModalTitle] = useState("Confirm changes");
+  const [draftImpactModalMessage, setDraftImpactModalMessage] = useState("");
   const [showSidebarSummaryDrawer, setShowSidebarSummaryDrawer] = useState(false);
   const [showPublishDrawer, setShowPublishDrawer] = useState(false);
   const [showMobileToolsDrawer, setShowMobileToolsDrawer] = useState(false);
@@ -860,9 +906,17 @@ export default function SellerCatalogueNewPage() {
   const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [productDisputeMessage, setProductDisputeMessage] = useState("");
+  const [productDisputeSubmitting, setProductDisputeSubmitting] = useState(false);
   const [createdProduct, setCreatedProduct] = useState<CreatedProductSummary | null>(null);
   const [loadedProductSku, setLoadedProductSku] = useState("");
+  const [loadedProductSellerCode, setLoadedProductSellerCode] = useState("");
+  const [loadedProductSellerSlug, setLoadedProductSellerSlug] = useState("");
+  const [loadedProductVendorName, setLoadedProductVendorName] = useState("");
+  const [productAccessDenied, setProductAccessDenied] = useState(false);
   const [feeConfig, setFeeConfig] = useState(DEFAULT_MARKETPLACE_FEE_CONFIG);
+  const [sellerDeliverySettingsReady, setSellerDeliverySettingsReady] = useState(true);
+  const draftImpactResolverRef = useRef<((value: boolean) => void) | null>(null);
   const marketplaceCategories = useMemo(
     () => (feeConfig?.categories?.length ? feeConfig.categories : SELLER_CATALOGUE_CATEGORIES),
     [feeConfig],
@@ -943,14 +997,17 @@ export default function SellerCatalogueNewPage() {
     [selectedFeeRule.rule],
   );
   const variantBasePriceIncl = money2(variantDraft.sellingPriceIncl || 0);
-  const selectedSuccessFeePercent = useMemo(
-    () => estimateMarketplaceSuccessFeePercent(selectedFeeRule.rule, variantBasePriceIncl || 0),
-    [selectedFeeRule.rule, variantBasePriceIncl],
-  );
   const variantSaleDiscountPercent = Number(variantDraft.saleDiscountPercent || 0);
   const variantSalePreviewIncl = variantDraft.isOnSale && variantSaleDiscountPercent > 0
     ? money2(variantBasePriceIncl * (1 - variantSaleDiscountPercent / 100))
     : 0;
+  const variantEffectivePriceIncl = variantDraft.isOnSale && variantSalePreviewIncl > 0
+    ? variantSalePreviewIncl
+    : variantBasePriceIncl;
+  const selectedSuccessFeePercent = useMemo(
+    () => estimateMarketplaceSuccessFeePercent(selectedFeeRule.rule, variantEffectivePriceIncl || 0),
+    [selectedFeeRule.rule, variantEffectivePriceIncl],
+  );
   const variantLogisticsReady = useMemo(() => {
     if (fulfillmentMode !== "bevgo") return true;
     return marketplaceVariantLogisticsComplete({
@@ -977,7 +1034,7 @@ export default function SellerCatalogueNewPage() {
     return buildMarketplaceFeeSnapshot({
       categorySlug: category,
       subCategorySlug: subCategory,
-      sellingPriceIncl: variantBasePriceIncl,
+      sellingPriceIncl: variantEffectivePriceIncl,
       weightKg: Number(variantDraft.weightKg || 0),
       lengthCm: Number(variantDraft.lengthCm || 0),
       widthCm: Number(variantDraft.widthCm || 0),
@@ -992,7 +1049,7 @@ export default function SellerCatalogueNewPage() {
     feeConfig,
     fulfillmentMode,
     subCategory,
-    variantBasePriceIncl,
+    variantEffectivePriceIncl,
     variantDraft.heightCm,
     variantDraft.inventoryQty,
     variantDraft.lengthCm,
@@ -1013,8 +1070,7 @@ export default function SellerCatalogueNewPage() {
       { label: "Description", ready: descriptionPlainText.trim().length > 10 },
       { label: "Keywords", ready: keywordTags.length > 0 },
       { label: "Images", ready: productImages.length > 0 },
-      ...(fulfillmentMode === "seller" ? [{ label: "Lead time", ready: leadTimeDays.trim().length > 0 }] : []),
-      ...(fulfillmentMode === "seller" ? [{ label: "Cutoff time", ready: cutoffTime.trim().length > 0 }] : []),
+      ...(fulfillmentMode === "seller" ? [{ label: "Delivery settings", ready: sellerDeliverySettingsReady }] : []),
       ...(fulfillmentMode === "bevgo" ? [{ label: "Variant logistics", ready: variantLogisticsReady }] : []),
       { label: "Variants", ready: variantItems.length > 0 },
     ],
@@ -1024,8 +1080,6 @@ export default function SellerCatalogueNewPage() {
       descriptionPlainText,
       fulfillmentMode,
       keywordTags.length,
-      leadTimeDays,
-      cutoffTime,
       overview,
       productImages.length,
       productSku,
@@ -1034,6 +1088,7 @@ export default function SellerCatalogueNewPage() {
       uniqueId.length,
       variantItems.length,
       variantLogisticsReady,
+      sellerDeliverySettingsReady,
     ],
   );
   const missingRequirements = publishRequirements.filter((item) => !item.ready);
@@ -1055,11 +1110,36 @@ export default function SellerCatalogueNewPage() {
     if (error) setShowErrorDialog(true);
   }, [error]);
 
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeSellerSlug) {
+      setSellerDeliverySettingsReady(true);
+      return;
+    }
+
+    fetch(`/api/client/v1/accounts/seller/settings/get?sellerSlug=${encodeURIComponent(activeSellerSlug)}`, {
+      cache: "no-store",
+    })
+      .then((response) => response.json().catch(() => ({})))
+      .then((payload) => {
+        if (cancelled) return;
+        const profile = payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {};
+        setSellerDeliverySettingsReady(hasSellerDeliverySettings(profile));
+      })
+      .catch(() => {
+        if (!cancelled) setSellerDeliverySettingsReady(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSellerSlug]);
+
   const formIsValid =
     Boolean(authReady) &&
     Boolean(isAuthenticated) &&
-    Boolean(isSeller) &&
-    Boolean(vendorName) &&
+    Boolean(canUseSellerEditor) &&
+    Boolean(vendorName || loadedProductVendorName || isSystemAdmin) &&
     uniqueId.length === 8 &&
     title.trim().length > 2 &&
     category.trim().length > 0 &&
@@ -1069,9 +1149,47 @@ export default function SellerCatalogueNewPage() {
     descriptionPlainText.trim().length > 10 &&
     productSku.trim().length > 0 &&
     keywordTags.length > 0 &&
-    (fulfillmentMode === "bevgo" || leadTimeDays.trim().length > 0) &&
-    (fulfillmentMode === "bevgo" || cutoffTime.trim().length > 0) &&
     !submitting;
+
+  const moderationStatusKey = String(createdProduct?.moderationStatus ?? "draft").trim().toLowerCase();
+  const canSubmitReview =
+    !isSystemAdmin &&
+    Boolean(activeProductId) &&
+    variantItems.length > 0 &&
+    !submitting &&
+    (fulfillmentMode !== "seller" || sellerDeliverySettingsReady) &&
+    moderationStatusKey !== "in_review" &&
+    moderationStatusKey !== "published" &&
+    moderationStatusKey !== "awaiting_stock" &&
+    moderationStatusKey !== "blocked";
+  const submitReviewLabel = moderationStatusKey === "rejected" ? "Re-submit for review" : "Submit for review";
+
+  async function submitProductBlockDispute() {
+    if (!activeProductId || !productDisputeMessage.trim()) return;
+    setProductDisputeSubmitting(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await fetch("/api/client/v1/products/reports/dispute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: activeProductId,
+          message: productDisputeMessage,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to submit the dispute.");
+      }
+      setMessage(payload?.message || "Dispute submitted.");
+      setProductDisputeMessage("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to submit the dispute.");
+    } finally {
+      setProductDisputeSubmitting(false);
+    }
+  }
 
   const renderPublishingChecklist = () => (
     <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -1108,7 +1226,7 @@ export default function SellerCatalogueNewPage() {
   );
 
   const renderSidebarSummary = () => (
-    <>
+    <div className={["space-y-5", embeddedMode ? "pt-5" : "pt-4"].join(" ")}>
       <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Status</p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1119,21 +1237,70 @@ export default function SellerCatalogueNewPage() {
             {createdProduct ? "Saved as a draft." : "Not yet saved."}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => void submitForReview()}
-          disabled={!activeProductId || variantItems.length === 0 || submitting}
-          className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Submit for review
-        </button>
-        <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-          {variantItems.length === 0
-            ? "Add at least one variant before you can submit this draft."
-            : inventoryTrackingRequired
-              ? "Piessang fulfilment can be submitted now. Once accepted, stock must be shipped to the warehouse before it can go live."
-              : "Your draft can be submitted once you are ready."}
-        </p>
+        {!isSystemAdmin ? (
+          <>
+            {moderationStatusKey === "in_review" ? (
+              <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
+                This product is already in review. Piessang will review it before it can move forward.
+              </p>
+            ) : moderationStatusKey === "blocked" ? (
+              <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
+                <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Product blocked</p>
+                <p className="mt-1">
+                  {createdProduct?.moderationReason || "Piessang has hidden this product after reviewing a customer report."}
+                </p>
+                <label className="mt-3 block">
+                  <span className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Dispute this decision</span>
+                  <textarea
+                    value={productDisputeMessage}
+                    onChange={(event) => setProductDisputeMessage(event.target.value)}
+                    rows={4}
+                    className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020] outline-none focus:border-[#cbb26b]"
+                    placeholder="Tell Piessang why this product should be restored."
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void submitProductBlockDispute()}
+                  disabled={productDisputeSubmitting || !productDisputeMessage.trim()}
+                  className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {productDisputeSubmitting ? "Sending dispute..." : "Submit dispute"}
+                </button>
+              </div>
+            ) : moderationStatusKey === "published" || moderationStatusKey === "awaiting_stock" ? (
+              <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
+                This product has already been approved. Submit for review will only return after a rejection or meaningful content changes.
+              </p>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void submitForReview()}
+                  disabled={!canSubmitReview}
+                  className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {submitReviewLabel}
+                </button>
+                <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                  {variantItems.length === 0
+                    ? "Add at least one variant before you can submit this draft."
+                    : fulfillmentMode === "seller" && !sellerDeliverySettingsReady
+                      ? "Add your delivery and shipping settings in seller settings before submitting a self-fulfilled listing."
+                    : moderationStatusKey === "rejected"
+                      ? "Fix the rejection feedback, then re-submit the product for review."
+                      : inventoryTrackingRequired
+                        ? "Piessang fulfilment can be submitted now. Once accepted, stock must be shipped to the warehouse before it can go live."
+                        : "Your draft can be submitted once you are ready."}
+                </p>
+              </>
+            )}
+          </>
+        ) : (
+          <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
+            System admins can review and edit this listing here, but seller submission actions are hidden in admin review mode.
+          </p>
+        )}
       </section>
 
       <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -1178,27 +1345,19 @@ export default function SellerCatalogueNewPage() {
             <p className="mt-1 text-[12px] font-semibold text-[#202020]">{selectedSuccessFeePercent.toFixed(1)}% per order</p>
           </div>
           <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Lead time</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Shipping timing</p>
             <p className="mt-1 text-[12px] font-semibold text-[#202020]">
-              {fulfillmentMode === "seller"
-                ? `${leadTimeDays || "3"} day${String(leadTimeDays) === "1" ? "" : "s"}`
-                : "Managed by Piessang"}
+              {fulfillmentMode === "seller" ? "Managed in shipping preferences" : "Managed by Piessang"}
             </p>
           </div>
-          {fulfillmentMode === "seller" ? (
-            <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Cutoff time</p>
-              <p className="mt-1 text-[12px] font-semibold text-[#202020]">{cutoffTime || "10:00"}</p>
-            </div>
-          ) : null}
           <p className="text-[11px] leading-[1.5] text-[#57636c]">
             {fulfillmentMode === "seller"
               ? "You handle packing and delivery. Marketplace success fees still apply based on the category fee table."
-              : "Piessang handles fulfilment. Marketplace success fees still apply, with fulfilment, handling, and storage fees calculated from the live fee tables."}
+              : "Piessang handles fulfilment. Marketplace success fees still apply, with fulfilment and storage fees calculated from the live fee tables."}
           </p>
         </div>
       </section>
-    </>
+    </div>
   );
 
   async function fetchUniqueCode() {
@@ -1410,6 +1569,8 @@ export default function SellerCatalogueNewPage() {
   useEffect(() => {
     if (!editorProductId) return;
     let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
 
     async function loadProduct() {
       setLoadingProduct(true);
@@ -1417,14 +1578,38 @@ export default function SellerCatalogueNewPage() {
       try {
         const response = await fetch(`${PRODUCT_GET_ENDPOINT}?id=${encodeURIComponent(editorProductId)}&includeUnavailable=true`, {
           cache: "no-store",
+          signal: controller.signal,
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload?.ok === false) {
           throw new Error(payload?.message || "Unable to load the product.");
         }
         const record = payload?.data ?? payload?.product ?? payload ?? {};
+        const recordSellerCode = String(record?.product?.sellerCode ?? record?.seller?.sellerCode ?? "").trim();
+        const recordSellerSlug = String(record?.seller?.sellerSlug ?? "").trim();
+        const recordVendorName = String(record?.product?.vendorName ?? record?.seller?.vendorName ?? "").trim();
+        const allowedSellerKeys = new Set(
+          [
+            activeSellerContext?.sellerSlug,
+            activeSellerContext?.sellerCode,
+            profile?.sellerSlug,
+            profile?.sellerCode,
+            ...(Array.isArray(profile?.sellerManagedAccounts)
+              ? profile.sellerManagedAccounts.flatMap((item) => [item?.sellerSlug, item?.sellerCode])
+              : []),
+          ]
+            .map((item) => String(item ?? "").trim())
+            .filter(Boolean),
+        );
+        const hasSellerAccessToProduct =
+          allowedSellerKeys.has(recordSellerCode) ||
+          allowedSellerKeys.has(recordSellerSlug);
+        if (!isSystemAdmin && !hasSellerAccessToProduct) {
+          throw new Error("You do not have access to this product.");
+        }
         if (cancelled) return;
 
+        setProductAccessDenied(false);
         setUniqueId(String(record?.product?.unique_id ?? editorProductId).trim());
         setProductSku(String(record?.product?.sku ?? "").trim());
         setTitle(String(record?.product?.title ?? "").trim());
@@ -1463,14 +1648,15 @@ export default function SellerCatalogueNewPage() {
         const nextInventoryTracking = Boolean(record?.placement?.inventory_tracking) || nextFulfillmentMode === "bevgo";
         setFulfillmentMode(nextFulfillmentMode);
         setInventoryTracking(nextInventoryTracking);
-        setLeadTimeDays(String(record?.fulfillment?.lead_time_days ?? "3"));
-        setCutoffTime(String(record?.fulfillment?.cutoff_time ?? "10:00"));
         setVariantDraft((current) => ({
           ...current,
           trackInventory: nextInventoryTracking,
         }));
         setVariantImages([]);
         setLoadedProductSku(String(record?.product?.sku ?? "").trim());
+        setLoadedProductSellerCode(recordSellerCode);
+        setLoadedProductSellerSlug(recordSellerSlug);
+        setLoadedProductVendorName(recordVendorName);
         setCreatedProduct({
           uniqueId: String(record?.product?.unique_id ?? editorProductId).trim(),
           sku: String(record?.product?.sku ?? "").trim(),
@@ -1478,12 +1664,21 @@ export default function SellerCatalogueNewPage() {
           titleSlug: String(record?.product?.titleSlug ?? normalizeSlug(String(record?.product?.title ?? ""))).trim(),
           brandSlug: String(record?.product?.brand ?? "").trim(),
           brandTitle: String(record?.product?.brandTitle ?? "").trim(),
-          vendorName: String(record?.product?.vendorName ?? vendorName ?? "").trim(),
+          vendorName: recordVendorName || String(vendorName ?? "").trim(),
           moderationStatus: String(record?.moderation?.status ?? "draft").trim() || "draft",
+          moderationReason: String(record?.moderation?.reason ?? record?.moderation?.notes ?? "").trim(),
         });
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Unable to load the product.");
+        if (!cancelled) {
+          setProductAccessDenied(cause instanceof Error && cause.message === "You do not have access to this product.");
+          if (cause instanceof DOMException && cause.name === "AbortError") {
+            setError("Loading this product took too long. Please try again.");
+          } else {
+            setError(cause instanceof Error ? cause.message : "Unable to load the product.");
+          }
+        }
       } finally {
+        window.clearTimeout(timeoutId);
         if (!cancelled) setLoadingProduct(false);
       }
     }
@@ -1491,6 +1686,8 @@ export default function SellerCatalogueNewPage() {
     void loadProduct();
     return () => {
       cancelled = true;
+      controller.abort();
+      window.clearTimeout(timeoutId);
     };
   }, [editorProductId, vendorName]);
 
@@ -1924,6 +2121,7 @@ export default function SellerCatalogueNewPage() {
 
   function resetProductForm() {
     setCreatedProduct(null);
+    setProductAccessDenied(false);
     setUniqueId("");
     setTitle("");
     setProductSku("");
@@ -1942,20 +2140,23 @@ export default function SellerCatalogueNewPage() {
     setVariantFormOpen(false);
     setInventoryTracking(false);
     setFulfillmentMode("seller");
-    setLeadTimeDays("3");
-    setCutoffTime("10:00");
     setLoadedProductSku("");
+    setLoadedProductSellerCode("");
+    setLoadedProductSellerSlug("");
+    setLoadedProductVendorName("");
     setSkuStatus("idle");
     setVariantSkuStatus("idle");
     resetVariantDraft({ makeDefault: true });
     setMessage(null);
     setError(null);
-    if (editorProductId) {
+    if (editorProductId && !embeddedMode) {
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.delete("id");
       router.replace(`${pathname}?${nextUrl.searchParams.toString()}`.replace(/\?$/, ""), { scroll: false });
     }
-    void fetchUniqueCode();
+    if (!embeddedMode) {
+      void fetchUniqueCode();
+    }
   }
 
   async function fileToBlurHash(file: File) {
@@ -2056,10 +2257,6 @@ export default function SellerCatalogueNewPage() {
     if (!overview.trim()) return "Product overview is required.";
     if (descriptionPlainText.trim().length < 10) return "Product description is required.";
     if (!keywordTags.length) return "Add at least one keyword.";
-    if (fulfillmentMode === "seller" && (!leadTimeDays.trim() || Number(leadTimeDays) < 1 || Number(leadTimeDays) > 14)) {
-      return "Lead time must be between 1 and 14 days for self-fulfilment.";
-    }
-    if (fulfillmentMode === "seller" && !cutoffTime.trim()) return "Cutoff time is required for self-fulfilment.";
     return "";
   }
 
@@ -2095,13 +2292,9 @@ export default function SellerCatalogueNewPage() {
       if (!variantDraft.heightCm.trim()) return "Variant height is required for Piessang fulfilment.";
       if (!variantDraft.monthlySales30d.trim()) return "Monthly sales estimate is required for Piessang fulfilment.";
       if (!variantDraft.inventoryQty.trim()) return "Add public warehouse stock for this Piessang-fulfilled variant.";
-      if (!variantDraft.warehouseId.trim()) return "Add a warehouse or location for this Piessang-fulfilled variant.";
     } else if (inventoryTrackingEnabled) {
       if (!variantDraft.inventoryQty.trim()) {
         return "Add stock quantity for this tracked inventory variant.";
-      }
-      if (!variantDraft.warehouseId.trim()) {
-        return "Add a warehouse or location for this tracked inventory variant.";
       }
     }
     return "";
@@ -2169,6 +2362,28 @@ export default function SellerCatalogueNewPage() {
     }
   }
 
+  function closeDraftImpactModal(result: boolean) {
+    setShowDraftImpactModal(false);
+    const resolver = draftImpactResolverRef.current;
+    draftImpactResolverRef.current = null;
+    resolver?.(result);
+  }
+
+  function requestDraftImpactConfirmation({
+    title,
+    message,
+  }: {
+    title: string;
+    message: string;
+  }) {
+    setDraftImpactModalTitle(title);
+    setDraftImpactModalMessage(message);
+    setShowDraftImpactModal(true);
+    return new Promise<boolean>((resolve) => {
+      draftImpactResolverRef.current = resolve;
+    });
+  }
+
   async function saveProductDraft() {
     const validationError = validateProductDraft();
     if (validationError) {
@@ -2182,7 +2397,13 @@ export default function SellerCatalogueNewPage() {
       const isUpdate = Boolean(activeProductId);
       if (
         isUpdate &&
-        !window.confirm("Updating this product will move it back to draft and it will need to be resubmitted for review. Continue?")
+        !(await requestDraftImpactConfirmation({
+          title: "Update product",
+          message:
+            String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
+              ? "Updating this product will send your changes for review while the current live version stays visible until approval."
+              : "Updating this product will move it back to draft and it will need to be resubmitted for review.",
+        }))
       ) {
         return { savedId: activeProductId, isUpdate };
       }
@@ -2227,6 +2448,7 @@ export default function SellerCatalogueNewPage() {
         brandTitle: normalizedBrandTitle,
         vendorName: vendorName.trim(),
         moderationStatus,
+        moderationReason: String(returnedProduct?.moderation?.reason ?? returnedProduct?.moderation?.notes ?? "").trim(),
       });
       const savedBrandSlug = String(returnedProduct?.product?.brand ?? returnedProduct?.brand ?? normalizedBrandSlug).trim();
       const savedBrandTitle = String(returnedProduct?.product?.brandTitle ?? returnedProduct?.brandTitle ?? normalizedBrandTitle).trim();
@@ -2253,7 +2475,9 @@ export default function SellerCatalogueNewPage() {
         [
           isUpdate
             ? payloadResponse?.resubmissionRequired
-              ? "Product updated. It has been moved back to draft and must be resubmitted for review."
+              ? payloadResponse?.liveVersionKept
+                ? "Product updated. Your changes are now in review while the current live version stays visible."
+                : "Product updated. It has been moved back to draft and must be resubmitted for review."
               : "Draft updated."
             : "Product saved as draft.",
           savedBrandTitle
@@ -2267,12 +2491,17 @@ export default function SellerCatalogueNewPage() {
           .filter(Boolean)
           .join(" "),
       );
+      if (payloadResponse?.resubmissionRequired) {
+        notifyAdminBadgeRefresh();
+      }
 
-      const nextUrl = new URL(window.location.href);
-      nextUrl.searchParams.set("unique_id", savedId);
-      nextUrl.searchParams.delete("id");
-      nextUrl.searchParams.set("section", "create-product");
-      router.replace(`${pathname}?${nextUrl.searchParams.toString()}`, { scroll: false });
+      if (!embeddedMode) {
+        const nextUrl = new URL(window.location.href);
+        nextUrl.searchParams.set("unique_id", savedId);
+        nextUrl.searchParams.delete("id");
+        nextUrl.searchParams.set("section", "create-product");
+        router.replace(`${pathname}?${nextUrl.searchParams.toString()}`, { scroll: false });
+      }
 
       await loadVariantItems(savedId);
       return { savedId, isUpdate };
@@ -2312,8 +2541,8 @@ export default function SellerCatalogueNewPage() {
           keywords: normalizedKeywords,
           brandTitle: normalizedBrandTitle || null,
           brand: normalizedBrandSlug || null,
-          sellerCode: activeSellerContext?.sellerCode || profile?.sellerCode || null,
-          vendorName: vendorName.trim(),
+          sellerCode: activeSellerContext?.sellerCode || profile?.sellerCode || loadedProductSellerCode || null,
+          vendorName: (vendorName || loadedProductVendorName).trim(),
         },
         grouping: {
           category: normalizedCategory,
@@ -2321,7 +2550,7 @@ export default function SellerCatalogueNewPage() {
           brand: normalizedBrandSlug || null,
         },
         placement: {
-          isActive: moderationStatus === "in_review",
+          isActive: false,
           isFeatured: false,
           inventory_tracking: inventoryTrackingForProduct,
         },
@@ -2332,8 +2561,6 @@ export default function SellerCatalogueNewPage() {
           mode: fulfillmentMode,
           success_fee_percent: selectedSuccessFeePercent,
           success_fee_label: selectedFeeRuleLabel,
-          lead_time_days: fulfillmentMode === "seller" ? Number(leadTimeDays || 0) : null,
-          cutoff_time: fulfillmentMode === "seller" ? cutoffTime.trim() : null,
         },
         media: {
           images,
@@ -2364,6 +2591,10 @@ export default function SellerCatalogueNewPage() {
     }
     if (variantItems.length === 0) {
       setError("Add at least one variant before submitting the product for review.");
+      return;
+    }
+    if (fulfillmentMode === "seller" && !sellerDeliverySettingsReady) {
+      setError("Add your seller delivery and shipping settings before submitting a self-fulfilled product for review.");
       return;
     }
 
@@ -2397,6 +2628,7 @@ export default function SellerCatalogueNewPage() {
           ? { ...current, moderationStatus: "in_review" }
           : current,
       );
+      notifyAdminBadgeRefresh();
       setMessage("Product submitted for review.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to submit the product for review.");
@@ -2529,11 +2761,17 @@ export default function SellerCatalogueNewPage() {
       }
       if (
         activeProductId &&
-        !window.confirm(
-          editingVariantIndex !== null
-            ? "Updating this variant will move the product back to draft and it will need to be resubmitted for review. Continue?"
-            : "Adding this variant will move the product back to draft and it will need to be resubmitted for review. Continue?",
-        )
+        !(await requestDraftImpactConfirmation({
+          title: editingVariantIndex !== null ? "Update variant" : "Add variant",
+          message:
+            editingVariantIndex !== null
+              ? String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
+                ? "Updating this variant will send your changes for review while the current live version stays visible until approval."
+                : "Updating this variant will move the product back to draft and it will need to be resubmitted for review."
+              : String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
+                ? "Adding this variant will send your changes for review while the current live version stays visible until approval."
+                : "Adding this variant will move the product back to draft and it will need to be resubmitted for review.",
+        }))
       ) {
         return;
       }
@@ -2561,15 +2799,25 @@ export default function SellerCatalogueNewPage() {
       const inventoryRows = (inventoryTrackingEnabled || isBevgoFulfilment)
         ? [
             {
-              warehouse_id: variantDraft.warehouseId.trim() || "main",
+              warehouse_id: "main",
               in_stock_qty: Number(variantDraft.inventoryQty || 0),
             },
           ]
         : [];
+      const effectiveSellingPriceIncl = variantEffectiveSellingPriceIncl({
+        pricing: {
+          selling_price_incl: sellingPriceIncl,
+        },
+        sale: {
+          is_on_sale: saleIsOn,
+          discount_percent: discountPercent,
+          sale_price_incl: salePriceIncl,
+        },
+      });
       const feeSnapshot = buildMarketplaceFeeSnapshot({
         categorySlug: category,
         subCategorySlug: subCategory,
-        sellingPriceIncl,
+        sellingPriceIncl: effectiveSellingPriceIncl,
         weightKg: Number(variantDraft.weightKg || 0),
         lengthCm: Number(variantDraft.lengthCm || 0),
         widthCm: Number(variantDraft.widthCm || 0),
@@ -2731,7 +2979,29 @@ export default function SellerCatalogueNewPage() {
           throw new Error(payload?.message || "Unable to update the variant.");
         }
 
-        setMessage(payload?.resubmissionRequired ? "Variant updated. The product is back in draft and must be resubmitted for review." : "Variant updated.");
+        setCreatedProduct((current) =>
+          current
+            ? {
+                ...current,
+                moderationStatus: payload?.resubmissionRequired
+                  ? payload?.liveVersionKept
+                    ? "in_review"
+                    : "draft"
+                  : current.moderationStatus,
+              }
+            : current,
+        );
+
+        setMessage(
+          payload?.resubmissionRequired
+            ? payload?.liveVersionKept
+              ? "Variant updated. Your changes are in review while the current live version stays visible."
+              : "Variant updated. The product is back in draft and must be resubmitted for review."
+            : "Variant updated.",
+        );
+        if (payload?.resubmissionRequired) {
+          notifyAdminBadgeRefresh();
+        }
         setVariantFormOpen(false);
         resetVariantDraft({ makeDefault: variantItems.length === 0 });
         await loadVariantItems(activeProductId);
@@ -2798,7 +3068,29 @@ export default function SellerCatalogueNewPage() {
         throw new Error(payload?.message || "Unable to add the variant.");
       }
 
-      setMessage(payload?.resubmissionRequired ? "Variant added. The product is back in draft and must be resubmitted for review." : "Variant added.");
+      setCreatedProduct((current) =>
+        current
+          ? {
+              ...current,
+              moderationStatus: payload?.resubmissionRequired
+                ? payload?.liveVersionKept
+                  ? "in_review"
+                  : "draft"
+                : current.moderationStatus,
+            }
+          : current,
+      );
+
+      setMessage(
+        payload?.resubmissionRequired
+          ? payload?.liveVersionKept
+            ? "Variant added. Your changes are in review while the current live version stays visible."
+            : "Variant added. The product is back in draft and must be resubmitted for review."
+          : "Variant added.",
+      );
+      if (payload?.resubmissionRequired) {
+        notifyAdminBadgeRefresh();
+      }
       setVariantFormOpen(false);
       resetVariantDraft({ makeDefault: variantItems.length === 0 });
       await loadVariantItems(activeProductId);
@@ -2821,7 +3113,15 @@ export default function SellerCatalogueNewPage() {
       setMessage("Variant removed from the draft.");
       return;
     }
-    if (!window.confirm("Deleting this variant will move the product back to draft and it will need to be resubmitted for review. Continue?")) return;
+    if (
+      !(await requestDraftImpactConfirmation({
+        title: "Delete variant",
+        message:
+          String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
+            ? "Deleting this variant will send your changes for review while the current live version stays visible until approval."
+            : "Deleting this variant will move the product back to draft and it will need to be resubmitted for review.",
+      }))
+    ) return;
 
     setSubmitting(true);
     setMessage(null);
@@ -2839,7 +3139,28 @@ export default function SellerCatalogueNewPage() {
       if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.message || "Unable to delete the variant.");
       }
-      setMessage(payload?.resubmissionRequired ? "Variant removed. The product is back in draft and must be resubmitted for review." : "Variant removed.");
+      setCreatedProduct((current) =>
+        current
+          ? {
+              ...current,
+              moderationStatus: payload?.resubmissionRequired
+                ? payload?.liveVersionKept
+                  ? "in_review"
+                  : "draft"
+                : current.moderationStatus,
+            }
+          : current,
+      );
+      setMessage(
+        payload?.resubmissionRequired
+          ? payload?.liveVersionKept
+            ? "Variant removed from the pending update. The current live version stays visible while the change is reviewed."
+            : "Variant removed. The product is back in draft and must be resubmitted for review."
+          : "Variant removed.",
+      );
+      if (payload?.resubmissionRequired) {
+        notifyAdminBadgeRefresh();
+      }
       await loadVariantItems(activeProductId);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to delete the variant.");
@@ -3060,7 +3381,7 @@ export default function SellerCatalogueNewPage() {
     );
   }
 
-  if (!isSeller) {
+  if (!canUseSellerEditor) {
     return (
       <main className="mx-auto max-w-[960px] px-4 py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -3113,6 +3434,28 @@ export default function SellerCatalogueNewPage() {
               className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
             >
               Back to catalogue
+            </Link>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (productAccessDenied) {
+    return (
+      <main className="mx-auto max-w-[960px] px-4 py-10">
+        <section className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Product access</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">You do not have access to this product</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            Only the seller account owner, their team members, or a system admin can open and edit this listing.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Link
+              href="/seller/dashboard?section=products"
+              className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+            >
+              Back to products
             </Link>
           </div>
         </section>
@@ -3187,7 +3530,9 @@ export default function SellerCatalogueNewPage() {
               </div>
               <h2 className="mt-2 text-[18px] font-semibold text-[#202020]">{createdProduct.title}</h2>
               <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
-                Your listing is saved as a draft. Add variants, then submit it for review when you are ready. If Piessang fulfils this listing, it will move to an awaiting stock state after approval.
+                {isSystemAdmin
+                  ? "You are viewing this listing in system admin mode. Seller-only submission shortcuts are hidden here."
+                  : "Your listing is saved as a draft. Add variants, then submit it for review when you are ready. If Piessang fulfils this listing, it will move to an awaiting stock state after approval."}
               </p>
               <p className="mt-2 text-[12px] uppercase tracking-[0.12em] text-[#907d4c]">SKU: {createdProduct.sku}</p>
               <div className="mt-4 flex flex-wrap gap-2">
@@ -3204,13 +3549,15 @@ export default function SellerCatalogueNewPage() {
                 >
                   {variantFormOpen ? "Close variants" : "Add variant"}
                 </button>
-                <button
-                  type="button"
-                  onClick={resetProductForm}
-                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-                >
-                  Create another
-                </button>
+                {!isSystemAdmin ? (
+                  <button
+                    type="button"
+                    onClick={resetProductForm}
+                    className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+                  >
+                    Create another
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -3490,52 +3837,11 @@ export default function SellerCatalogueNewPage() {
                   })}
                 </div>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <label className="block">
-                    <div className="mb-1 flex items-center gap-1.5">
-                      <span className="block text-[11px] font-semibold text-[#202020]">
-                        Lead time (days) {fulfillmentMode === "seller" ? <span className="text-[#d11c1c]">*</span> : null}
-                      </span>
-                      <HelpTip label="Lead time help">
-                        For self-fulfilment, this is the number of days buyers should expect before dispatch.
-                      </HelpTip>
+                  {fulfillmentMode === "seller" ? (
+                    <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[11px] text-[#57636c] sm:col-span-2">
+                      Delivery timing for seller-fulfilled products now comes from your shipping preferences. Update your direct delivery rules or shipping zones in Settings to control the delivery promise shown to shoppers.
                     </div>
-                    <select
-                      value={leadTimeDays}
-                      onChange={(event) => setLeadTimeDays(event.target.value)}
-                      disabled={fulfillmentMode !== "seller" || fulfillmentLocked}
-                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b] disabled:bg-[#f7f7f7] disabled:text-[#9aa3af]"
-                    >
-                      <option value="">Select lead time</option>
-                      {Array.from({ length: 14 }, (_, index) => index + 1).map((day) => (
-                        <option key={day} value={String(day)}>
-                          {day} day{day === 1 ? "" : "s"}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                      This is shown to customers for self-fulfilment listings. Lead time is capped at 14 days.
-                    </p>
-                  </label>
-                  <label className="block">
-                    <div className="mb-1 flex items-center gap-1.5">
-                      <span className="block text-[11px] font-semibold text-[#202020]">
-                        Cutoff time {fulfillmentMode === "seller" ? <span className="text-[#d11c1c]">*</span> : null}
-                      </span>
-                      <HelpTip label="Cutoff time help">
-                        Buyers will see this as the last time they can place an order before the fulfilment window moves forward.
-                      </HelpTip>
-                    </div>
-                    <input
-                      type="time"
-                      value={cutoffTime}
-                      onChange={(event) => setCutoffTime(event.target.value)}
-                      disabled={fulfillmentMode !== "seller" || fulfillmentLocked}
-                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b] disabled:bg-[#f7f7f7] disabled:text-[#9aa3af]"
-                    />
-                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                      Orders placed after this time move into the next delivery promise.
-                    </p>
-                  </label>
+                  ) : null}
                   {fulfillmentLocked ? (
                     <button
                       type="button"
@@ -4077,7 +4383,7 @@ export default function SellerCatalogueNewPage() {
                             {inventoryTrackingRequired
                               ? "Piessang fulfilment keeps inventory managed by Piessang after approval. You can still submit this draft now."
                               : inventoryTracking
-                                ? "Add opening stock and warehouse details for this variant."
+                                ? "Add opening stock for this variant."
                                 : "Enable inventory tracking above to set stock for variants."}
                           </p>
                         </div>
@@ -4090,7 +4396,7 @@ export default function SellerCatalogueNewPage() {
                         </span>
                       </div>
                       {!inventoryTrackingRequired && inventoryTrackingEnabled ? (
-                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <div className="mt-3 grid gap-3">
                           <label className="block">
                             <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
                               Starting stock <span className="text-[#d11c1c]">*</span>
@@ -4104,19 +4410,6 @@ export default function SellerCatalogueNewPage() {
                               }
                               className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
                               placeholder="0"
-                            />
-                          </label>
-                          <label className="block">
-                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
-                              Warehouse / location <span className="text-[#d11c1c]">*</span>
-                            </span>
-                            <input
-                              value={variantDraft.warehouseId}
-                              onChange={(event) =>
-                                setVariantDraft((current) => ({ ...current, warehouseId: event.target.value }))
-                              }
-                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                              placeholder="main-warehouse"
                             />
                           </label>
                         </div>
@@ -4338,7 +4631,7 @@ export default function SellerCatalogueNewPage() {
       </section>
         </div>
 
-        <aside className="space-y-4 xl:sticky xl:top-4">
+        <aside className={["space-y-4 xl:sticky", embeddedMode ? "xl:top-6" : "xl:top-4"].join(" ")}>
           <div className="hidden xl:block">
             {renderSidebarSummary()}
           </div>
@@ -4713,6 +5006,44 @@ export default function SellerCatalogueNewPage() {
                 className="inline-flex h-10 items-center rounded-[8px] bg-[#b91c1c] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {submitting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showDraftImpactModal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => closeDraftImpactModal(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-[8px] bg-white p-5 shadow-[0_18px_50px_rgba(20,24,27,0.22)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
+              Review impact
+            </p>
+            <h3 className="mt-2 text-[18px] font-semibold text-[#202020]">{draftImpactModalTitle}</h3>
+            <p className="mt-2 text-[13px] leading-[1.55] text-[#57636c]">
+              {draftImpactModalMessage} Continue?
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => closeDraftImpactModal(false)}
+                className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => closeDraftImpactModal(true)}
+                className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+              >
+                Continue
               </button>
             </div>
           </div>

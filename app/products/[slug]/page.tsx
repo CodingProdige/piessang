@@ -1,6 +1,8 @@
-import { ProductsPage } from "../page";
+import { ProductsPage, generateMetadata as generateProductsMetadata } from "../page";
 
 export const dynamic = "force-dynamic";
+
+export const generateMetadata = generateProductsMetadata;
 
 export default async function ProductSlugPage({
   searchParams,

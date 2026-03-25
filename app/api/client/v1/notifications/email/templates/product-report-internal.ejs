@@ -1,0 +1,19 @@
+<h2>Product report submitted</h2>
+
+<p>A customer has reported a product on Piessang.</p>
+
+<ul>
+  <li><strong>Product:</strong> <%= productTitle %></li>
+  <li><strong>Product ID:</strong> <%= productId %></li>
+  <li><strong>Seller:</strong> <%= vendorName %></li>
+  <li><strong>Reason:</strong> <%= reasonLabel %></li>
+  <li><strong>Reported by:</strong> <%= reporterName || reporterEmail || reporterUid || "Anonymous" %></li>
+  <% if (reporterEmail) { %>
+    <li><strong>Reporter email:</strong> <%= reporterEmail %></li>
+  <% } %>
+  <% if (reportMessage) { %>
+    <li><strong>Message:</strong> <%= reportMessage %></li>
+  <% } %>
+</ul>
+
+<p>Please review the product report in the seller dashboard admin tools.</p>

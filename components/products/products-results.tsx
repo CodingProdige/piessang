@@ -4,7 +4,14 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import {
+  readShopperDeliveryArea,
+  subscribeToShopperDeliveryArea,
+  type ShopperDeliveryArea,
+} from "@/components/products/delivery-area-gate";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { formatCurrency, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 
 type ProductVariant = {
   variant_id?: string | number;
@@ -15,11 +22,14 @@ type ProductVariant = {
     volume_unit?: string | null;
   };
   pricing?: {
+    selling_price_incl?: number;
     selling_price_excl?: number;
+    sale_price_incl?: number;
     sale_price_excl?: number;
   };
   sale?: {
     is_on_sale?: boolean;
+    sale_price_incl?: number;
     sale_price_excl?: number;
   };
   placement?: {
@@ -37,6 +47,9 @@ type ProductVariant = {
       blurHashUrl?: string | null;
     }>;
   };
+  sales?: {
+    total_units_sold?: number;
+  };
   total_in_stock_items_available?: number;
 };
 
@@ -52,6 +65,9 @@ type ProductItem = {
       vendorName?: string | null;
       vendorDescription?: string | null;
       sellerCode?: string | null;
+      sales?: {
+        total_units_sold?: number;
+      };
     };
     seller?: {
       sellerCode?: string | null;
@@ -60,6 +76,38 @@ type ProductItem = {
       sellerSlug?: string | null;
       activeSellerSlug?: string | null;
       groupSellerSlug?: string | null;
+      baseLocation?: string | null;
+      deliveryProfile?: {
+        localDeliveryRules?: Array<{
+          id?: string | null;
+          label?: string | null;
+          city?: string | null;
+          suburb?: string | null;
+          radiusKm?: number;
+          fee?: number;
+          leadTimeDays?: number;
+        }>;
+        courierZones?: Array<{
+          id?: string | null;
+          label?: string | null;
+          country?: string | null;
+          province?: string | null;
+          city?: string | null;
+          postalCodes?: string[];
+          fee?: number;
+          leadTimeDays?: number;
+          cutoffTime?: string | null;
+          isFallback?: boolean;
+        }>;
+        directDelivery?: {
+          cutoffTime?: string | null;
+        };
+        origin?: {
+          utcOffsetMinutes?: number | null;
+        };
+        allowsCollection?: boolean;
+        notes?: string | null;
+      };
     };
     brand?: {
       title?: string | null;
@@ -141,7 +189,32 @@ type CartPreview = {
 type SearchParamValue = string | string[] | undefined;
 
 const VAT_MULTIPLIER = 1.15;
+const VAT_DIVISOR = 1.15;
 const PAGE_SIZE = 24;
+const LOW_STOCK_THRESHOLD = 13;
+const HOT_SALES_FIRE_THRESHOLD = 100;
+
+function formatSoldCount(value?: number | null) {
+  const count = Number(value || 0);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  if (count >= 1_000_000) {
+    const compact = `${(count / 1_000_000).toFixed(count >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
+    return `${compact} sold`;
+  }
+  if (count >= 1000) {
+    const compact = `${(count / 1000).toFixed(count >= 10_000 ? 0 : 1).replace(/\.0$/, "")}K`;
+    return `${compact} sold`;
+  }
+  return `${Math.round(count)} sold`;
+}
+
+function FlameIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current">
+      <path d="M10.8 1.7c.2 2.2-.7 3.6-1.8 4.8-1.1 1.1-2.2 2.2-2.2 4 0 1.6 1.3 3 3.1 3 2.1 0 3.8-1.6 3.8-4.2 0-1.6-.6-2.8-1.4-4 .1 1.4-.3 2.4-1.1 3.2.1-2-.2-4.4-2.4-6.8ZM10 18c-3.8 0-6.5-2.9-6.5-6.7 0-2.8 1.4-4.8 3-6.4.9-.9 1.7-1.7 1.8-3.2a1 1 0 0 1 1.8-.5c3.3 4.2 5.4 7 5.4 10.6 0 3.7-2.4 6.2-5.5 6.2Zm-.1-2.3c1.6 0 2.7-1.1 2.7-2.8 0-1-.3-1.8-1-2.8-.2.8-.7 1.4-1.3 1.9-.5.4-1 .8-1 1.7 0 1.1.8 2 1.6 2Z" />
+    </svg>
+  );
+}
 
 function buildHref(
   pathname: string,
@@ -157,22 +230,67 @@ function buildHref(
   return query ? `${pathname}?${query}` : pathname;
 }
 
-function formatCurrencyInclVat(value?: number) {
-  if (typeof value !== "number" || Number.isNaN(value)) return null;
-  const inclVat = value * VAT_MULTIPLIER;
-  return `R ${new Intl.NumberFormat("en-ZA", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(inclVat)}`;
+function splitCurrencyParts(formattedValue?: string | null) {
+  if (!formattedValue) return null;
+  const normalized = String(formattedValue).replace(/\s/g, "");
+  const match = normalized.match(/^([^0-9-]*)(-?[0-9.,]+)$/);
+  if (!match) return null;
+  const symbol = match[1] || "";
+  const numeric = match[2] || "";
+  const lastSeparatorIndex = Math.max(numeric.lastIndexOf("."), numeric.lastIndexOf(","));
+  if (lastSeparatorIndex === -1) return { whole: `${symbol}${numeric}`, cents: "00" };
+  const whole = `${symbol}${numeric.slice(0, lastSeparatorIndex)}`;
+  const cents = numeric.slice(lastSeparatorIndex + 1).padEnd(2, "0").slice(0, 2);
+  return { whole, cents };
 }
+
+function StorefrontPrice({
+  valueExVat,
+  tone = "default",
+  size = "md",
+}: {
+  valueExVat?: number | null;
+  tone?: "default" | "sale";
+  size?: "md" | "lg";
+}) {
+  const { formatMoney } = useDisplayCurrency();
+  const inclVat = typeof valueExVat === "number" ? valueExVat * VAT_MULTIPLIER : undefined;
+  const parts = splitCurrencyParts(typeof inclVat === "number" ? formatMoney(inclVat) : null);
+  if (!parts) return null;
+
+  const toneClass = tone === "sale" ? "text-[#ff5963]" : "text-[#4a4545]";
+  const wholeClass = size === "lg" ? "text-[20px]" : "text-[18px]";
+  const centsClass = size === "lg" ? "text-[12px]" : "text-[11px]";
+
+  return (
+    <span className={`inline-flex items-start font-medium leading-none tracking-tight ${toneClass}`}>
+      <span className={wholeClass}>{parts.whole}</span>
+      <span className={`ml-[1px] ${centsClass} leading-none`}>{parts.cents}</span>
+    </span>
+  );
+}
+
+function formatMoney(value: number, formatDisplay: (amount: number) => string) {
+  return formatDisplay(typeof value === "number" && Number.isFinite(value) ? value : 0);
+}
+
 
 function getVariantPriceExVat(variant?: ProductVariant) {
   if (!variant) return null;
+  if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_incl === "number") {
+    return variant.sale.sale_price_incl / VAT_DIVISOR;
+  }
   if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_excl === "number") {
     return variant.sale.sale_price_excl;
   }
+  if (typeof variant.pricing?.sale_price_incl === "number") {
+    return variant.pricing.sale_price_incl / VAT_DIVISOR;
+  }
   if (typeof variant.pricing?.sale_price_excl === "number") {
     return variant.pricing.sale_price_excl;
+  }
+  if (typeof variant.pricing?.selling_price_incl === "number") {
+    return variant.pricing.selling_price_incl / VAT_DIVISOR;
   }
   if (typeof variant.pricing?.selling_price_excl === "number") {
     return variant.pricing.selling_price_excl;
@@ -182,7 +300,16 @@ function getVariantPriceExVat(variant?: ProductVariant) {
 
 function getCompareAtVariantPriceExVat(variant?: ProductVariant) {
   if (!variant) return null;
-  const prices = [variant.pricing?.selling_price_excl, variant.pricing?.sale_price_excl].filter(
+  const prices = [
+    variant.pricing?.selling_price_excl,
+    typeof variant.pricing?.selling_price_incl === "number"
+      ? variant.pricing.selling_price_incl / VAT_DIVISOR
+      : undefined,
+    variant.pricing?.sale_price_excl,
+    typeof variant.pricing?.sale_price_incl === "number"
+      ? variant.pricing.sale_price_incl / VAT_DIVISOR
+      : undefined,
+  ].filter(
     (value): value is number => typeof value === "number" && Number.isFinite(value),
   );
 
@@ -200,6 +327,17 @@ function getImageCount(item: ProductItem) {
   return productImages.filter((image) => Boolean(image?.imageUrl)).length + variantImages.length;
 }
 
+function getDisplayImages(item: ProductItem) {
+  const productImages = (item.data?.media?.images ?? []).filter((image) => Boolean(image?.imageUrl));
+  if (productImages.length) return productImages;
+
+  const defaultVariant =
+    item.data?.variants?.find((variant) => variant?.placement?.is_default) ??
+    item.data?.variants?.[0];
+
+  return (defaultVariant?.media?.images ?? []).filter((image) => Boolean(image?.imageUrl));
+}
+
 function parseCutoffMinutes(cutoff?: string | null) {
   if (!cutoff) return null;
   const [hoursRaw, minutesRaw] = String(cutoff).split(":");
@@ -209,39 +347,102 @@ function parseCutoffMinutes(cutoff?: string | null) {
   return hours * 60 + minutes;
 }
 
-function getDeliveryPromise(item: ProductItem) {
+function getZonedNow(offsetMinutes?: number | null) {
+  const now = new Date();
+  if (!Number.isFinite(Number(offsetMinutes))) return now;
+  return new Date(now.getTime() + Number(offsetMinutes) * 60_000 + now.getTimezoneOffset() * 60_000);
+}
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function getDeliveryPromise(item: ProductItem, shopperArea: ShopperDeliveryArea | null) {
   const fulfillment = item.data?.fulfillment;
   if (String(fulfillment?.mode ?? "").toLowerCase() !== "seller") return null;
 
-  const leadTimeDays = Number(fulfillment?.lead_time_days);
+  const profile = item.data?.seller?.deliveryProfile;
+  if (!profile) return null;
+
+  const resolved = resolveSellerDeliveryOption({
+    profile,
+    sellerBaseLocation: item.data?.seller?.baseLocation || "",
+    shopperArea: shopperArea as any,
+  });
+  if (!resolved.available || typeof resolved.leadTimeDays !== "number") return null;
+
+  const leadTimeDays = Number(resolved.leadTimeDays);
   if (!Number.isFinite(leadTimeDays) || leadTimeDays < 0) return null;
 
-  const cutoffMinutes = parseCutoffMinutes(fulfillment?.cutoff_time ?? null);
-  if (cutoffMinutes == null) return null;
-
-  const now = new Date();
+  const now = getZonedNow((resolved as any)?.utcOffsetMinutes);
+  const cutoffValue = (resolved as any)?.cutoffTime || null;
+  const cutoffMinutes = parseCutoffMinutes(cutoffValue);
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  const afterCutoff = nowMinutes >= cutoffMinutes;
+  const afterCutoff = cutoffMinutes == null ? false : nowMinutes >= cutoffMinutes;
   const promisedDate = new Date(now);
   promisedDate.setDate(promisedDate.getDate() + leadTimeDays + (afterCutoff ? 1 : 0));
+  const daysUntilDelivery = Math.max(
+    0,
+    Math.round((startOfDay(promisedDate).getTime() - startOfDay(now).getTime()) / 86_400_000),
+  );
 
-  const cutoffText = `Order by ${String(fulfillment?.cutoff_time ?? "").slice(0, 5)}`;
+  const cutoffText = cutoffValue ? `Order by ${cutoffValue}` : null;
   const formatDate = new Intl.DateTimeFormat("en-ZA", {
     weekday: "short",
     day: "numeric",
     month: "short",
   });
 
-  if (leadTimeDays <= 1) {
+  if (daysUntilDelivery <= 1) {
     return {
-      label: afterCutoff ? "Get it tomorrow" : "Get it today",
-      cutoffText,
+      label: daysUntilDelivery === 0 ? "Delivered today" : "Delivered tomorrow",
+      cutoffText: afterCutoff ? null : cutoffText,
     };
   }
 
   return {
     label: `Get it by ${formatDate.format(promisedDate)}`,
-    cutoffText,
+    cutoffText: null,
+  };
+}
+
+function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliveryArea | null) {
+  const fulfillmentMode = String(item.data?.fulfillment?.mode || "").trim().toLowerCase();
+  if (fulfillmentMode !== "seller") {
+    return { label: "Piessang shipping available", tone: "neutral" as const };
+  }
+
+  const profile = item.data?.seller?.deliveryProfile;
+  if (!profile) {
+    return shopperArea
+      ? { label: "Check delivery with seller", tone: "neutral" as const }
+      : { label: "Set your shipping location", tone: "neutral" as const };
+  }
+
+  const resolved = resolveSellerDeliveryOption({
+    profile,
+    sellerBaseLocation: item.data?.seller?.baseLocation || "",
+    shopperArea: shopperArea as any,
+  });
+
+  if (resolved.kind === "collection") {
+    return { label: "Pickup available from seller", tone: "neutral" as const };
+  }
+  if (resolved.kind === "local") {
+    return {
+      label: resolved.amountIncl > 0 ? `Direct delivery ${formatCurrency(resolved.amountIncl)}` : "Direct delivery available",
+      tone: "success" as const,
+    };
+  }
+  if (resolved.kind === "courier") {
+    return {
+      label: resolved.amountIncl > 0 ? `Shipping ${formatCurrency(resolved.amountIncl)}` : "Shipping available",
+      tone: "success" as const,
+    };
+  }
+  return {
+    label: resolved.label,
+    tone: shopperArea ? ("danger" as const) : ("neutral" as const),
   };
 }
 
@@ -506,16 +707,16 @@ function getStockState(variant?: ProductVariant, item?: ProductItem) {
 
   const stock = variant?.total_in_stock_items_available;
   if (typeof stock === "number") {
-    return stock > 0
-      ? { label: `${stock} in stock`, tone: "success" as const, hideQuantity: false }
-      : { label: "Out of stock", tone: "danger" as const, hideQuantity: false };
+    if (stock <= 0) return { label: "Out of stock", tone: "danger" as const, hideQuantity: false };
+    if (stock <= LOW_STOCK_THRESHOLD) return { label: `Only ${stock} left`, tone: "warning" as const, hideQuantity: false };
+    return { label: "In stock", tone: "success" as const, hideQuantity: true };
   }
 
   const firstLocation = variant?.inventory?.[0];
   if (typeof firstLocation?.in_stock_qty === "number") {
-    return firstLocation.in_stock_qty > 0
-      ? { label: `${firstLocation.in_stock_qty} in stock`, tone: "success" as const, hideQuantity: false }
-      : { label: "Out of stock", tone: "danger" as const, hideQuantity: false };
+    if (firstLocation.in_stock_qty <= 0) return { label: "Out of stock", tone: "danger" as const, hideQuantity: false };
+    if (firstLocation.in_stock_qty <= LOW_STOCK_THRESHOLD) return { label: `Only ${firstLocation.in_stock_qty} left`, tone: "warning" as const, hideQuantity: false };
+    return { label: "In stock", tone: "success" as const, hideQuantity: true };
   }
 
   return { label: "Stock unknown", tone: "neutral" as const, hideQuantity: false };
@@ -623,6 +824,7 @@ function ProductCard({
   currentUrl,
   onAddToCartSuccess,
   cartBurstKey,
+  shopperArea,
 }: {
   item: ProductItem;
   view: "grid" | "list";
@@ -634,8 +836,12 @@ function ProductCard({
   currentUrl: string;
   onAddToCartSuccess: (cart: CartPreview | null) => void;
   cartBurstKey: number;
+  shopperArea: ShopperDeliveryArea | null;
 }) {
-  const image = item.data?.media?.images?.find((entry) => Boolean(entry?.imageUrl)) ?? null;
+  const { formatMoney } = useDisplayCurrency();
+  const displayImages = getDisplayImages(item);
+  const [hoveredImageIndex, setHoveredImageIndex] = useState(0);
+  const image = displayImages[hoveredImageIndex] ?? displayImages[0] ?? null;
   const titleText = item.data?.product?.title ?? "Untitled product";
   const {
     isAuthenticated,
@@ -661,8 +867,11 @@ function ProductCard({
       typeof compareAtPriceValue === "number" &&
       compareAtPriceValue > displayPriceValue,
   );
-  const salePrice = formatCurrencyInclVat(displayPriceValue);
-  const compareAtPrice = saleActive ? formatCurrencyInclVat(compareAtPriceValue) : null;
+  const salePrice = typeof displayPriceValue === "number" ? formatMoney(displayPriceValue * VAT_MULTIPLIER) : null;
+  const compareAtPrice =
+    saleActive && typeof compareAtPriceValue === "number"
+      ? formatMoney(compareAtPriceValue * VAT_MULTIPLIER)
+      : null;
   const stockState = getStockState(defaultVariant, item);
   const reviewState = getReviewState(item);
   const reviewMeta = getReviewMeta(item);
@@ -670,7 +879,15 @@ function ProductCard({
   const selectedVariantLabel = getSelectedVariantLabel(item);
   const imageCount = getImageCount(item);
   const salePercent = getSalePercent(item);
-  const deliveryPromise = getDeliveryPromise(item);
+  const totalUnitsSold = Number(
+    defaultVariant?.sales?.total_units_sold ??
+      item.data?.product?.sales?.total_units_sold ??
+      0,
+  );
+  const soldCountLabel = formatSoldCount(totalUnitsSold);
+  const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
+  const deliveryPromise = getDeliveryPromise(item, shopperArea);
+  const deliveryMessage = getSellerDeliveryMessage(item, shopperArea);
   const href = getProductHref(item);
   const linkTarget = openInNewTab ? "_blank" : undefined;
   const linkRel = openInNewTab ? "noreferrer noopener" : undefined;
@@ -684,7 +901,23 @@ function ProductCard({
     const favoriteMatch = favoriteIds?.includes(productUniqueId);
     setIsFavorite(Boolean(item.data?.is_favorite) || Boolean(favoriteMatch));
   }, [favoriteIds, item.data?.is_favorite, productUniqueId]);
+  useEffect(() => {
+    setHoveredImageIndex(0);
+  }, [productUniqueId]);
   const favoriteVisible = isAuthenticated;
+
+  const handleImagePointerMove = (event: MouseEvent<HTMLElement>) => {
+    if (displayImages.length <= 1) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (!bounds.width) return;
+    const position = Math.max(0, Math.min(event.clientX - bounds.left, bounds.width));
+    const nextIndex = Math.min(displayImages.length - 1, Math.floor((position / bounds.width) * displayImages.length));
+    setHoveredImageIndex(nextIndex);
+  };
+
+  const handleImagePointerLeave = () => {
+    if (hoveredImageIndex !== 0) setHoveredImageIndex(0);
+  };
 
   const handleFavoriteToggle = async (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -838,7 +1071,11 @@ function ProductCard({
     className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
       >
         <div className="flex flex-col gap-3 p-4 sm:flex-row">
-          <div className="relative h-[160px] w-full shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa] sm:w-[180px]">
+          <div
+            className="relative h-[160px] w-full shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa] sm:w-[180px]"
+            onMouseMove={handleImagePointerMove}
+            onMouseLeave={handleImagePointerLeave}
+          >
             {imageBadges}
             <BlurhashImage
               src={image?.imageUrl ?? ""}
@@ -936,19 +1173,39 @@ function ProductCard({
 
           {deliveryPromise ? (
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
-              <span className="rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]">
+              <span className="inline-flex items-center gap-1 rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]">
+                <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current">
+                  <path d="M6 2a1 1 0 0 1 1 1v1h6V3a1 1 0 1 1 2 0v1h.5A2.5 2.5 0 0 1 18 6.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 15.5v-9A2.5 2.5 0 0 1 4.5 4H5V3a1 1 0 0 1 1-1zm9.5 6h-11a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5z" />
+                </svg>
                 {deliveryPromise.label}
               </span>
-              <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span>
+              {deliveryPromise.cutoffText ? <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span> : null}
             </div>
           ) : null}
+          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
+            {soldCountLabel ? (
+              <span className={showHotSales ? "inline-flex items-center gap-1 text-[#f97316]" : "text-[#57636c]"}>
+                {showHotSales ? <FlameIcon /> : null}
+                {soldCountLabel}
+              </span>
+            ) : null}
+            <span
+              className={
+                deliveryMessage.tone === "danger"
+                  ? "rounded-full bg-[#fff1f2] px-2.5 py-1 text-[#b91c1c]"
+                  : deliveryMessage.tone === "success"
+                    ? "rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]"
+                    : "rounded-full bg-[#f3f4f6] px-2.5 py-1 text-[#57636c]"
+              }
+            >
+              {deliveryMessage.label}
+            </span>
+          </div>
 
           <div className="flex flex-wrap items-end gap-3 pt-0.5">
             {salePrice ? (
               <div className="flex flex-wrap items-end gap-2">
-                <p className={saleActive ? "text-[20px] font-medium leading-none tracking-tight text-[#ff5963]" : "text-[20px] font-medium leading-none tracking-tight text-[#4a4545]"}>
-                  {salePrice}
-                </p>
+                <StorefrontPrice valueExVat={displayPriceValue} tone={saleActive ? "sale" : "default"} size="lg" />
                 {saleActive && compareAtPrice ? (
                   <p className="text-[12px] font-medium leading-none text-[#8b94a3] line-through">
                     {compareAtPrice}
@@ -965,7 +1222,7 @@ function ProductCard({
               ) : null}
             </div>
 
-            <div className="mt-3">
+            <div className="mt-3 flex items-stretch gap-2">
               <button
                 type="button"
                 data-ignore-card-open="true"
@@ -973,7 +1230,7 @@ function ProductCard({
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={handleAddDefaultVariantToCart}
                 disabled={cartBusy}
-                className="relative inline-flex h-10 w-full items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
+                className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
                 aria-label="Add default variant to cart"
               >
                 <CartPlusIcon />
@@ -1006,7 +1263,11 @@ function ProductCard({
       className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
     >
       <div className="block">
-        <div className="relative aspect-[1/1] overflow-hidden bg-[#fafafa]">
+        <div
+          className="relative aspect-[1/1] overflow-hidden bg-[#fafafa]"
+          onMouseMove={handleImagePointerMove}
+          onMouseLeave={handleImagePointerLeave}
+        >
           {imageBadges}
           <BlurhashImage
             src={image?.imageUrl ?? ""}
@@ -1078,6 +1339,8 @@ function ProductCard({
                   ? "text-[#1a8553]"
                   : stockState.tone === "danger"
                     ? "text-[#b91c1c]"
+                    : stockState.tone === "warning"
+                      ? "text-[#b45309]"
                     : "text-[#57636c]"
               }
             >
@@ -1110,12 +1373,29 @@ function ProductCard({
               <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span>
             </div>
           ) : null}
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
+            {soldCountLabel ? (
+              <span className={showHotSales ? "inline-flex items-center gap-1 text-[#f97316]" : "text-[#57636c]"}>
+                {showHotSales ? <FlameIcon /> : null}
+                {soldCountLabel}
+              </span>
+            ) : null}
+            <span
+              className={
+                deliveryMessage.tone === "danger"
+                  ? "rounded-full bg-[#fff1f2] px-2.5 py-1 text-[#b91c1c]"
+                  : deliveryMessage.tone === "success"
+                    ? "rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]"
+                    : "rounded-full bg-[#f3f4f6] px-2.5 py-1 text-[#57636c]"
+              }
+            >
+              {deliveryMessage.label}
+            </span>
+          </div>
 
           {salePrice ? (
             <div className="flex flex-wrap items-end gap-2 pt-0.5">
-              <p className={saleActive ? "text-[18px] font-medium leading-none tracking-tight text-[#ff5963]" : "text-[18px] font-medium leading-none tracking-tight text-[#4a4545]"}>
-                {salePrice}
-              </p>
+              <StorefrontPrice valueExVat={displayPriceValue} tone={saleActive ? "sale" : "default"} size="md" />
               {saleActive && compareAtPrice ? (
                 <p className="text-[11px] font-medium leading-none text-[#8b94a3] line-through">
                   {compareAtPrice}
@@ -1126,7 +1406,7 @@ function ProductCard({
             <p className="pt-0.5 text-[12px] text-[#8b94a3]">Price unavailable</p>
           )}
 
-          <div className="mt-3">
+          <div className="mt-3 flex items-stretch gap-2">
             <button
               type="button"
               data-ignore-card-open="true"
@@ -1134,7 +1414,7 @@ function ProductCard({
               onPointerDown={(event) => event.stopPropagation()}
               onClick={handleAddDefaultVariantToCart}
               disabled={cartBusy}
-              className="relative inline-flex h-10 w-full items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
+              className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
               aria-label="Add default variant to cart"
             >
               <CartPlusIcon />
@@ -1180,8 +1460,9 @@ export function ProductsResults({
   const [cartPreview, setCartPreview] = useState<CartPreview | null>(null);
   const [cartToastVisible, setCartToastVisible] = useState(false);
   const [cartBurstKey, setCartBurstKey] = useState<number>(0);
+  const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const { uid, isAuthenticated, favoriteCount, refreshProfile, openAuthModal } = useAuth();
+  const { uid, isAuthenticated, favoriteCount, refreshProfile, openAuthModal, syncCartState } = useAuth();
   const pathname = usePathname();
   const liveSearchParams = useSearchParams();
   const filterParams = useMemo(() => new URLSearchParams(liveSearchParams.toString()), [liveSearchParams]);
@@ -1192,6 +1473,11 @@ export function ProductsResults({
   const minRatingParam = filterParams.get("minRating");
   const minRating = minRatingParam ? Number(minRatingParam) : undefined;
   const favoritesOnly = filterParams.get("favoritesOnly") === "true";
+
+  useEffect(() => {
+    setShopperArea(readShopperDeliveryArea());
+    return subscribeToShopperDeliveryArea(setShopperArea);
+  }, []);
 
   useEffect(() => {
     setItems(initialItems);
@@ -1346,6 +1632,7 @@ export function ProductsResults({
       }
     }
 
+    syncCartState(nextCart);
     setCartPreview(nextCart);
     setCartDrawerOpen(true);
     setCartToastVisible(true);
@@ -1374,7 +1661,8 @@ export function ProductsResults({
   if (sortedItems.length === 0) {
     const hasFavorites = favoriteCount > 0;
     return (
-      <div className="rounded-[8px] bg-white px-5 py-10 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+      <div className="space-y-4">
+        <div className="rounded-[8px] bg-white px-5 py-10 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
           {favoritesOnly ? "Favourites" : "No results"}
         </p>
@@ -1408,6 +1696,7 @@ export function ProductsResults({
             </button>
           ) : null}
         </div>
+        </div>
       </div>
     );
   }
@@ -1429,6 +1718,7 @@ export function ProductsResults({
                 currentUrl={currentUrl}
                 onAddToCartSuccess={handleAddToCartSuccess}
                 cartBurstKey={cartBurstKey}
+                shopperArea={shopperArea}
               />
             ))}
           </div>
@@ -1447,6 +1737,7 @@ export function ProductsResults({
               currentUrl={currentUrl}
               onAddToCartSuccess={handleAddToCartSuccess}
               cartBurstKey={cartBurstKey}
+              shopperArea={shopperArea}
             />
           ))}
         </div>

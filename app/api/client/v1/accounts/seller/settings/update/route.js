@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
@@ -32,6 +33,18 @@ function sanitizeLongText(value) {
   return toStr(value).replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
+function sanitizeMoney(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return 0;
+  return Number(numeric.toFixed(2));
+}
+
+function sanitizePositiveInt(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return fallback;
+  return Math.trunc(numeric);
+}
+
 function sanitizePlacement(value) {
   const candidate = toStr(value, "center center").toLowerCase();
   const percentageMatch = candidate.match(/^(\d{1,3}(?:\.\d+)?)%\s+(\d{1,3}(?:\.\d+)?)%$/);
@@ -42,6 +55,34 @@ function sanitizePlacement(value) {
   }
   const allowed = new Set(["left center", "center top", "center center", "center bottom", "right center"]);
   return allowed.has(candidate) ? candidate : "center center";
+}
+
+function sanitizeCoordinate(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Number(numeric.toFixed(6));
+}
+
+function sanitizeOffsetMinutes(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.trunc(numeric);
+}
+
+function sanitizeTime(value) {
+  const input = toStr(value);
+  if (!input) return null;
+  const match = input.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function resolveCutoffTime(value, fallback = "10:00") {
+  return sanitizeTime(value) || fallback;
 }
 
 function parseBranding(payload) {
@@ -58,6 +99,75 @@ function parseBranding(payload) {
   };
 }
 
+function parseDeliveryProfile(payload) {
+  const normalized = normalizeSellerDeliveryProfile(payload && typeof payload === "object" ? payload : {});
+  return {
+    origin: {
+      country: sanitizeText(normalized.origin?.country),
+      region: sanitizeText(normalized.origin?.region),
+      city: sanitizeText(normalized.origin?.city),
+      suburb: sanitizeText(normalized.origin?.suburb),
+      postalCode: sanitizeText(normalized.origin?.postalCode),
+      utcOffsetMinutes: sanitizeOffsetMinutes(normalized.origin?.utcOffsetMinutes),
+      latitude: sanitizeCoordinate(normalized.origin?.latitude),
+      longitude: sanitizeCoordinate(normalized.origin?.longitude),
+    },
+    directDelivery: {
+      enabled: normalized.directDelivery?.enabled === true,
+      title: "Direct delivery",
+      radiusKm: sanitizePositiveInt(normalized.directDelivery?.radiusKm, 0),
+      leadTimeDays: sanitizePositiveInt(normalized.directDelivery?.leadTimeDays, 1),
+      cutoffTime: resolveCutoffTime(normalized.directDelivery?.cutoffTime),
+      pricingRules: Array.isArray(normalized.directDelivery?.pricingRules)
+        ? normalized.directDelivery.pricingRules.map((rule) => ({
+            id: toStr(rule.id),
+            label: sanitizeText(rule.label),
+            minDistanceKm: rule.minDistanceKm == null ? null : sanitizePositiveInt(rule.minDistanceKm, 0),
+            maxDistanceKm: rule.maxDistanceKm == null ? null : sanitizePositiveInt(rule.maxDistanceKm, 0),
+            minOrderValue: rule.minOrderValue == null ? null : sanitizeMoney(rule.minOrderValue),
+            maxOrderValue: rule.maxOrderValue == null ? null : sanitizeMoney(rule.maxOrderValue),
+            fee: sanitizeMoney(rule.fee),
+            freeAboveOrderValue: rule.freeAboveOrderValue == null ? null : sanitizeMoney(rule.freeAboveOrderValue),
+            isActive: rule.isActive !== false,
+          }))
+        : [],
+    },
+    shippingZones: Array.isArray(normalized.shippingZones)
+      ? normalized.shippingZones.map((zone) => ({
+          id: toStr(zone.id),
+          label: sanitizeText(zone.label),
+          scopeType: sanitizeText(zone.scopeType || "country"),
+          country: sanitizeText(zone.country),
+          region: sanitizeText(zone.region),
+          city: sanitizeText(zone.city),
+          postalCodes: Array.isArray(zone.postalCodes) ? zone.postalCodes.map((code) => sanitizeText(code)).filter(Boolean) : [],
+          leadTimeDays: sanitizePositiveInt(zone.leadTimeDays, 2),
+          cutoffTime: resolveCutoffTime(zone.cutoffTime),
+          pricingRules: Array.isArray(zone.pricingRules)
+            ? zone.pricingRules.map((rule) => ({
+                id: toStr(rule.id),
+                label: sanitizeText(rule.label),
+                minDistanceKm: rule.minDistanceKm == null ? null : sanitizePositiveInt(rule.minDistanceKm, 0),
+                maxDistanceKm: rule.maxDistanceKm == null ? null : sanitizePositiveInt(rule.maxDistanceKm, 0),
+                minOrderValue: rule.minOrderValue == null ? null : sanitizeMoney(rule.minOrderValue),
+                maxOrderValue: rule.maxOrderValue == null ? null : sanitizeMoney(rule.maxOrderValue),
+                fee: sanitizeMoney(rule.fee),
+                freeAboveOrderValue: rule.freeAboveOrderValue == null ? null : sanitizeMoney(rule.freeAboveOrderValue),
+                isActive: rule.isActive !== false,
+              }))
+            : [],
+          isFallback: zone.isFallback === true,
+          isActive: zone.isActive !== false,
+        }))
+      : [],
+    pickup: {
+      enabled: normalized.pickup?.enabled === true,
+      leadTimeDays: sanitizePositiveInt(normalized.pickup?.leadTimeDays, 0),
+    },
+    notes: sanitizeLongText(normalized.notes || ""),
+  };
+}
+
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -67,6 +177,7 @@ export async function POST(req) {
     const db = getAdminDb();
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     const branding = parseBranding(data?.branding || data);
+    const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
     const vendorName = titleCaseVendorName(data?.vendorName || data?.seller?.vendorName || "");
     const vendorDescription = normalizeSellerDescription(
       data?.vendorDescription || data?.description || data?.seller?.vendorDescription || data?.seller?.description,
@@ -105,6 +216,7 @@ export async function POST(req) {
       "seller.activeSellerCode": sellerCode,
       "seller.groupSellerCode": sellerCode,
       "seller.branding": branding,
+      "seller.deliveryProfile": deliveryProfile,
       "seller.media": branding,
       "timestamps.updatedAt": new Date(),
     });
@@ -117,6 +229,7 @@ export async function POST(req) {
         sellerCode,
       },
       branding,
+      deliveryProfile,
     });
   } catch (e) {
     console.error("seller/settings/update failed:", e);

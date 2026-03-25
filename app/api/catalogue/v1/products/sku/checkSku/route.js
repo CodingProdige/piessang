@@ -34,10 +34,10 @@ export async function POST(req) {
 
     return ok(result);
   } catch (e) {
-    console.error("checkSkuUnique failed:", e);
     if (e?.status === 409) {
       return ok({ unique: false, conflict: e.conflict ?? null });
     }
+    console.error("checkSkuUnique failed:", e);
     return err(500, "Unexpected Error", "Something went wrong while checking SKU uniqueness.");
   }
 }

@@ -1,65 +1,82 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import axios from "axios";
-import { db } from "@/lib/firebaseConfig";
-import {
-  collection, getDocs, doc, setDoc, deleteDoc
-} from "firebase/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { releaseStockLotReservations } from "@/lib/warehouse/stock-lots";
 
-const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
-const err =(s,t,m,e={})=>NextResponse.json({ ok:false,title:t,message:m,...e },{ status:s });
+const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
+const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
-const PRODUCT_RELEASE = "/api/catalogue/v1/products/sale/release";
+function normalizeActiveReservations(entries) {
+  const now = Date.now();
+  return (Array.isArray(entries) ? entries : []).filter((entry) => {
+    const lotId = String(entry?.lotId || "").trim();
+    const quantity = Math.max(0, Number(entry?.quantity || 0));
+    const expiresAt = entry?.expiresAt ? new Date(entry.expiresAt).getTime() : 0;
+    return lotId && quantity > 0 && expiresAt <= now;
+  });
+}
 
-export async function GET(req){
-  try{
-    const origin = new URL(req.url).origin;
-    const cartsRef = collection(db,"carts_active");
-    const snap = await getDocs(cartsRef);
+export async function GET() {
+  try {
+    const db = getAdminDb();
+    if (!db) return err(500, "Reclaim Failed", "Admin database is unavailable.");
 
-    const nowTs = Date.now();
-    const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+    const snap = await db.collection("carts").get();
+    const reclaimed = [];
 
-    let reclaimed = [];
+    for (const docSnap of snap.docs) {
+      const cart = docSnap.data() || {};
+      const items = Array.isArray(cart?.items) ? cart.items : [];
+      let changed = false;
+      const nextItems = [];
 
-    for (const docSnap of snap.docs){
-      const cart = docSnap.data();
-      const createdAt = new Date(cart.timestamps.createdAt).getTime();
-
-      if ((nowTs - createdAt) < TWELVE_HOURS) continue;
-
-      /* Cart is stale → reclaim */
-
-      for (const it of cart.items || []){
-        if ((it.sale_qty || 0) > 0){
-          await axios.post(new URL(PRODUCT_RELEASE, origin).toString(), {
-            unique_id: it.product_unique_id,
-            variant_id: it.selected_variant.variant_id,
-            qty: it.sale_qty
-          });
+      for (const item of items) {
+        const variant = item?.selected_variant_snapshot || {};
+        const expiredReservations = normalizeActiveReservations(variant?.warehouse_lot_reservations);
+        if (expiredReservations.length) {
+          await releaseStockLotReservations({ reservations: expiredReservations });
+          changed = true;
         }
+
+        const activeReservations = (Array.isArray(variant?.warehouse_lot_reservations) ? variant.warehouse_lot_reservations : []).filter(
+          (entry) => !expiredReservations.some((released) => String(released.lotId) === String(entry?.lotId || "")),
+        );
+
+        nextItems.push({
+          ...item,
+          selected_variant_snapshot: {
+            ...variant,
+            warehouse_lot_reservations: activeReservations,
+          },
+        });
       }
 
-      /* Move to abandoned */
-      await setDoc(doc(db,"carts_abandoned",docSnap.id),{
-        ...cart,
-        reclaimedAt: new Date().toISOString()
-      });
+      if (!changed) continue;
 
-      /* Delete active cart */
-      await deleteDoc(doc(db,"carts_active",docSnap.id));
+      await db.collection("carts").doc(docSnap.id).set(
+        {
+          items: nextItems,
+          timestamps: {
+            ...(cart?.timestamps || {}),
+            updatedAt: new Date().toISOString(),
+          },
+        },
+        { merge: true },
+      );
 
       reclaimed.push(docSnap.id);
     }
 
     return ok({
-      message:"Reclaim process completed.",
-      reclaimed
+      message: "Expired cart reservations reclaimed.",
+      reclaimed,
     });
-
-  }catch(e){
+  } catch (e) {
     console.error(e);
-    return err(500,"Reclaim Failed","Unexpected error",{ error:e.toString() });
+    return err(500, "Reclaim Failed", "Unexpected error", {
+      error: e instanceof Error ? e.message : String(e),
+    });
   }
 }
+

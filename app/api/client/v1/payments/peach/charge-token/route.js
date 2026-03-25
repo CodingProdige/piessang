@@ -3,17 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import https from "https";
 import querystring from "querystring";
-import {
-  doc,
-  getDoc,
-  updateDoc,
-  collection,
-  query,
-  where,
-  getDocs
-} from "firebase/firestore";
-
-import { db } from "@/lib/firebaseConfig";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { applyOrderPaymentSuccess } from "@/lib/payments/applyOrderPaymentSuccess";
 
 /* ───────── HELPERS ───────── */
@@ -74,6 +64,10 @@ function peachRequest(path, form) {
 
 export async function POST(req) {
   try {
+    const db = getAdminDb();
+    if (!db) {
+      return err(500, "Database Unavailable", "Admin database is not configured.");
+    }
     const {
       userId,
       cardId,
@@ -98,12 +92,10 @@ export async function POST(req) {
 
     /* ───── RESOLVE ORDER ───── */
 
-    const q = query(
-      collection(db, "orders_v2"),
-      where("order.merchantTransactionId", "==", merchantTransactionId)
-    );
-
-    const qs = await getDocs(q);
+    const qs = await db
+      .collection("orders_v2")
+      .where("order.merchantTransactionId", "==", merchantTransactionId)
+      .get();
 
     if (qs.empty) {
       return err(404, "Order Not Found", "No order matches this transaction.");
@@ -116,17 +108,38 @@ export async function POST(req) {
     const orderSnap = qs.docs[0];
     const order = orderSnap.data();
     const orderId = orderSnap.id;
+    const orderCustomerId =
+      order?.meta?.orderedFor || order?.order?.customerId || order?.customer_snapshot?.customerId || null;
 
-    if (order?.order?.status?.payment === "paid") {
+    if (orderCustomerId && String(orderCustomerId) !== String(userId)) {
+      return err(403, "Forbidden", "You cannot pay for another customer's order.");
+    }
+
+    if (order?.order?.status?.payment === "paid" || order?.payment?.status === "paid") {
       return err(409, "Already Paid", "This order has already been paid.");
+    }
+
+    const expectedAmount = Number(order?.payment?.required_amount_incl || 0).toFixed(2);
+    const expectedCurrency = String(order?.payment?.currency || currency || "").trim();
+    if (formattedAmount !== expectedAmount) {
+      return err(400, "Amount Mismatch", "The payment amount no longer matches the order total.", {
+        expectedAmount,
+        providedAmount: formattedAmount,
+      });
+    }
+    if (String(currency || "").trim() !== expectedCurrency) {
+      return err(400, "Currency Mismatch", "The payment currency no longer matches the order.", {
+        expectedCurrency,
+        providedCurrency: currency,
+      });
     }
 
     /* ───── LOAD USER & CARD ───── */
 
-    const userRef = doc(db, "users", userId);
-    const userSnap = await getDoc(userRef);
+    const userRef = db.collection("users").doc(userId);
+    const userSnap = await userRef.get();
 
-    if (!userSnap.exists()) {
+    if (!userSnap.exists) {
       return err(404, "User Not Found", "User does not exist.");
     }
 
@@ -216,7 +229,7 @@ export async function POST(req) {
         : c
     );
 
-    await updateDoc(userRef, {
+    await userRef.update({
       "paymentMethods.cards": updatedCards
     });
 

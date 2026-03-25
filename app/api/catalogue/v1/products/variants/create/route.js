@@ -26,6 +26,10 @@ const toBool=(v,f=false)=>
   f;
 const is8=(s)=>/^\d{8}$/.test(String(s??"").trim());
 
+function hasLiveSnapshotRecord(product) {
+  return Boolean(product?.live_snapshot && typeof product.live_snapshot === "object");
+}
+
 function normalizeVolumeUnit(value) {
   const unit = String(value ?? "").trim().toLowerCase();
   if (["l", "lt", "liter", "litre", "liters", "litres"].includes(unit)) return "lt";
@@ -168,16 +172,18 @@ export async function POST(req){
       return err(
         400,
         "Missing Stock",
-        "Bevgo fulfilment variants require stock quantities and a warehouse or location."
+        "Bevgo fulfilment variants require stock quantities."
       );
     }
 
+    const sellingPriceInclRaw = Number(data?.pricing?.selling_price_incl);
+    if (!Number.isFinite(sellingPriceInclRaw) || sellingPriceInclRaw <= 0) {
+      return err(400, "Missing Price", "VAT-inclusive selling price is required for every variant.");
+    }
+
     const discountPercent = Math.max(0, Math.min(100, toNum(data?.sale?.discount_percent, 0)));
-    const saleEnabled = toBool(data?.sale?.is_on_sale,false) || discountPercent > 0 || Number.isFinite(+data?.sale?.sale_price_incl) || Number.isFinite(+data?.sale?.sale_price_excl);
-    const sellingPriceIncl = money2(
-      data?.pricing?.selling_price_incl ??
-        (Number.isFinite(+data?.pricing?.selling_price_excl) ? Number(data?.pricing?.selling_price_excl) * (1 + VAT_RATE) : 0)
-    );
+    const saleEnabled = toBool(data?.sale?.is_on_sale,false) || discountPercent > 0 || Number.isFinite(+data?.sale?.sale_price_incl);
+    const sellingPriceIncl = money2(sellingPriceInclRaw);
   const variant={
       variant_id:vId,
       sku:toStr(data?.sku),
@@ -206,11 +212,7 @@ export async function POST(req){
       pricing:{
         supplier_price_excl:money2(data?.pricing?.supplier_price_excl),
         selling_price_incl: sellingPriceIncl,
-        selling_price_excl:money2(
-          Number.isFinite(+data?.pricing?.selling_price_excl)
-            ? data?.pricing?.selling_price_excl
-            : moneyInclToExcl(data?.pricing?.selling_price_incl ?? 0)
-        ),
+        selling_price_excl:money2(moneyInclToExcl(sellingPriceIncl)),
         cost_price_excl:Number.isFinite(+data?.pricing?.cost_price_excl)
           ?money2(data.pricing.cost_price_excl)
           :money2(data?.pricing?.base_price_excl),
@@ -224,29 +226,19 @@ export async function POST(req){
         sale_price_incl:money2(
           data?.sale?.sale_price_incl ??
             (() => {
-              const priceIncl = money2(
-                data?.pricing?.selling_price_incl ??
-                  (Number.isFinite(+data?.pricing?.selling_price_excl) ? Number(data?.pricing?.selling_price_excl) * (1 + VAT_RATE) : 0)
-              );
+              const priceIncl = sellingPriceIncl;
               const discount = discountPercent;
               return discount > 0 ? priceIncl * (1 - discount / 100) : 0;
             })()
         ),
-        sale_price_excl:money2(
-          Number.isFinite(+data?.sale?.sale_price_excl)
-            ? data?.sale?.sale_price_excl
-            : moneyInclToExcl(
-                data?.sale?.sale_price_incl ??
-                  (() => {
-                    const priceIncl = money2(
-                      data?.pricing?.selling_price_incl ??
-                        (Number.isFinite(+data?.pricing?.selling_price_excl) ? Number(data?.pricing?.selling_price_excl) * (1 + VAT_RATE) : 0)
-                    );
-                    const discount = Math.max(0, Math.min(100, toNum(data?.sale?.discount_percent, 0)));
-                    return discount > 0 ? priceIncl * (1 - discount / 100) : 0;
-                  })()
-              )
-        ),
+        sale_price_excl:money2(moneyInclToExcl(
+          data?.sale?.sale_price_incl ??
+            (() => {
+              const priceIncl = sellingPriceIncl;
+              const discount = Math.max(0, Math.min(100, toNum(data?.sale?.discount_percent, 0)));
+              return discount > 0 ? priceIncl * (1 - discount / 100) : 0;
+            })()
+        )),
         qty_available:toInt(data?.sale?.qty_available,0),
       },
 
@@ -278,22 +270,31 @@ export async function POST(req){
 
     variants.push(variant);
 
-    await pref.update({
+    const preserveLiveVersionDuringReview =
+      toStr(current?.moderation?.status).toLowerCase() === "published" || hasLiveSnapshotRecord(current);
+
+    const updatePayload = {
       variants,
       moderation: {
         ...(current?.moderation || {}),
-        status: "draft",
+        status: preserveLiveVersionDuringReview ? "in_review" : "draft",
         reason: "variant_changed",
-        notes: "Variant updates require the listing to be reviewed again before it goes live.",
+        notes: preserveLiveVersionDuringReview
+          ? "Variant updates are in review. The current live version stays visible until the changes are approved."
+          : "Variant updates require the listing to be reviewed again before it goes live.",
         reviewedAt: null,
         reviewedBy: null,
       },
       placement: {
         ...(current?.placement || {}),
-        isActive: false,
+        isActive: preserveLiveVersionDuringReview ? Boolean(current?.placement?.isActive) : false,
       },
       "timestamps.updatedAt":FieldValue.serverTimestamp()
-    });
+    };
+    if (preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(current)) {
+      updatePayload.live_snapshot = current;
+    }
+    await pref.update(updatePayload);
 
     const sellerSlug = toStr(
       current?.seller?.sellerSlug ||
@@ -331,6 +332,7 @@ export async function POST(req){
       unique_id:pid,
       variant_id:vId,
       resubmissionRequired: true,
+      liveVersionKept: preserveLiveVersionDuringReview,
       variant
     });
 

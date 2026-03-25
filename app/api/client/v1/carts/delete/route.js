@@ -1,82 +1,56 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import axios from "axios";
-import { db } from "@/lib/firebaseConfig";
-import { doc, getDoc, deleteDoc } from "firebase/firestore";
+import { normalizeCartForClient } from "@/lib/cart/public-api";
+import { recordLiveCommerceEvent } from "@/lib/analytics/live-commerce";
 
-const ok = (p = {}, s = 200) =>
-  NextResponse.json({ ok: true, ...p }, { status: s });
-
-const err = (s, t, m, e = {}) =>
-  NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
-
-/* Product backend (sale stock ops) */
-const PRODUCT_BASE =
-  "/api/catalogue/v1/products/sale";
-
-async function releaseSale(unique_id, variant_id, qty, origin) {
-  if (qty > 0) {
-    await axios.post(new URL(`${PRODUCT_BASE}/release`, origin).toString(), {
-      unique_id,
-      variant_id,
-      qty,
-    });
-  }
-}
+const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
+const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
 export async function POST(req) {
   try {
-    const origin = new URL(req.url).origin;
-    const { uid } = await req.json();
-
+    const body = await req.json().catch(() => ({}));
+    const uid = String(body?.uid || "").trim();
     if (!uid) {
       return err(400, "Invalid Request", "uid is required.");
     }
 
-    const cartRef = doc(db, "carts", uid);
-    const snap = await getDoc(cartRef);
+    const origin = new URL(req.url).origin;
+    const response = await fetch(new URL("/api/catalogue/v1/carts/cart/clear", origin), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        customerId: uid,
+        channel: "storefront",
+      }),
+    });
 
-    // No cart = nothing to restore
-    if (!snap.exists()) {
-      return ok({
-        data: { cart: null, message: "Cart already empty." },
-      });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      return err(
+        response.status || 500,
+        payload?.title || "Delete Failed",
+        payload?.message || "Unable to clear cart.",
+      );
     }
 
-    const cart = snap.data();
-    const items = cart.items || [];
-
-    /* -------------------------------------------------------
-     * Restore sale stock ONLY using:
-     *  - item.unique_id
-     *  - item.selected_variant_id
-     *  - item.sale_qty
-     * ------------------------------------------------------- */
-    for (const it of items) {
-      const saleQty = it.sale_qty || 0;
-
-      if (saleQty > 0) {
-        await releaseSale(it.unique_id, it.selected_variant_id, saleQty, origin);
-      }
-    }
-
-    /* -------------------------------------------------------
-     * Delete the cart document
-     * ------------------------------------------------------- */
-    await deleteDoc(cartRef);
+    await recordLiveCommerceEvent("cart_cleared", {
+      customerId: uid,
+      itemCount: 0,
+      cartStatus: "empty",
+    });
 
     return ok({
       data: {
-        cart: null,
-        message: "Cart deleted & sale stock restored.",
+        cart: normalizeCartForClient(payload?.data?.cart ?? null, uid),
+        message: "Cart cleared.",
       },
     });
-
   } catch (e) {
     console.error(e);
     return err(500, "Delete Failed", "Unexpected server error.", {
-      error: e.toString(),
+      error: e instanceof Error ? e.message : String(e),
     });
   }
 }

@@ -1,19 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  orderBy,
-  query,
-  startAfter,
-  updateDoc,
-  where
-} from "firebase/firestore";
-import { db } from "@/lib/firebaseConfig";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { buildOrderDeliveryProgress } from "@/lib/orders/fulfillment-progress";
 
 /* ───────── HELPERS ───────── */
@@ -36,11 +24,12 @@ function isEmpty(value) {
 
 async function resolveAccessType(userId) {
   if (!userId) return null;
-  const snap = await getDoc(doc(db, "users", userId));
-  if (snap.exists()) return snap.data()?.system?.accessType || null;
+  const db = getAdminDb();
+  if (!db) return null;
+  const snap = await db.collection("users").doc(userId).get();
+  if (snap.exists) return snap.data()?.system?.accessType || null;
 
-  const q = query(collection(db, "users"), where("uid", "==", userId));
-  const match = await getDocs(q);
+  const match = await db.collection("users").where("uid", "==", userId).get();
   if (match.empty) return null;
   return match.docs[0]?.data()?.system?.accessType || null;
 }
@@ -73,9 +62,9 @@ function normalizeNullStrings(value) {
 }
 
 function canCancelOrder(order) {
-  const orderStatus = order?.order?.status?.order || null;
+  const orderStatus = order?.lifecycle?.orderStatus || order?.order?.status?.order || null;
   const paymentStatus =
-    order?.payment?.status || order?.order?.status?.payment || null;
+    order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || null;
 
   if (
     orderStatus === "processing" ||
@@ -277,9 +266,9 @@ function matchesFilters(order, filters) {
   const delivery = order?.delivery || {};
   const createdAt = parseDate(order?.timestamps?.createdAt);
 
-  const paymentStatus = payment?.status || orderBlock?.status?.payment || null;
-  const orderStatus = orderBlock?.status?.order || null;
-  const fulfillmentStatus = orderBlock?.status?.fulfillment || null;
+  const paymentStatus = order?.lifecycle?.paymentStatus || payment?.status || orderBlock?.status?.payment || null;
+  const orderStatus = order?.lifecycle?.orderStatus || orderBlock?.status?.order || null;
+  const fulfillmentStatus = order?.lifecycle?.fulfillmentStatus || orderBlock?.status?.fulfillment || null;
 
   if (filters.orderType && orderBlock.type !== filters.orderType) return false;
   if (filters.customerId && orderBlock.customerId !== filters.customerId)
@@ -333,6 +322,8 @@ function needsFullCustomerSnapshot(snapshot) {
 }
 
 async function ensureFullCustomerSnapshot(orderRef, orderData) {
+  const db = getAdminDb();
+  if (!db) return orderData;
   const snapshot = orderData?.customer_snapshot || null;
   if (!needsFullCustomerSnapshot(snapshot)) return orderData;
 
@@ -344,8 +335,8 @@ async function ensureFullCustomerSnapshot(orderRef, orderData) {
 
   if (!customerId) return orderData;
 
-  const userSnap = await getDoc(doc(db, "users", customerId));
-  if (!userSnap.exists()) return orderData;
+  const userSnap = await db.collection("users").doc(customerId).get();
+  if (!userSnap.exists) return orderData;
 
   const fullUser = userSnap.data();
   const nextOrder = {
@@ -353,7 +344,7 @@ async function ensureFullCustomerSnapshot(orderRef, orderData) {
     customer_snapshot: fullUser
   };
 
-  await updateDoc(orderRef, {
+  await orderRef.update({
     customer_snapshot: fullUser,
     "timestamps.updatedAt": new Date().toISOString()
   });
@@ -370,53 +361,55 @@ function buildOrdersQuery({
   const clauses = [];
 
   if (userId && !allowAll) {
-    clauses.push(where("meta.orderedFor", "==", userId));
+    clauses.push({ field: "meta.orderedFor", op: "==", value: userId });
   }
 
   if (filters?.customerId) {
-    clauses.push(where("order.customerId", "==", filters.customerId));
+    clauses.push({ field: "order.customerId", op: "==", value: filters.customerId });
   }
 
   if (filters?.orderType) {
-    clauses.push(where("order.type", "==", filters.orderType));
+    clauses.push({ field: "order.type", op: "==", value: filters.orderType });
   }
   if (filters?.channel) {
-    clauses.push(where("order.channel", "==", filters.channel));
+    clauses.push({ field: "order.channel", op: "==", value: filters.channel });
   }
   if (filters?.paymentStatus) {
-    clauses.push(where("order.status.payment", "==", filters.paymentStatus));
+    clauses.push({ field: "order.status.payment", op: "==", value: filters.paymentStatus });
   }
   if (filters?.orderStatus) {
-    clauses.push(where("order.status.order", "==", filters.orderStatus));
+    clauses.push({ field: "order.status.order", op: "==", value: filters.orderStatus });
   }
   if (filters?.fulfillmentStatus) {
-    clauses.push(where("order.status.fulfillment", "==", filters.fulfillmentStatus));
+    clauses.push({ field: "order.status.fulfillment", op: "==", value: filters.fulfillmentStatus });
   }
   if (filters?.paymentMethod) {
-    clauses.push(where("payment.method", "==", filters.paymentMethod));
+    clauses.push({ field: "payment.method", op: "==", value: filters.paymentMethod });
   }
   if (filters?.deliverySpeed) {
-    clauses.push(where("delivery.speed.type", "==", filters.deliverySpeed));
+    clauses.push({ field: "delivery.speed.type", op: "==", value: filters.deliverySpeed });
   }
 
   if (filters?.createdFrom) {
     const from = parseDate(filters.createdFrom);
-    if (from) clauses.push(where("timestamps.createdAt", ">=", from.toISOString()));
+    if (from) clauses.push({ field: "timestamps.createdAt", op: ">=", value: from.toISOString() });
   }
   if (filters?.createdTo) {
     const to = parseDate(filters.createdTo);
-    if (to) clauses.push(where("timestamps.createdAt", "<=", to.toISOString()));
+    if (to) clauses.push({ field: "timestamps.createdAt", op: "<=", value: to.toISOString() });
   }
 
-  clauses.push(orderBy("timestamps.createdAt", sortOrder === "asc" ? "asc" : "desc"));
+  clauses.push({ field: "timestamps.createdAt", direction: sortOrder === "asc" ? "asc" : "desc" });
 
-  return query(collection(db, "orders_v2"), ...clauses);
+  return { clauses };
 }
 
 /* ───────── ENDPOINT ───────── */
 
 export async function POST(req) {
   try {
+    const db = getAdminDb();
+    if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     const body = await req.json().catch(() => ({}));
     const {
       orderId: rawOrderId,
@@ -445,18 +438,18 @@ export async function POST(req) {
     const sortOrder = isEmpty(rawSortOrder) ? "desc" : rawSortOrder;
 
     if (orderId) {
-      const ref = doc(db, "orders_v2", orderId);
-      const snap = await getDoc(ref);
+      const ref = db.collection("orders_v2").doc(orderId);
+      const snap = await ref.get();
 
-      if (snap.exists()) {
+      if (snap.exists) {
         return ok({ data: withCancelFlag(snap.data()) });
       }
     }
 
     if (orderId) {
-      const ref = doc(db, "orders_v2", orderId);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) {
+      const ref = db.collection("orders_v2").doc(orderId);
+      const snap = await ref.get();
+      if (!snap.exists) {
         return err(404, "Order Not Found", `No order found with id: ${orderId}`);
       }
       const orderData = await ensureFullCustomerSnapshot(ref, {
@@ -469,12 +462,7 @@ export async function POST(req) {
     if (orderNumber || merchantTransactionId) {
       const field = orderNumber ? "order.orderNumber" : "order.merchantTransactionId";
       const value = orderNumber || merchantTransactionId;
-      const ref = query(
-        collection(db, "orders_v2"),
-        where(field, "==", value),
-        limit(1)
-      );
-      const snap = await getDocs(ref);
+      const snap = await db.collection("orders_v2").where(field, "==", value).limit(1).get();
       if (snap.empty) {
         return err(
           404,
@@ -496,27 +484,37 @@ export async function POST(req) {
       filters,
       sortOrder
     });
+    const baseRef = db.collection("orders_v2");
 
     const safePage = Number(page) > 0 ? Number(page) : 1;
     const pageSize = paginate ? PAGE_SIZE : null;
 
     let cursorDoc = null;
     if (paginate && safePage > 1) {
-      const cursorSnap = await getDocs(
-        query(baseQuery, limit((safePage - 1) * PAGE_SIZE))
-      );
+      let cursorQuery = baseRef;
+      for (const clause of baseQuery.clauses) {
+        if (clause.field && clause.direction) {
+          cursorQuery = cursorQuery.orderBy(clause.field, clause.direction);
+        } else if (clause.op) {
+          cursorQuery = cursorQuery.where(clause.field, clause.op, clause.value);
+        }
+      }
+      const cursorSnap = await cursorQuery.limit((safePage - 1) * PAGE_SIZE).get();
       cursorDoc = cursorSnap.docs[cursorSnap.docs.length - 1] || null;
     }
 
-    const dataQuery = paginate
-      ? query(
-          baseQuery,
-          ...(cursorDoc ? [startAfter(cursorDoc)] : []),
-          limit(PAGE_SIZE)
-        )
-      : baseQuery;
+    let dataQuery = baseRef;
+    for (const clause of baseQuery.clauses) {
+      if (clause.field && clause.direction) {
+        dataQuery = dataQuery.orderBy(clause.field, clause.direction);
+      } else if (clause.op) {
+        dataQuery = dataQuery.where(clause.field, clause.op, clause.value);
+      }
+    }
+    if (cursorDoc) dataQuery = dataQuery.startAfter(cursorDoc);
+    if (paginate) dataQuery = dataQuery.limit(PAGE_SIZE);
 
-    const dataSnap = await getDocs(dataQuery);
+    const dataSnap = await dataQuery.get();
     const pageOrders = [];
     for (const docSnap of dataSnap.docs) {
       const hydrated = await ensureFullCustomerSnapshot(docSnap.ref, {

@@ -1,7 +1,8 @@
 // @ts-nocheck
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { db } from "@/lib/firebaseConfig";
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
 import crypto from "crypto";
+import { buildPaidStatePatch } from "@/lib/orders/platform-order";
 
 const now = () => new Date().toISOString();
 const r2 = value => Number((Number(value) || 0).toFixed(2));
@@ -10,7 +11,7 @@ function derivePaymentStatus(amountIncl, requiredAmountIncl) {
   const required = r2(requiredAmountIncl);
   const paid = r2(amountIncl);
   if (required <= 0) return "paid";
-  if (paid <= 0) return "unpaid";
+  if (paid <= 0) return "pending";
   if (paid + 0.0001 >= required) return "paid";
   return "partial";
 }
@@ -27,13 +28,17 @@ export async function applyOrderPaymentSuccess({
   currency,
   token = null
 }) {
+  const db = getAdminDb();
+  if (!db) {
+    throw new Error("Admin database is not configured");
+  }
   if (!orderId) {
     throw new Error("orderId is required");
   }
 
-  const ref = doc(db, "orders_v2", orderId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) {
+  const ref = db.collection("orders_v2").doc(orderId);
+  const snap = await ref.get();
+  if (!snap.exists) {
     throw new Error("Order not found");
   }
 
@@ -66,31 +71,25 @@ export async function applyOrderPaymentSuccess({
   }
 
   const updatePayload = {
-    "payment.provider": provider,
-    "payment.method": method,
-    "payment.chargeType": chargeType,
-    "payment.status": paymentStatus,
-    "payment.paid_amount_incl": paidAmountIncl,
-    "payment.currency": currency || order?.payment?.currency || null,
-    "payment.required_amount_incl": requiredAmountIncl,
-    "payment.merchantTransactionId": merchantTransactionId || order?.payment?.merchantTransactionId || null,
-    "payment.peachTransactionId": peachTransactionId || order?.payment?.peachTransactionId || null,
-    "payment.threeDSecureId": threeDSecureId || order?.payment?.threeDSecureId || null,
-    "payment.token": token || order?.payment?.token || null,
+    ...buildPaidStatePatch(order, {
+      provider,
+      method,
+      chargeType,
+      merchantTransactionId,
+      peachTransactionId,
+      threeDSecureId,
+      amount_incl: paidAmountIncl,
+      currency,
+      token,
+      timestamp,
+    }),
     "payment.attempts": attempts,
-    "order.status.payment": paymentStatus,
-    "order.status.order": paymentStatus === "paid" ? "confirmed" : order?.order?.status?.order || "confirmed",
-    "order.editable": false,
-    "order.editable_reason": "Order is locked because payment was completed.",
-    "timestamps.updatedAt": timestamp,
-    "timestamps.lockedAt": order?.timestamps?.lockedAt || timestamp
   };
 
-  await updateDoc(ref, updatePayload);
+  await ref.update(updatePayload);
 
   const paymentId = `pay_${orderId}_${peachTransactionId || crypto.randomUUID().replace(/-/g, "")}`;
-  await setDoc(
-    doc(db, "payments_v2", paymentId),
+  await db.collection("payments_v2").doc(paymentId).set(
     {
       paymentId,
       orderId,
@@ -105,7 +104,7 @@ export async function applyOrderPaymentSuccess({
       status: paymentStatus,
       createdAt: timestamp,
       updatedAt: timestamp,
-      _updatedAt: serverTimestamp()
+      _updatedAt: FieldValue.serverTimestamp()
     },
     { merge: true }
   );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useAuth } from "@/components/auth/auth-provider";
 
 type SellerOrderSlice = {
   orderId: string;
@@ -110,6 +111,7 @@ function statusLabelText(status: string) {
 }
 
 export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }: SellerOrdersWorkspaceProps) {
+  const { authReady, isAuthenticated } = useAuth();
   const [items, setItems] = useState<SellerOrderSlice[]>([]);
   const [counts, setCounts] = useState({ all: 0, new: 0, unfulfilled: 0, fulfilled: 0 });
   const [loading, setLoading] = useState(true);
@@ -118,6 +120,15 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!authReady) return undefined;
+    if (!isAuthenticated) {
+      setItems([]);
+      setCounts({ all: 0, new: 0, unfulfilled: 0, fulfilled: 0 });
+      setLoading(false);
+      setError(null);
+      return undefined;
+    }
+
     let cancelled = false;
     async function loadOrders() {
       setLoading(true);
@@ -147,7 +158,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
     return () => {
       cancelled = true;
     };
-  }, [mode, sellerCode, sellerSlug]);
+  }, [authReady, isAuthenticated, mode, sellerCode, sellerSlug]);
 
   async function updateSellerOrderStatus(item: SellerOrderSlice, nextStatus: "confirmed" | "processing" | "dispatched" | "delivered") {
     setUpdatingOrderId(item.orderId);

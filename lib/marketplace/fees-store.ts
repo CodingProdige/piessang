@@ -137,6 +137,86 @@ async function loadCatalogueTaxonomy(db: any) {
   };
 }
 
+export async function ensureCatalogueTaxonomySeed() {
+  const db = getAdminDb();
+  if (!db) throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");
+
+  const [categorySnap, subCategorySnap] = await Promise.all([
+    db.collection("categories").get(),
+    db.collection("sub_categories").get(),
+  ]);
+
+  if (categorySnap.empty) {
+    const batch = db.batch();
+    for (const [categoryIndex, category] of (DEFAULT_MARKETPLACE_FEE_CONFIG.categories || []).entries()) {
+      const categoryRef = db.collection("categories").doc(category.slug);
+      batch.set(categoryRef, {
+        docId: category.slug,
+        category: {
+          slug: category.slug,
+          title: category.title,
+          description: null,
+          keywords: [],
+        },
+        placement: {
+          position: categoryIndex + 1,
+          isActive: true,
+          isFeatured: false,
+        },
+        media: {
+          color: null,
+          images: [],
+          video: null,
+          icon: null,
+        },
+        timestamps: {
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+      });
+    }
+    await batch.commit();
+  }
+
+  if (subCategorySnap.empty) {
+    const batch = db.batch();
+    for (const category of DEFAULT_MARKETPLACE_FEE_CONFIG.categories || []) {
+      for (const [subCategoryIndex, subCategory] of (category.subCategories || []).entries()) {
+        const subCategoryRef = db.collection("sub_categories").doc(`${category.slug}__${subCategory.slug}`);
+        batch.set(subCategoryRef, {
+          docId: `${category.slug}__${subCategory.slug}`,
+          grouping: {
+            category: category.slug,
+          },
+          subCategory: {
+            slug: subCategory.slug,
+            kind: "consumable",
+            title: subCategory.title,
+            description: null,
+            keywords: [],
+          },
+          placement: {
+            position: subCategoryIndex + 1,
+            isActive: true,
+            isFeatured: false,
+          },
+          media: {
+            color: null,
+            images: [],
+            video: null,
+            icon: null,
+          },
+          timestamps: {
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        });
+      }
+    }
+    await batch.commit();
+  }
+}
+
 async function deleteCollectionDocs(collectionName: string, keepIds: string[] = []) {
   const db = getAdminDb();
   if (!db) throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");
@@ -151,6 +231,8 @@ async function deleteCollectionDocs(collectionName: string, keepIds: string[] = 
 async function ensureSeedData() {
   const db = getAdminDb();
   if (!db) throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");
+
+  await ensureCatalogueTaxonomySeed();
 
   const [categorySnap, fulfilmentSnap, storageSnap] = await Promise.all([
     db.collection(CATEGORY_SUCCESS_FEES_COLLECTION).get(),

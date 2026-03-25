@@ -1,9 +1,13 @@
-<h2>Product status update</h2>
+<h2><%= statusHeading || "Product status update" %></h2>
 
 <p>Hi <%= vendorName %>,</p>
 
 <p>
-Your product <strong><%= productTitle %></strong> has changed status on Bevgo.
+<% if (isLiveUpdate) { %>
+Your latest changes for <strong><%= productTitle %></strong> have changed status on Piessang.
+<% } else { %>
+Your product <strong><%= productTitle %></strong> has changed status on Piessang.
+<% } %>
 </p>
 
 <ul>
@@ -20,5 +24,5 @@ Your product <strong><%= productTitle %></strong> has changed status on Bevgo.
 
 <p style="margin-top: 20px;">
 Cheers,<br/>
-The Bevgo Team
+The Piessang Team
 </p>

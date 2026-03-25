@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/seller-delivery-settings-reminders",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/orders/payment-success-reconciliation",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/orders/payment-pending-cleanup",
+      "schedule": "*/30 * * * *"
+    }
+  ]
+}

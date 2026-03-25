@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
 
 type ProductItem = {
   id: string;
@@ -57,16 +58,20 @@ type ProductItem = {
     }>;
     is_unavailable_for_listing?: boolean;
     has_in_stock_variants?: boolean;
+    listing_block_reason_code?: string | null;
+    listing_block_reason_message?: string | null;
   };
 };
 
 type SellerProductsWorkspaceProps = {
   vendorName: string;
+  sellerSlug?: string;
   onCreateProduct: () => void;
   onEditProduct: (productId: string) => void;
+  onOpenSettings?: () => void;
 };
 
-type StatusFilter = "all" | "live" | "review" | "awaiting_stock" | "draft" | "rejected";
+type StatusFilter = "all" | "live" | "review" | "awaiting_stock" | "draft" | "rejected" | "blocked";
 
 function toSlug(value: string) {
   return String(value || "")
@@ -77,6 +82,7 @@ function toSlug(value: string) {
 
 function normalizeStatus(item: ProductItem["data"]) {
   const moderation = String(item?.moderation?.status ?? "").toLowerCase();
+  if (moderation === "blocked") return "blocked";
   if (moderation === "rejected") return "rejected";
   if (moderation === "in_review" || moderation === "pending") return "review";
   if (moderation === "awaiting_stock") return "awaiting_stock";
@@ -96,6 +102,8 @@ function statusTone(status: string) {
       return "bg-[rgba(99,102,241,0.12)] text-[#4f46e5]";
     case "rejected":
       return "bg-[rgba(220,38,38,0.10)] text-[#b91c1c]";
+    case "blocked":
+      return "bg-[rgba(127,29,29,0.12)] text-[#7f1d1d]";
     case "draft":
       return "bg-[rgba(148,163,184,0.14)] text-[#475569]";
     default:
@@ -109,6 +117,8 @@ function statusLabel(status: string) {
       return "In review";
     case "awaiting_stock":
       return "Awaiting stock";
+    case "blocked":
+      return "Blocked";
     default:
       return status;
   }
@@ -145,13 +155,24 @@ function EyeIcon({ className = "" }: { className?: string }) {
   );
 }
 
+function WarningIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M12 4 21 20H3L12 4Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M12 9v5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="12" cy="17" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
 function isRowEditIgnored(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   return Boolean(target.closest('button, a, input, textarea, select, label, [data-ignore-row-edit="true"]'));
 }
 
-export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditProduct }: SellerProductsWorkspaceProps) {
+export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateProduct, onEditProduct, onOpenSettings }: SellerProductsWorkspaceProps) {
   const [items, setItems] = useState<ProductItem[]>([]);
+  const [deliverySettingsReady, setDeliverySettingsReady] = useState(true);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -202,6 +223,29 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
     return () => controller.abort();
   }, [loadProducts]);
 
+  useEffect(() => {
+    let mounted = true;
+    if (!sellerSlug) {
+      setDeliverySettingsReady(true);
+      return;
+    }
+    fetch(`/api/client/v1/accounts/seller/settings/get?sellerSlug=${encodeURIComponent(sellerSlug)}`, {
+      cache: "no-store",
+    })
+      .then((response) => response.json().catch(() => ({})))
+      .then((payload) => {
+        if (!mounted) return;
+        const profile = payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {};
+        setDeliverySettingsReady(hasSellerDeliverySettings(profile));
+      })
+      .catch(() => {
+        if (mounted) setDeliverySettingsReady(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [sellerSlug]);
+
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return items.filter((item) => {
@@ -248,6 +292,7 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
       awaiting_stock: 0,
       draft: 0,
       rejected: 0,
+      blocked: 0,
       variants: 0,
     };
     for (const item of items) {
@@ -260,6 +305,14 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
 
   const selectedCount = selectedIds.length;
   const activeRowCount = rows.length;
+  const hasSelfFulfilledProducts = useMemo(
+    () => items.some((item) => String(item?.data?.fulfillment?.mode ?? "seller").toLowerCase() === "seller"),
+    [items],
+  );
+  const hiddenByDeliverySettingsCount = useMemo(
+    () => items.filter((item) => item?.data?.listing_block_reason_code === "missing_delivery_settings").length,
+    [items],
+  );
 
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedIds.includes(row.id)),
@@ -340,7 +393,7 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
               data: {
                 placement: { isActive: nextStatus === "active" },
                 moderation: {
-                  status: nextStatus === "active" ? "published" : "draft",
+                  status: nextStatus === "active" ? "in_review" : "draft",
                   reason: null,
                   notes: null,
                   reviewedAt: null,
@@ -364,7 +417,11 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
 
       setSelectedIds([]);
       setBulkMenuOpen(false);
-      setBulkMessage(`Updated ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} to ${nextStatus}.`);
+      setBulkMessage(
+        nextStatus === "active"
+          ? `Submitted ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} for review.`
+          : `Moved ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} to draft.`,
+      );
       await loadProducts();
     } catch (cause) {
       setBulkMessage(cause instanceof Error ? cause.message : "Unable to update selected products.");
@@ -441,6 +498,27 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
           Add product
         </button>
       </section>
+
+      {hasSelfFulfilledProducts && !deliverySettingsReady ? (
+        <section className="rounded-[8px] border border-[rgba(185,28,28,0.14)] bg-[rgba(185,28,28,0.05)] px-4 py-4 text-[13px] text-[#202020]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Delivery settings required</p>
+              <p className="mt-1 leading-[1.6] text-[#57636c]">
+                You have self-fulfilled products. Add your direct delivery, shipping, or pickup settings before submitting them for review.
+                {hiddenByDeliverySettingsCount > 0 ? ` ${hiddenByDeliverySettingsCount} product${hiddenByDeliverySettingsCount === 1 ? " is" : "s are"} currently hidden from the storefront until this is fixed.` : ""}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onOpenSettings?.()}
+              className="inline-flex min-h-9 items-center justify-center rounded-[8px] bg-[#202020] px-4 py-2 text-[12px] font-semibold text-white"
+            >
+              Delivery settings
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       {selectedIds.length > 0 ? (
         <section className="rounded-[8px] border border-black/5 bg-[rgba(203,178,107,0.08)] px-4 py-3 text-[13px] text-[#202020]">
@@ -566,7 +644,7 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
       <section className="rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
         <div className="flex flex-col gap-3 border-b border-black/5 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-2">
-            {(["all", "live", "review", "awaiting_stock", "draft", "rejected"] as const).map((status) => (
+            {(["all", "live", "review", "awaiting_stock", "draft", "rejected", "blocked"] as const).map((status) => (
               <button
                 key={status}
                 type="button"
@@ -589,7 +667,9 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
                           ? stats.awaiting_stock
                         : status === "draft"
                           ? stats.draft
-                          : stats.rejected}
+                          : status === "rejected"
+                            ? stats.rejected
+                            : stats.blocked}
                 </span>
               </button>
             ))}
@@ -703,6 +783,15 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
                                   >
                                     {product.title || "Untitled product"}
                                   </button>
+                                  {item.data?.listing_block_reason_code === "missing_delivery_settings" ? (
+                                    <span
+                                      className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(185,28,28,0.08)] px-2 py-1 text-[10px] font-semibold text-[#b91c1c]"
+                                      title={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
+                                    >
+                                      <WarningIcon className="h-3.5 w-3.5" />
+                                      Hidden from storefront
+                                    </span>
+                                  ) : null}
                                   <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">
                                     {product.brandTitle || grouping.brand || "Brand not set"} • {product.vendorName || "Piessang"}
                                   </p>
@@ -873,6 +962,15 @@ export function SellerProductsWorkspace({ vendorName, onCreateProduct, onEditPro
                               >
                                 {product.title || "Untitled product"}
                               </button>
+                              {item.data?.listing_block_reason_code === "missing_delivery_settings" ? (
+                                <div
+                                  className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(185,28,28,0.08)] px-2 py-1 text-[10px] font-semibold text-[#b91c1c]"
+                                  title={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
+                                >
+                                  <WarningIcon className="h-3.5 w-3.5" />
+                                  Hidden from storefront
+                                </div>
+                              ) : null}
                               <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">
                                 {product.brandTitle || grouping.brand || "Brand not set"}
                               </p>

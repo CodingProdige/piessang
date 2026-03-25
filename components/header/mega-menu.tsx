@@ -6,15 +6,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { CartActionStack } from "@/components/cart/cart-actions";
 import { CartItemCard } from "@/components/cart/cart-item-card";
+import { DisplayCurrencySelector, useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import {
+  readShopperDeliveryArea,
+  saveShopperDeliveryArea,
+  subscribeToShopperDeliveryArea,
+  type ShopperDeliveryArea,
+} from "@/components/products/delivery-area-gate";
+import { GooglePlacePickerModal, reverseGeocodeCoordinates } from "@/components/shared/google-place-picker-modal";
 
 const CATEGORIES_ENDPOINT = "/api/catalogue/v1/categories/list";
-const SUBCATEGORIES_ENDPOINT = "/api/catalogue/subcategories";
-const BRANDS_ENDPOINT = "/api/catalogue/brands";
+const SUBCATEGORIES_ENDPOINT = "/api/catalogue/v1/subCategories/list";
+const BRANDS_ENDPOINT = "/api/catalogue/v1/brands/get";
 const PRODUCTS_ENDPOINT = "/api/catalogue/v1/products/product/get";
 const PRODUCTS_PAGE = "/products";
 const MENU_HEIGHT = 430;
+const DELIVERY_PROMPT_DISMISSED_KEY = "piessang-delivery-prompt-dismissed";
 
 type CatalogueCategory = {
+  slug?: string;
+  title?: string;
+  description?: string | null;
+  position?: number;
   id?: string;
   data?: {
     docId?: string;
@@ -31,6 +44,11 @@ type CatalogueCategory = {
 };
 
 type CatalogueSubCategory = {
+  slug?: string;
+  kind?: string | null;
+  title?: string;
+  description?: string | null;
+  position?: number;
   id?: string;
   data?: {
     docId?: string;
@@ -118,6 +136,143 @@ type ProductAvailabilitySummary = {
   subCategoryCounts: Record<string, number>;
 };
 
+function formatDeliveryAreaLabel(area: ShopperDeliveryArea | null) {
+  if (!area) return "Set delivery location";
+  return [area.suburb, area.city, area.province, area.country].filter(Boolean)[0] || "Delivery location";
+}
+
+function HeaderDeliveryLocationControl({
+  triggerId,
+  className = "",
+}: {
+  triggerId?: string;
+  className?: string;
+}) {
+  const { isAuthenticated } = useAuth();
+  const [area, setArea] = useState<ShopperDeliveryArea | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setArea(readShopperDeliveryArea());
+    return subscribeToShopperDeliveryArea(setArea);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (area) return;
+
+    if (isAuthenticated) {
+      const dismissed = window.sessionStorage.getItem(DELIVERY_PROMPT_DISMISSED_KEY) === "1";
+      if (!dismissed) {
+        setPickerOpen(true);
+        window.sessionStorage.setItem(DELIVERY_PROMPT_DISMISSED_KEY, "1");
+      }
+      return;
+    }
+
+    if (!navigator.geolocation) return;
+
+    let cancelled = false;
+    setGeoLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        if (cancelled) return;
+        try {
+          const place = await reverseGeocodeCoordinates(position.coords.latitude, position.coords.longitude);
+          if (cancelled) return;
+          const nextArea = {
+            city: String(place.city || "").trim(),
+            province: String(place.region || "").trim(),
+            suburb: String(place.suburb || "").trim(),
+            postalCode: String(place.postalCode || "").trim(),
+            country: String(place.country || "").trim(),
+            latitude: typeof place.latitude === "number" ? place.latitude : null,
+            longitude: typeof place.longitude === "number" ? place.longitude : null,
+          };
+          if (nextArea.city || nextArea.province) {
+            saveShopperDeliveryArea(nextArea);
+            setArea(nextArea);
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setGeoError(error instanceof Error ? error.message : "Unable to detect your location.");
+          }
+        } finally {
+          if (!cancelled) setGeoLoading(false);
+        }
+      },
+      (error) => {
+        if (cancelled) return;
+        setGeoLoading(false);
+        if (error?.code !== error.PERMISSION_DENIED) {
+          setGeoError("Unable to detect your location right now.");
+        }
+      },
+      {
+        enableHighAccuracy: false,
+        timeout: 10000,
+        maximumAge: 300000,
+      },
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [area, isAuthenticated]);
+
+  return (
+    <>
+      <button
+        id={triggerId}
+        type="button"
+        onClick={() => setPickerOpen(true)}
+        className={`inline-flex items-center gap-2 border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] hover:text-[#2f343b] ${className}`}
+        title={area ? `${area.city}${area.province ? `, ${area.province}` : ""}` : "Set your delivery location"}
+      >
+        <svg viewBox="0 0 20 20" className="h-4 w-4 fill-current" aria-hidden="true">
+          <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
+        </svg>
+        <span>{geoLoading ? "Checking location..." : formatDeliveryAreaLabel(area)}</span>
+      </button>
+      {geoError ? <span className="hidden text-[11px] text-[#8b94a3] lg:inline">{geoError}</span> : null}
+      <GooglePlacePickerModal
+        open={pickerOpen}
+        title="Choose your delivery location"
+        initialValue={
+          area
+            ? {
+                city: area.city,
+                region: area.province,
+                suburb: area.suburb,
+                postalCode: area.postalCode,
+                country: area.country,
+                latitude: area.latitude,
+                longitude: area.longitude,
+              }
+            : null
+        }
+        onClose={() => setPickerOpen(false)}
+        onSelect={(value) => {
+          const nextArea = {
+            city: String(value.city || "").trim(),
+            province: String(value.region || "").trim(),
+            suburb: String(value.suburb || "").trim(),
+            postalCode: String(value.postalCode || "").trim(),
+            country: String(value.country || "").trim(),
+            latitude: typeof value.latitude === "number" ? value.latitude : null,
+            longitude: typeof value.longitude === "number" ? value.longitude : null,
+          };
+          saveShopperDeliveryArea(nextArea);
+          setArea(nextArea);
+          setPickerOpen(false);
+        }}
+      />
+    </>
+  );
+}
+
 function buildProductsHref(params: {
   category?: string;
   subCategory?: string;
@@ -140,8 +295,8 @@ async function fetchDepartments(): Promise<Department[]> {
 
     return (payload.items ?? [])
       .map((item) => {
-        const slug = item.data?.category?.slug?.trim();
-        const title = item.data?.category?.title?.trim();
+        const slug = item.slug?.trim() || item.data?.category?.slug?.trim();
+        const title = item.title?.trim() || item.data?.category?.title?.trim();
 
         if (!slug || !title) return null;
 
@@ -149,8 +304,8 @@ async function fetchDepartments(): Promise<Department[]> {
           id: item.id ?? item.data?.docId ?? slug,
           slug,
           title,
-          description: item.data?.category?.description?.trim() ?? "",
-          position: item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
+          description: item.description?.trim() ?? item.data?.category?.description?.trim() ?? "",
+          position: item.position ?? item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
         };
       })
       .filter((item): item is Department => Boolean(item))
@@ -176,8 +331,8 @@ async function fetchSubcategories(categorySlug: string): Promise<SubCategory[]> 
 
     list
       .map((item) => {
-        const slug = item.data?.subCategory?.slug?.trim();
-        const title = item.data?.subCategory?.title?.trim();
+        const slug = item.slug?.trim() || item.data?.subCategory?.slug?.trim();
+        const title = item.title?.trim() || item.data?.subCategory?.title?.trim();
         const groupedCategory = item.data?.grouping?.category?.trim();
 
         if (!slug || !title || (groupedCategory && groupedCategory !== categorySlug)) return null;
@@ -187,8 +342,8 @@ async function fetchSubcategories(categorySlug: string): Promise<SubCategory[]> 
           id: item.id ?? item.data?.docId ?? slug,
           slug,
           title,
-          description: item.data?.subCategory?.description?.trim() ?? "",
-          position: item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
+          description: item.description?.trim() ?? item.data?.subCategory?.description?.trim() ?? "",
+          position: item.position ?? item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
         };
       })
       .forEach((item) => {
@@ -494,42 +649,65 @@ function CartPreviewDrawer({
   open,
   onClose,
   uid,
+  onCartChange,
 }: {
   open: boolean;
   onClose: () => void;
   uid: string | null;
+  onCartChange?: (cart: unknown) => void;
 }) {
+  const { formatMoney } = useDisplayCurrency();
+  type CartPreviewItem = {
+    cart_item_key?: string;
+    product_unique_id?: string;
+    qty?: number;
+    quantity?: number;
+    sale_qty?: number;
+    regular_qty?: number;
+    line_totals?: {
+      final_incl?: number;
+      final_excl?: number;
+    };
+    product_snapshot?: {
+      product?: {
+        unique_id?: string | number | null;
+        title?: string | null;
+        vendorName?: string | null;
+      };
+      seller?: {
+        vendorName?: string | null;
+      };
+      fulfillment?: {
+        mode?: string | null;
+      };
+      media?: {
+        images?: Array<{ imageUrl?: string | null }>;
+      };
+    };
+    selected_variant_snapshot?: {
+      variant_id?: string | number | null;
+      label?: string | null;
+      pricing?: {
+        selling_price_excl?: number;
+        selling_price_incl?: number;
+        sale_price_incl?: number;
+        sale_price_excl?: number;
+      };
+      sale?: {
+        is_on_sale?: boolean;
+        sale_price_incl?: number;
+        sale_price_excl?: number;
+        qty_available?: number;
+      };
+    };
+  };
+
   const [loading, setLoading] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [lineBusyKey, setLineBusyKey] = useState<string | null>(null);
+  const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [cart, setCart] = useState<{
-    items?: Array<{
-      qty?: number;
-      quantity?: number;
-      sale_qty?: number;
-      regular_qty?: number;
-      line_totals?: {
-        final_incl?: number;
-        final_excl?: number;
-      };
-      product_snapshot?: {
-        product?: {
-          title?: string | null;
-        };
-        media?: {
-          images?: Array<{ imageUrl?: string | null }>;
-        };
-      };
-      selected_variant_snapshot?: {
-        label?: string | null;
-        pricing?: {
-          selling_price_excl?: number;
-        };
-        sale?: {
-          is_on_sale?: boolean;
-          sale_price_excl?: number;
-          qty_available?: number;
-        };
-      };
-    }>;
+    items?: CartPreviewItem[];
     totals?: { final_payable_incl?: number; final_incl?: number };
     cart?: { item_count?: number };
   } | null>(null);
@@ -547,11 +725,15 @@ function CartPreviewDrawer({
       .then((response) => response.json())
       .then((payload) => {
         if (!mounted) return;
-        setCart((payload?.data?.cart ?? null) as typeof cart);
+        const nextCart = (payload?.data?.cart ?? null) as typeof cart;
+        setCart(nextCart);
+        onCartChange?.(nextCart);
+        setHasLoaded(true);
       })
       .catch(() => {
         if (!mounted) return;
         setCart(null);
+        setHasLoaded(true);
       })
       .finally(() => {
         if (!mounted) return;
@@ -561,11 +743,67 @@ function CartPreviewDrawer({
     return () => {
       mounted = false;
     };
-  }, [open, uid]);
+  }, [onCartChange, open, uid]);
 
   const items = Array.isArray(cart?.items) ? cart.items : [];
   const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const totalIncl = cart?.totals?.final_payable_incl ?? cart?.totals?.final_incl ?? 0;
+  const showDrawerLoading = loading && !hasLoaded;
+  const sellerGroups = items.reduce<Array<{ seller: string; items: CartPreviewItem[] }>>((groups, item) => {
+    const seller =
+      item?.product_snapshot?.seller?.vendorName?.trim() ||
+      item?.product_snapshot?.product?.vendorName?.trim() ||
+      "Piessang seller";
+    const existing = groups.find((group) => group.seller === seller);
+    if (existing) existing.items.push(item);
+    else groups.push({ seller, items: [item] });
+    return groups;
+  }, []);
+
+  const updateLine = async (
+    item: CartPreviewItem,
+    action: "increment" | "decrement" | "remove",
+  ) => {
+    if (!uid) return;
+    const productId =
+      String(item?.product_snapshot?.product?.unique_id || "") ||
+      String(item?.product_unique_id || "");
+    const variantId = String(item?.selected_variant_snapshot?.variant_id || "");
+    if (!productId || !variantId) return;
+
+    const busyKey = String(item?.cart_item_key || `${productId}::${variantId}`);
+    setLineBusyKey(busyKey);
+    try {
+      const endpoint = action === "remove" ? "/api/client/v1/carts/removeItem" : "/api/client/v1/carts/update";
+      const payload =
+        action === "remove"
+          ? { uid, unique_id: productId, variant_id: variantId }
+          : { uid, productId, variantId, mode: "change", qty: action === "increment" ? 1 : -1 };
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || json?.ok === false) throw new Error(json?.message || "Unable to update cart.");
+      const nextCart = (json?.data?.cart ?? null) as typeof cart;
+      setCart(nextCart);
+      onCartChange?.(nextCart);
+      setSnackbarMessage(action === "remove" ? "Item removed from your cart." : "Cart quantity updated.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update your cart.";
+      setSnackbarMessage(message);
+    } finally {
+      setLineBusyKey(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!snackbarMessage) return undefined;
+    const timer = window.setTimeout(() => setSnackbarMessage(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [snackbarMessage]);
 
   return (
     <div className={`fixed inset-0 z-[68] ${open ? "" : "pointer-events-none"}`}>
@@ -583,7 +821,11 @@ function CartPreviewDrawer({
         <div className="flex items-center justify-between border-b border-black/5 px-5 py-4">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Cart preview</p>
-            <h3 className="mt-1 text-[18px] font-semibold text-[#202020]">{itemCount} items</h3>
+            {showDrawerLoading ? (
+              <div className="mt-2 h-6 w-24 animate-pulse rounded bg-[#ece8df]" />
+            ) : (
+              <h3 className="mt-1 text-[18px] font-semibold text-[#202020]">{itemCount} items</h3>
+            )}
           </div>
           <button
             type="button"
@@ -598,34 +840,78 @@ function CartPreviewDrawer({
         <div className="space-y-4 px-5 py-4">
           <div className="rounded-[8px] bg-[#fafafa] px-4 py-3">
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Estimated total</p>
-            <p className="mt-1 text-[22px] font-semibold text-[#202020]">
-              {`R ${new Intl.NumberFormat("en-ZA", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              }).format(typeof totalIncl === "number" && Number.isFinite(totalIncl) ? totalIncl : 0)}`}
-            </p>
+            {showDrawerLoading ? (
+              <div className="mt-2 h-8 w-32 animate-pulse rounded bg-[#ece8df]" />
+            ) : (
+              <p className="mt-1 text-[22px] font-semibold text-[#202020]">{formatMoney(totalIncl)}</p>
+            )}
           </div>
 
-          {loading ? (
-            <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-5 text-[13px] text-[#57636c]">
-              Loading cart...
+          {showDrawerLoading ? (
+            <div className="space-y-3">
+              {[0, 1].map((index) => (
+                <div key={index} className="rounded-[8px] border border-black/5 bg-white p-3 shadow-[0_6px_18px_rgba(20,24,27,0.05)]">
+                  <div className="flex gap-3">
+                    <div className="h-14 w-14 animate-pulse rounded-[8px] bg-[#f1ede4]" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3.5 w-3/4 animate-pulse rounded bg-[#f1ede4]" />
+                      <div className="h-3 w-1/2 animate-pulse rounded bg-[#f5f1e8]" />
+                      <div className="h-3 w-2/5 animate-pulse rounded bg-[#f5f1e8]" />
+                      <div className="h-3.5 w-24 animate-pulse rounded bg-[#f1ede4]" />
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
 
-          {items.length ? (
+          {!showDrawerLoading && items.length ? (
             <div className="space-y-3">
-              {items.map((item, index) => (
-                <CartItemCard key={`${item.product_snapshot?.product?.title ?? "item"}-${index}`} item={item} compact />
+              {sellerGroups.map((group) => (
+                <section key={group.seller} className="space-y-2">
+                  <div className="flex items-center justify-between px-1">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{group.seller}</p>
+                    <p className="text-[10px] text-[#8b94a3]">
+                      {group.items.some((item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "bevgo")
+                        ? "Piessang delivery available"
+                        : "Seller delivery"}
+                    </p>
+                  </div>
+                  {group.items.map((item, index) => {
+                    const productId =
+                      String(item?.product_snapshot?.product?.unique_id || "") ||
+                      String(item?.product_unique_id || "");
+                    const variantId = String(item?.selected_variant_snapshot?.variant_id || "");
+                    const busyKey = String(item?.cart_item_key || `${productId}::${variantId}`);
+                    return (
+                      <CartItemCard
+                        key={`${group.seller}-${item.product_snapshot?.product?.title ?? "item"}-${index}`}
+                        item={item}
+                        compact
+                        onIncrement={() => void updateLine(item, "increment")}
+                        onDecrement={() => void updateLine(item, "decrement")}
+                        onRemove={() => void updateLine(item, "remove")}
+                        busy={lineBusyKey === busyKey}
+                      />
+                    );
+                  })}
+                </section>
               ))}
             </div>
-          ) : (
+          ) : !showDrawerLoading ? (
             <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-6 text-[13px] text-[#57636c]">
               Your cart is empty right now.
             </div>
-          )}
+          ) : null}
 
           <CartActionStack onNavigate={onClose} compact />
         </div>
+
+        {snackbarMessage ? (
+          <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-[#202020] px-4 py-2 text-[12px] font-medium text-white shadow-[0_14px_30px_rgba(20,24,27,0.24)]">
+            {snackbarMessage}
+          </div>
+        ) : null}
       </aside>
     </div>
   );
@@ -803,19 +1089,6 @@ function CategoryFlyout({
                   })}
                   className="flex w-full items-center gap-3 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-left shadow-[0_4px_12px_rgba(20,24,27,0.04)] transition-colors hover:bg-[rgba(203,178,107,0.18)]"
                 >
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[8px] bg-white">
-                    {brand.imageUrl ? (
-                      <Image
-                        src={brand.imageUrl}
-                        alt={brand.title}
-                        width={40}
-                        height={40}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <span className="text-[11px] font-semibold text-[#4f5965]">Brand</span>
-                    )}
-                  </span>
                   <span className="min-w-0">
                     <span className="block truncate text-[13px] font-semibold text-[#202020]">
                       {brand.title}
@@ -975,6 +1248,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     cartItemCount,
     openAuthModal,
     refreshProfile,
+    syncCartState,
     signOut,
   } = useAuth();
   const {
@@ -1015,6 +1289,16 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
 
   return (
     <header id="bevgo-site-header" className="bg-white shadow-[0_2px_16px_rgba(20,24,27,0.08)]">
+      <div className="border-b border-black/5 bg-[#faf8f2]">
+        <div className="mx-auto flex w-full max-w-[1180px] items-center justify-end gap-4 px-3 py-2 lg:px-4">
+          <div className="shrink-0">
+            <HeaderDeliveryLocationControl className="h-auto border-r-0 px-0 text-[11px]" />
+          </div>
+          <div className="shrink-0">
+            <DisplayCurrencySelector className="text-[11px]" />
+          </div>
+        </div>
+      </div>
       <div className="border-b border-black/5 bg-white">
         <div className="flex w-full items-center justify-between gap-4 px-3 py-4 lg:px-4">
           <div className="flex items-center gap-4 lg:gap-8">
@@ -1121,6 +1405,19 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
             </Link>
 
             <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  const trigger = document.getElementById("piessang-mobile-delivery-trigger");
+                  trigger?.click();
+                }}
+                className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
+                aria-label="Choose delivery location"
+              >
+                <svg viewBox="0 0 20 20" className="h-5 w-5 fill-current" aria-hidden="true">
+                  <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
+                </svg>
+              </button>
               <button type="button" className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]" aria-label="Search">
                 <SearchIcon />
               </button>
@@ -1136,7 +1433,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               >
                 <CartIcon />
                 {isAuthenticated && cartItemCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#0f80c3] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
+                  <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
                     {cartItemCount}
                   </span>
                 ) : null}
@@ -1145,16 +1442,21 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
           </div>
         </div>
       </div>
+      <div className="sr-only lg:hidden">
+        <div id="piessang-mobile-delivery-trigger-wrapper">
+          <HeaderDeliveryLocationControl triggerId="piessang-mobile-delivery-trigger" className="border-r-0 px-0" />
+        </div>
+      </div>
 
       <div className="hidden bg-[rgba(203,178,107,0.18)] lg:block">
-        <div className="w-full px-3 py-2 lg:px-4">
+        <div className="mx-auto w-full max-w-[1180px] px-3 py-2 lg:px-4">
           <SearchBar />
         </div>
       </div>
 
       {showMegaMenu ? (
         <div className="hidden border-b border-black/5 bg-white lg:block">
-          <div className="w-full px-3 py-4 lg:px-4">
+          <div className="mx-auto w-full max-w-[1180px] px-3 py-4 lg:px-4">
             <div
               className="relative flex gap-4"
               onMouseLeave={() => {
@@ -1228,6 +1530,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         open={cartPreviewOpen}
         onClose={() => setCartPreviewOpen(false)}
         uid={uid}
+        onCartChange={syncCartState}
       />
 
       <MobileDrawer

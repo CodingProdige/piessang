@@ -1,217 +1,79 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import axios from "axios";
-import { db } from "@/lib/firebaseConfig";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { findCartLineByProductVariant, normalizeCartForClient, readCartDoc } from "@/lib/cart/public-api";
 
-/* ------------- HELPERS ------------- */
-const ok  = (p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
-const err = (s,t,m,e={})=>NextResponse.json({ ok:false,title:t,message:m,...e },{ status:s });
+const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
+const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
-const now = ()=>new Date().toISOString();
-const VAT = 0.15;
-const r2 = v => Number(v.toFixed(2));
-
-/* Product API (cross-backend) */
-const PRODUCT_BASE = "/api/catalogue/v1/products/sale";
-
-/* Reserve sale quantity */
-async function reserveSale(unique_id, variant_id, qty, origin){
-  if (qty <= 0) return;
-  await axios.post(new URL(`${PRODUCT_BASE}/reserve`, origin).toString(), { unique_id, variant_id, qty });
+function normalizeLegacyMode(mode, hasExistingLine, qty) {
+  const normalizedMode = String(mode || "").toLowerCase();
+  if (normalizedMode === "change") {
+    return Number(qty) >= 0 ? (hasExistingLine ? "increment" : "add") : "decrement";
+  }
+  if (normalizedMode === "set") {
+    return hasExistingLine ? "set" : Number(qty) <= 0 ? "remove" : "add";
+  }
+  if (["add", "increment", "decrement", "remove"].includes(normalizedMode)) {
+    return normalizedMode;
+  }
+  return hasExistingLine ? "set" : "add";
 }
 
-/* Release sale quantity */
-async function releaseSale(unique_id, variant_id, qty, origin){
-  if (qty <= 0) return;
-  await axios.post(new URL(`${PRODUCT_BASE}/release`, origin).toString(), { unique_id, variant_id, qty });
-}
+export async function POST(req) {
+  try {
+    const body = await req.json().catch(() => ({}));
+    const uid = String(body?.uid || "").trim();
+    const productUniqueId = String(body?.product?.product?.unique_id || body?.productId || "").trim();
+    const variantId = String(body?.variant_id || body?.variantId || "").trim();
+    const qty = Number(body?.qty ?? body?.quantity ?? 0);
 
-/* ------------- ENDPOINT ------------- */
+    if (!uid || !productUniqueId || !variantId || !Number.isFinite(qty)) {
+      return err(400, "Invalid Request", "uid, product unique id, variant id, and qty are required.");
+    }
 
-export async function POST(req){
-  try{
+    const existingCart = await readCartDoc(uid);
+    const existingLine = findCartLineByProductVariant(existingCart, productUniqueId, variantId);
+    const nextMode = normalizeLegacyMode(body?.mode, Boolean(existingLine), qty);
+
     const origin = new URL(req.url).origin;
-    const body = await req.json();
-    const { uid, product, variant_id, mode, qty } = body || {};
+    const response = await fetch(new URL("/api/catalogue/v1/carts/cart/updateAtomic", origin), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        customerId: uid,
+        productId: productUniqueId,
+        variantId,
+        quantity: Math.abs(qty),
+        mode: nextMode,
+        cart_item_key: existingLine?.cart_item_key || null,
+        channel: "storefront",
+      }),
+    });
 
-    if (!uid || !product || !product.product?.unique_id || !variant_id || !mode || qty == null){
-      return err(400,"Invalid Request",
-        "uid, product (with product.product.unique_id), variant_id, mode, qty are required."
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      return err(
+        response.status || 500,
+        payload?.title || "Cart Update Failed",
+        payload?.message || "Unable to update cart.",
+        payload?.ui ? { ui: payload.ui } : {},
       );
     }
 
-    if (!["set","change"].includes(mode)){
-      return err(400,"Invalid Mode","mode must be 'set' or 'change'.");
-    }
-
-    const p = product;
-    const product_unique_id = p.product.unique_id;
-
-    /* Find variant */
-    const variant = p.variants?.find(v => v.variant_id == variant_id);
-    if (!variant) return err(400,"Variant Not Found","Variant does not exist.");
-    if (!variant.placement?.isActive) return err(400,"Variant Inactive","Variant is not active.");
-
-    const isOnSale = variant.sale?.is_on_sale === true;
-    const saleAvailable = isOnSale ? (variant.sale.qty_available || 0) : 0;
-
-    /* Load cart */
-    const cartRef = doc(db,"carts",uid);
-    const snap = await getDoc(cartRef);
-
-    let cart = snap.exists() ? snap.data() : {
-      cart:{ cart_id:`CART-${uid}`, user_id:uid, status:"active" },
-      items:[],
-      totals:{},
-      timestamps:{ createdAt:now(), updatedAt:now() }
-    };
-    let items = cart.items || [];
-
-    const existingIndex = items.findIndex(
-      it => it.product_unique_id === product_unique_id &&
-            it.selected_variant?.variant_id == variant_id
-    );
-
-    const existing = existingIndex >= 0 ? items[existingIndex] : null;
-    const currentQty = existing?.qty || 0;
-    const currentSaleQty = existing?.sale_qty || 0;
-
-    /* Resolve final qty */
-    let finalQty = mode === "set" ? qty : currentQty + qty;
-    if (finalQty < 0) finalQty = 0;
-
-    /* If final quantity = 0 → remove + release sale stock */
-    if (finalQty === 0){
-      if (existing){
-        if (isOnSale && currentSaleQty > 0){
-          await releaseSale(product_unique_id, variant_id, currentSaleQty, origin);
-        }
-        items.splice(existingIndex,1);
-      }
-
-      cart.items = items;
-      cart.timestamps.updatedAt = now();
-      await setDoc(cartRef, cart, { merge:true });
-      return ok({ data:{ cart } });
-    }
-
-    /* ---------------- SALE RESERVATION LOGIC ---------------- */
-
-    let newSaleQty = 0;
-    let newRegularQty = 0;
-
-    if (isOnSale){
-
-      if (!existing){
-        // Entire new quantity
-        newSaleQty = Math.min(finalQty, saleAvailable);
-        newRegularQty = finalQty - newSaleQty;
-
-        if (newSaleQty > 0){
-          await reserveSale(product_unique_id, variant_id, newSaleQty, origin);
-        }
-      } else {
-        // Compute sale delta
-        const requiredSaleQty = Math.min(finalQty, saleAvailable + existing.sale_qty);
-
-        if (requiredSaleQty > currentSaleQty){
-          const diff = requiredSaleQty - currentSaleQty;
-          await reserveSale(product_unique_id, variant_id, diff, origin);
-        }
-        else if (requiredSaleQty < currentSaleQty){
-          const diff = currentSaleQty - requiredSaleQty;
-          await releaseSale(product_unique_id, variant_id, diff, origin);
-        }
-
-        newSaleQty = requiredSaleQty;
-        newRegularQty = finalQty - requiredSaleQty;
-      }
-
-    } else {
-      newSaleQty = 0;
-      newRegularQty = finalQty;
-    }
-
-    /* ---------------- Build item snapshot ---------------- */
-
-    const item = {
-      product_unique_id,
-      qty: finalQty,
-      sale_qty: newSaleQty,
-      regular_qty: newRegularQty,
-      grouping: p.grouping,
-      placement: p.placement,
-      media: p.media,
-      product: p.product,
-      ratings: p.ratings || { average:null, count:0, lastUpdated:null },
-      selected_variant_id: variant_id,
-      selected_variant: {
-        ...variant,
-        sale_reservation_qty: newSaleQty
+    return ok({
+      data: {
+        cart: normalizeCartForClient(payload?.data?.cart ?? null, uid),
+        generatedKey: payload?.data?.generatedKey ?? null,
       },
-      selected_variant_snapshot: {
-        ...variant,
-        sale_reservation_qty: newSaleQty
-      },
-
-      timestamps:{
-        createdAt: existing?.timestamps?.createdAt || now(),
-        updatedAt: now()
-      }
-    };
-
-    if (existingIndex >= 0) items[existingIndex] = item;
-    else items.push(item);
-
-    cart.items = items;
-
-    /* ---------------- Recalculate totals ---------------- */
-
-    let totals = {
-      subtotal_excl:0,
-      subtotal_incl:0,
-      rebate_amount:0,
-      sale_savings_excl:0,
-      deposit_total_excl:0,
-      vat_total:0,
-      final_excl:0,
-      final_incl:0
-    };
-
-    for (const it of items){
-      const v = it.selected_variant;
-      const base = v.pricing.selling_price_excl;
-      const sale = v.sale?.is_on_sale ? v.sale.sale_price_excl : base;
-
-      const saleSub = it.sale_qty * sale;
-      const regSub  = it.regular_qty * base;
-      const subtotal = saleSub + regSub;
-
-      totals.subtotal_excl += subtotal;
-
-      if (v.sale?.is_on_sale){
-        totals.sale_savings_excl += it.sale_qty * (base - sale);
-      }
-
-    }
-
-    totals.final_excl = totals.subtotal_excl + totals.deposit_total_excl;
-    totals.vat_total = totals.final_excl * VAT;
-    totals.final_incl = totals.final_excl + totals.vat_total;
-    totals.subtotal_incl = totals.final_incl;
-
-    Object.keys(totals).forEach(k => totals[k] = r2(totals[k]));
-
-    cart.totals = totals;
-    cart.timestamps.updatedAt = now();
-
-    await setDoc(cartRef, cart, { merge:true });
-    return ok({ data:{ cart } });
-
-  }catch(e){
+      ui: payload?.ui ?? null,
+    });
+  } catch (e) {
     console.error(e);
-    return err(500,"Cart Update Failed","Unexpected error",{ error:e.toString() });
+    return err(500, "Cart Update Failed", "Unexpected error", {
+      error: e instanceof Error ? e.message : String(e),
+    });
   }
 }
+

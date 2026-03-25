@@ -163,23 +163,12 @@ export async function POST(req){
     const sellerSlug  = toStr(data?.seller?.sellerSlug || data?.product?.sellerSlug || toSellerSlug(vendorName), "");
     const sellerCodeFromPayload = toStr(data?.seller?.sellerCode || data?.product?.sellerCode || "");
     const fulfillmentMode = toStr(data?.fulfillment?.mode, "seller") || "seller";
-    const leadTimeDays = Number.isFinite(+data?.fulfillment?.lead_time_days)
-      ? Math.trunc(+data.fulfillment.lead_time_days)
-      : null;
-    const cutoffTime = toStr(data?.fulfillment?.cutoff_time, "");
 
     if (!category || !subCategory || !brand)
       return err(400,"Missing Grouping","category, subCategory and brand are required.");
 
     if (!titleRaw)
       return err(400,"Invalid Title","product.title is required.");
-    if (fulfillmentMode === "seller" && (!Number.isFinite(leadTimeDays) || leadTimeDays < 0)) {
-      return err(400, "Missing Lead Time", "Provide a lead time in days for self-fulfilment.");
-    }
-    if (fulfillmentMode === "seller" && !cutoffTime) {
-      return err(400, "Missing Cutoff Time", "Provide a cutoff time for self-fulfilment.");
-    }
-
     let sellerOwner = null;
     const sellerIdentifier = sellerCodeFromPayload || sellerSlug;
     if (sellerIdentifier) {
@@ -256,9 +245,13 @@ export async function POST(req){
       const barcode = toStr(variant?.barcode);
       const variantPriceIncl = Number.isFinite(+variant?.pricing?.selling_price_incl)
         ? money2(variant.pricing.selling_price_incl)
-        : Number.isFinite(+variant?.pricing?.selling_price_excl)
-          ? money2(Number(variant.pricing.selling_price_excl) * (1 + 0.15))
-          : 0;
+        : 0;
+      if (!(variantPriceIncl > 0)) {
+        return err(400, "Missing Price", "VAT-inclusive selling price is required for every variant.");
+      }
+      const salePriceIncl = Number.isFinite(+variant?.sale?.sale_price_incl)
+        ? money2(variant.sale.sale_price_incl)
+        : 0;
       if (fulfillmentMode === "bevgo" && !marketplaceVariantLogisticsComplete(logistics)) {
         return err(400, "Missing Logistics", "Each Bevgo-fulfilled variant requires weight, dimensions, monthly sales and stock metadata.");
       }
@@ -269,6 +262,16 @@ export async function POST(req){
 
       const normalizedVariant = {
         ...variant,
+        pricing: {
+          ...(variant?.pricing || {}),
+          selling_price_incl: variantPriceIncl,
+          selling_price_excl: money2(variantPriceIncl / 1.15),
+        },
+        sale: {
+          ...(variant?.sale || {}),
+          sale_price_incl: salePriceIncl,
+          sale_price_excl: salePriceIncl > 0 ? money2(salePriceIncl / 1.15) : 0,
+        },
         placement: {
           ...(variant?.placement || {}),
           track_inventory: trackInventory,
@@ -342,8 +345,8 @@ export async function POST(req){
       fulfillment: {
         mode: fulfillmentMode,
         commission_rate: null,
-        lead_time_days: fulfillmentMode === "seller" ? leadTimeDays : null,
-        cutoff_time: fulfillmentMode === "seller" ? cutoffTime : null,
+        lead_time_days: null,
+        cutoff_time: null,
         locked: true,
         change_request: null,
       },
