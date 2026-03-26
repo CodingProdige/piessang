@@ -40,7 +40,11 @@ export async function POST(req) {
         return {
           ...loc,
           ...updates,
+          recipientName: updates.recipientName ?? loc.recipientName ?? "",
           suburb: updates.suburb ?? loc.suburb ?? "",
+          phoneNumber: updates.phoneNumber ?? loc.phoneNumber ?? "",
+          instructions: updates.instructions ?? loc.instructions ?? loc.deliveryInstructions ?? "",
+          deliveryInstructions: updates.deliveryInstructions ?? updates.instructions ?? loc.deliveryInstructions ?? loc.instructions ?? "",
           latitude: typeof updates.latitude === "number" ? updates.latitude : loc.latitude ?? null,
           longitude: typeof updates.longitude === "number" ? updates.longitude : loc.longitude ?? null,
           updatedAt: now(),

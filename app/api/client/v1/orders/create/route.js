@@ -342,13 +342,6 @@ export async function POST(req) {
     }
 
     const user = userSnap.data();
-    if (user?.account?.onboardingComplete !== true) {
-      return err(
-        403,
-        "Onboarding Incomplete",
-        "Customer onboarding must be completed before placing an order."
-      );
-    }
     const resolvedAccountName = firstNonEmptyString(
       user?.account?.accountName,
       user?.business?.companyName,

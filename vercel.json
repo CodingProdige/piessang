@@ -11,6 +11,14 @@
     {
       "path": "/api/cron/orders/payment-pending-cleanup",
       "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/seller-payout-batches",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/seller-payout-submit",
+      "schedule": "30 2 * * *"
     }
   ]
 }

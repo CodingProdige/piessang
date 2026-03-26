@@ -168,6 +168,30 @@ export const emailMessages = {
       subjectTemplate: "Order <%= orderNumber || 'your order' %> update — <%= statusLabel %>"
     },
 
+    "return-request-submitted": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "return-request-submitted.ejs",
+      subjectTemplate: "We received your return request for order <%= orderNumber %>"
+    },
+
+    "seller-return-request": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-return-request.ejs",
+      subjectTemplate: "Return request for <%= vendorName %> — order <%= orderNumber %>"
+    },
+
+    "return-request-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "return-request-internal.ejs",
+      subjectTemplate: "Return request received — order <%= orderNumber %> — <%= ownerLabel %>"
+    },
+
+    "return-status-update": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "return-status-update.ejs",
+      subjectTemplate: "Return update for order <%= orderNumber %> — <%= statusLabel %>"
+    },
+
     "cart-item-sale": {
       wrapper: "corporate-wrapper.ejs",
       template: "cart-item-sale.ejs",

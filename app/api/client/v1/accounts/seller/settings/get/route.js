@@ -25,6 +25,36 @@ function normalizePlacement(value) {
   return allowed.has(candidate) ? candidate : "center center";
 }
 
+function normalizePayoutProfile(profile) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  return {
+    payoutMethod: toStr(source.payoutMethod || "local_bank"),
+    accountHolderName: toStr(source.accountHolderName || source.account_name),
+    bankName: toStr(source.bankName || source.bank_name),
+    bankCountry: toStr(source.bankCountry || source.bank_country || source.country || "ZA"),
+    bankAddress: toStr(source.bankAddress || source.bank_address),
+    branchCode: toStr(source.branchCode || source.branch_code),
+    accountNumber: toStr(source.accountNumber || source.account_number),
+    iban: toStr(source.iban),
+    swiftBic: toStr(source.swiftBic || source.swift_bic),
+    routingNumber: toStr(source.routingNumber || source.routing_number),
+    accountType: toStr(source.accountType || source.account_type || "business_cheque"),
+    country: toStr(source.country || "ZA"),
+    currency: toStr(source.currency || "ZAR"),
+    beneficiaryReference: toStr(source.beneficiaryReference || source.reference),
+    beneficiaryAddressLine1: toStr(source.beneficiaryAddressLine1 || source.beneficiary_address_line_1),
+    beneficiaryAddressLine2: toStr(source.beneficiaryAddressLine2 || source.beneficiary_address_line_2),
+    beneficiaryCity: toStr(source.beneficiaryCity || source.beneficiary_city),
+    beneficiaryRegion: toStr(source.beneficiaryRegion || source.beneficiary_region),
+    beneficiaryPostalCode: toStr(source.beneficiaryPostalCode || source.beneficiary_postal_code),
+    beneficiaryCountry: toStr(source.beneficiaryCountry || source.beneficiary_country || source.country || "ZA"),
+    verificationStatus: toStr(source.verificationStatus || "not_submitted"),
+    verificationNotes: toStr(source.verificationNotes || ""),
+    peachRecipientId: toStr(source.peachRecipientId || ""),
+    lastVerifiedAt: toStr(source.lastVerifiedAt || ""),
+  };
+}
+
 export async function GET(req) {
   try {
     const db = getAdminDb();
@@ -45,6 +75,7 @@ export async function GET(req) {
         : {};
 
     const deliveryProfile = normalizeSellerDeliveryProfile(seller?.deliveryProfile || {});
+    const payoutProfile = normalizePayoutProfile(seller?.payoutProfile || {});
 
     return ok({
       seller: {
@@ -55,6 +86,7 @@ export async function GET(req) {
         vendorDescription: toStr(seller?.vendorDescription || seller?.description || "").slice(0, 500),
       },
       deliveryProfile,
+      payoutProfile,
       branding: {
         bannerImageUrl: toStr(branding?.bannerImageUrl || branding?.bannerUrl),
         bannerBlurHashUrl: toStr(branding?.bannerBlurHashUrl || branding?.bannerBlurHash),

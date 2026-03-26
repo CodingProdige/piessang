@@ -198,6 +198,7 @@ function HeaderDeliveryLocationControl({
         } catch (error) {
           if (!cancelled) {
             setGeoError(error instanceof Error ? error.message : "Unable to detect your location.");
+            setPickerOpen(true);
           }
         } finally {
           if (!cancelled) setGeoLoading(false);
@@ -1115,12 +1116,68 @@ function MobileDrawer({
   open,
   onClose,
   departments,
+  isAuthenticated,
+  isSeller,
+  favoriteCount,
+  cartItemCount,
+  favoritesHref,
+  onRequireAuth,
+  onOpenCartPreview,
+  onSignOut,
 }: {
   open: boolean;
   onClose: () => void;
   departments: Department[];
+  isAuthenticated: boolean;
+  isSeller: boolean;
+  favoriteCount: number;
+  cartItemCount: number;
+  favoritesHref: string;
+  onRequireAuth: () => void;
+  onOpenCartPreview: () => void;
+  onSignOut: () => void;
 }) {
-  const { isAuthenticated, profile, signOut, openAuthModal, favoriteCount } = useAuth();
+  const { openAuthModal } = useAuth();
+  const [view, setView] = useState<"root" | "categories" | "subcategories">("root");
+  const [activeDepartment, setActiveDepartment] = useState<Department | null>(null);
+  const [mobileSubcategories, setMobileSubcategories] = useState<SubCategory[]>([]);
+  const [subcategoriesLoading, setSubcategoriesLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setView("root");
+      setActiveDepartment(null);
+      setMobileSubcategories([]);
+      setSubcategoriesLoading(false);
+    }
+  }, [open]);
+
+  async function openDepartment(department: Department) {
+    setActiveDepartment(department);
+    setView("subcategories");
+    setSubcategoriesLoading(true);
+    const items = await fetchSubcategories(department.slug);
+    setMobileSubcategories(items);
+    setSubcategoriesLoading(false);
+  }
+
+  const rootItems: Array<{
+    title: string;
+    href: string;
+    chevron?: boolean;
+    active?: boolean;
+    dot?: boolean;
+    onClick?: () => void;
+  }> = [
+    { title: "Home", href: "/" },
+    { title: "Shop by Category", href: PRODUCTS_PAGE, chevron: true, active: true, onClick: () => setView("categories") },
+    { title: "Deals", href: "/products?onSale=true" },
+    { title: "Orders", href: "/account?section=orders" },
+    ...(isAuthenticated ? [{ title: "My Account", href: "/account" }] : [{ title: "Login", href: "/" }, { title: "Register", href: "/" }]),
+    ...(isSeller ? [{ title: "Seller dashboard", href: "/seller/dashboard" }] : []),
+    { title: "Help Centre", href: "/account?section=support" },
+  ] as const;
+
   return (
     <div className={`fixed inset-0 z-50 lg:hidden ${open ? "" : "pointer-events-none"}`}>
       <button
@@ -1130,103 +1187,221 @@ function MobileDrawer({
         onClick={onClose}
       />
       <div
-        className={`relative h-full w-[84vw] max-w-[360px] overflow-y-auto bg-white shadow-[0_16px_40px_rgba(0,0,0,0.24)] transition-transform duration-300 ${
+        className={`relative h-full w-[84vw] max-w-[360px] overflow-y-auto bg-[#fcfbf7] shadow-[0_16px_40px_rgba(0,0,0,0.24)] transition-transform duration-300 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex items-center justify-between border-b border-black/5 px-4 py-4">
-          <PiessangLogo />
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center text-[28px] leading-none text-[#4b5563]"
-            aria-label="Close menu"
-          >
-            ×
-          </button>
+        <div className="border-b border-black/5 bg-white/95 px-4 py-4 backdrop-blur">
+          <div className="mb-3 flex items-center justify-between">
+            <PiessangLogo />
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#f5f5f5] text-[28px] leading-none text-[#4b5563]"
+              aria-label="Close menu"
+            >
+              ×
+            </button>
+          </div>
+          <div className="rounded-[14px] border border-black/5 bg-[linear-gradient(135deg,#081a4f_0%,#0e2a7a_55%,#1f1146_100%)] px-4 py-3 text-white shadow-[0_10px_24px_rgba(20,24,27,0.14)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d8c793]">
+              Browse Piessang
+            </p>
+            <p className="mt-1 text-[14px] leading-6 text-white/84">
+              Shop categories, manage your account, and jump back into your cart without leaving this menu.
+            </p>
+          </div>
         </div>
 
-        <div className="flex flex-col py-2">
-          {[
-            { title: "Home", href: "/" },
-            { title: "Shop by Category", href: PRODUCTS_PAGE, chevron: true, active: true },
-            { title: "Deals", href: "/products?onSale=true" },
-            { title: "Orders", href: "/account?section=orders" },
-            { title: isAuthenticated ? "My Account" : "Login", href: isAuthenticated ? "/account" : "/", dot: isAuthenticated, chevron: true },
-            { title: "Help Centre", href: "/account?section=support" },
-          ].map((item) => (
-            <Link
-              key={item.title}
-              href={item.href}
-              className="flex h-[58px] items-center justify-between border-b border-black/5 px-5 text-[17px] font-medium text-[#4b5563] first:border-t first:border-t-black/5"
-              onClick={(event) => {
-                if (!isAuthenticated && item.title === "Login") {
-                  event.preventDefault();
-                  onClose();
-                  openAuthModal("Sign in to access your account and favourites.");
-                }
-              }}
-            >
-              <span className="flex items-center gap-3">
-                <span>{item.title}</span>
-                {item.dot ? <span className="h-3 w-3 rounded-full bg-[#f66b77]" /> : null}
-              </span>
-              {item.chevron ? <span className="text-[#b8b8b8]">→</span> : null}
-            </Link>
-          ))}
+        <div className="flex flex-col py-3">
+          {view === "root"
+            ? rootItems.map((item) => (
+                <Link
+                  key={item.title}
+                  href={item.href}
+                  className="mx-3 mb-2 flex min-h-[58px] items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 text-[16px] font-medium text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+                  onClick={(event) => {
+                    if (item.title === "Shop by Category" && item.onClick) {
+                      event.preventDefault();
+                      item.onClick();
+                      return;
+                    }
+                    if (!isAuthenticated && item.title === "Login") {
+                      event.preventDefault();
+                      onClose();
+                      openAuthModal("Sign in to access your account and favourites.");
+                      return;
+                    }
+                    if (!isAuthenticated && item.title === "Register") {
+                      event.preventDefault();
+                      onClose();
+                      openAuthModal("Create your Piessang account to continue.");
+                      return;
+                    }
+                    onClose();
+                  }}
+                >
+                  <span className="flex items-center gap-3">
+                    <span>{item.title}</span>
+                  </span>
+                  {item.chevron ? <span className="text-[#b8b8b8]">→</span> : null}
+                </Link>
+              ))
+            : null}
 
-          <div className="border-b border-black/5 px-5 py-3">
-            <div className="flex items-center justify-between rounded-[8px] border border-black/10 px-4 py-2.5">
+          {view === "categories" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setView("root")}
+                className="mx-3 mb-2 flex min-h-[58px] w-auto items-center gap-3 rounded-[14px] border border-black/5 bg-white px-4 text-left text-[16px] font-medium text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+              >
+                <span className="text-[#b8b8b8]">←</span>
+                <span>All menu items</span>
+              </button>
+              <Link
+                href={PRODUCTS_PAGE}
+                onClick={onClose}
+                className="mx-3 mb-2 flex min-h-[58px] items-center justify-between rounded-[14px] border border-black/5 bg-[rgba(203,178,107,0.14)] px-4 text-[16px] font-semibold text-[#202020]"
+              >
+                <span>Browse all products</span>
+                <span className="text-[#b8b8b8]">→</span>
+              </Link>
+              {departments.map((department) => (
+                <button
+                  key={department.id}
+                  type="button"
+                  onClick={() => void openDepartment(department)}
+                  className="mx-3 mb-2 flex min-h-[58px] w-auto items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 text-left text-[16px] font-medium text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+                >
+                  <span>{department.title}</span>
+                  <span className="text-[#b8b8b8]">→</span>
+                </button>
+              ))}
+            </>
+          ) : null}
+
+          {view === "subcategories" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setView("categories")}
+                className="mx-3 mb-2 flex min-h-[58px] w-auto items-center gap-3 rounded-[14px] border border-black/5 bg-white px-4 text-left text-[16px] font-medium text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+              >
+                <span className="text-[#b8b8b8]">←</span>
+                <span>{activeDepartment?.title || "Categories"}</span>
+              </button>
+              {activeDepartment ? (
+                <Link
+                  href={buildProductsHref({ category: activeDepartment.slug })}
+                  onClick={onClose}
+                  className="mx-3 mb-2 flex min-h-[58px] items-center justify-between rounded-[14px] border border-black/5 bg-[rgba(203,178,107,0.14)] px-4 text-[16px] font-semibold text-[#202020]"
+                >
+                  <span>View all {activeDepartment.title}</span>
+                  <span className="text-[#b8b8b8]">→</span>
+                </Link>
+              ) : null}
+              {subcategoriesLoading ? (
+                <div className="mx-3 rounded-[14px] border border-black/5 bg-white px-4 py-5 text-[14px] text-[#6b7280] shadow-[0_6px_18px_rgba(20,24,27,0.04)]">Loading categories...</div>
+              ) : mobileSubcategories.length ? (
+                mobileSubcategories.map((subCategory) => (
+                  <Link
+                    key={subCategory.id}
+                    href={buildProductsHref({ category: activeDepartment?.slug, subCategory: subCategory.slug })}
+                    onClick={onClose}
+                    className="mx-3 mb-2 flex min-h-[58px] items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 text-[16px] font-medium text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+                  >
+                    <span>{subCategory.title}</span>
+                    <span className="text-[#b8b8b8]">→</span>
+                  </Link>
+                ))
+              ) : (
+                <div className="mx-3 rounded-[14px] border border-black/5 bg-white px-4 py-5 text-[14px] text-[#6b7280] shadow-[0_6px_18px_rgba(20,24,27,0.04)]">No categories available here yet.</div>
+              )}
+            </>
+          ) : null}
+
+          <div className="px-3 py-2">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                if (isAuthenticated) onOpenCartPreview();
+                else onRequireAuth();
+              }}
+              className="flex w-full items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-3 text-left shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+            >
               <span className="flex items-center gap-3 text-[16px] font-medium text-[#202020]">
                 <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#249689] text-white">
                   <CartIcon />
                 </span>
                 Cart
               </span>
-              <span className="text-[14px] text-[#8b94a3]">0 Items</span>
-            </div>
+              <span className="text-[14px] text-[#8b94a3]">{cartItemCount} Items</span>
+            </button>
           </div>
 
-          <div className="border-b border-black/5 px-5 py-3">
-            <div className="flex items-center justify-between rounded-[8px] border border-black/10 px-4 py-2.5">
-              <span className="flex items-center gap-3 text-[16px] font-medium text-[#202020]">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f46c7b] text-white">
-                  <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true">
-                    <path d="M12 21s-7-4.35-9.5-8.7C.3 9.1 1.8 5.8 5.4 5.1c2-.4 4 .5 5.2 2 1.2-1.5 3.2-2.4 5.2-2 3.6.7 5.1 4 2.9 7.2C19 16.65 12 21 12 21Z" />
-                  </svg>
-                </span>
-                Lists
-              </span>
-              <span className="text-[14px] text-[#8b94a3]">
-                {isAuthenticated ? `${favoriteCount} Items` : "0 Items"}
-              </span>
-            </div>
-          </div>
-
-          <div className="mt-auto flex items-center justify-between border-t border-black/5 bg-[#fafafa] px-5 py-4">
-            <Link
-              href={isAuthenticated ? "/account" : "/"}
-              className="inline-flex items-center gap-3 rounded-[8px] border border-black/10 bg-white px-4 py-2 text-[15px] font-semibold text-[#0f80c3] shadow-[0_4px_12px_rgba(20,24,27,0.06)]"
-            >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0f80c3] text-white">
-                <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true">
-                  <path d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-4 0-8 2.2-8 5v1h16v-1c0-2.8-4-5-8-5Z" />
-                </svg>
-              </span>
-              {isAuthenticated ? "My Account" : "Login"}
-            </Link>
+          <div className="px-3 py-2">
             {isAuthenticated ? (
-              <button type="button" onClick={() => void signOut()} className="text-[15px] font-semibold text-[#0f80c3]">
-                Logout
-              </button>
+              <Link
+                href={favoritesHref}
+                onClick={onClose}
+                className="flex items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-3 shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+              >
+                <span className="flex items-center gap-3 text-[16px] font-medium text-[#202020]">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f46c7b] text-white">
+                    <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true">
+                      <path d="M12 21s-7-4.35-9.5-8.7C.3 9.1 1.8 5.8 5.4 5.1c2-.4 4 .5 5.2 2 1.2-1.5 3.2-2.4 5.2-2 3.6.7 5.1 4 2.9 7.2C19 16.65 12 21 12 21Z" />
+                    </svg>
+                  </span>
+                  Lists
+                </span>
+                <span className="text-[14px] text-[#8b94a3]">{favoriteCount} Items</span>
+              </Link>
             ) : (
               <button
                 type="button"
-                onClick={() => openAuthModal("Create your Piessang account to continue.")}
-                className="text-[15px] font-semibold text-[#0f80c3]"
+                onClick={() => {
+                  onClose();
+                  onRequireAuth();
+                }}
+                className="flex w-full items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-3 text-left shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
               >
-                Register
+                <span className="flex items-center gap-3 text-[16px] font-medium text-[#202020]">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#f46c7b] text-white">
+                    <svg viewBox="0 0 24 24" className="h-5 w-5 fill-current" aria-hidden="true">
+                      <path d="M12 21s-7-4.35-9.5-8.7C.3 9.1 1.8 5.8 5.4 5.1c2-.4 4 .5 5.2 2 1.2-1.5 3.2-2.4 5.2-2 3.6.7 5.1 4 2.9 7.2C19 16.65 12 21 12 21Z" />
+                    </svg>
+                  </span>
+                  Lists
+                </span>
+                <span className="text-[14px] text-[#8b94a3]">0 Items</span>
               </button>
+            )}
+          </div>
+
+          <div className="mt-auto flex items-center justify-center gap-6 border-t border-black/5 bg-[#fafafa] px-5 py-5 text-center">
+            {isAuthenticated ? (
+              <button type="button" onClick={onSignOut} className="text-[15px] font-semibold text-[#0f80c3]">
+                Logout
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => openAuthModal("Sign in to access your account and favourites.")}
+                  className="text-[15px] font-semibold text-[#0f80c3]"
+                >
+                  Login
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAuthModal("Create your Piessang account to continue.")}
+                  className="text-[15px] font-semibold text-[#0f80c3]"
+                >
+                  Register
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1290,12 +1465,14 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   return (
     <header id="bevgo-site-header" className="bg-white shadow-[0_2px_16px_rgba(20,24,27,0.08)]">
       <div className="border-b border-black/5 bg-[#faf8f2]">
-        <div className="mx-auto flex w-full max-w-[1180px] items-center justify-end gap-4 px-3 py-2 lg:px-4">
-          <div className="shrink-0">
-            <HeaderDeliveryLocationControl className="h-auto border-r-0 px-0 text-[11px]" />
-          </div>
-          <div className="shrink-0">
-            <DisplayCurrencySelector className="text-[11px]" />
+        <div className="flex h-11 w-full items-center justify-end px-3 lg:px-4">
+          <div className="flex h-full items-center justify-end gap-4">
+            <div className="flex h-full shrink-0 items-center">
+              <HeaderDeliveryLocationControl className="h-full border-r-0 px-0 text-[11px]" />
+            </div>
+            <div className="flex h-full shrink-0 items-center">
+              <DisplayCurrencySelector className="text-[11px]" />
+            </div>
           </div>
         </div>
       </div>
@@ -1537,6 +1714,14 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         open={mobileOpen}
         onClose={() => setMobileOpen(false)}
         departments={departments}
+        isAuthenticated={isAuthenticated}
+        isSeller={isSeller}
+        favoriteCount={favoriteCount}
+        cartItemCount={cartItemCount}
+        favoritesHref={favoritesHref}
+        onRequireAuth={() => openAuthModal("Sign in to manage your cart and favourites.")}
+        onOpenCartPreview={() => setCartPreviewOpen(true)}
+        onSignOut={() => void signOut()}
       />
     </header>
   );

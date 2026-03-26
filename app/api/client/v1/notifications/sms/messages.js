@@ -6,7 +6,7 @@
 
 export const smsTemplates = {
     "order-seller-fulfillment-update": {
-      message: "Update for order {{orderNumber}}: {{vendorName}} marked your items as {{statusLabel}}."
+      message: "Update for order {{orderNumber}}: {{statusMessage}}"
     },
 
     "seller-new-order": {

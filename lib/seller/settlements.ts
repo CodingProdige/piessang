@@ -5,6 +5,7 @@ import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 
 const SETTLEMENT_COLLECTION = "seller_settlements_v1";
 const STRIKE_THRESHOLD = 3;
+const PAYOUT_HOLD_DAYS = Math.max(0, Math.trunc(Number(process.env.SELLER_PAYOUT_HOLD_DAYS || 7)));
 
 const now = () => new Date().toISOString();
 const r2 = (value) => Number((Number(value) || 0).toFixed(2));
@@ -23,6 +24,17 @@ function addDays(iso, days) {
   if (Number.isNaN(date.getTime())) return null;
   date.setDate(date.getDate() + Math.max(0, Math.trunc(Number(days) || 0)));
   return date.toISOString();
+}
+
+function parseDate(value) {
+  const input = toStr(value, "");
+  if (!input) return null;
+  const date = new Date(input);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isoOrNull(date) {
+  return date instanceof Date && !Number.isNaN(date.getTime()) ? date.toISOString() : null;
 }
 
 function normalizeKey(value) {
@@ -129,6 +141,48 @@ function getExpectedFulfilmentBy(item, orderCreatedAt) {
   if (!createdAt || !(leadTimeDays > 0)) return null;
 
   return addDays(createdAt, leadTimeDays);
+}
+
+function isPayoutProfileReady(profile) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  const payoutMethod = toStr(source.payoutMethod || "local_bank").toLowerCase();
+  if (payoutMethod === "international_bank") {
+    return Boolean(
+      toStr(source.accountHolderName) &&
+        toStr(source.bankName) &&
+        toStr(source.bankCountry || source.country) &&
+        toStr(source.currency) &&
+        toStr(source.iban) &&
+        toStr(source.swiftBic || source.swift_bic),
+    );
+  }
+  return Boolean(
+    toStr(source.accountHolderName) &&
+      toStr(source.bankName) &&
+      toStr(source.bankCountry || source.country) &&
+      toStr(source.accountNumber) &&
+      toStr(source.branchCode),
+  );
+}
+
+function getPayoutProfileSummary(profile) {
+  const source = profile && typeof profile === "object" ? profile : {};
+  const accountNumber = toStr(source.accountNumber);
+  return {
+    ready: isPayoutProfileReady(source),
+    payoutMethod: toStr(source.payoutMethod || "local_bank") || "local_bank",
+    verificationStatus: toStr(source.verificationStatus || "not_submitted").toLowerCase() || "not_submitted",
+    bankName: toStr(source.bankName || null) || null,
+    bankCountry: toStr(source.bankCountry || source.country || null) || null,
+    accountHolderName: toStr(source.accountHolderName || null) || null,
+    accountType: toStr(source.accountType || null) || null,
+    currency: toStr(source.currency || "ZAR") || "ZAR",
+    accountLast4: accountNumber ? accountNumber.slice(-4) : null,
+    ibanLast4: toStr(source.iban) ? toStr(source.iban).slice(-4) : null,
+    swiftBic: toStr(source.swiftBic || source.swift_bic || null) || null,
+    peachRecipientId: toStr(source.peachRecipientId || null) || null,
+    beneficiaryReference: toStr(source.beneficiaryReference || null) || null,
+  };
 }
 
 function getVariantFeeValue(item, key) {
@@ -291,14 +345,14 @@ export function summarizeSellerSettlementBucket(bucket) {
 }
 
 function aggregateSettlementStatus(statuses) {
-  const order = ["blocked", "cancelled", "pending_review", "held", "ready_for_payout", "paid"];
+  const order = ["blocked", "cancelled", "pending_review", "held", "ready_for_payout", "processing_payout", "paid"];
   for (const item of order) {
     if (statuses.includes(item)) return item;
   }
   return statuses[0] || "held";
 }
 
-function getSettlementStatus({ orderStatus, paymentStatus, claimStatus, reviewStatus, releaseStatus }) {
+function getSettlementStatus({ orderStatus, paymentStatus, claimStatus, reviewStatus, releaseStatus, payoutEligible, payoutProfileReady, batchStatus }) {
   const normalizedOrderStatus = toStr(orderStatus).toLowerCase();
   const normalizedPaymentStatus = toStr(paymentStatus).toLowerCase();
   const normalizedClaimStatus = toStr(claimStatus).toLowerCase();
@@ -309,10 +363,41 @@ function getSettlementStatus({ orderStatus, paymentStatus, claimStatus, reviewSt
     return "cancelled";
   }
   if (normalizedReleaseStatus === "paid") return "paid";
+  if (["pending_submission", "submitted", "in_transit"].includes(toStr(batchStatus).toLowerCase())) return "processing_payout";
   if (normalizedReviewStatus === "rejected") return "blocked";
-  if (normalizedReviewStatus === "approved" || normalizedOrderStatus === "completed") return "ready_for_payout";
+  if ((normalizedReviewStatus === "approved" || normalizedOrderStatus === "completed") && payoutEligible && payoutProfileReady) {
+    return "ready_for_payout";
+  }
   if (normalizedClaimStatus === "pending_review") return "pending_review";
   return "held";
+}
+
+function getBucketDeliveredAt(order, bucket) {
+  const items = Array.isArray(order?.items) ? order.items : [];
+  const sellerCode = toStr(bucket?.sellerCode).toLowerCase();
+  const sellerSlug = toStr(bucket?.sellerSlug).toLowerCase();
+  const deliveredDates = [];
+
+  for (const item of items) {
+    const identity = getItemSellerIdentity(item);
+    const matchesSeller =
+      (sellerCode && toStr(identity.sellerCode).toLowerCase() === sellerCode) ||
+      (sellerSlug && toStr(identity.sellerSlug).toLowerCase() === sellerSlug);
+    if (!matchesSeller) continue;
+
+    const tracking = item?.fulfillment_tracking || {};
+    const deliveredAt =
+      parseDate(tracking?.deliveredAt) ||
+      parseDate(tracking?.updatedAt && toStr(tracking?.status).toLowerCase() === "delivered" ? tracking.updatedAt : null);
+    if (deliveredAt) deliveredDates.push(deliveredAt);
+  }
+
+  if (!deliveredDates.length) {
+    return parseDate(order?.timestamps?.completedAt || order?.timestamps?.updatedAt || null);
+  }
+
+  deliveredDates.sort((left, right) => right.getTime() - left.getTime());
+  return deliveredDates[0];
 }
 
 async function bumpSellerStrike({ ownerId, reasonCode, reasonMessage, orderId, orderNumber }) {
@@ -397,16 +482,24 @@ export async function syncOrderSellerSettlements({
     const settlementRef = db.collection(SETTLEMENT_COLLECTION).doc(settlementId);
     const existingSnap = await settlementRef.get();
     const existing = existingSnap.exists ? existingSnap.data() : {};
+    const payoutProfileSummary = getPayoutProfileSummary(sellerOwner?.data?.seller?.payoutProfile || existing?.payout?.bank_profile || {});
+    const deliveredAt = getBucketDeliveredAt(order, bucket);
+    const eligibleAt = deliveredAt ? parseDate(addDays(deliveredAt.toISOString(), PAYOUT_HOLD_DAYS)) : null;
+    const payoutEligible = Boolean(eligibleAt && eligibleAt.getTime() <= Date.now());
 
     const claimStatus = toStr(claim?.status || existing?.fulfilment?.claimStatus || "");
     const reviewStatus = toStr(review?.status || existing?.fulfilment?.reviewStatus || "");
     const releaseStatus = toStr(release?.status || existing?.payout?.status || "");
+    const batchStatus = toStr(existing?.payout?.batchStatus || existing?.payout_batch?.status || "");
     const nextStatus = getSettlementStatus({
       orderStatus,
       paymentStatus,
       claimStatus,
       reviewStatus,
       releaseStatus,
+      payoutEligible,
+      payoutProfileReady: payoutProfileSummary.ready,
+      batchStatus,
     });
 
     const nextFulfilmentStatus =
@@ -476,10 +569,33 @@ export async function syncOrderSellerSettlements({
         net_due_incl: r2(bucket.totals?.payoutDueIncl || 0),
         released_incl: r2(release?.releasedIncl || existing?.payout?.released_incl || 0),
         remaining_due_incl: r2(Math.max((bucket.totals?.payoutDueIncl || 0) - Number(release?.releasedIncl || existing?.payout?.released_incl || 0), 0)),
-        status: release?.status || existing?.payout?.status || (nextStatus === "paid" ? "paid" : nextStatus === "ready_for_payout" ? "ready_for_payout" : "held"),
+        status:
+          release?.status ||
+          existing?.payout?.status ||
+          (nextStatus === "paid"
+            ? "paid"
+            : nextStatus === "processing_payout"
+              ? "pending_submission"
+              : nextStatus === "ready_for_payout"
+                ? "ready_for_payout"
+                : "held"),
         releaseReference: release?.reference || existing?.payout?.releaseReference || null,
         releasedAt: release?.releasedAt || existing?.payout?.releasedAt || null,
         releasedBy: release?.releasedBy || existing?.payout?.releasedBy || null,
+        delivered_at: isoOrNull(deliveredAt),
+        eligible_at: isoOrNull(eligibleAt),
+        hold_days: PAYOUT_HOLD_DAYS,
+        hold_reason:
+          !deliveredAt
+            ? "awaiting_delivery"
+            : !payoutEligible
+              ? "return_window_open"
+              : !payoutProfileSummary.ready
+                ? "missing_bank_details"
+                : null,
+        bank_profile: payoutProfileSummary,
+        batchId: existing?.payout?.batchId || null,
+        batchStatus: batchStatus || null,
       },
       lines: bucket.lines,
       accountability: {
@@ -511,6 +627,9 @@ export async function syncOrderSellerSettlements({
       vendorName: settlementPayload.vendorName,
       status: settlementPayload.status,
       payoutStatus: settlementPayload.payout.status,
+      eligibleAt: settlementPayload.payout.eligible_at,
+      holdReason: settlementPayload.payout.hold_reason,
+      bankReady: payoutProfileSummary.ready,
       fulfilmentMode: settlementPayload.fulfilment.mode,
       grossIncl: settlementPayload.payout.gross_incl,
       successFeeIncl: settlementPayload.payout.success_fee_incl,
@@ -569,6 +688,9 @@ export async function releaseSellerSettlement({
   const settlement = settlementSnap?.exists ? settlementSnap.data() : null;
   if (!settlement) {
     throw new Error("Seller settlement not found.");
+  }
+  if (!["ready_for_payout", "pending_submission", "submitted"].includes(toStr(settlement?.status || "").toLowerCase())) {
+    throw new Error("This settlement is not ready to be released.");
   }
 
   const releasedIncl = r2(amountIncl ?? settlement?.payout?.net_due_incl ?? 0);

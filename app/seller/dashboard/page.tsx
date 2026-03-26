@@ -15,6 +15,7 @@ import { SellerOrdersWorkspace } from "@/components/seller/orders-workspace";
 import { SellerProductReportsWorkspace } from "@/components/seller/product-reports-workspace";
 import { SellerProductReviewsWorkspace } from "@/components/seller/product-reviews-workspace";
 import { SellerProductsWorkspace } from "@/components/seller/products-workspace";
+import { SellerReturnsWorkspace } from "@/components/seller/returns-workspace";
 import { SellerSettlementsWorkspace } from "@/components/seller/settlements-workspace";
 import { SellerWarehouseWorkspace } from "@/components/seller/warehouse-workspace";
 import { SellerPageIntro } from "@/components/seller/page-intro";
@@ -34,6 +35,7 @@ type SidebarSection =
   | "warehouse"
   | "warehouse-calendar"
   | "customers"
+  | "returns"
   | "billing"
   | "marketing"
   | "settlements"
@@ -43,6 +45,7 @@ type SidebarSection =
   | "admin-live-view"
   | "product-reviews"
   | "product-reports"
+  | "admin-returns"
   | "fees"
   | "create-product"
   | "inventory"
@@ -141,6 +144,7 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   warehouse: ["admin", "manager", "catalogue"],
   "warehouse-calendar": ["admin"],
   customers: ["admin", "manager", "orders"],
+  returns: ["admin", "manager", "orders"],
   billing: ["admin", "manager", "analytics"],
   marketing: ["admin"],
   settlements: ["admin", "manager", "catalogue", "orders", "analytics"],
@@ -150,6 +154,7 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   "admin-live-view": ["admin"],
   "product-reviews": ["admin"],
   "product-reports": ["admin"],
+  "admin-returns": ["admin"],
   fees: ["admin"],
   "create-product": ["admin", "manager", "catalogue"],
   inventory: ["admin", "manager", "catalogue"],
@@ -311,6 +316,14 @@ function SidebarIcon({ icon }: { icon: string }) {
           <path d="M5 2a1 1 0 0 1 1 1v1h7.38l-.17-.34A1 1 0 0 1 14.1 2h.9a1 1 0 0 1 .89 1.45L15.12 5l.77 1.55A1 1 0 0 1 15 8h-1a1 1 0 0 1-.89-.55L13 7H6v10a1 1 0 1 1-2 0V3a1 1 0 0 1 1-1z" />
         </svg>
       );
+    case "returns":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 4h12l2 4-6 6 4 6H6l4-6-6-6 2-4Z" />
+          <path d="M9 8h6" />
+          <path d="M10 12l1.5 2L14 10" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -429,7 +442,7 @@ function SidebarMenu({
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "admin-analytics", "admin-live-view", "fees", "product-reports", "product-reviews"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "admin-analytics", "admin-live-view", "admin-returns", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -489,6 +502,13 @@ function SidebarMenu({
               active={activeSection === "customers"}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "customers")}
               onClick={() => handleNavigate("customers")}
+            />
+            <SidebarButton
+              label="Returns"
+              icon="returns"
+              active={activeSection === "returns"}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "returns")}
+              onClick={() => handleNavigate("returns")}
             />
             <SidebarButton
               label="Billing"
@@ -607,6 +627,12 @@ function SidebarMenu({
               onClick={() => handleNavigate("product-reports")}
             />
             <SidebarButton
+              label="Returns"
+              icon="returns"
+              active={activeSection === "admin-returns"}
+              onClick={() => handleNavigate("admin-returns")}
+            />
+            <SidebarButton
               label="Warehouse calendar"
               icon="truck"
                 active={activeSection === "warehouse-calendar"}
@@ -673,6 +699,8 @@ function SellerDashboardContent() {
         return "warehouse-calendar";
       case "customers":
         return "customers";
+      case "returns":
+        return "returns";
       case "billing":
         return "billing";
       case "marketing":
@@ -699,6 +727,9 @@ function SellerDashboardContent() {
       case "product-report":
       case "reported-products":
         return "product-reports";
+      case "admin-returns":
+      case "returns-admin":
+        return "admin-returns";
       case "fees":
       case "marketplace-fees":
         return "fees";
@@ -965,7 +996,7 @@ function SellerDashboardContent() {
     return profileSlug || adminSlug || sellerContexts[0]?.sellerSlug || "";
   }, [isSystemAdmin, profile?.sellerActiveSellerSlug, profile?.sellerSlug, sellerContexts]);
   const showReturnHome = Boolean(homeSellerSlug && homeSellerSlug !== resolvedSellerSlug);
-  const blockedSections: SidebarSection[] = ["products", "warehouse", "customers", "marketing", "settlements", "create-product", "inventory", "collections", "purchase-orders", "transfers", "new-orders", "unfulfilled", "fulfilled", "analytics"];
+  const blockedSections: SidebarSection[] = ["products", "warehouse", "customers", "returns", "marketing", "settlements", "create-product", "inventory", "collections", "purchase-orders", "transfers", "new-orders", "unfulfilled", "fulfilled", "analytics"];
   const sellerBlocked = activeSellerStatus === "blocked";
   const sellerClosed = activeSellerStatus === "closed" || activeSellerStatus === "deleted" || activeSellerStatus === "archived";
   const sellerUnavailable = sellerBlocked || sellerClosed;
@@ -977,7 +1008,7 @@ function SellerDashboardContent() {
   const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
   const sectionLocked = sellerUnavailable
     ? blockedSections.includes(activeSection)
-      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "fees" || activeSection === "warehouse-calendar"
+      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
         ? !canManageSellerDashboard
         : !canAccessSellerSection(activeSellerRole, activeSection);
   const firstAllowedSection = useMemo(() => {
@@ -985,7 +1016,7 @@ function SellerDashboardContent() {
       ? ["home", "settings", "team"]
       : sellerClosed
         ? ["home", "settings"]
-      : ["products", "new-orders", "customers", "analytics", "home", "settings"];
+      : ["products", "new-orders", "returns", "customers", "analytics", "home", "settings"];
     return preferredOrder.find((section) => canAccessSellerSection(activeSellerRole, section)) || "home";
   }, [activeSellerRole, sellerBlocked, sellerClosed]);
   const currentAccessLabel = formatSellerAccessLabel(activeSellerContext, homeSellerSlug, isSystemAdmin);
@@ -1055,7 +1086,7 @@ function SellerDashboardContent() {
   }, [activeSection, pathname, router, searchParams]);
 
   function setSection(nextSection: SidebarSection) {
-    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
+    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
     if (!canAccessSellerSection(activeSellerRole, nextSection)) return;
     setActiveSection(nextSection);
     setMobileMenuOpen(false);
@@ -1106,6 +1137,8 @@ function SellerDashboardContent() {
         return "Warehouse calendar";
       case "customers":
         return "Customers";
+      case "returns":
+        return "Returns";
       case "billing":
         return "Billing";
       case "marketing":
@@ -1124,6 +1157,8 @@ function SellerDashboardContent() {
         return "Product reviews";
       case "product-reports":
         return "Product reports";
+      case "admin-returns":
+        return "Returns";
       case "fees":
         return "Marketplace fees";
       case "inventory":
@@ -1167,6 +1202,8 @@ function SellerDashboardContent() {
         return "Review inbound and outbound warehouse bookings in one admin-only calendar.";
       case "customers":
         return "See customers who have ordered from this seller account.";
+      case "returns":
+        return "Review the return requests you need to handle for orders fulfilled by you.";
       case "billing":
         return "Review monthly seller billing, due amounts, and fee summaries.";
       case "marketing":
@@ -1185,6 +1222,8 @@ function SellerDashboardContent() {
         return "Approve or reject seller product submissions before they become visible on the marketplace.";
       case "product-reports":
         return "Review customer product reports, block listings when required, and resolve seller disputes.";
+      case "admin-returns":
+        return "Review marketplace return requests, approve them, and process refunds once they are approved.";
       case "fees":
         return "Manage marketplace fee rules and push updated rates across the catalogue.";
       case "create-product":
@@ -1403,6 +1442,8 @@ function SellerDashboardContent() {
               <SellerProductReviewsWorkspace onQueueChanged={() => { void refreshAdminBadges(); }} />
             ) : activeSection === "product-reports" && canManageSellerDashboard ? (
               <SellerProductReportsWorkspace onQueueChanged={() => { void refreshAdminBadges(); }} />
+            ) : activeSection === "admin-returns" && canManageSellerDashboard ? (
+              <SellerReturnsWorkspace adminMode />
             ) : activeSection === "fees" && canManageSellerDashboard ? (
               <SellerFeesWorkspace />
             ) : activeSection === "warehouse-calendar" && canManageSellerDashboard ? (
@@ -1448,6 +1489,11 @@ function SellerDashboardContent() {
               />
             ) : activeSection === "customers" ? (
               <SellerCustomersWorkspace vendorName={activeVendorName} />
+            ) : activeSection === "returns" ? (
+              <SellerReturnsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+              />
             ) : activeSection === "billing" ? (
               <SellerBillingWorkspace
                 sellerSlug={resolvedSellerSlug}

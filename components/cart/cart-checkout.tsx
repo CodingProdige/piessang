@@ -113,6 +113,11 @@ type AddressDraft = {
   longitude: string;
 };
 
+type CheckoutContactDraft = {
+  recipientName: string;
+  phoneNumber: string;
+};
+
 function getCartTotalIncl(cart: CartPayload | null) {
   return Number(cart?.totals?.final_payable_incl ?? cart?.totals?.final_incl ?? 0);
 }
@@ -304,6 +309,7 @@ export function CartCheckout() {
   const [addressEditing, setAddressEditing] = useState(false);
   const [selectedLocationIndex, setSelectedLocationIndex] = useState(0);
   const [pickupSelections, setPickupSelections] = useState<string[]>([]);
+  const [contactDraft, setContactDraft] = useState<CheckoutContactDraft>({ recipientName: "", phoneNumber: "" });
   const [paymentMode, setPaymentMode] = useState<"saved" | "new">("saved");
   const [selectedCardId, setSelectedCardId] = useState("");
   const [newCard, setNewCard] = useState<NewCardState>({
@@ -371,6 +377,13 @@ export function CartCheckout() {
   }, [isAuthenticated, profile?.accountName, profile?.displayName, uid]);
 
   const selectedLocation = locations[selectedLocationIndex] || null;
+
+  useEffect(() => {
+    setContactDraft({
+      recipientName: String(selectedLocation?.recipientName || profile?.accountName || profile?.displayName || "").trim(),
+      phoneNumber: String(selectedLocation?.phoneNumber || "").trim(),
+    });
+  }, [selectedLocation?.recipientName, selectedLocation?.phoneNumber, profile?.accountName, profile?.displayName]);
 
   useEffect(() => {
     if (!uid) return;
@@ -490,6 +503,7 @@ export function CartCheckout() {
     validateExpiryMonth(newCard.expiryMonth) &&
     validateExpiryYear(newCard.expiryYear) &&
     sanitizeCvv(newCard.cvv).length >= 3;
+  const hasCheckoutContactDetails = Boolean(contactDraft.recipientName.trim() && contactDraft.phoneNumber.trim());
   const cardErrors = {
     holder: newCard.holder.trim().length > 1 ? "" : "Enter the name exactly as it appears on the card.",
     number: sanitizeCardNumber(newCard.number).length >= 13 ? "" : "Enter a valid card number.",
@@ -667,6 +681,11 @@ export function CartCheckout() {
       setErrorMessage("Choose a delivery address before placing your order.");
       return;
     }
+    if (!hasCheckoutContactDetails) {
+      setErrorMessage("Add the delivery contact name and phone number before placing your order.");
+      setSnackbarMessage("Delivery contact details are required before checkout.");
+      return;
+    }
     if (checkoutBlocked) {
       setErrorMessage("Remove the out-of-stock items from your cart before placing your order.");
       setSnackbarMessage("Remove the out-of-stock items from your cart before placing your order.");
@@ -703,7 +722,11 @@ export function CartCheckout() {
         body: JSON.stringify({
           cartId: uid,
           customerId: uid,
-          deliveryAddress: selectedLocation,
+          deliveryAddress: {
+            ...(selectedLocation || {}),
+            recipientName: contactDraft.recipientName.trim(),
+            phoneNumber: contactDraft.phoneNumber.trim(),
+          },
           pickupSelections,
           source: "web",
         }),
@@ -880,6 +903,37 @@ export function CartCheckout() {
           <div className="space-y-5">
             <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
               <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-[18px] font-semibold text-[#202020]">Delivery contact details</h2>
+                  <p className="mt-1 text-[12px] text-[#57636c]">
+                    Add the name and phone number the seller or driver should use for this order.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Recipient name</label>
+                  <input
+                    value={contactDraft.recipientName}
+                    onChange={(event) => setContactDraft((current) => ({ ...current, recipientName: event.target.value }))}
+                    className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                    placeholder="Who should receive or collect this order?"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Phone number</label>
+                  <input
+                    value={contactDraft.phoneNumber}
+                    onChange={(event) => setContactDraft((current) => ({ ...current, phoneNumber: event.target.value }))}
+                    className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                    placeholder="Contact number for delivery or collection"
+                  />
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+              <div className="flex items-center justify-between gap-3">
                 <h2 className="text-[18px] font-semibold text-[#202020]">Delivery address</h2>
                 <div className="flex items-center gap-3">
                   <button
@@ -940,6 +994,15 @@ export function CartCheckout() {
                         onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
                         placeholder="Street number and street name"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Phone number</label>
+                      <input
+                        value={addressDraft.phoneNumber}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, phoneNumber: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Contact number for delivery"
                       />
                     </div>
                     <div className="sm:col-span-2">
@@ -1059,6 +1122,7 @@ export function CartCheckout() {
                         <div>
                           <p className="text-[14px] font-semibold text-[#202020]">{resolveLocationTitle(location, index)}</p>
                           <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">{formatAddress(location)}</p>
+                          {location?.phoneNumber ? <p className="mt-2 text-[12px] font-medium text-[#202020]">{location.phoneNumber}</p> : null}
                         </div>
                         {location?.is_default ? (
                           <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">
@@ -1271,9 +1335,10 @@ export function CartCheckout() {
               <div className="mt-5 rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Delivering to</p>
                 <p className="mt-2 text-[14px] font-semibold text-[#202020]">
-                  {resolveLocationTitle(selectedLocation, selectedLocationIndex)}
+                  {contactDraft.recipientName || resolveLocationTitle(selectedLocation, selectedLocationIndex)}
                 </p>
                 <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">{formatAddress(selectedLocation)}</p>
+                {contactDraft.phoneNumber ? <p className="mt-2 text-[12px] font-semibold text-[#202020]">{contactDraft.phoneNumber}</p> : null}
               </div>
             ) : null}
             <div className="mt-5 space-y-3 text-[13px] text-[#57636c]">
@@ -1332,6 +1397,7 @@ export function CartCheckout() {
                 submitting ||
                 checkoutBlocked ||
                 !locations.length ||
+                !hasCheckoutContactDetails ||
                 !cart?.items?.length ||
                 (paymentMode === "saved" ? !selectedCard?.id : !canUseNewCard)
               }
@@ -1460,7 +1526,7 @@ export function CartCheckout() {
             setAddressDraft(defaultAddressDraft(profile ?? undefined));
           }}
         />
-        <div className="relative w-full max-w-[760px] rounded-[8px] bg-white shadow-[0_24px_60px_rgba(20,24,27,0.22)]">
+        <div className="relative flex max-h-[75svh] w-full max-w-[760px] flex-col overflow-hidden rounded-[8px] bg-white shadow-[0_24px_60px_rgba(20,24,27,0.22)]">
           <div className="flex items-start justify-between gap-4 border-b border-black/5 px-5 py-4">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Saved addresses</p>
@@ -1479,8 +1545,8 @@ export function CartCheckout() {
               ×
             </button>
           </div>
-          <div className="grid max-h-[75svh] gap-0 overflow-hidden md:grid-cols-[300px_minmax(0,1fr)]">
-            <div className="overflow-y-auto border-r border-black/5 p-4">
+          <div className="grid min-h-0 flex-1 gap-0 overflow-hidden md:grid-cols-[300px_minmax(0,1fr)]">
+            <div className="min-h-0 overflow-y-auto border-r border-black/5 p-4">
               <div className="space-y-3">
                 {locations.length ? locations.map((location, index) => {
                   const locationId = String((location as any)?.id || "");
@@ -1525,7 +1591,7 @@ export function CartCheckout() {
                 )}
               </div>
             </div>
-            <div className="overflow-y-auto p-5">
+            <div className="min-h-0 overflow-y-auto p-5">
               {editingLocationId ? (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-3">
@@ -1560,6 +1626,14 @@ export function CartCheckout() {
                       <input
                         value={addressDraft.streetAddress}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Phone number</label>
+                      <input
+                        value={addressDraft.phoneNumber}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, phoneNumber: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
                       />
                     </div>

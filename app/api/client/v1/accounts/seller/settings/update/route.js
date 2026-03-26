@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
@@ -83,6 +84,56 @@ function sanitizeTime(value) {
 
 function resolveCutoffTime(value, fallback = "10:00") {
   return sanitizeTime(value) || fallback;
+}
+
+function sanitizeEnum(value, allowed, fallback) {
+  const normalized = toStr(value).toLowerCase();
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
+function sanitizeBankAccountNumber(value) {
+  return toStr(value).replace(/[^\d]/g, "").slice(0, 20);
+}
+
+function sanitizeBranchCode(value) {
+  return toStr(value).replace(/[^\d]/g, "").slice(0, 10);
+}
+
+function sanitizeAlphaNumeric(value, max = 34) {
+  return toStr(value).replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, max);
+}
+
+function parsePayoutProfile(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const payoutMethod = sanitizeEnum(source.payoutMethod, ["same_country_bank", "other_country_bank"], "same_country_bank");
+  const supportedCountryCodes = SUPPORTED_PAYOUT_COUNTRIES.map((entry) => entry.code);
+  const supportedCurrencyCodes = SUPPORTED_PAYOUT_CURRENCIES.map((entry) => entry.code);
+  return {
+    payoutMethod,
+    accountHolderName: sanitizeText(source.accountHolderName || source.account_name || "").slice(0, 120),
+    bankName: sanitizeText(source.bankName || source.bank_name || "").slice(0, 120),
+    bankCountry: sanitizeEnum(source.bankCountry || source.bank_country || source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase(),
+    bankAddress: sanitizeLongText(source.bankAddress || source.bank_address || "").slice(0, 200),
+    branchCode: sanitizeBranchCode(source.branchCode || source.branch_code || ""),
+    accountNumber: sanitizeBankAccountNumber(source.accountNumber || source.account_number || ""),
+    iban: sanitizeAlphaNumeric(source.iban || "", 34),
+    swiftBic: sanitizeAlphaNumeric(source.swiftBic || source.swift_bic || "", 11),
+    routingNumber: sanitizeAlphaNumeric(source.routingNumber || source.routing_number || "", 20),
+    accountType: sanitizeEnum(source.accountType || source.account_type, ["business_cheque", "business_savings", "cheque", "savings"], "business_cheque"),
+    country: sanitizeEnum(source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase(),
+    currency: sanitizeEnum(source.currency || "ZAR", supportedCurrencyCodes.map((code) => code.toLowerCase()), "zar").toUpperCase(),
+    beneficiaryReference: sanitizeText(source.beneficiaryReference || source.reference || "").slice(0, 120),
+    beneficiaryAddressLine1: sanitizeText(source.beneficiaryAddressLine1 || source.beneficiary_address_line_1 || "").slice(0, 120),
+    beneficiaryAddressLine2: sanitizeText(source.beneficiaryAddressLine2 || source.beneficiary_address_line_2 || "").slice(0, 120),
+    beneficiaryCity: sanitizeText(source.beneficiaryCity || source.beneficiary_city || "").slice(0, 120),
+    beneficiaryRegion: sanitizeText(source.beneficiaryRegion || source.beneficiary_region || "").slice(0, 120),
+    beneficiaryPostalCode: sanitizeText(source.beneficiaryPostalCode || source.beneficiary_postal_code || "").slice(0, 30),
+    beneficiaryCountry: sanitizeEnum(source.beneficiaryCountry || source.beneficiary_country || source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase(),
+    verificationStatus: sanitizeEnum(source.verificationStatus, ["not_submitted", "pending", "verified", "failed"], "not_submitted"),
+    verificationNotes: sanitizeLongText(source.verificationNotes || ""),
+    peachRecipientId: sanitizeText(source.peachRecipientId || "").slice(0, 120),
+    lastVerifiedAt: toStr(source.lastVerifiedAt || ""),
+  };
 }
 
 function parseBranding(payload) {
@@ -178,6 +229,7 @@ export async function POST(req) {
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     const branding = parseBranding(data?.branding || data);
     const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
+    const payoutProfile = parsePayoutProfile(data?.payoutProfile || data?.payout || {});
     const vendorName = titleCaseVendorName(data?.vendorName || data?.seller?.vendorName || "");
     const vendorDescription = normalizeSellerDescription(
       data?.vendorDescription || data?.description || data?.seller?.vendorDescription || data?.seller?.description,
@@ -217,6 +269,7 @@ export async function POST(req) {
       "seller.groupSellerCode": sellerCode,
       "seller.branding": branding,
       "seller.deliveryProfile": deliveryProfile,
+      "seller.payoutProfile": payoutProfile,
       "seller.media": branding,
       "timestamps.updatedAt": new Date(),
     });
@@ -230,6 +283,7 @@ export async function POST(req) {
       },
       branding,
       deliveryProfile,
+      payoutProfile,
     });
   } catch (e) {
     console.error("seller/settings/update failed:", e);

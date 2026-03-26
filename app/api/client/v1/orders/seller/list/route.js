@@ -64,6 +64,130 @@ function getLinePriceIncl(item) {
   return Number.isFinite(price) ? price * getLineQuantity(item) : 0;
 }
 
+function getSellerDeliveryDetails(order, sellerIdentity) {
+  const snapshot = order?.delivery_snapshot && typeof order.delivery_snapshot === "object" ? order.delivery_snapshot : {};
+  const delivery = order?.delivery && typeof order.delivery === "object" ? order.delivery : {};
+  const breakdown = Array.isArray(snapshot?.sellerDeliveryBreakdown)
+    ? snapshot.sellerDeliveryBreakdown
+    : Array.isArray(delivery?.fee?.seller_breakdown)
+      ? delivery.fee.seller_breakdown
+      : [];
+
+  const sellerCode = toLower(sellerIdentity?.sellerCode);
+  const sellerSlug = toLower(sellerIdentity?.sellerSlug);
+  const entry = breakdown.find((item) => {
+    const entryCode = toLower(item?.sellerCode || item?.seller_code || item?.seller_key || "");
+    const entrySlug = toLower(item?.sellerSlug || item?.seller_slug || "");
+    return Boolean(
+      (sellerCode && entryCode === sellerCode) ||
+      (sellerSlug && entrySlug === sellerSlug),
+    );
+  }) || null;
+
+  const address = snapshot?.address || delivery?.address_snapshot || null;
+  const destination = [toStr(address?.suburb), toStr(address?.city), toStr(address?.province || address?.stateProvinceRegion), toStr(address?.country)]
+    .filter(Boolean)
+    .join(", ");
+
+  if (!entry) {
+    return {
+      type: "unknown",
+      label: "Delivery method still needs to be confirmed",
+      amountIncl: 0,
+      leadTimeDays: null,
+      matchedRuleLabel: "",
+      destination,
+      instructions: "We could not match a saved delivery method for this seller slice yet.",
+      trackingMode: "hidden",
+    };
+  }
+
+  const deliveryType = toLower(entry?.delivery_type || entry?.method || entry?.type || "");
+  if (deliveryType === "collection") {
+    return {
+      type: "collection",
+      label: toStr(entry?.label || "Customer collection"),
+      amountIncl: Number(entry?.amountIncl ?? entry?.amount_incl ?? 0) || 0,
+      leadTimeDays: entry?.lead_time_days ?? null,
+      matchedRuleLabel: toStr(entry?.matched_rule_label || ""),
+      destination,
+      instructions: "The customer chose collection, so you should prepare these items for pickup instead of dispatching them.",
+      trackingMode: "hidden",
+    };
+  }
+  if (deliveryType === "direct_delivery") {
+    return {
+      type: "direct_delivery",
+      label: toStr(entry?.label || "Direct delivery"),
+      amountIncl: Number(entry?.amountIncl ?? entry?.amount_incl ?? 0) || 0,
+      leadTimeDays: entry?.lead_time_days ?? null,
+      matchedRuleLabel: toStr(entry?.matched_rule_label || ""),
+      destination,
+      instructions: "This order falls within your direct delivery coverage, so you should handle the delivery yourself instead of using courier tracking.",
+      trackingMode: "direct",
+    };
+  }
+  if (deliveryType === "shipping") {
+    return {
+      type: "shipping",
+      label: toStr(entry?.label || "Shipping"),
+      amountIncl: Number(entry?.amountIncl ?? entry?.amount_incl ?? 0) || 0,
+      leadTimeDays: entry?.lead_time_days ?? null,
+      matchedRuleLabel: toStr(entry?.matched_rule_label || ""),
+      destination,
+      instructions: "This order uses your shipping settings, so you can add courier and tracking details when you dispatch it.",
+      trackingMode: "courier",
+    };
+  }
+
+  return {
+    type: deliveryType || "unknown",
+    label: toStr(entry?.label || "Delivery method"),
+    amountIncl: Number(entry?.amountIncl ?? entry?.amount_incl ?? 0) || 0,
+    leadTimeDays: entry?.lead_time_days ?? null,
+    matchedRuleLabel: toStr(entry?.matched_rule_label || ""),
+    destination,
+    instructions: "Use the delivery method saved on this order when you fulfil it.",
+    trackingMode: "hidden",
+  };
+}
+
+function getSellerCustomerContact(order) {
+  const snapshot = order?.customer_snapshot || {};
+  const delivery = order?.delivery && typeof order.delivery === "object" ? order.delivery : {};
+  const address = order?.delivery_snapshot?.address || delivery?.address_snapshot || null;
+  const phone =
+    toStr(address?.phoneNumber) ||
+    toStr(snapshot?.phoneNumber) ||
+    toStr(snapshot?.account?.phoneNumber) ||
+    toStr(snapshot?.personal?.phoneNumber) ||
+    "";
+  const recipientName =
+    toStr(address?.recipientName) ||
+    toStr(snapshot?.account?.accountName) ||
+    toStr(snapshot?.business?.companyName) ||
+    toStr(snapshot?.personal?.fullName) ||
+    "Customer";
+  const destination = [
+    toStr(address?.streetAddress),
+    toStr(address?.addressLine2),
+    toStr(address?.suburb),
+    toStr(address?.city),
+    toStr(address?.stateProvinceRegion || address?.province),
+    toStr(address?.postalCode),
+    toStr(address?.country),
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return {
+    recipientName,
+    phone,
+    destination,
+    notes: toStr(address?.instructions || address?.deliveryInstructions || delivery?.notes || ""),
+  };
+}
+
 function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const enrichedItems = items.map((item) => enrichOrderItemFulfillment(item, order));
   const selfFulfilmentLines = enrichedItems.filter((item) => getLineFulfillmentMode(item) === "seller");
@@ -74,6 +198,8 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const paymentStatus = toLower(order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "");
   const fulfillmentStatus = toLower(order?.lifecycle?.fulfillmentStatus || order?.order?.status?.fulfillment || "");
   const deliveryProgress = buildOrderDeliveryProgress({ ...order, items: enrichedItems }).progress;
+  const deliveryOption = getSellerDeliveryDetails(order, sellerIdentity);
+  const customerContact = getSellerCustomerContact(order);
   const newOrder = ["payment_pending", "confirmed"].includes(orderStatus);
   const fulfilled = orderStatus === "completed" || fulfillmentStatus === "delivered";
   const unfulfilled = !fulfilled && orderStatus !== "cancelled";
@@ -95,6 +221,8 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
     paymentStatus,
     fulfillmentStatus,
     deliveryProgress,
+    deliveryOption,
+    customerContact,
     counts: {
       items: enrichedItems.length,
       quantity: allQty,
@@ -138,7 +266,7 @@ export async function GET(req) {
     const scopeSellerSlug = isSystemAdmin ? sellerSlugParam : "";
 
     const snap = await db.collection("orders_v2").get();
-    const slices = [];
+    const allSlices = [];
 
     for (const docSnap of snap.docs) {
       const order = docSnap.data() || {};
@@ -155,20 +283,24 @@ export async function GET(req) {
 
       const sellerIdentity = getLineSellerIdentifiers(sellerItems[0]);
       const slice = buildSellerSlice(docSnap.id, order, sellerItems, sellerIdentity);
-      if (filter === "new" && !slice.flags.new) continue;
-      if (filter === "unfulfilled" && !slice.flags.unfulfilled) continue;
-      if (filter === "fulfilled" && !slice.flags.fulfilled) continue;
-      slices.push(slice);
+      allSlices.push(slice);
     }
 
-    slices.sort((left, right) => (right.createdAt || "").localeCompare(left.createdAt || ""));
-
     const counts = {
-      all: slices.length,
-      new: slices.filter((item) => item.flags.new).length,
-      unfulfilled: slices.filter((item) => item.flags.unfulfilled).length,
-      fulfilled: slices.filter((item) => item.flags.fulfilled).length,
+      all: allSlices.length,
+      new: allSlices.filter((item) => item.flags.new).length,
+      unfulfilled: allSlices.filter((item) => item.flags.unfulfilled).length,
+      fulfilled: allSlices.filter((item) => item.flags.fulfilled).length,
     };
+
+    const slices = allSlices.filter((slice) => {
+      if (filter === "new") return slice.flags.new;
+      if (filter === "unfulfilled") return slice.flags.unfulfilled;
+      if (filter === "fulfilled") return slice.flags.fulfilled;
+      return true;
+    });
+
+    slices.sort((left, right) => (right.createdAt || "").localeCompare(left.createdAt || ""));
 
     return ok({ items: slices, counts });
   } catch (e) {

@@ -430,13 +430,13 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
   }
   if (resolved.kind === "local") {
     return {
-      label: resolved.amountIncl > 0 ? `Direct delivery ${formatCurrency(resolved.amountIncl)}` : "Direct delivery available",
+      label: "Direct delivery available",
       tone: "success" as const,
     };
   }
   if (resolved.kind === "courier") {
     return {
-      label: resolved.amountIncl > 0 ? `Shipping ${formatCurrency(resolved.amountIncl)}` : "Shipping available",
+      label: "Shipping available",
       tone: "success" as const,
     };
   }
@@ -1234,7 +1234,8 @@ function ProductCard({
                 aria-label="Add default variant to cart"
               >
                 <CartPlusIcon />
-                <span className="whitespace-nowrap">Add to cart</span>
+                <span className="whitespace-nowrap sm:hidden">Add</span>
+                <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
                 {cartCount > 0 ? (
                   <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
                     {cartCount}
@@ -1418,7 +1419,8 @@ function ProductCard({
               aria-label="Add default variant to cart"
             >
               <CartPlusIcon />
-              <span className="whitespace-nowrap">Add to cart</span>
+              <span className="whitespace-nowrap sm:hidden">Add</span>
+              <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
               {cartCount > 0 ? (
                 <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
                   {cartCount}

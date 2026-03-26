@@ -3,16 +3,8 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import https from "https";
 import querystring from "querystring";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  updateDoc,
-  where
-} from "firebase/firestore";
-import { db } from "@/lib/firebaseConfig";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { syncOrderSellerSettlements } from "@/lib/seller/settlements";
 
 /* ───────── HELPERS ───────── */
 
@@ -83,18 +75,16 @@ function peachRequest(path, form) {
 }
 
 async function resolveOrderRef({ orderId, orderNumber, merchantTransactionId }) {
-  if (orderId) {
-    return doc(db, "orders_v2", orderId);
-  }
+  const db = getAdminDb();
+  if (!db) return null;
+  if (orderId) return db.collection("orders_v2").doc(orderId);
 
   const field = orderNumber
     ? "order.orderNumber"
     : "order.merchantTransactionId";
   const value = orderNumber || merchantTransactionId;
 
-  const snap = await getDocs(
-    query(collection(db, "orders_v2"), where(field, "==", value))
-  );
+  const snap = await db.collection("orders_v2").where(field, "==", value).get();
 
   if (snap.empty) {
     return null;
@@ -138,6 +128,11 @@ export async function POST(req) {
       return err(500, "Config Error", "PEACH credentials are not configured.");
     }
 
+    const adminDb = getAdminDb();
+    if (!adminDb) {
+      return err(500, "Config Error", "Firebase Admin is not configured.");
+    }
+
     const ref = await resolveOrderRef({
       orderId,
       orderNumber,
@@ -148,9 +143,9 @@ export async function POST(req) {
       return err(404, "Order Not Found", "Order could not be located.");
     }
 
-    const snap = await getDoc(ref);
+    const snap = await ref.get();
 
-    if (!snap.exists()) {
+    if (!snap.exists) {
       return err(404, "Order Not Found", "Order could not be located.");
     }
 
@@ -347,7 +342,15 @@ export async function POST(req) {
       updatePayload["timestamps.lockedAt"] = order?.timestamps?.lockedAt || now();
     }
 
-    await updateDoc(ref, updatePayload);
+    await ref.set(updatePayload, { merge: true });
+
+    const refreshedSnap = await ref.get();
+    if (refreshedSnap.exists) {
+      await syncOrderSellerSettlements({
+        orderId: snap.id,
+        eventType: isFullyRefunded ? "refund_full" : "refund_partial",
+      }).catch(() => null);
+    }
 
     return ok({
       orderId: snap.id,

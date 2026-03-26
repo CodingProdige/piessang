@@ -9,6 +9,7 @@ import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
 import { clientStorage } from "@/lib/firebase";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
 
 type SellerBranding = {
   bannerImageUrl: string;
@@ -72,6 +73,33 @@ type SellerDeliveryProfile = {
   notes: string;
 };
 
+type SellerPayoutProfile = {
+  payoutMethod: string;
+  accountHolderName: string;
+  bankName: string;
+  bankCountry: string;
+  bankAddress: string;
+  branchCode: string;
+  accountNumber: string;
+  iban: string;
+  swiftBic: string;
+  routingNumber: string;
+  accountType: string;
+  country: string;
+  currency: string;
+  beneficiaryReference: string;
+  beneficiaryAddressLine1: string;
+  beneficiaryAddressLine2: string;
+  beneficiaryCity: string;
+  beneficiaryRegion: string;
+  beneficiaryPostalCode: string;
+  beneficiaryCountry: string;
+  verificationStatus: string;
+  verificationNotes: string;
+  peachRecipientId: string;
+  lastVerifiedAt: string;
+};
+
 type SellerSettingsWorkspaceProps = {
   sellerSlug: string;
   vendorName: string;
@@ -114,6 +142,33 @@ const EMPTY_DELIVERY_PROFILE: SellerDeliveryProfile = {
     leadTimeDays: "0",
   },
   notes: "",
+};
+
+const EMPTY_PAYOUT_PROFILE: SellerPayoutProfile = {
+  payoutMethod: "same_country_bank",
+  accountHolderName: "",
+  bankName: "",
+  bankCountry: "ZA",
+  bankAddress: "",
+  branchCode: "",
+  accountNumber: "",
+  iban: "",
+  swiftBic: "",
+  routingNumber: "",
+  accountType: "business_cheque",
+  country: "ZA",
+  currency: "ZAR",
+  beneficiaryReference: "",
+  beneficiaryAddressLine1: "",
+  beneficiaryAddressLine2: "",
+  beneficiaryCity: "",
+  beneficiaryRegion: "",
+  beneficiaryPostalCode: "",
+  beneficiaryCountry: "ZA",
+  verificationStatus: "not_submitted",
+  verificationNotes: "",
+  peachRecipientId: "",
+  lastVerifiedAt: "",
 };
 
 function makePricingRule(seed = Date.now()) {
@@ -281,12 +336,14 @@ function useSellerAccessLabel(role: string) {
 function buildSettingsSnapshot(input: {
   branding: SellerBranding;
   deliveryProfile: SellerDeliveryProfile;
+  payoutProfile: SellerPayoutProfile;
   vendorNameValue: string;
   vendorDescriptionValue: string;
 }) {
   return JSON.stringify({
     branding: input.branding,
     deliveryProfile: input.deliveryProfile,
+    payoutProfile: input.payoutProfile,
     vendorNameValue: sanitizeVendorName(input.vendorNameValue),
     vendorDescriptionValue: toStr(input.vendorDescriptionValue).slice(0, 500),
   });
@@ -308,6 +365,7 @@ export function SellerSettingsWorkspace({
   const [deleting, setDeleting] = useState(false);
   const [branding, setBranding] = useState<SellerBranding>(EMPTY_BRANDING);
   const [deliveryProfile, setDeliveryProfile] = useState<SellerDeliveryProfile>(EMPTY_DELIVERY_PROFILE);
+  const [payoutProfile, setPayoutProfile] = useState<SellerPayoutProfile>(EMPTY_PAYOUT_PROFILE);
   const [vendorNameValue, setVendorNameValue] = useState(vendorName);
   const [vendorDescriptionValue, setVendorDescriptionValue] = useState("");
   const [sellerCodeValue, setSellerCodeValue] = useState("");
@@ -350,10 +408,11 @@ export function SellerSettingsWorkspace({
       buildSettingsSnapshot({
         branding,
         deliveryProfile,
+        payoutProfile,
         vendorNameValue,
         vendorDescriptionValue,
       }) !== savedSnapshot,
-    [branding, deliveryProfile, savedSnapshot, vendorDescriptionValue, vendorNameValue],
+    [branding, deliveryProfile, payoutProfile, savedSnapshot, vendorDescriptionValue, vendorNameValue],
   );
   
   function showSnackbar(message: string, tone: "success" | "error" = "success") {
@@ -440,6 +499,7 @@ export function SellerSettingsWorkspace({
         const nextDeliveryProfile = normalizeSellerDeliveryProfile(
           payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {},
         );
+        const nextPayoutProfile = payload?.payoutProfile && typeof payload.payoutProfile === "object" ? payload.payoutProfile : {};
         if (!cancelled && sellerRecord) {
           const nextVendorName = sanitizeVendorName(
             sellerRecord.vendorName || sellerRecord.groupVendorName || vendorName,
@@ -460,6 +520,32 @@ export function SellerSettingsWorkspace({
           setVendorNameValue(nextVendorName || vendorName);
           setVendorDescriptionValue(nextVendorDescription);
           setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
+          setPayoutProfile({
+            payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+            accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
+            bankName: toStr(nextPayoutProfile?.bankName),
+            bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
+            bankAddress: toStr(nextPayoutProfile?.bankAddress),
+            branchCode: toStr(nextPayoutProfile?.branchCode),
+            accountNumber: toStr(nextPayoutProfile?.accountNumber),
+            iban: toStr(nextPayoutProfile?.iban),
+            swiftBic: toStr(nextPayoutProfile?.swiftBic),
+            routingNumber: toStr(nextPayoutProfile?.routingNumber),
+            accountType: toStr(nextPayoutProfile?.accountType || "business_cheque"),
+            country: toStr(nextPayoutProfile?.country || "ZA"),
+            currency: toStr(nextPayoutProfile?.currency || "ZAR"),
+            beneficiaryReference: toStr(nextPayoutProfile?.beneficiaryReference),
+            beneficiaryAddressLine1: toStr(nextPayoutProfile?.beneficiaryAddressLine1),
+            beneficiaryAddressLine2: toStr(nextPayoutProfile?.beneficiaryAddressLine2),
+            beneficiaryCity: toStr(nextPayoutProfile?.beneficiaryCity),
+            beneficiaryRegion: toStr(nextPayoutProfile?.beneficiaryRegion),
+            beneficiaryPostalCode: toStr(nextPayoutProfile?.beneficiaryPostalCode),
+            beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
+            verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
+            verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
+            peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+            lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+          });
           setSellerCodeValue(
             toStr(
               sellerRecord.sellerCode ||
@@ -481,6 +567,32 @@ export function SellerSettingsWorkspace({
                 logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
               },
               deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
+              payoutProfile: {
+                payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+                accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
+                bankName: toStr(nextPayoutProfile?.bankName),
+                bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
+                bankAddress: toStr(nextPayoutProfile?.bankAddress),
+                branchCode: toStr(nextPayoutProfile?.branchCode),
+                accountNumber: toStr(nextPayoutProfile?.accountNumber),
+                iban: toStr(nextPayoutProfile?.iban),
+                swiftBic: toStr(nextPayoutProfile?.swiftBic),
+                routingNumber: toStr(nextPayoutProfile?.routingNumber),
+                accountType: toStr(nextPayoutProfile?.accountType || "business_cheque"),
+                country: toStr(nextPayoutProfile?.country || "ZA"),
+                currency: toStr(nextPayoutProfile?.currency || "ZAR"),
+                beneficiaryReference: toStr(nextPayoutProfile?.beneficiaryReference),
+                beneficiaryAddressLine1: toStr(nextPayoutProfile?.beneficiaryAddressLine1),
+                beneficiaryAddressLine2: toStr(nextPayoutProfile?.beneficiaryAddressLine2),
+                beneficiaryCity: toStr(nextPayoutProfile?.beneficiaryCity),
+                beneficiaryRegion: toStr(nextPayoutProfile?.beneficiaryRegion),
+                beneficiaryPostalCode: toStr(nextPayoutProfile?.beneficiaryPostalCode),
+                beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
+                verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
+                verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
+                peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+                lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+              },
               vendorNameValue: nextVendorName || vendorName,
               vendorDescriptionValue: nextVendorDescription,
             }),
@@ -617,6 +729,7 @@ export function SellerSettingsWorkspace({
           data: {
             branding,
             deliveryProfile,
+            payoutProfile,
             vendorName: nextVendorName,
             vendorDescription: vendorDescriptionValue,
           },
@@ -629,6 +742,7 @@ export function SellerSettingsWorkspace({
 
       const nextBranding = payload?.branding || branding;
       const nextSeller = payload?.seller || {};
+      const nextPayoutProfile = payload?.payoutProfile || payoutProfile;
       setBranding({
         bannerImageUrl: toStr(nextBranding?.bannerImageUrl),
         bannerBlurHashUrl: toStr(nextBranding?.bannerBlurHashUrl),
@@ -641,6 +755,32 @@ export function SellerSettingsWorkspace({
       });
       const nextDeliveryProfile = normalizeSellerDeliveryProfile(payload?.deliveryProfile || {});
       setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
+      setPayoutProfile({
+        payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+        accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
+        bankName: toStr(nextPayoutProfile?.bankName),
+        bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
+        bankAddress: toStr(nextPayoutProfile?.bankAddress),
+        branchCode: toStr(nextPayoutProfile?.branchCode),
+        accountNumber: toStr(nextPayoutProfile?.accountNumber),
+        iban: toStr(nextPayoutProfile?.iban),
+        swiftBic: toStr(nextPayoutProfile?.swiftBic),
+        routingNumber: toStr(nextPayoutProfile?.routingNumber),
+        accountType: toStr(nextPayoutProfile?.accountType || "business_cheque"),
+        country: toStr(nextPayoutProfile?.country || "ZA"),
+        currency: toStr(nextPayoutProfile?.currency || "ZAR"),
+        beneficiaryReference: toStr(nextPayoutProfile?.beneficiaryReference),
+        beneficiaryAddressLine1: toStr(nextPayoutProfile?.beneficiaryAddressLine1),
+        beneficiaryAddressLine2: toStr(nextPayoutProfile?.beneficiaryAddressLine2),
+        beneficiaryCity: toStr(nextPayoutProfile?.beneficiaryCity),
+        beneficiaryRegion: toStr(nextPayoutProfile?.beneficiaryRegion),
+        beneficiaryPostalCode: toStr(nextPayoutProfile?.beneficiaryPostalCode),
+        beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
+        verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
+        verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
+        peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+        lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+      });
       setVendorNameValue(sanitizeVendorName(nextSeller?.vendorName || nextVendorName));
       setVendorDescriptionValue(toStr(nextSeller?.vendorDescription || vendorDescriptionValue).slice(0, 500));
       setSellerCodeValue(toStr(nextSeller?.sellerCode || sellerCodeValue));
@@ -657,6 +797,32 @@ export function SellerSettingsWorkspace({
             logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
           },
           deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
+          payoutProfile: {
+            payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+            accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
+            bankName: toStr(nextPayoutProfile?.bankName),
+            bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
+            bankAddress: toStr(nextPayoutProfile?.bankAddress),
+            branchCode: toStr(nextPayoutProfile?.branchCode),
+            accountNumber: toStr(nextPayoutProfile?.accountNumber),
+            iban: toStr(nextPayoutProfile?.iban),
+            swiftBic: toStr(nextPayoutProfile?.swiftBic),
+            routingNumber: toStr(nextPayoutProfile?.routingNumber),
+            accountType: toStr(nextPayoutProfile?.accountType || "business_cheque"),
+            country: toStr(nextPayoutProfile?.country || "ZA"),
+            currency: toStr(nextPayoutProfile?.currency || "ZAR"),
+            beneficiaryReference: toStr(nextPayoutProfile?.beneficiaryReference),
+            beneficiaryAddressLine1: toStr(nextPayoutProfile?.beneficiaryAddressLine1),
+            beneficiaryAddressLine2: toStr(nextPayoutProfile?.beneficiaryAddressLine2),
+            beneficiaryCity: toStr(nextPayoutProfile?.beneficiaryCity),
+            beneficiaryRegion: toStr(nextPayoutProfile?.beneficiaryRegion),
+            beneficiaryPostalCode: toStr(nextPayoutProfile?.beneficiaryPostalCode),
+            beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
+            verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
+            verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
+            peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+            lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+          },
           vendorNameValue: sanitizeVendorName(nextSeller?.vendorName || nextVendorName),
           vendorDescriptionValue: toStr(nextSeller?.vendorDescription || vendorDescriptionValue).slice(0, 500),
         }),
@@ -1192,6 +1358,155 @@ export function SellerSettingsWorkspace({
           />
         </label>
       </div>
+
+      <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Payout settings</p>
+            <h4 className="mt-1 text-[18px] font-semibold text-[#202020]">Where Piessang should pay you</h4>
+            <p className="mt-1 text-[12px] text-[#57636c]">
+              Add the bank details Piessang should use for automated seller payouts. Eligible settlements are only prepared for payout after the 7-day return window closes.
+            </p>
+          </div>
+          <div className="rounded-full bg-[rgba(144,125,76,0.08)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
+            {payoutProfile.verificationStatus === "verified" ? "Verified" : payoutProfile.accountNumber || payoutProfile.iban ? "Details added" : "Setup needed"}
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Payout method</span>
+            <select value={payoutProfile.payoutMethod} onChange={(event) => setPayoutProfile((current) => ({ ...current, payoutMethod: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+              <option value="same_country_bank">Bank account in your seller country</option>
+              <option value="other_country_bank">Bank account in another country</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account holder name</span>
+            <input value={payoutProfile.accountHolderName} onChange={(event) => setPayoutProfile((current) => ({ ...current, accountHolderName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Bevgo (Pty) Ltd" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank name</span>
+            <input value={payoutProfile.bankName} onChange={(event) => setPayoutProfile((current) => ({ ...current, bankName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Standard Bank" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank country</span>
+            <select value={payoutProfile.bankCountry} onChange={(event) => setPayoutProfile((current) => ({ ...current, bankCountry: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+              {SUPPORTED_PAYOUT_COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Branch code</span>
+            <input value={payoutProfile.branchCode} onChange={(event) => setPayoutProfile((current) => ({ ...current, branchCode: event.target.value.replace(/[^\d]/g, "").slice(0, 10) }))} disabled={!canEditSettings || payoutProfile.payoutMethod === "other_country_bank"} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="051001" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account number</span>
+            <input value={payoutProfile.accountNumber} onChange={(event) => setPayoutProfile((current) => ({ ...current, accountNumber: event.target.value.replace(/[^\d]/g, "").slice(0, 20) }))} disabled={!canEditSettings || payoutProfile.payoutMethod === "other_country_bank"} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="000123456789" />
+          </label>
+          {payoutProfile.payoutMethod === "other_country_bank" ? (
+            <>
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">IBAN</span>
+                <input value={payoutProfile.iban} onChange={(event) => setPayoutProfile((current) => ({ ...current, iban: event.target.value.replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 34) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="DE89370400440532013000" />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">SWIFT / BIC</span>
+                <input value={payoutProfile.swiftBic} onChange={(event) => setPayoutProfile((current) => ({ ...current, swiftBic: event.target.value.replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 11) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="DEUTDEFF" />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Routing / clearing code</span>
+                <input value={payoutProfile.routingNumber} onChange={(event) => setPayoutProfile((current) => ({ ...current, routingNumber: event.target.value.replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 20) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="ABA / sort / routing code" />
+              </label>
+              <label className="block md:col-span-2">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank address</span>
+                <input value={payoutProfile.bankAddress} onChange={(event) => setPayoutProfile((current) => ({ ...current, bankAddress: event.target.value.slice(0, 200) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Bank street address" />
+              </label>
+            </>
+          ) : null}
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account type</span>
+            <select value={payoutProfile.accountType} onChange={(event) => setPayoutProfile((current) => ({ ...current, accountType: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+              <option value="business_cheque">Business cheque</option>
+              <option value="business_savings">Business savings</option>
+              <option value="cheque">Cheque</option>
+              <option value="savings">Savings</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Payout reference</span>
+            <input value={payoutProfile.beneficiaryReference} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryReference: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="BEVGO-SETTLEMENTS" />
+          </label>
+        </div>
+
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Seller country</span>
+            <select value={payoutProfile.country} onChange={(event) => setPayoutProfile((current) => ({ ...current, country: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+              {SUPPORTED_PAYOUT_COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Settlement currency</span>
+            <select value={payoutProfile.currency} onChange={(event) => setPayoutProfile((current) => ({ ...current, currency: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+              {SUPPORTED_PAYOUT_CURRENCIES.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} · {currency.label}</option>)}
+            </select>
+          </label>
+          <div className="rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-3 py-3 text-[12px] text-[#57636c]">
+            <p className="font-semibold text-[#202020]">Payout readiness</p>
+            <p className="mt-1">
+              {payoutProfile.accountHolderName &&
+              payoutProfile.bankName &&
+              ((payoutProfile.payoutMethod === "same_country_bank" && payoutProfile.branchCode && payoutProfile.accountNumber) ||
+                (payoutProfile.payoutMethod === "other_country_bank" && payoutProfile.iban && payoutProfile.swiftBic))
+                ? "Your bank details are saved. Eligible settlements can now be prepared for automated payout runs."
+                : "Add your bank details so Piessang can prepare automated payouts once your return window closes."}
+            </p>
+            {payoutProfile.lastVerifiedAt ? <p className="mt-1">Last verified: {payoutProfile.lastVerifiedAt}</p> : null}
+          </div>
+        </div>
+
+        {payoutProfile.payoutMethod === "other_country_bank" ? (
+          <div className="mt-3 rounded-[8px] border border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] px-3 py-2 text-[12px] text-[#6f5d2d]">
+            Cross-border payout details are now supported in your seller profile and payout batches. Live provider support still depends on the payout network available for your chosen bank country and settlement currency.
+          </div>
+        ) : null}
+
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary address line 1</span>
+            <input value={payoutProfile.beneficiaryAddressLine1} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryAddressLine1: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Street address" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary address line 2</span>
+            <input value={payoutProfile.beneficiaryAddressLine2} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryAddressLine2: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Suite, floor, or building" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary city</span>
+            <input value={payoutProfile.beneficiaryCity} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryCity: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Cape Town" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary region / state</span>
+            <input value={payoutProfile.beneficiaryRegion} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryRegion: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Western Cape" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary postal code</span>
+            <input value={payoutProfile.beneficiaryPostalCode} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryPostalCode: event.target.value.slice(0, 30) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="8000" />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary country</span>
+            <select value={payoutProfile.beneficiaryCountry} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryCountry: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+              {SUPPORTED_PAYOUT_COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
+            </select>
+          </label>
+        </div>
+
+        {payoutProfile.verificationNotes ? (
+          <div className="mt-3 rounded-[8px] border border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] px-3 py-2 text-[12px] text-[#6f5d2d]">
+            {payoutProfile.verificationNotes}
+          </div>
+        ) : null}
+      </div>
+
       <GooglePlacePickerModal
         open={originPickerOpen}
         title="Choose your shipping origin"
@@ -1246,7 +1561,7 @@ export function SellerSettingsWorkspace({
 
       {hasUnsavedChanges ? (
         <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.08)] px-4 py-3 text-[13px] text-[#166534]">
-          You have unsaved changes in your seller settings. Save your updates so your new delivery rules and zones can take effect.
+          You have unsaved changes in your seller settings. Save your updates so your new delivery rules, payout details, and shipping setup can take effect.
         </div>
       ) : null}
 

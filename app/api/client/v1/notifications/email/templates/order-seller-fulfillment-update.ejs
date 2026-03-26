@@ -3,6 +3,9 @@
 %>
 
 <h2>Order update</h2>
+<% if (typeof statusHeadline !== "undefined" && statusHeadline) { %>
+  <p><strong><%= statusHeadline %></strong></p>
+<% } %>
 <p>
   Your order
   <% if (typeof orderNumber !== "undefined" && orderNumber) { %>
@@ -19,6 +22,10 @@
 <p>
   New status: <strong><%= statusLabel || "Updated" %></strong>
 </p>
+
+<% if (typeof statusMessage !== "undefined" && statusMessage) { %>
+  <p><%= statusMessage %></p>
+<% } %>
 
 <% if (safeItems.length) { %>
   <p>The following products were included in this update:</p>

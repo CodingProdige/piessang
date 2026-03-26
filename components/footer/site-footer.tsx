@@ -20,7 +20,7 @@ const FOOTER_COLUMNS = [
   },
   {
     title: "Company",
-    items: ["About Piessang", "Sell on Piessang", "Careers", "Privacy"],
+    items: ["About Piessang", "Sell on Piessang", "Terms", "Privacy"],
   },
 ];
 
@@ -28,14 +28,14 @@ export function PiessangFooter() {
   return (
     <footer className="border-t border-black/5 bg-white">
       <div className="w-full px-3 py-8 lg:px-4 lg:py-10">
-        <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.35fr)_repeat(4,minmax(0,1fr))]">
+        <div className="grid gap-8 text-center sm:grid-cols-2 sm:text-left lg:grid-cols-[minmax(0,1.35fr)_repeat(4,minmax(0,1fr))]">
           {FOOTER_COLUMNS.map((column) => (
             <div key={column.title} className="min-w-0">
               <h2 className="text-[13px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">
                 {column.title}
               </h2>
               {column.title === "About" ? (
-                <div className="mt-4 max-w-[22ch] space-y-4 text-[13px] leading-[1.6] text-[#57636c]">
+                <div className="mx-auto mt-4 flex max-w-[22ch] flex-col items-center space-y-4 text-[13px] leading-[1.6] text-[#57636c] sm:mx-0 sm:items-start">
                   <Image
                     src="/logo/Piessang%20Logo.png"
                     alt="Piessang"
@@ -68,6 +68,16 @@ export function PiessangFooter() {
                                       ? "/account"
                                       : item === "Sell on Piessang"
                                         ? "/sell-on-piessang"
+                                        : item === "Delivery"
+                                          ? "/delivery"
+                                          : item === "Returns"
+                                            ? "/returns"
+                                            : item === "Payments"
+                                              ? "/payments"
+                                              : item === "Privacy"
+                                                ? "/privacy"
+                                                : item === "Terms"
+                                                  ? "/terms"
                                         : "/"
                         }
                         className="transition-colors hover:text-[#202020]"
@@ -82,9 +92,9 @@ export function PiessangFooter() {
           ))}
         </div>
 
-        <div className="mt-8 flex flex-col gap-3 border-t border-black/5 pt-6 text-[12px] text-[#8b94a3] lg:flex-row lg:items-center lg:justify-between">
+        <div className="mt-8 flex flex-col items-center gap-3 border-t border-black/5 pt-6 text-center text-[12px] text-[#8b94a3] lg:flex-row lg:items-center lg:justify-between lg:text-left">
           <p>© {new Date().getFullYear()} Piessang by Bevgo. All rights reserved.</p>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center justify-center gap-3 lg:justify-end">
             <p>Marketplace, simplified.</p>
             <Image
               src="/badges/secured%20by%20peach-colour.png"

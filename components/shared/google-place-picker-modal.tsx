@@ -40,13 +40,17 @@ const GOOGLE_MAPS_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
 
 export function loadGoogleMaps() {
   if (typeof window === "undefined") return Promise.reject(new Error("Window unavailable."));
-  if (window.google?.maps?.places) return Promise.resolve(window.google);
+  if (window.google?.maps) return Promise.resolve(window.google);
   if (window.__piessangGoogleMapsPromise) return window.__piessangGoogleMapsPromise;
   if (!GOOGLE_MAPS_KEY) return Promise.reject(new Error("Google Maps API key is not configured."));
 
   window.__piessangGoogleMapsPromise = new Promise((resolve, reject) => {
     const existing = document.querySelector('script[data-google-maps="true"]');
     if (existing) {
+      if (window.google?.maps) {
+        resolve(window.google);
+        return;
+      }
       existing.addEventListener("load", () => resolve(window.google));
       existing.addEventListener("error", () => reject(new Error("Unable to load Google Maps.")));
       return;
@@ -101,7 +105,11 @@ export async function reverseGeocodeCoordinates(latitude: number, longitude: num
   const google = await loadGoogleMaps();
   const geocoder = new google.maps.Geocoder();
   return new Promise<LocationValue>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("Location lookup took too long."));
+    }, 8000);
     geocoder.geocode({ location: { lat: latitude, lng: longitude } }, (results: any[] = [], status: string) => {
+      window.clearTimeout(timeoutId);
       if (status !== "OK" || !results?.[0]) {
         reject(new Error("Unable to resolve your current location."));
         return;

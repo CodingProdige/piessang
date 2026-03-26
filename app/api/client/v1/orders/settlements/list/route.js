@@ -22,7 +22,7 @@ function toNum(value, fallback = 0) {
 
 function normalizeFilter(value) {
   const normalized = toStr(value, "all").toLowerCase();
-  if (["all", "pending_review", "ready_for_payout", "paid", "blocked", "cancelled", "held", "late", "review_queue", "payouts"].includes(normalized)) {
+  if (["all", "pending_review", "ready_for_payout", "processing_payout", "paid", "blocked", "cancelled", "held", "late", "review_queue", "payouts"].includes(normalized)) {
     return normalized;
   }
   return "all";
@@ -79,6 +79,13 @@ function normalizeSettlement(docSnap) {
       released_incl: toNum(payout.released_incl || 0),
       remaining_due_incl: toNum(payout.remaining_due_incl || 0),
       status: toStr(payout.status || "held").toLowerCase() || "held",
+      eligible_at: toStr(payout.eligible_at || ""),
+      delivered_at: toStr(payout.delivered_at || ""),
+      hold_reason: toStr(payout.hold_reason || ""),
+      hold_days: toNum(payout.hold_days || 0),
+      bank_profile: payout.bank_profile && typeof payout.bank_profile === "object" ? payout.bank_profile : {},
+      batchId: toStr(payout.batchId || ""),
+      batchStatus: toStr(payout.batchStatus || "").toLowerCase() || "",
       releaseReference: toStr(payout.releaseReference || ""),
       releasedAt: toStr(payout.releasedAt || ""),
       releasedBy: toStr(payout.releasedBy || ""),
@@ -126,8 +133,10 @@ function matchesFilter(record, filter) {
       return status === "pending_review" || reviewStatus === "pending_review";
     case "ready_for_payout":
       return status === "ready_for_payout" || payoutStatus === "ready_for_payout";
+    case "processing_payout":
+      return status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus);
     case "payouts":
-      return ["ready_for_payout", "paid"].includes(status) || ["ready_for_payout", "paid"].includes(payoutStatus);
+      return ["ready_for_payout", "processing_payout", "paid"].includes(status) || ["ready_for_payout", "pending_submission", "submitted", "paid"].includes(payoutStatus);
     case "paid":
       return status === "paid" || payoutStatus === "paid";
     case "blocked":
@@ -198,13 +207,14 @@ export async function GET(req) {
         const reviewStatus = toStr(item?.fulfilment?.reviewStatus || "").toLowerCase();
         if (status === "pending_review" || reviewStatus === "pending_review") acc.pendingReview += 1;
         if (status === "ready_for_payout" || payoutStatus === "ready_for_payout") acc.readyForPayout += 1;
+        if (status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus)) acc.processingPayout += 1;
         if (status === "paid" || payoutStatus === "paid") acc.paid += 1;
         if (status === "blocked") acc.blocked += 1;
         if (status === "cancelled") acc.cancelled += 1;
         if (item?.accountability?.late === true || item?.fulfilment?.late === true) acc.late += 1;
         return acc;
       },
-      { total: 0, pendingReview: 0, readyForPayout: 0, paid: 0, blocked: 0, cancelled: 0, late: 0 },
+      { total: 0, pendingReview: 0, readyForPayout: 0, processingPayout: 0, paid: 0, blocked: 0, cancelled: 0, late: 0 },
     );
 
     settlements.sort((left, right) => {

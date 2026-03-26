@@ -1,0 +1,20 @@
+<h1 style="margin:0 0 16px;font-size:24px;line-height:1.3;color:#202020;">Your return request has been received</h1>
+<p style="margin:0 0 14px;color:#4b5563;font-size:15px;line-height:1.7;">
+  Hi <%= customerName || "there" %>, we received your return request for order <strong><%= orderNumber %></strong>.
+</p>
+<p style="margin:0 0 14px;color:#4b5563;font-size:15px;line-height:1.7;">
+  Return reference: <strong><%= returnId %></strong><br/>
+  Reviewed by: <strong><%= ownerLabel %></strong><br/>
+  Reason: <strong><%= reason %></strong>
+</p>
+<% if (Array.isArray(items) && items.length) { %>
+  <p style="margin:0 0 8px;color:#202020;font-size:14px;font-weight:600;">Items on this request</p>
+  <ul style="margin:0 0 16px 18px;padding:0;color:#4b5563;font-size:14px;line-height:1.7;">
+    <% items.forEach(function(item){ %>
+      <li><%= item.productTitle %><% if (item.variantLabel) { %> — <%= item.variantLabel %><% } %> x <%= item.quantity %></li>
+    <% }) %>
+  </ul>
+<% } %>
+<p style="margin:0;color:#4b5563;font-size:15px;line-height:1.7;">
+  We’ll review the request and contact you with the next steps as soon as possible.
+</p>
