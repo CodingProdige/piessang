@@ -79,6 +79,10 @@ function getRefundPaymentId(order = {}) {
   return toStr(charged[0]?.peachTransactionId || charged[0]?.transactionId || "");
 }
 
+function getOrderPaymentProvider(order = {}) {
+  return toStr(order?.payment?.provider || order?.order?.payment?.provider).toLowerCase();
+}
+
 export async function POST(req) {
   try {
     const sessionUser = await requireSessionUser();
@@ -154,25 +158,40 @@ export async function POST(req) {
       const merchantTransactionId = toStr(returnDoc?.return?.merchantTransactionId);
       const orderSnap = orderId ? await db.collection("orders_v2").doc(orderId).get() : null;
       const order = orderSnap?.exists ? orderSnap.data() || {} : {};
-      const paymentId = getRefundPaymentId(order);
-      if (!paymentId) {
-        return err(409, "Missing Payment", "We could not find the original charged payment for this order.");
-      }
       const refundAmount = amount > 0 ? amount : Number(returnDoc?.return?.amountIncl || 0);
       const origin = new URL(req.url).origin;
-      const refundResponse = await fetch(`${origin}/api/client/v1/payments/peach/charge-refund`, {
+      const paymentProvider = getOrderPaymentProvider(order);
+      const refundRoute =
+        paymentProvider === "stripe"
+          ? "/api/client/v1/payments/stripe/refund"
+          : "/api/client/v1/payments/peach/charge-refund";
+      const refundPayloadBody =
+        paymentProvider === "stripe"
+          ? {
+              orderId,
+              orderNumber,
+              merchantTransactionId,
+              refundRequestId: returnId,
+              amount: refundAmount,
+              note: note || returnDoc?.return?.message || "Approved marketplace return refund.",
+            }
+          : {
+              orderId,
+              orderNumber,
+              merchantTransactionId,
+              paymentId: getRefundPaymentId(order),
+              refundRequestId: returnId,
+              amount: refundAmount,
+              currency: "ZAR",
+              message: note || returnDoc?.return?.message || "Approved marketplace return refund.",
+            };
+      if (paymentProvider !== "stripe" && !refundPayloadBody.paymentId) {
+        return err(409, "Missing Payment", "We could not find the original charged payment for this order.");
+      }
+      const refundResponse = await fetch(`${origin}${refundRoute}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          orderId,
-          orderNumber,
-          merchantTransactionId,
-          paymentId,
-          refundRequestId: returnId,
-          amount: refundAmount,
-          currency: "ZAR",
-          message: note || returnDoc?.return?.message || "Approved marketplace return refund.",
-        }),
+        body: JSON.stringify(refundPayloadBody),
       });
       const refundPayload = await refundResponse.json().catch(() => ({}));
       if (!refundResponse.ok || refundPayload?.ok === false) {

@@ -3372,7 +3372,7 @@ export function SellerCatalogueEditor({
           <button
             type="button"
             onClick={() => openAuthModal("Sign in to access the product creation flow.")}
-            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+            className="brand-button mt-5 inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
           >
             Sign in
           </button>
@@ -3504,7 +3504,7 @@ export function SellerCatalogueEditor({
               type="button"
               onClick={() => void handleSubmit()}
               disabled={!formIsValid}
-              className="inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#d8be73] disabled:cursor-not-allowed disabled:opacity-60"
+              className="brand-button inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-60"
             >
               {submitting ? "Saving..." : activeProductId ? "Update draft" : "Save draft"}
             </button>

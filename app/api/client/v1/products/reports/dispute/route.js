@@ -98,7 +98,7 @@ export async function POST(req) {
     }, { merge: true });
 
     if (process.env.SENDGRID_API_KEY?.startsWith("SG.")) {
-      const recipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["info@bevgo.co.za"] });
+      const recipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["support@piessang.com"] });
       if (recipients.length) {
         await sendSellerNotificationEmails({
           origin: new URL(req.url).origin,
@@ -108,7 +108,7 @@ export async function POST(req) {
             reportId,
             productId: toStr(report?.product?.id || ""),
             productTitle: toStr(report?.product?.title || "Product"),
-            vendorName: toStr(report?.product?.vendorName || profile?.sellerVendorName || "Bevgo seller"),
+            vendorName: toStr(report?.product?.vendorName || profile?.sellerVendorName || "Piessang seller"),
             sellerSlug,
             disputeMessage: message,
           },

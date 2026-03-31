@@ -4,14 +4,19 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import {
+  AccountListsWorkspace,
+  AccountOrdersWorkspace,
+  AccountPaymentsWorkspace,
+} from "@/components/account/account-sections";
 
-type AccountSection = "overview" | "orders" | "payments" | "profile" | "lists" | "support" | "seller";
+type AccountSection = "overview" | "orders" | "payments" | "profile" | "lists" | "support" | "policies" | "seller";
 
 type AccountCard = {
   title: string;
   section: Exclude<AccountSection, "overview">;
   icon: string;
-  links: string[];
+  links: Array<{ label: string; href: string }>;
   href?: string;
 };
 
@@ -22,6 +27,7 @@ const sectionTitles: Record<AccountSection, string> = {
   profile: "Profile",
   lists: "My Lists",
   support: "Support",
+  policies: "Policies",
   seller: "Seller Tools",
 };
 
@@ -30,31 +36,67 @@ const accountCards: AccountCard[] = [
     title: "Orders",
     section: "orders" as const,
     icon: "cart",
-    links: ["Orders", "Invoices", "Returns", "Product reviews"],
+    links: [
+      { label: "Orders", href: "/account/orders" },
+      { label: "Invoices", href: "/account/orders" },
+      { label: "Returns", href: "/account/orders" },
+      { label: "Product reviews", href: "/account/orders" },
+    ],
+    href: "/account/orders",
   },
   {
     title: "Payments & Credit",
     section: "payments" as const,
     icon: "card",
-    links: ["Coupons & offers", "Credit & refunds", "Redeem gift voucher"],
+    links: [
+      { label: "Coupons & offers", href: "/account?section=payments" },
+      { label: "Credit & refunds", href: "/account?section=payments" },
+      { label: "Redeem gift voucher", href: "/account?section=payments" },
+    ],
   },
   {
     title: "Profile",
     section: "profile" as const,
     icon: "profile",
-    links: ["Personal details", "Security settings", "Address book", "Newsletter subscriptions"],
+    links: [
+      { label: "Personal details", href: "/account/personal-details" },
+      { label: "Notification preferences", href: "/account/notification-preferences" },
+      { label: "Address book", href: "/account/address-book" },
+      { label: "Newsletter subscriptions", href: "/account/newsletters" },
+    ],
   },
   {
     title: "My Lists",
     section: "lists" as const,
     icon: "heart",
-    links: ["My favourites", "Saved products", "Create a list"],
+    links: [
+      { label: "My favourites", href: "/account?section=lists" },
+      { label: "Saved products", href: "/account?section=lists" },
+      { label: "Create a list", href: "/account?section=lists" },
+    ],
   },
   {
     title: "Support",
     section: "support" as const,
     icon: "help",
-    links: ["Help centre", "Delivery help", "Returns", "Contact Piessang"],
+    links: [
+      { label: "My tickets", href: "/support/tickets" },
+      { label: "Contact Piessang", href: "/contact" },
+    ],
+    href: "/support/tickets",
+  },
+  {
+    title: "Policies",
+    section: "policies" as const,
+    icon: "help",
+    links: [
+      { label: "Delivery policy", href: "/delivery" },
+      { label: "Returns policy", href: "/returns" },
+      { label: "Payments", href: "/payments" },
+      { label: "Privacy", href: "/privacy" },
+      { label: "Terms", href: "/terms" },
+    ],
+    href: "/terms",
   },
 ];
 
@@ -115,10 +157,7 @@ export function AccountHub() {
   const visibleCards = useMemo(() => {
     if (!isAuthenticated) return accountCards;
     if (!isSeller) return accountCards;
-
-  return [
-    ...accountCards,
-    ];
+    return [...accountCards];
   }, [isAuthenticated, isSeller]);
 
   if (!isAuthenticated) {
@@ -133,7 +172,7 @@ export function AccountHub() {
           <button
             type="button"
             onClick={() => openAuthModal("Sign in to access your Piessang account.")}
-            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+            className="brand-button mt-5 inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
           >
             Sign in
           </button>
@@ -141,28 +180,31 @@ export function AccountHub() {
 
         <section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {visibleCards.map((card) => (
-          <Link
+          <div
             key={card.title}
-            href={card.href ?? `/account?section=${card.section}`}
             className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)] transition-shadow hover:shadow-[0_14px_30px_rgba(20,24,27,0.10)]"
           >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-[18px] font-semibold text-[#202020]">{card.title}</p>
-                  <ul className="mt-3 space-y-2 text-[13px] leading-[1.4] text-[#0f80c3]">
-                    {card.links.map((item) => (
-                      <li key={item} className="underline decoration-[#0f80c3] underline-offset-2">
-                        {item}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                <span className="text-[#4a4545]">
-                  <CardIcon icon={card.icon} />
-                </span>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <Link href={card.href ?? `/account?section=${card.section}`} className="text-[18px] font-semibold text-[#202020]">
+                  {card.title}
+                </Link>
+                <ul className="mt-3 space-y-2 text-[13px] leading-[1.4] text-[#0f80c3]">
+                  {card.links.map((item) => (
+                    <li key={item.label}>
+                      <Link href={item.href} className="underline decoration-[#0f80c3] underline-offset-2">
+                        {item.label}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
               </div>
-            </Link>
-          ))}
+              <Link href={card.href ?? `/account?section=${card.section}`} className="text-[#4a4545]">
+                <CardIcon icon={card.icon} />
+              </Link>
+            </div>
+          </div>
+        ))}
         </section>
 
         <section className="mt-6 rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
@@ -213,28 +255,31 @@ export function AccountHub() {
 
       <section className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {visibleCards.map((card) => (
-        <Link
+        <div
           key={card.title}
-          href={card.href ?? `/account?section=${card.section}`}
           className={`rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)] transition-shadow hover:shadow-[0_14px_30px_rgba(20,24,27,0.10)] ${activeSection === card.section ? "ring-1 ring-[#cbb26b]/40" : ""}`}
         >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[18px] font-semibold text-[#202020]">{card.title}</p>
-                <ul className="mt-3 space-y-2 text-[13px] leading-[1.4] text-[#0f80c3]">
-                  {card.links.map((item) => (
-                    <li key={item} className="underline decoration-[#0f80c3] underline-offset-2">
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <span className="text-[#4a4545]">
-                <CardIcon icon={card.icon} />
-              </span>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <Link href={card.href ?? `/account?section=${card.section}`} className="text-[18px] font-semibold text-[#202020]">
+                {card.title}
+              </Link>
+              <ul className="mt-3 space-y-2 text-[13px] leading-[1.4] text-[#0f80c3]">
+                {card.links.map((item) => (
+                  <li key={item.label}>
+                    <Link href={item.href} className="underline decoration-[#0f80c3] underline-offset-2">
+                      {item.label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </Link>
-        ))}
+            <Link href={card.href ?? `/account?section=${card.section}`} className="text-[#4a4545]">
+              <CardIcon icon={card.icon} />
+            </Link>
+          </div>
+        </div>
+      ))}
       </section>
 
       <section className="mt-6 grid gap-4 lg:grid-cols-[1.3fr_0.7fr]">
@@ -247,14 +292,19 @@ export function AccountHub() {
             {activeSection === "payments" && "View credits, refunds, and payment history for your account."}
             {activeSection === "profile" && "Update business details, security settings, and addresses."}
             {activeSection === "lists" && "Manage favourites and saved products from your storefront activity."}
-            {activeSection === "support" && "Get help with delivery, returns, and account questions."}
+            {activeSection === "support" && "Manage support conversations from the dedicated Piessang support area."}
+            {activeSection === "policies" && "Read the customer-facing policies that govern shopping on Piessang."}
             {activeSection === "seller" && "Manage your seller catalogue, analytics, and order queue."}
             {activeSection === "overview" && "Everything you need to manage your Piessang profile."}
           </h2>
           <p className="mt-3 max-w-[760px] text-[13px] leading-[1.7] text-[#57636c]">
             {activeSection === "seller"
               ? "Registering as a seller unlocks the marketplace tools on your account."
-              : "Use the cards above to jump into the relevant part of your account as we expand the full experience."}
+              : activeSection === "support"
+                ? "Open the dedicated support area to view your tickets, reply to Piessang, and close resolved conversations."
+                : activeSection === "policies"
+                  ? "Your account actions and your marketplace policies now live in separate places so the account area stays action-focused."
+                : "The sections below are now wired to your real customer data, so you can manage the important parts of your account from one place."}
           </p>
           {profile?.email ? (
             <p className="mt-3 text-[12px] font-medium text-[#8b94a3]">
@@ -283,7 +333,7 @@ export function AccountHub() {
               <button
                 type="button"
                 onClick={() => openSellerRegistrationModal("Register your seller account to unlock marketplace tools.")}
-                className="inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+                className="brand-button inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
               >
                 Register as seller
               </button>
@@ -291,6 +341,65 @@ export function AccountHub() {
           )}
         </div>
       </section>
+
+      {uid ? (
+        <section className="mt-6">
+          {activeSection === "orders" ? <AccountOrdersWorkspace uid={uid} /> : null}
+          {activeSection === "payments" ? <AccountPaymentsWorkspace uid={uid} /> : null}
+          {activeSection === "profile" ? null : null}
+          {activeSection === "lists" ? <AccountListsWorkspace uid={uid} favoriteCount={favoriteCount} /> : null}
+          {activeSection === "support" ? (
+            <div className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+              <p className="text-[18px] font-semibold text-[#202020]">Support</p>
+              <p className="mt-2 max-w-[760px] text-[13px] leading-[1.7] text-[#57636c]">
+                Your support tickets now live in their own dedicated support area so replies and updates stay easy to follow.
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Link
+                  href="/support/tickets"
+                  className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+                >
+                  Open my tickets
+                </Link>
+                <Link
+                  href="/contact"
+                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020]"
+                >
+                  Contact Piessang
+                </Link>
+              </div>
+            </div>
+          ) : null}
+          {activeSection === "policies" ? (
+            <div className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+              <p className="text-[18px] font-semibold text-[#202020]">Policies</p>
+              <p className="mt-2 max-w-[760px] text-[13px] leading-[1.7] text-[#57636c]">
+                Delivery, returns, payments, privacy, and terms now sit in their own policy area instead of being mixed into your account actions.
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Link
+                  href="/delivery"
+                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020]"
+                >
+                  Delivery policy
+                </Link>
+                <Link
+                  href="/returns"
+                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020]"
+                >
+                  Returns policy
+                </Link>
+                <Link
+                  href="/terms"
+                  className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+                >
+                  Terms
+                </Link>
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
     </main>
   );
 }

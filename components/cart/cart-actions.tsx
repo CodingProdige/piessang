@@ -36,7 +36,7 @@ export function CartActionStack({
         </button>
       ) : (
         <Link
-          href="/cart?step=checkout"
+          href="/checkout"
           onClick={onNavigate}
           className={`inline-flex w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 font-semibold uppercase tracking-[0.08em] text-white transition-colors hover:bg-[#cbb26b] ${compact ? "h-8 text-[10px]" : "h-9 text-[11px]"}`}
         >

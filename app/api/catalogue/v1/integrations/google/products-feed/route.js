@@ -5,9 +5,9 @@ import { db } from "@/lib/firebase";
 import { collection, getDocs } from "firebase/firestore";
 
 const VAT = 0.15;
-const FEED_TITLE = "Bevgo Product Feed";
-const FEED_DESC = "Google Merchant product feed for Bevgo marketplace";
-const FEED_LINK = "https://marketplace.bevgo.co.za";
+const FEED_TITLE = "Piessang Product Feed";
+const FEED_DESC = "Google Merchant product feed for Piessang marketplace";
+const FEED_LINK = "https://piessang.com";
 
 const PRODUCTS_COLLECTION = "products_v2";
 const GOOGLE_FEED_SECRET = process.env.GOOGLE_FEED_SECRET || "";
@@ -89,7 +89,7 @@ function buildGoogleCategory(grouping) {
 }
 
 function productLink(uniqueId) {
-  return `https://marketplace.bevgo.co.za/product?uniqueId=${encodeURIComponent(String(uniqueId || ""))}`;
+  return `https://piessang.com/products?uniqueId=${encodeURIComponent(String(uniqueId || ""))}`;
 }
 
 function variantPriceFields(variant) {
@@ -175,9 +175,9 @@ export async function GET(req) {
 
       const desc =
         String(p?.product?.description || "").trim() ||
-        `${title} available on Bevgo Marketplace`;
+        `${title} available on Piessang Marketplace`;
       const image = Array.isArray(p?.media?.images) ? p.media.images[0]?.imageUrl : null;
-      const brand = String(p?.grouping?.brand || "").trim() || "Bevgo";
+      const brand = String(p?.grouping?.brand || "").trim() || "Piessang";
       const category = String(p?.grouping?.category || "").trim();
       const subCategory = String(p?.grouping?.subCategory || "").trim();
       const googleCategory = buildGoogleCategory(p?.grouping);

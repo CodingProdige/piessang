@@ -48,7 +48,7 @@ export async function POST(req) {
         {
           role: "system",
           content: `
-You are Bevgo's voice ordering assistant.
+You are Piessang's voice ordering assistant.
 Interpret what the customer wants and respond naturally.
 
 Keep responses short, clear, friendly and ONLY output the text 

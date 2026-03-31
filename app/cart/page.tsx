@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { CartCheckout } from "@/components/cart/cart-checkout";
 import { LiveCart } from "@/components/cart/live-cart";
 
@@ -10,30 +10,38 @@ function CheckoutResult({
   orderId,
   orderNumber,
   paymentId,
+  checkoutSessionId,
   merchantTransactionId,
 }: {
   orderId: string;
   orderNumber: string;
   paymentId: string;
+  checkoutSessionId: string;
   merchantTransactionId: string;
 }) {
   const [state, setState] = useState<"loading" | "success" | "failed">(
-    paymentId ? "loading" : "success",
+    paymentId || checkoutSessionId ? "loading" : "success",
   );
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    if (!paymentId) return;
+    if (!paymentId && !checkoutSessionId) return;
     let active = true;
 
     (async () => {
       try {
-        const statusResponse = await fetch(
-          `/api/client/v1/payments/peach/payment-status?paymentId=${encodeURIComponent(paymentId)}&poll=true`,
-          { cache: "no-store" },
-        );
+        const statusUrl = checkoutSessionId
+          ? `/api/client/v1/payments/stripe/session-status?sessionId=${encodeURIComponent(checkoutSessionId)}&orderId=${encodeURIComponent(orderId)}`
+          : `/api/client/v1/payments/peach/payment-status?paymentId=${encodeURIComponent(paymentId)}&poll=true`;
+        const statusResponse = await fetch(statusUrl, { cache: "no-store" });
         const statusPayload = await statusResponse.json().catch(() => ({}));
-        const paymentStatus = String(statusPayload?.status || "").trim().toLowerCase();
+        const paymentStatus = String(
+          checkoutSessionId
+            ? statusPayload?.data?.paymentStatus || statusPayload?.paymentStatus || ""
+            : statusPayload?.status || "",
+        )
+          .trim()
+          .toLowerCase();
 
         if (!active) return;
 
@@ -68,7 +76,7 @@ function CheckoutResult({
     return () => {
       active = false;
     };
-  }, [merchantTransactionId, orderId, orderNumber, paymentId]);
+  }, [checkoutSessionId, merchantTransactionId, orderId, orderNumber, paymentId]);
 
   if (state === "loading") {
     return (
@@ -94,7 +102,7 @@ function CheckoutResult({
             {message || "No order was kept. You can return to your cart and try again."}
           </p>
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <Link href="/cart?step=checkout" className="inline-flex h-11 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white">
+            <Link href="/checkout" className="inline-flex h-11 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white">
               Try payment again
             </Link>
             <Link href="/cart" className="inline-flex h-11 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]">
@@ -128,6 +136,7 @@ function CheckoutResult({
 }
 
 export default function CartPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const step = String(searchParams.get("step") || "").trim().toLowerCase();
   const isCheckout = step === "checkout";
@@ -135,10 +144,35 @@ export default function CartPage() {
   const orderNumber = String(searchParams.get("orderNumber") || "").trim();
   const orderId = String(searchParams.get("orderId") || "").trim();
   const paymentId = String(searchParams.get("paymentId") || "").trim();
+  const checkoutSessionId = String(searchParams.get("checkoutSessionId") || "").trim();
   const merchantTransactionId = String(searchParams.get("merchantTransactionId") || "").trim();
 
+  useEffect(() => {
+    if (isCheckout) {
+      router.replace("/checkout");
+      return;
+    }
+    if (isSuccess) {
+      const next = new URLSearchParams();
+      if (orderId) next.set("orderId", orderId);
+      if (orderNumber) next.set("orderNumber", orderNumber);
+      if (paymentId) next.set("paymentId", paymentId);
+      if (checkoutSessionId) next.set("checkoutSessionId", checkoutSessionId);
+      if (merchantTransactionId) next.set("merchantTransactionId", merchantTransactionId);
+      router.replace(`/checkout/success${next.toString() ? `?${next.toString()}` : ""}`);
+    }
+  }, [checkoutSessionId, isCheckout, isSuccess, merchantTransactionId, orderId, orderNumber, paymentId, router]);
+
   if (isSuccess) {
-    return <CheckoutResult orderId={orderId} orderNumber={orderNumber} paymentId={paymentId} merchantTransactionId={merchantTransactionId} />;
+    return (
+      <CheckoutResult
+        orderId={orderId}
+        orderNumber={orderNumber}
+        paymentId={paymentId}
+        checkoutSessionId={checkoutSessionId}
+        merchantTransactionId={merchantTransactionId}
+      />
+    );
   }
 
   return (

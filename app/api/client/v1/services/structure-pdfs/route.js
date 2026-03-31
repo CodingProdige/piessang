@@ -146,13 +146,13 @@ function buildMarketplaceHtml(context) {
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Bevgo Marketplace Service</title>
+    <title>Piessang Marketplace Service</title>
     <style>${sharedStyles()}</style>
   </head>
   <body>
     <div class="header">
       <div>
-        <div class="brand">BEVGO DISTRIBUTIONS</div>
+        <div class="brand">PIESSANG</div>
         <p class="muted">${esc(context.region)}</p>
       </div>
       <div class="title">Marketplace Service Structure</div>
@@ -161,8 +161,8 @@ function buildMarketplaceHtml(context) {
     <div class="hero">
       <h2>One Platform. One Invoice. All Your Suppliers.</h2>
       <p>
-        Bevgo Marketplace connects suppliers to active hospitality and residential demand.
-        Bevgo captures customer orders, consolidates basket demand, and executes fulfillment.
+        Piessang Marketplace connects suppliers to active hospitality and residential demand.
+        Piessang captures customer orders, consolidates basket demand, and executes fulfillment.
       </p>
     </div>
 
@@ -170,14 +170,14 @@ function buildMarketplaceHtml(context) {
     <div class="grid">
       <div class="card">
         <div class="tag">Option A</div>
-        <h3>Option A: Marketplace Sales + Bevgo Delivery</h3>
+        <h3>Option A: Marketplace Sales + Piessang Delivery</h3>
         <div class="rate">15% on all sales</div>
         <div class="subhead">How It Works</div>
         <ul class="bullets">
-          <li>Products listed on Bevgo marketplace</li>
-          <li>Orders captured through Bevgo channels</li>
+          <li>Products listed on Piessang marketplace</li>
+          <li>Orders captured through Piessang channels</li>
           <li>Supplier handles stock and prep</li>
-          <li>Bevgo handles final delivery to customer</li>
+          <li>Piessang handles final delivery to customer</li>
         </ul>
         <div class="subhead">Notes</div>
         <ul class="bullets">
@@ -186,13 +186,13 @@ function buildMarketplaceHtml(context) {
       </div>
       <div class="card">
         <div class="tag">Option B</div>
-        <h3>Option B: List on Bevgo + Store in Bevgo Warehouse</h3>
+        <h3>Option B: List on Piessang + Store in Piessang Warehouse</h3>
         <div class="rate">12% on all sales</div>
         <div class="subhead">How It Works</div>
         <ul class="bullets">
           <li>Marketplace listing + order capture</li>
-          <li>Inventory warehoused in Bevgo facility</li>
-          <li>Bevgo handles pick, pack, dispatch</li>
+          <li>Inventory warehoused in Piessang facility</li>
+          <li>Piessang handles pick, pack, dispatch</li>
         </ul>
         <div class="subhead">Storage</div>
         <ul class="bullets">
@@ -202,7 +202,7 @@ function buildMarketplaceHtml(context) {
       <div class="card dark">
         <div class="tag">Option C (Preferred)</div>
         <h3>Option C: Marketplace + Warehouse + Full 3PL Logistics</h3>
-        <div class="rate">10% on Bevgo sales</div>
+        <div class="rate">10% on Piessang sales</div>
         <div class="subhead">How It Works</div>
         <ul class="bullets">
           <li>Best for scale and operational outsourcing</li>
@@ -242,7 +242,7 @@ function buildMarketplaceHtml(context) {
         <tr>
           <td>3</td>
           <td>Marketplace Option C</td>
-          <td>10% on Bevgo sales + custom 3PL handling rates.</td>
+          <td>10% on Piessang sales + custom 3PL handling rates.</td>
         </tr>
       </tbody>
     </table>
@@ -261,13 +261,13 @@ function buildThreePlHtml(context) {
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Bevgo Pure 3PL Service</title>
+    <title>Piessang Pure 3PL Service</title>
     <style>${sharedStyles()}</style>
   </head>
   <body>
     <div class="header">
       <div>
-        <div class="brand">BEVGO DISTRIBUTIONS</div>
+        <div class="brand">PIESSANG</div>
         <p class="muted">${esc(context.region)}</p>
       </div>
       <div class="title">Pure 3PL Fulfillment Service</div>
@@ -277,7 +277,7 @@ function buildThreePlHtml(context) {
       <h2>Pure 3PL Fulfillment Service.</h2>
       <p>
         Independent from marketplace demand. Clients keep their own sales channels,
-        while Bevgo executes storage, pick-pack, dispatch, and delivery.
+        while Piessang executes storage, pick-pack, dispatch, and delivery.
       </p>
     </div>
 
@@ -374,7 +374,7 @@ async function buildResponse(body = {}) {
   const now = new Date().toISOString();
   const context = {
     generatedAt: now,
-    companyEmail: body?.companyEmail || "info@bevgo.co.za",
+    companyEmail: body?.companyEmail || "support@piessang.com",
     companyPhone: body?.companyPhone || "021 818 6153",
     region: body?.region || "Western Cape, South Africa"
   };
@@ -384,8 +384,8 @@ async function buildResponse(body = {}) {
   const threePlHtml = buildThreePlHtml(context);
 
   const [marketplacePdfUrl, threePlPdfUrl] = await Promise.all([
-    renderPdf(marketplaceHtml, `bevgo-marketplace-service-${ts}`),
-    renderPdf(threePlHtml, `bevgo-3pl-service-${ts}`)
+    renderPdf(marketplaceHtml, `piessang-marketplace-service-${ts}`),
+    renderPdf(threePlHtml, `piessang-3pl-service-${ts}`)
   ]);
 
   return {

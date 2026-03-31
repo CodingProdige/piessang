@@ -165,14 +165,14 @@ export async function POST(req){
       return err(
         400,
         "Missing Logistics",
-        "Weight, dimensions, stock and monthly sales estimates are required for Bevgo fulfilment variants."
+        "Weight, dimensions, stock and monthly sales estimates are required for Piessang fulfilment variants."
       );
     }
     if (requiresLogistics && inventoryRows.length === 0) {
       return err(
         400,
         "Missing Stock",
-        "Bevgo fulfilment variants require stock quantities."
+        "Piessang fulfilment variants require stock quantities."
       );
     }
 
@@ -318,7 +318,7 @@ export async function POST(req){
           type: "seller-low-stock",
           to: recipients,
           data: {
-            vendorName: current?.product?.vendorName || current?.seller?.vendorName || "Bevgo seller",
+            vendorName: current?.product?.vendorName || current?.seller?.vendorName || "Piessang seller",
             productTitle: current?.product?.title || "your product",
             variantLabel: variant.label || "variant",
             currentStock: String(stockTotal),

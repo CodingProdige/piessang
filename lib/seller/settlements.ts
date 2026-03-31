@@ -689,8 +689,31 @@ export async function releaseSellerSettlement({
   if (!settlement) {
     throw new Error("Seller settlement not found.");
   }
-  if (!["ready_for_payout", "pending_submission", "submitted"].includes(toStr(settlement?.status || "").toLowerCase())) {
+  const settlementStatus = toStr(settlement?.status || "").toLowerCase();
+  const payoutStatus = toStr(settlement?.payout?.status || "").toLowerCase();
+  const batchStatus = toStr(settlement?.payout?.batchStatus || "").toLowerCase();
+  const holdReason = toStr(settlement?.payout?.hold_reason || "");
+  const deliveredAt = parseDate(settlement?.payout?.delivered_at);
+  const eligibleAt = parseDate(settlement?.payout?.eligible_at);
+  const payoutProfileReady = settlement?.payout?.bank_profile?.ready === true;
+
+  if (!["ready_for_payout", "processing_payout", "pending_submission", "submitted"].includes(settlementStatus)) {
     throw new Error("This settlement is not ready to be released.");
+  }
+  if (!["ready_for_payout", "pending_submission", "submitted", "paid"].includes(payoutStatus) && !["pending_submission", "submitted", "in_transit"].includes(batchStatus)) {
+    throw new Error("This settlement has not reached a payable payout state.");
+  }
+  if (!deliveredAt) {
+    throw new Error("This settlement cannot be released before the order is marked delivered.");
+  }
+  if (!eligibleAt || eligibleAt.getTime() > Date.now()) {
+    throw new Error("This settlement cannot be released before the payout hold window closes.");
+  }
+  if (!payoutProfileReady) {
+    throw new Error("This settlement cannot be released until payout details are complete.");
+  }
+  if (holdReason && holdReason !== "none") {
+    throw new Error("This settlement is still on hold and cannot be released.");
   }
 
   const releasedIncl = r2(amountIncl ?? settlement?.payout?.net_due_incl ?? 0);

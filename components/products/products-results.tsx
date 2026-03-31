@@ -150,10 +150,17 @@ type ProductItem = {
       count?: number;
     };
     has_sale_variant?: boolean;
+    is_new_arrival?: boolean;
     is_favorite?: boolean;
     has_in_stock_variants?: boolean;
     is_eligible_by_variant_availability?: boolean;
     is_unavailable_for_listing?: boolean;
+  };
+  ad?: {
+    sponsored?: boolean;
+    campaignId?: string | null;
+    placement?: string | null;
+    label?: string | null;
   };
 };
 
@@ -216,6 +223,14 @@ function FlameIcon() {
   );
 }
 
+function SparkIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current">
+      <path d="M10 1.5c.4 0 .7.2.9.6l1.5 3.6 3.9.3c.4 0 .8.3.9.7.1.4 0 .8-.4 1.1l-3 2.6.9 3.8c.1.4-.1.8-.4 1.1-.3.2-.8.3-1.2 0L10 13.4l-3.3 1.9c-.4.2-.8.2-1.2 0-.3-.3-.5-.7-.4-1.1l.9-3.8-3-2.6c-.3-.3-.5-.7-.4-1.1.1-.4.5-.7.9-.7l3.9-.3 1.5-3.6c.2-.4.5-.6.9-.6Z" />
+    </svg>
+  );
+}
+
 function buildHref(
   pathname: string,
   searchParams: URLSearchParams,
@@ -228,6 +243,44 @@ function buildHref(
   }
   const query = params.toString();
   return query ? `${pathname}?${query}` : pathname;
+}
+
+function buildProductsApiUrl(searchParams: URLSearchParams) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of searchParams.entries()) {
+    if (!value) continue;
+    if (key === "unique_id") {
+      params.set("id", value);
+    } else if (key === "vendor") {
+      params.set("sellerSlug", value);
+      params.set("vendor", value);
+    } else {
+      params.set(key, value);
+    }
+  }
+
+  if (!params.has("isActive")) {
+    params.set("isActive", "true");
+  }
+
+  return `/api/catalogue/v1/products/product/get?${params.toString()}`;
+}
+
+function getCampaignSessionId(uid?: string | null) {
+  if (typeof window === "undefined") return "";
+  const normalizedUid = typeof uid === "string" ? uid.trim() : "";
+  const key = normalizedUid
+    ? `piessang_campaign_session_id:${normalizedUid}`
+    : "piessang_campaign_session_id";
+  const storage = normalizedUid ? window.localStorage : window.sessionStorage;
+  let sessionId = storage.getItem(key);
+  if (!sessionId) {
+    const prefix = normalizedUid ? `campaign:user:${normalizedUid}` : "campaign:anon";
+    sessionId = `${prefix}:${Math.random().toString(36).slice(2)}:${Date.now().toString(36)}`;
+    storage.setItem(key, sessionId);
+  }
+  return sessionId;
 }
 
 function splitCurrencyParts(formattedValue?: string | null) {
@@ -589,7 +642,7 @@ function CartDrawer({
               View cart
             </Link>
             <Link
-              href="/cart?step=checkout"
+              href="/checkout"
               className="inline-flex h-11 flex-1 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-white"
               onClick={onClose}
             >
@@ -886,8 +939,9 @@ function ProductCard({
   );
   const soldCountLabel = formatSoldCount(totalUnitsSold);
   const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
+  const isNewArrival = item.data?.is_new_arrival === true;
+  const isSponsored = item.ad?.sponsored === true;
   const deliveryPromise = getDeliveryPromise(item, shopperArea);
-  const deliveryMessage = getSellerDeliveryMessage(item, shopperArea);
   const href = getProductHref(item);
   const linkTarget = openInNewTab ? "_blank" : undefined;
   const linkRel = openInNewTab ? "noreferrer noopener" : undefined;
@@ -998,6 +1052,26 @@ function ProductCard({
     }
   };
   const openProduct = () => {
+    if (isSponsored && item.ad?.campaignId && productUniqueId) {
+      const payload = JSON.stringify({
+        action: "click",
+        campaignId: item.ad.campaignId,
+        productId: productUniqueId,
+        placement: item.ad.placement || "category_grid",
+        sessionId: getCampaignSessionId(uid),
+        userId: uid || null,
+      });
+      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        navigator.sendBeacon("/api/client/v1/campaigns/track", new Blob([payload], { type: "application/json" }));
+      } else {
+        void fetch("/api/client/v1/campaigns/track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          keepalive: true,
+        }).catch(() => null);
+      }
+    }
     if (openInNewTab) {
       window.open(href, "_blank", "noreferrer,noopener");
       return;
@@ -1038,6 +1112,17 @@ function ProductCard({
           {salePercent}% off
         </span>
       ) : null}
+      {isSponsored ? (
+        <span className="absolute right-10 top-2 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
+          {item.ad?.label || "Sponsored"}
+        </span>
+      ) : null}
+      {isNewArrival ? (
+        <span className="absolute left-2 top-10 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
+          <SparkIcon />
+          New
+        </span>
+      ) : null}
       <button
         type="button"
         data-ignore-card-open="true"
@@ -1059,6 +1144,27 @@ function ProductCard({
     </>
   );
   const reviewStars = reviewMeta ? Math.max(0, Math.min(5, Math.round(reviewMeta.average))) : 0;
+
+  useEffect(() => {
+    if (!isSponsored || !item.ad?.campaignId || !productUniqueId) return;
+    const sessionId = getCampaignSessionId(uid);
+    const storageKey = `piessang_campaign_impression:${item.ad.campaignId}:${productUniqueId}:${item.ad.placement || "category_grid"}`;
+    if (window.sessionStorage.getItem(storageKey)) return;
+    window.sessionStorage.setItem(storageKey, "1");
+    void fetch("/api/client/v1/campaigns/track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "impression",
+        campaignId: item.ad.campaignId,
+        productId: productUniqueId,
+        placement: item.ad.placement || "category_grid",
+        sessionId,
+        userId: uid || null,
+      }),
+      keepalive: true,
+    }).catch(() => null);
+  }, [isSponsored, item.ad?.campaignId, item.ad?.placement, productUniqueId, uid]);
 
   if (view === "list") {
     return (
@@ -1182,25 +1288,14 @@ function ProductCard({
               {deliveryPromise.cutoffText ? <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span> : null}
             </div>
           ) : null}
-          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
-            {soldCountLabel ? (
+          {soldCountLabel ? (
+            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
               <span className={showHotSales ? "inline-flex items-center gap-1 text-[#f97316]" : "text-[#57636c]"}>
                 {showHotSales ? <FlameIcon /> : null}
                 {soldCountLabel}
               </span>
-            ) : null}
-            <span
-              className={
-                deliveryMessage.tone === "danger"
-                  ? "rounded-full bg-[#fff1f2] px-2.5 py-1 text-[#b91c1c]"
-                  : deliveryMessage.tone === "success"
-                    ? "rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]"
-                    : "rounded-full bg-[#f3f4f6] px-2.5 py-1 text-[#57636c]"
-              }
-            >
-              {deliveryMessage.label}
-            </span>
-          </div>
+            </div>
+          ) : null}
 
           <div className="flex flex-wrap items-end gap-3 pt-0.5">
             {salePrice ? (
@@ -1374,25 +1469,14 @@ function ProductCard({
               <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span>
             </div>
           ) : null}
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
-            {soldCountLabel ? (
+          {soldCountLabel ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
               <span className={showHotSales ? "inline-flex items-center gap-1 text-[#f97316]" : "text-[#57636c]"}>
                 {showHotSales ? <FlameIcon /> : null}
                 {soldCountLabel}
               </span>
-            ) : null}
-            <span
-              className={
-                deliveryMessage.tone === "danger"
-                  ? "rounded-full bg-[#fff1f2] px-2.5 py-1 text-[#b91c1c]"
-                  : deliveryMessage.tone === "success"
-                    ? "rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]"
-                    : "rounded-full bg-[#f3f4f6] px-2.5 py-1 text-[#57636c]"
-              }
-            >
-              {deliveryMessage.label}
-            </span>
-          </div>
+            </div>
+          ) : null}
 
           {salePrice ? (
             <div className="flex flex-wrap items-end gap-2 pt-0.5">
@@ -1446,6 +1530,8 @@ export function ProductsResults({
   openInNewTab,
   searchParams,
   totalCount,
+  sponsoredPlacement,
+  sponsoredContext,
 }: {
   initialItems: ProductItem[];
   currentSort: string;
@@ -1453,8 +1539,11 @@ export function ProductsResults({
   openInNewTab: boolean;
   searchParams: Record<string, SearchParamValue>;
   totalCount: number;
+  sponsoredPlacement?: string;
+  sponsoredContext?: { category?: string; subCategory?: string; search?: string };
 }) {
   const [items, setItems] = useState(initialItems);
+  const [sponsoredItems, setSponsoredItems] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [priceRange, setPriceRange] = useState<{ min: number; max: number } | null>(null);
@@ -1486,6 +1575,46 @@ export function ProductsResults({
   }, [initialItems]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function loadSponsoredItems() {
+      if (!sponsoredPlacement || !items.length) {
+        setSponsoredItems([]);
+        return;
+      }
+
+      try {
+        const response = await fetch("/api/client/v1/campaigns/serve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            placement: sponsoredPlacement,
+            items,
+            context: sponsoredContext ?? {},
+            limit: 2,
+            sessionId: getCampaignSessionId(uid),
+            userId: uid || null,
+          }),
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (cancelled || !response.ok || payload?.ok === false) return;
+        setSponsoredItems(Array.isArray(payload?.data?.items) ? payload.data.items : []);
+      } catch {
+        if (!cancelled) {
+          setSponsoredItems([]);
+        }
+      }
+    }
+
+    void loadSponsoredItems();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [items, sponsoredContext, sponsoredPlacement]);
+
+  useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{ min?: number; max?: number }>).detail;
       if (
@@ -1506,7 +1635,25 @@ export function ProductsResults({
     () => filterByPriceRange(filterByMinRating(items, minRating), priceRange?.min, priceRange?.max),
     [items, minRating, priceRange?.min, priceRange?.max],
   );
-  const sortedItems = useMemo(() => sortProducts(filteredItems, currentSort), [filteredItems, currentSort]);
+  const displayItems = useMemo(() => {
+    if (!filteredItems.length || !sponsoredItems.length || !sponsoredPlacement) return filteredItems;
+    const sponsoredIds = new Set(
+      sponsoredItems
+        .map((item) => String(item?.id ?? item?.data?.docId ?? item?.data?.product?.unique_id ?? "").trim())
+        .filter(Boolean),
+    );
+    const organic = filteredItems.filter(
+      (item) => !sponsoredIds.has(String(item?.id ?? item?.data?.docId ?? item?.data?.product?.unique_id ?? "").trim()),
+    );
+    const next = [...organic];
+    const slots = sponsoredPlacement === "search_results" ? [1, 6] : [3, 10];
+    sponsoredItems.forEach((item, index) => {
+      const slot = Math.min(slots[index] ?? next.length, next.length);
+      next.splice(slot, 0, item);
+    });
+    return next;
+  }, [filteredItems, sponsoredItems, sponsoredPlacement]);
+  const sortedItems = useMemo(() => sortProducts(displayItems, currentSort), [displayItems, currentSort]);
   const clearCatalogFilters = {
     id: undefined,
     unique_id: undefined,
@@ -1595,7 +1742,7 @@ export function ProductsResults({
         params.set("isActive", "true");
       }
 
-      const response = await fetch(`/api/catalogue/products?${params.toString()}`);
+      const response = await fetch(buildProductsApiUrl(params));
       const payload = (await response.json()) as { items?: ProductItem[]; groups?: Array<{ items?: ProductItem[] }>; count?: number; total?: number };
       const raw = payload.items ?? payload.groups?.flatMap((group) => group.items ?? []) ?? [];
       const merged = new Map<string, ProductItem>();

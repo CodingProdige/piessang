@@ -120,7 +120,7 @@ export async function POST(req) {
       "billing.state": billing.state || "WC",
       "billing.street1": billing.street1 || "Test Street",
 
-      "customer.email": payload.email || "unknown@bevgo.co.za",
+      "customer.email": payload.email || "unknown@piessang.com",
       "customer.ip": payload.ip || "127.0.0.1",
       "customer.givenName": holder?.split(" ")[0] || "Unknown",
       "customer.surname": holder?.split(" ")[1] || "User",
@@ -158,7 +158,7 @@ export async function POST(req) {
       body.merchantTransactionId || `CARD-SAVE-${userId}-${Date.now()}`;
 
     // ----------------------
-    // 3️⃣ Build Bevgo Saved Card Object (canonical)
+    // 3️⃣ Build Piessang saved card object (canonical)
     // ----------------------
     const cardId = uid();
     const timestamp = now();

@@ -30,7 +30,7 @@ export const SELLER_BLOCK_REASONS: SellerBlockReasonOption[] = [
   {
     value: "policy_issue",
     label: "Policy or content issue",
-    fix: "Update the affected content so it meets Bevgo marketplace requirements.",
+    fix: "Update the affected content so it meets Piessang marketplace requirements.",
   },
   {
     value: "duplicate_account",

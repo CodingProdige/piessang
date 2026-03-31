@@ -64,7 +64,7 @@ export default function SellOnPiessangPage() {
             <div className="mt-6 flex flex-wrap gap-3">
               <RegisterSellerButton
                 label="Register as seller"
-                className="inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+                className="brand-button inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
               />
               <Link
                 href="/products"
@@ -152,7 +152,7 @@ export default function SellOnPiessangPage() {
           <div className="mt-5 flex flex-wrap gap-3">
             <RegisterSellerButton
               label="Register as seller"
-              className="inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+              className="brand-button inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
             />
             <Link
               href="/account"

@@ -67,7 +67,7 @@ export async function POST(req){
           type: "seller-low-stock",
           to: recipients,
           data: {
-            vendorName: productSnapshot?.product?.vendorName || productSnapshot?.seller?.vendorName || "Bevgo seller",
+            vendorName: productSnapshot?.product?.vendorName || productSnapshot?.seller?.vendorName || "Piessang seller",
             productTitle: productSnapshot?.product?.title || "your product",
             variantLabel: wh || "inventory",
             currentStock: String(stockTotal),

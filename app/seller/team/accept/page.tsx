@@ -58,7 +58,7 @@ function SellerTeamAcceptContent() {
           <button
             type="button"
             onClick={() => openAuthModal("Sign in to accept your seller team invite.")}
-            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+            className="brand-button mt-5 inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
           >
             Sign in to continue
           </button>

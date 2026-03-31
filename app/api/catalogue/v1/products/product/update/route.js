@@ -268,11 +268,11 @@ function buildStatusNextStep(status, fulfillmentMode, reason) {
   const normalized = toStr(status).toLowerCase();
   if (normalized === "awaiting_stock") {
     return fulfillmentMode === "bevgo"
-      ? "Your listing has been approved. Please send stock to Bevgo so we can book it in and publish the product."
+      ? "Your listing has been approved. Please send stock to Piessang so we can book it in and publish the product."
       : "Your listing is approved and waiting for fulfilment updates.";
   }
   if (normalized === "published") {
-    return "Your product is now live and visible on the Bevgo store.";
+    return "Your product is now live and visible on the Piessang store.";
   }
   if (normalized === "rejected") {
     return reason
@@ -280,7 +280,7 @@ function buildStatusNextStep(status, fulfillmentMode, reason) {
       : "Your listing was rejected. Please update the draft and resubmit.";
   }
   if (normalized === "in_review") {
-    return "Your listing is now with the Bevgo review team.";
+    return "Your listing is now with the Piessang review team.";
   }
   return "Your product status has been updated.";
 }
@@ -289,7 +289,7 @@ function buildProductStatusNextStep(status, fulfillmentMode, reason, { isLiveUpd
   const normalized = toStr(status).toLowerCase();
   if (normalized === "awaiting_stock") {
     return isLiveUpdate
-      ? "Your latest product changes have been approved. Please send any required stock updates to Bevgo so the approved update can go live."
+      ? "Your latest product changes have been approved. Please send any required stock updates to Piessang so the approved update can go live."
       : buildStatusNextStep(status, fulfillmentMode, reason);
   }
   if (normalized === "published") {
@@ -685,6 +685,18 @@ export async function POST(req){
       updated?.placement?.isActive === true;
 
     if (becamePublished) {
+      const currentFirstPublishedAt = current?.marketplace?.firstPublishedAt ?? updated?.marketplace?.firstPublishedAt ?? null;
+      if (!currentFirstPublishedAt) {
+        await ref.set(
+          {
+            marketplace: {
+              ...(updated?.marketplace || {}),
+              firstPublishedAt: new Date().toISOString(),
+            },
+          },
+          { merge: true },
+        );
+      }
       const pendingSaleRefreshes = Array.isArray(current?.meta?.pendingSaleRefreshes)
         ? current.meta.pendingSaleRefreshes
         : [];
@@ -766,7 +778,7 @@ export async function POST(req){
                           ? "Product update submitted"
                           : "Product status update",
               isLiveUpdate: wasLiveUpdate,
-              fulfillmentLabel: fulfillmentModeForEmail === "bevgo" ? "Bevgo fulfils" : "Seller fulfils",
+              fulfillmentLabel: fulfillmentModeForEmail === "bevgo" ? "Piessang fulfils" : "Seller fulfils",
               reason: next.moderation.status === "rejected" ? reason : "",
               nextStep: buildProductStatusNextStep(next.moderation.status, fulfillmentModeForEmail, reason, {
                 isLiveUpdate: wasLiveUpdate,

@@ -167,7 +167,7 @@ export async function POST(req) {
             type: "seller-account-blocked",
             to: recipients,
             data: {
-              vendorName: seller?.vendorName || seller?.groupVendorName || owner.data?.seller?.vendorName || "Bevgo seller",
+              vendorName: seller?.vendorName || seller?.groupVendorName || owner.data?.seller?.vendorName || "Piessang seller",
               reasonLabel: getSellerBlockReasonLabel(reasonCode),
               reasonMessage,
               fixHint: getSellerBlockReasonFix(reasonCode),
@@ -181,9 +181,9 @@ export async function POST(req) {
       const internalEmailPromise = sendSellerNotificationEmails({
         origin,
         type: "seller-account-blocked-internal",
-        to: ["info@bevgo.co.za"],
+        to: ["support@piessang.com"],
         data: {
-          vendorName: seller?.vendorName || owner.data?.seller?.vendorName || "Bevgo seller",
+          vendorName: seller?.vendorName || owner.data?.seller?.vendorName || "Piessang seller",
           sellerSlug,
           blockedBy,
           blockedByEmail: requester?.email || requester?.seller?.contactEmail || "",

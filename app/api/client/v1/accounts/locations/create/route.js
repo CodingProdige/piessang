@@ -68,6 +68,7 @@ export async function POST(req) {
       stateProvinceRegion: location.stateProvinceRegion || "",
       postalCode: location.postalCode || "",
       country: location.country || "",
+      phoneCountryCode: location.phoneCountryCode || "27",
       phoneNumber: location.phoneNumber || "",
       latitude: typeof location.latitude === "number" ? location.latitude : null,
       longitude: typeof location.longitude === "number" ? location.longitude : null,

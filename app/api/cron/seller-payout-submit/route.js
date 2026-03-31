@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
-import { submitPendingPeachPayoutBatches } from "@/lib/seller/payout-provider";
+import { submitPendingStripePayoutBatches } from "@/lib/seller/payout-provider";
 
 const ok = (data = {}, status = 200) => NextResponse.json({ ok: true, data }, { status });
 const err = (status, title, message, extra = {}) =>
@@ -21,7 +21,7 @@ export async function GET(req) {
       return err(401, "Unauthorized", "Invalid cron authorization.");
     }
 
-    const result = await submitPendingPeachPayoutBatches();
+    const result = await submitPendingStripePayoutBatches();
     return ok(result);
   } catch (e) {
     console.error("cron seller payout submit failed:", e);
@@ -30,4 +30,3 @@ export async function GET(req) {
     });
   }
 }
-

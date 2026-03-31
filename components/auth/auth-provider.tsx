@@ -27,6 +27,7 @@ import {
   hasSellerTeamMemberships,
   ownsSellerAccount,
 } from "@/lib/seller/access";
+import { SUPPORTED_PAYOUT_COUNTRIES } from "@/lib/seller/payout-config";
 import { SELLER_SERVICE_AREAS } from "@/lib/seller/service-areas";
 import { getSellerReviewRequest } from "@/lib/seller/account-status";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
@@ -153,6 +154,7 @@ type SellerRegistrationState = {
   contactEmail: string;
   countryCode: string;
   contactPhone: string;
+  sellerCountry: string;
   baseLocation: string;
   category: string;
   subCategory: string;
@@ -218,7 +220,7 @@ function sanitizeEmailInput(value: string) {
 }
 
 function sanitizeDigits(value: string) {
-  return String(value ?? "").replace(/\D+/g, "").slice(0, 9);
+  return String(value ?? "").replace(/\D+/g, "").slice(0, 15);
 }
 
 function sanitizeText(value: string) {
@@ -240,6 +242,7 @@ function buildSellerRegistrationDefaults(profile: AuthProfile | null): SellerReg
     contactEmail: profile?.email ?? "",
     countryCode: "27",
     contactPhone: "",
+    sellerCountry: "ZA",
     baseLocation: SELLER_SERVICE_AREAS[0],
     category: "",
     subCategory: "",
@@ -661,6 +664,7 @@ export function AuthProvider({
       contactEmail: profile?.email ?? clientAuth.currentUser?.email ?? "",
       countryCode: "27",
       contactPhone: "",
+      sellerCountry: "ZA",
       baseLocation: SELLER_SERVICE_AREAS[0],
       category: "",
       subCategory: "",
@@ -699,6 +703,15 @@ export function AuthProvider({
   const handleSignOut = useCallback(async () => {
     setBusy(true);
     try {
+      const pushToken = typeof window !== "undefined" ? window.localStorage.getItem("piessang_push_token") : null;
+      if (pushToken) {
+        await fetch("/api/client/v1/notifications/push/tokens/unregister", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: pushToken }),
+        }).catch(() => null);
+        window.localStorage.removeItem("piessang_push_token");
+      }
       await signOut(clientAuth);
       await syncServerSession(null);
       setProfile(null);
@@ -763,6 +776,7 @@ export function AuthProvider({
     const contactEmail = sanitizeEmail(sellerModal.contactEmail);
     const countryCode = sanitizeDigits(sellerModal.countryCode);
     const contactPhone = sanitizeDigits(sellerModal.contactPhone);
+    const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
     const baseLocation = sanitizeText(sellerModal.baseLocation);
     const subCategory = sanitizeText(sellerModal.subCategory);
 
@@ -771,7 +785,8 @@ export function AuthProvider({
       contactEmail &&
       contactEmail.includes("@") &&
       countryCode &&
-      contactPhone.length === 9 &&
+      contactPhone.length >= 6 &&
+      sellerCountry &&
       baseLocation;
 
     const subCategoryValid =
@@ -848,6 +863,7 @@ export function AuthProvider({
       const contactEmail = sanitizeEmail(sellerModal.contactEmail);
       const countryCode = sanitizeDigits(sellerModal.countryCode) || "27";
       const contactPhone = sanitizeDigits(sellerModal.contactPhone);
+      const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
       const baseLocation = sanitizeText(sellerModal.baseLocation);
       const category = sanitizeText(sellerModal.category);
       const subCategory = sanitizeText(sellerModal.subCategory);
@@ -860,7 +876,8 @@ export function AuthProvider({
       if (!vendorName) throw new Error("Vendor name is required.");
       if (!contactEmail || !contactEmail.includes("@")) throw new Error("A valid contact email is required.");
       if (!countryCode) throw new Error("Country code is required.");
-      if (contactPhone.length !== 9) throw new Error("Please enter a 9 digit South African phone number.");
+      if (contactPhone.length < 6) throw new Error("Please enter a valid contact phone number.");
+      if (!sellerCountry) throw new Error("Please choose the country you plan on selling from.");
       if (!baseLocation) throw new Error("Base location is required.");
       if (category && subCategory && !sellerSubCategories.some((item) => item.slug === subCategory)) {
         throw new Error("Please choose a valid sub category.");
@@ -906,6 +923,7 @@ export function AuthProvider({
               contactEmail,
               countryCode,
               phoneNumber: contactPhone,
+              sellerCountry,
               baseLocation,
               category: category || "",
               subCategory: category ? subCategory || "" : "",
@@ -1188,47 +1206,54 @@ export function AuthProvider({
                 }}
               >
                 {mode === "sign-up" ? (
-                  <label className="block">
-                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                  <div className="block">
+                    <label htmlFor="auth-display-name" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                       Display name <span className="text-[#d11c1c]">*</span>
-                    </span>
+                    </label>
                     <input
+                      id="auth-display-name"
                       required
                       value={displayName}
                       onChange={(event) => setDisplayName(event.target.value)}
                       className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
                       placeholder="Your name"
                     />
-                  </label>
+                  </div>
                 ) : null}
 
-                <label className="block">
-                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                <div className="block">
+                  <label htmlFor="auth-email" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                     Email address <span className="text-[#d11c1c]">*</span>
-                  </span>
+                  </label>
                   <input
+                    id="auth-email"
                     type="email"
                     autoComplete="email"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     value={email}
                     onChange={(event) => setEmail(event.target.value.replace(/\s+/g, ""))}
                     className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
                     placeholder="you@example.com"
                   />
-                </label>
+                </div>
 
-                <label className="block">
-                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                <div className="block">
+                  <label htmlFor="auth-password" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                     Password <span className="text-[#d11c1c]">*</span>
-                  </span>
+                  </label>
                   <input
+                    id="auth-password"
                     type="password"
                     autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
+                    data-lpignore="true"
+                    data-1p-ignore="true"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
                     placeholder="••••••••"
                   />
-                </label>
+                </div>
 
                 {authMessage ? (
                   <div className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
@@ -1473,8 +1498,7 @@ export function AuthProvider({
                   <div className="mt-5 rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-3">
                     <p className="text-[12px] font-semibold text-[#202020]">Only your seller details are required.</p>
                     <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
-                      Email addresses are saved without spaces. Phone numbers must be 9 South African digits.
-                      Category and sub category are optional.
+                      Email addresses are saved without spaces. Choose the country you plan on selling from so Piessang can match you to supported payout countries. Category and sub category are optional.
                     </p>
                   </div>
 
@@ -1617,6 +1641,29 @@ export function AuthProvider({
                         />
                       </label>
                     </div>
+
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                        Selling country <span className="text-[#d11c1c]">*</span>
+                      </span>
+                      <select
+                        required
+                        value={sellerModal.sellerCountry}
+                        onChange={(event) =>
+                          setSellerModal((current) => ({ ...current, sellerCountry: event.target.value }))
+                        }
+                        className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
+                      >
+                        {SUPPORTED_PAYOUT_COUNTRIES.map((country) => (
+                          <option key={country.code} value={country.code}>
+                            {country.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                        You can only register seller countries supported by our automated payout system.
+                      </p>
+                    </label>
 
                     <label className="block">
                       <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">

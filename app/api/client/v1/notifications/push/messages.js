@@ -1,6 +1,6 @@
 export const pushTemplates = {
   "welcome": {
-    title: "Welcome to Bevgo!",
+    title: "Welcome to Piessang!",
     body: "Thank you for completing your onboarding.",
     link: "bevgo://home"
   },
@@ -25,7 +25,7 @@ export const pushTemplates = {
 
   "order-delivered": {
     title: "Delivery Complete 🎉",
-    body: "Thanks for ordering with Bevgo! Your delivery has been completed.",
+    body: "Thanks for ordering with Piessang! Your delivery has been completed.",
     link: "bevgo://orders"
   },
 

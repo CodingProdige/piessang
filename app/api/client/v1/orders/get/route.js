@@ -524,7 +524,16 @@ export async function POST(req) {
       pageOrders.push(withCancelFlag(hydrated));
     }
 
-    const fullSnap = await getDocs(baseQuery);
+    let fullQuery = baseRef;
+    for (const clause of baseQuery.clauses) {
+      if (clause.field && clause.direction) {
+        fullQuery = fullQuery.orderBy(clause.field, clause.direction);
+      } else if (clause.op) {
+        fullQuery = fullQuery.where(clause.field, clause.op, clause.value);
+      }
+    }
+
+    const fullSnap = await fullQuery.get();
     const filtered = fullSnap.docs.map(doc => ({
       docId: doc.id,
       ...doc.data()

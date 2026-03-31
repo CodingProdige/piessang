@@ -74,6 +74,8 @@ export async function POST(req) {
 
     const order = snap.data();
     const paid = order?.payment?.status === "paid";
+    const createIntentKey =
+      typeof order?.meta?.createIntentKey === "string" ? order.meta.createIntentKey.trim() : "";
 
     if (paid && !force) {
       return err(
@@ -89,6 +91,10 @@ export async function POST(req) {
     }
 
     await ref.delete();
+
+    if (createIntentKey) {
+      await db.collection("idempotency_order_create_v2").doc(createIntentKey).delete().catch(() => null);
+    }
 
     return ok({
       orderId: snap.id,

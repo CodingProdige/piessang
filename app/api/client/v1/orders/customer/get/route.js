@@ -1,11 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import {
-  collection,
-  getDocs
-} from "firebase/firestore";
-import { db } from "@/lib/firebaseConfig";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { buildOrderDeliveryProgress } from "@/lib/orders/fulfillment-progress";
 
 /* ───────── HELPERS ───────── */
@@ -529,6 +525,11 @@ function baseChartOptions() {
 
 export async function POST(req) {
   try {
+    const db = getAdminDb();
+    if (!db) {
+      return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
+    }
+
     const body = await req.json().catch(() => ({}));
     const {
       customerCode: rawCustomerCode,
@@ -549,7 +550,7 @@ export async function POST(req) {
       return err(400, "Missing Parameters", "customerCode or userId is required.");
     }
 
-    const orderSnap = await getDocs(collection(db, "orders_v2"));
+    const orderSnap = await db.collection("orders_v2").get();
     const orders = orderSnap.docs.map(doc =>
       withDeliveryProgress(
         withIndexedPaymentHistory(

@@ -23,10 +23,10 @@ const HOST = "oppwa.com";
 const ENTITY_ID = process.env.PEACH_S2S_ENTITY_ID;
 const ACCESS_TOKEN = process.env.PEACH_S2S_ACCESS_TOKEN;
 const DEFAULT_SHOPPER_RESULT_URL =
-  process.env.PEACH_SHOPPER_RESULT_URL || "https://3ds.bevgo.co.za/complete";
+  process.env.PEACH_SHOPPER_RESULT_URL || "https://pay.piessang.com/3ds/complete";
 const BASE_URL = process.env.BASE_URL;
-const LEGACY_PORTAL_HOST = "client-portal.bevgo.co.za";
-const CURRENT_PORTAL_HOST = "marketplace.bevgo.co.za";
+const LEGACY_PORTAL_HOST = "client-portal.piessang.com";
+const CURRENT_PORTAL_HOST = "piessang.com";
 
 function appendQueryParam(rawUrl, key, value) {
   if (!rawUrl) return rawUrl;
@@ -230,7 +230,7 @@ export async function POST(req) {
       "standingInstruction.source": "CIT",
       "standingInstruction.type": "UNSCHEDULED",
 
-      "customer.email": customer?.email || "unknown@bevgo.co.za",
+      "customer.email": customer?.email || "unknown@piessang.com",
       shopperResultUrl: redirectUrl
     };
 

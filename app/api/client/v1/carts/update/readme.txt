@@ -1,11 +1,11 @@
-🛒 Bevgo Cart Update Endpoint — Full Technical README
+🛒 Piessang Cart Update Endpoint — Full Technical README
 
 Endpoint: POST /api/v1/carts/update
 Purpose: Create/update a user’s active cart, apply inventory and sale rules, perform customer-pricing logic, split variant quantities into sale/regular buckets, remove unavailable items, and return a recalculated cart snapshot + totals + warnings.
 
 📌 Overview
 
-This endpoint is the core of Bevgo’s ordering engine.
+This endpoint is the core of Piessang’s ordering engine.
 It performs all cart logic in the backend to ensure:
 
 Correct sale-limit behavior

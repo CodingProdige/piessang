@@ -166,11 +166,11 @@ export async function POST(req) {
           type: "seller-review-response",
           to: recipients,
           data: {
-            vendorName: seller?.vendorName || owner.data?.seller?.vendorName || "Bevgo seller",
+            vendorName: seller?.vendorName || owner.data?.seller?.vendorName || "Piessang seller",
             statusLabel: approved ? "approved" : "rejected",
             feedback,
             nextStep: approved
-              ? "Your seller account is active again. You can continue managing products and orders from Bevgo."
+              ? "Your seller account is active again. You can continue managing products and orders from Piessang."
               : "Please fix the issues listed in the feedback, then request another review from your seller dashboard.",
           },
         });

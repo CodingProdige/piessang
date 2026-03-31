@@ -1,0 +1,5 @@
+<p style="margin:0 0 16px;">Hi <%= customerName || "there" %>,</p>
+<p style="margin:0 0 16px;">We’re still waiting for your reply on this support ticket.</p>
+<p style="margin:0 0 16px;"><strong>Ticket ID:</strong> <%= ticketId %><br /><strong>Subject:</strong> <%= subject %></p>
+<p style="margin:0 0 16px;">If we do not hear back from you, the ticket may close automatically in <%= daysRemaining %> day<%= daysRemaining === 1 ? "" : "s" %>.</p>
+<p style="margin:0;">Reply from your Piessang support area if you still need help.</p>

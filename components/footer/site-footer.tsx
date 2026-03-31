@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
+import { FooterAppActions } from "@/components/pwa/footer-app-actions";
 
 const FOOTER_COLUMNS = [
   {
@@ -55,9 +56,11 @@ export function PiessangFooter() {
                       <Link
                         href={
                           item === "Categories"
-                            ? "/products"
+                            ? "/categories"
                             : item === "Deals"
                               ? "/products?onSale=true"
+                              : item === "New arrivals"
+                                ? "/products?newArrivals=true"
                               : item === "Orders"
                                 ? "/account?section=orders"
                                 : item === "Lists"
@@ -68,6 +71,8 @@ export function PiessangFooter() {
                                       ? "/account"
                                       : item === "Sell on Piessang"
                                         ? "/sell-on-piessang"
+                                        : item === "Contact us"
+                                          ? "/contact"
                                         : item === "Delivery"
                                           ? "/delivery"
                                           : item === "Returns"
@@ -92,8 +97,14 @@ export function PiessangFooter() {
           ))}
         </div>
 
-        <div className="mt-8 flex flex-col items-center gap-3 border-t border-black/5 pt-6 text-center text-[12px] text-[#8b94a3] lg:flex-row lg:items-center lg:justify-between lg:text-left">
-          <p>© {new Date().getFullYear()} Piessang by Bevgo. All rights reserved.</p>
+        <div className="mt-8 border-t border-black/5 pt-5">
+          <div className="w-full">
+            <FooterAppActions />
+          </div>
+        </div>
+
+        <div className="mt-6 flex flex-col items-center gap-3 border-t border-black/5 pt-6 text-center text-[12px] text-[#8b94a3] lg:flex-row lg:items-center lg:justify-between lg:text-left">
+          <p>© {new Date().getFullYear()} Piessang. All rights reserved.</p>
           <div className="flex flex-wrap items-center justify-center gap-3 lg:justify-end">
             <p>Marketplace, simplified.</p>
             <Image

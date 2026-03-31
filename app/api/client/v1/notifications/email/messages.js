@@ -2,20 +2,20 @@ export const emailMessages = {
     "welcome": {
       wrapper: "marketing-wrapper.ejs",
       template: "welcome.ejs",
-      subjectTemplate: "Welcome to Bevgo, <%= firstName %>!"
+      subjectTemplate: "Welcome to Piessang, <%= firstName %>!"
     },
 
     "account-pending": {
         wrapper: "corporate-wrapper.ejs",
         template: "account-pending.ejs",
-        subjectTemplate: "Welcome, <%= companyName %>. Your Bevgo Account is Pending Activation"
+        subjectTemplate: "Welcome, <%= companyName %>. Your Piessang Account is Pending Activation"
     },
 
   
     "credit-approved": {
       wrapper: "corporate-wrapper.ejs",
       template: "credit-approved.ejs",
-      subjectTemplate: "Your Bevgo Credit is Approved — Ref <%= code %>"
+      subjectTemplate: "Your Piessang Credit is Approved — Ref <%= code %>"
     },
   
     "credit-rejected": {
@@ -27,7 +27,7 @@ export const emailMessages = {
     "credit-application-submitted": {
       wrapper: "corporate-wrapper.ejs",
       template: "credit-application-submitted.ejs",
-      subjectTemplate: "Your Bevgo Credit Application Has Been Received"
+      subjectTemplate: "Your Piessang Credit Application Has Been Received"
     },
 
     "credit-application-submitted-admin": {
@@ -39,7 +39,7 @@ export const emailMessages = {
     "seller-registration-success": {
       wrapper: "corporate-wrapper.ejs",
       template: "seller-registration-success.ejs",
-      subjectTemplate: "Welcome to Bevgo Marketplace, <%= vendorName %>!"
+      subjectTemplate: "Welcome to Piessang Marketplace, <%= vendorName %>!"
     },
 
     "seller-registration-internal": {
@@ -51,7 +51,7 @@ export const emailMessages = {
     "seller-account-blocked": {
       wrapper: "corporate-wrapper.ejs",
       template: "seller-account-blocked.ejs",
-      subjectTemplate: "Your Bevgo seller account has been blocked — <%= vendorName %>"
+      subjectTemplate: "Your Piessang seller account has been blocked — <%= vendorName %>"
     },
 
     "seller-account-blocked-internal": {
@@ -75,13 +75,13 @@ export const emailMessages = {
     "seller-team-invite": {
       wrapper: "corporate-wrapper.ejs",
       template: "seller-team-invite.ejs",
-      subjectTemplate: "You have been invited to join <%= vendorName %> on Bevgo"
+      subjectTemplate: "You have been invited to join <%= vendorName %> on Piessang"
     },
 
     "seller-team-access-granted": {
       wrapper: "corporate-wrapper.ejs",
       template: "seller-team-access-granted.ejs",
-      subjectTemplate: "Access granted to <%= vendorName %> on Bevgo"
+      subjectTemplate: "Access granted to <%= vendorName %> on Piessang"
     },
 
     "seller-product-status": {
@@ -190,6 +190,36 @@ export const emailMessages = {
       wrapper: "corporate-wrapper.ejs",
       template: "return-status-update.ejs",
       subjectTemplate: "Return update for order <%= orderNumber %> — <%= statusLabel %>"
+    },
+
+    "support-ticket-created": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "support-ticket-created.ejs",
+      subjectTemplate: "We received your support ticket — <%= subject %>"
+    },
+
+    "support-ticket-created-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "support-ticket-created-internal.ejs",
+      subjectTemplate: "New support ticket — <%= subject %> — <%= customerName %>"
+    },
+
+    "support-ticket-updated": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "support-ticket-updated.ejs",
+      subjectTemplate: "Support ticket update — <%= subject %>"
+    },
+
+    "support-ticket-closing-warning": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "support-ticket-closing-warning.ejs",
+      subjectTemplate: "Action needed: your support ticket will close soon — <%= subject %>"
+    },
+
+    "support-ticket-customer-reply-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "support-ticket-customer-reply-internal.ejs",
+      subjectTemplate: "Customer replied to support ticket — <%= subject %>"
     },
 
     "cart-item-sale": {

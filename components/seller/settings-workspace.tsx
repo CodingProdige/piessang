@@ -96,7 +96,10 @@ type SellerPayoutProfile = {
   beneficiaryCountry: string;
   verificationStatus: string;
   verificationNotes: string;
-  peachRecipientId: string;
+  stripeRecipientAccountId: string;
+  stripeRecipientEntityType: string;
+  stripeRecipientCountry: string;
+  stripeLastAccountLinkCreatedAt: string;
   lastVerifiedAt: string;
 };
 
@@ -167,7 +170,10 @@ const EMPTY_PAYOUT_PROFILE: SellerPayoutProfile = {
   beneficiaryCountry: "ZA",
   verificationStatus: "not_submitted",
   verificationNotes: "",
-  peachRecipientId: "",
+  stripeRecipientAccountId: "",
+  stripeRecipientEntityType: "",
+  stripeRecipientCountry: "",
+  stripeLastAccountLinkCreatedAt: "",
   lastVerifiedAt: "",
 };
 
@@ -353,6 +359,66 @@ function formatSellerOriginSummary(origin: SellerDeliveryProfile["origin"]) {
   return [origin.suburb, origin.city, origin.region, origin.country].filter(Boolean).join(", ");
 }
 
+function formatDateTime(value?: string | null) {
+  const input = toStr(value);
+  if (!input) return "";
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-ZA", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function SettingsSection({
+  eyebrow,
+  title,
+  description,
+  expanded,
+  onToggle,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-start justify-between gap-4 px-5 py-5 text-left"
+        aria-expanded={expanded}
+      >
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">{eyebrow}</p>
+          <h4 className="mt-1 text-[18px] font-semibold text-[#202020]">{title}</h4>
+          <p className="mt-1 text-[12px] text-[#57636c]">{description}</p>
+        </div>
+        <span className="mt-1 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-black/10 bg-[rgba(32,32,32,0.02)] text-[#202020]">
+          <svg viewBox="0 0 24 24" aria-hidden="true" className={`h-4 w-4 transition-transform ${expanded ? "rotate-180" : ""}`}>
+            <path
+              d="M6.5 9.5 12 15l5.5-5.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      </button>
+      {expanded ? <div className="border-t border-black/5 px-5 py-5">{children}</div> : null}
+    </div>
+  );
+}
+
 export function SellerSettingsWorkspace({
   sellerSlug,
   vendorName,
@@ -378,6 +444,14 @@ export function SellerSettingsWorkspace({
   const [bannerDragging, setBannerDragging] = useState(false);
   const [sellerCodeCopied, setSellerCodeCopied] = useState(false);
   const [snackbar, setSnackbar] = useState<{ message: string; tone?: "success" | "error" } | null>(null);
+  const [stripeOnboardingBusy, setStripeOnboardingBusy] = useState(false);
+  const [stripeStatusLoading, setStripeStatusLoading] = useState(false);
+  const [stripeStatus, setStripeStatus] = useState<any | null>(null);
+  const [sectionOpen, setSectionOpen] = useState({
+    branding: true,
+    shipping: true,
+    payouts: true,
+  });
   const [sellerNameCheck, setSellerNameCheck] = useState<{
     checking: boolean;
     unique: boolean | null;
@@ -393,7 +467,6 @@ export function SellerSettingsWorkspace({
   const copyTimeoutRef = useRef<number | null>(null);
   const snackbarTimeoutRef = useRef<number | null>(null);
   const [originPickerOpen, setOriginPickerOpen] = useState(false);
-
   const canEditSettings = Boolean(isSystemAdmin || ["owner", "admin"].includes(String(sellerRole ?? "").trim().toLowerCase()));
   const canDeleteSeller = Boolean(isSystemAdmin || String(sellerRole ?? "").trim().toLowerCase() === "owner");
   const publicVendorHref = sellerSlug ? `/vendors/${sellerSlug}` : "/products";
@@ -543,7 +616,10 @@ export function SellerSettingsWorkspace({
             beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
             verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
             verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
-            peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+            stripeRecipientAccountId: toStr(nextPayoutProfile?.stripeRecipientAccountId),
+            stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
+            stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
+            stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
             lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
           });
           setSellerCodeValue(
@@ -590,7 +666,10 @@ export function SellerSettingsWorkspace({
                 beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
                 verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
                 verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
-                peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+                stripeRecipientAccountId: toStr(nextPayoutProfile?.stripeRecipientAccountId),
+                stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
+                stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
+                stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
                 lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
               },
               vendorNameValue: nextVendorName || vendorName,
@@ -630,6 +709,97 @@ export function SellerSettingsWorkspace({
       if (snackbarTimeoutRef.current) window.clearTimeout(snackbarTimeoutRef.current);
     };
   }, []);
+
+  const payoutRecipientReady = Boolean(payoutProfile.stripeRecipientAccountId || stripeStatus?.connected);
+  const payoutSummaryBank = stripeStatus?.bankName
+    ? `${stripeStatus.bankName}${stripeStatus.accountLast4 ? ` •••• ${stripeStatus.accountLast4}` : ""}`
+    : payoutProfile.stripeRecipientAccountId || stripeStatus?.connected
+      ? "Bank account connected in Stripe"
+      : "Complete Stripe payout setup";
+  const payoutSummaryStatus = stripeStatus?.payoutsEnabled ||
+    payoutProfile.verificationStatus === "verified" ||
+    (payoutProfile.stripeRecipientAccountId && payoutSummaryBank !== "Complete Stripe payout setup")
+    ? "ready for payouts"
+    : toStr(stripeStatus?.status || payoutProfile.verificationStatus || (payoutRecipientReady ? "connected" : "not_started"));
+  const payoutSummarySyncedAt = toStr(payoutProfile.lastVerifiedAt || payoutProfile.stripeLastAccountLinkCreatedAt);
+  const stripeOnboardingComplete = payoutSummaryStatus === "ready for payouts" ||
+    payoutSummaryStatus === "connected" ||
+    stripeStatus?.payoutsEnabled === true ||
+    payoutProfile.verificationStatus === "verified";
+
+  async function loadStripePayoutStatus() {
+    if (!profile?.uid || !sellerSlug) return;
+    setStripeStatusLoading(true);
+    try {
+      const response = await fetch(
+        `/api/client/v1/accounts/seller/payouts/stripe/status?uid=${encodeURIComponent(profile.uid)}&sellerSlug=${encodeURIComponent(sellerSlug)}`,
+        { cache: "no-store" },
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to load payout status.");
+      }
+      setStripeStatus(payload?.data || null);
+    } catch (cause) {
+      setStripeStatus(null);
+      showSnackbar(cause instanceof Error ? cause.message : "Unable to load payout status.", "error");
+    } finally {
+      setStripeStatusLoading(false);
+    }
+  }
+
+  async function openStripePayoutOnboarding() {
+    if (!profile?.uid || !sellerSlug) return;
+    setStripeOnboardingBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/client/v1/accounts/seller/payouts/stripe/onboarding-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: profile.uid,
+          sellerSlug,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to start Stripe payout setup.");
+      }
+      const nextUrl = toStr(payload?.data?.url);
+      if (!nextUrl) {
+        throw new Error("Stripe did not return an onboarding URL.");
+      }
+      window.location.href = nextUrl;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to start Stripe payout setup.");
+      showSnackbar(cause instanceof Error ? cause.message : "Unable to start Stripe payout setup.", "error");
+    } finally {
+      setStripeOnboardingBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!profile?.uid || !sellerSlug) return;
+    void loadStripePayoutStatus();
+  }, [profile?.uid, sellerSlug]);
+
+  useEffect(() => {
+    if (!profile?.uid || !sellerSlug) return undefined;
+    const handleFocus = () => {
+      void loadStripePayoutStatus();
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void loadStripePayoutStatus();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [profile?.uid, sellerSlug]);
 
   async function fileToBlurHash(file: File) {
     const bitmap = await createImageBitmap(file);
@@ -778,7 +948,10 @@ export function SellerSettingsWorkspace({
         beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
         verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
         verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
-        peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+        stripeRecipientAccountId: toStr(nextPayoutProfile?.stripeRecipientAccountId),
+        stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
+        stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
+        stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
         lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
       });
       setVendorNameValue(sanitizeVendorName(nextSeller?.vendorName || nextVendorName));
@@ -820,7 +993,10 @@ export function SellerSettingsWorkspace({
             beneficiaryCountry: toStr(nextPayoutProfile?.beneficiaryCountry || "ZA"),
             verificationStatus: toStr(nextPayoutProfile?.verificationStatus || "not_submitted"),
             verificationNotes: toStr(nextPayoutProfile?.verificationNotes),
-            peachRecipientId: toStr(nextPayoutProfile?.peachRecipientId),
+            stripeRecipientAccountId: toStr(nextPayoutProfile?.stripeRecipientAccountId),
+            stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
+            stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
+            stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
             lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
           },
           vendorNameValue: sanitizeVendorName(nextSeller?.vendorName || nextVendorName),
@@ -1010,6 +1186,13 @@ export function SellerSettingsWorkspace({
         </label>
       </div>
 
+      <SettingsSection
+        eyebrow="Branding"
+        title="Store visuals"
+        description="Manage your banner and logo without keeping the whole branding workspace open all the time."
+        expanded={sectionOpen.branding}
+        onToggle={() => setSectionOpen((current) => ({ ...current, branding: !current.branding }))}
+      >
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
           <div className="flex items-center justify-between gap-3">
@@ -1165,18 +1348,15 @@ export function SellerSettingsWorkspace({
           </label>
         </div>
       </div>
+      </SettingsSection>
 
-      <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Shipping preferences</p>
-            <h4 className="mt-1 text-[18px] font-semibold text-[#202020]">How you ship orders</h4>
-            <p className="mt-1 text-[12px] text-[#57636c]">
-              Add direct delivery rules and shipping zones so shoppers only see options and fees that match their location.
-            </p>
-          </div>
-        </div>
-
+      <SettingsSection
+        eyebrow="Shipping preferences"
+        title="How you ship orders"
+        description="Add direct delivery rules and shipping zones so shoppers only see options and fees that match their location."
+        expanded={sectionOpen.shipping}
+        onToggle={() => setSectionOpen((current) => ({ ...current, shipping: !current.shipping }))}
+      >
         <div className="mt-4 space-y-4">
           <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
             <div className="flex items-start justify-between gap-3">
@@ -1278,7 +1458,7 @@ export function SellerSettingsWorkspace({
                 <p className="mt-1 text-[12px] text-[#57636c]">Add country, region, city, or postal-code based shipping zones for national and international delivery.</p>
               </div>
               <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: [...current.shippingZones, makeShippingZone(Date.now())] }))} className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
-                Add shipping zone
+                Add Zone
               </button>
             </div>
             <div className="mt-4 space-y-3">
@@ -1357,147 +1537,71 @@ export function SellerSettingsWorkspace({
             className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none transition-colors focus:border-[#cbb26b] disabled:bg-[#f7f7f7]"
           />
         </label>
-      </div>
+      </SettingsSection>
 
-      <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Payout settings</p>
-            <h4 className="mt-1 text-[18px] font-semibold text-[#202020]">Where Piessang should pay you</h4>
-            <p className="mt-1 text-[12px] text-[#57636c]">
-              Add the bank details Piessang should use for automated seller payouts. Eligible settlements are only prepared for payout after the 7-day return window closes.
-            </p>
-          </div>
-          <div className="rounded-full bg-[rgba(144,125,76,0.08)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
-            {payoutProfile.verificationStatus === "verified" ? "Verified" : payoutProfile.accountNumber || payoutProfile.iban ? "Details added" : "Setup needed"}
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Payout method</span>
-            <select value={payoutProfile.payoutMethod} onChange={(event) => setPayoutProfile((current) => ({ ...current, payoutMethod: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
-              <option value="same_country_bank">Bank account in your seller country</option>
-              <option value="other_country_bank">Bank account in another country</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account holder name</span>
-            <input value={payoutProfile.accountHolderName} onChange={(event) => setPayoutProfile((current) => ({ ...current, accountHolderName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Bevgo (Pty) Ltd" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank name</span>
-            <input value={payoutProfile.bankName} onChange={(event) => setPayoutProfile((current) => ({ ...current, bankName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Standard Bank" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank country</span>
-            <select value={payoutProfile.bankCountry} onChange={(event) => setPayoutProfile((current) => ({ ...current, bankCountry: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
-              {SUPPORTED_PAYOUT_COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Branch code</span>
-            <input value={payoutProfile.branchCode} onChange={(event) => setPayoutProfile((current) => ({ ...current, branchCode: event.target.value.replace(/[^\d]/g, "").slice(0, 10) }))} disabled={!canEditSettings || payoutProfile.payoutMethod === "other_country_bank"} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="051001" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account number</span>
-            <input value={payoutProfile.accountNumber} onChange={(event) => setPayoutProfile((current) => ({ ...current, accountNumber: event.target.value.replace(/[^\d]/g, "").slice(0, 20) }))} disabled={!canEditSettings || payoutProfile.payoutMethod === "other_country_bank"} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="000123456789" />
-          </label>
-          {payoutProfile.payoutMethod === "other_country_bank" ? (
-            <>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">IBAN</span>
-                <input value={payoutProfile.iban} onChange={(event) => setPayoutProfile((current) => ({ ...current, iban: event.target.value.replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 34) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="DE89370400440532013000" />
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">SWIFT / BIC</span>
-                <input value={payoutProfile.swiftBic} onChange={(event) => setPayoutProfile((current) => ({ ...current, swiftBic: event.target.value.replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 11) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="DEUTDEFF" />
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Routing / clearing code</span>
-                <input value={payoutProfile.routingNumber} onChange={(event) => setPayoutProfile((current) => ({ ...current, routingNumber: event.target.value.replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 20) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="ABA / sort / routing code" />
-              </label>
-              <label className="block md:col-span-2">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank address</span>
-                <input value={payoutProfile.bankAddress} onChange={(event) => setPayoutProfile((current) => ({ ...current, bankAddress: event.target.value.slice(0, 200) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Bank street address" />
-              </label>
-            </>
-          ) : null}
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account type</span>
-            <select value={payoutProfile.accountType} onChange={(event) => setPayoutProfile((current) => ({ ...current, accountType: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
-              <option value="business_cheque">Business cheque</option>
-              <option value="business_savings">Business savings</option>
-              <option value="cheque">Cheque</option>
-              <option value="savings">Savings</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Payout reference</span>
-            <input value={payoutProfile.beneficiaryReference} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryReference: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="BEVGO-SETTLEMENTS" />
-          </label>
-        </div>
-
-        <div className="mt-3 grid gap-3 md:grid-cols-3">
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Seller country</span>
-            <select value={payoutProfile.country} onChange={(event) => setPayoutProfile((current) => ({ ...current, country: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
-              {SUPPORTED_PAYOUT_COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Settlement currency</span>
-            <select value={payoutProfile.currency} onChange={(event) => setPayoutProfile((current) => ({ ...current, currency: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
-              {SUPPORTED_PAYOUT_CURRENCIES.map((currency) => <option key={currency.code} value={currency.code}>{currency.code} · {currency.label}</option>)}
-            </select>
-          </label>
-          <div className="rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-3 py-3 text-[12px] text-[#57636c]">
-            <p className="font-semibold text-[#202020]">Payout readiness</p>
-            <p className="mt-1">
-              {payoutProfile.accountHolderName &&
-              payoutProfile.bankName &&
-              ((payoutProfile.payoutMethod === "same_country_bank" && payoutProfile.branchCode && payoutProfile.accountNumber) ||
-                (payoutProfile.payoutMethod === "other_country_bank" && payoutProfile.iban && payoutProfile.swiftBic))
-                ? "Your bank details are saved. Eligible settlements can now be prepared for automated payout runs."
-                : "Add your bank details so Piessang can prepare automated payouts once your return window closes."}
-            </p>
-            {payoutProfile.lastVerifiedAt ? <p className="mt-1">Last verified: {payoutProfile.lastVerifiedAt}</p> : null}
+      <SettingsSection
+        eyebrow="Payout settings"
+        title="Where Piessang should pay you"
+        description="Complete Stripe payout setup so Piessang can release automated seller payouts after delivery, the hold window, and payout checks are complete."
+        expanded={sectionOpen.payouts}
+        onToggle={() => setSectionOpen((current) => ({ ...current, payouts: !current.payouts }))}
+      >
+        <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="font-semibold text-[#202020]">Stripe payout onboarding</p>
+              <p className="mt-1">
+                Complete Stripe payout setup so Piessang can release automated seller payouts after delivery, the hold window, and payout checks are complete.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void loadStripePayoutStatus()}
+                disabled={stripeStatusLoading}
+                className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {stripeStatusLoading ? "Refreshing..." : "Refresh status"}
+              </button>
+              {!stripeOnboardingComplete ? (
+                <button
+                  type="button"
+                  onClick={() => void openStripePayoutOnboarding()}
+                  disabled={!canEditSettings || stripeOnboardingBusy}
+                  className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {stripeOnboardingBusy ? "Opening..." : "Start Stripe setup"}
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
 
-        {payoutProfile.payoutMethod === "other_country_bank" ? (
-          <div className="mt-3 rounded-[8px] border border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] px-3 py-2 text-[12px] text-[#6f5d2d]">
-            Cross-border payout details are now supported in your seller profile and payout batches. Live provider support still depends on the payout network available for your chosen bank country and settlement currency.
+        <div className="mt-3 rounded-[8px] border border-black/5 bg-white">
+          <div className="border-b border-black/5 px-4 py-3">
+            <p className="text-[12px] font-semibold text-[#202020]">Payout recipient summary</p>
+            <p className="mt-1 text-[12px] text-[#57636c]">Stripe becomes the automated payout source of truth once onboarding is completed.</p>
           </div>
-        ) : null}
-
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary address line 1</span>
-            <input value={payoutProfile.beneficiaryAddressLine1} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryAddressLine1: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Street address" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary address line 2</span>
-            <input value={payoutProfile.beneficiaryAddressLine2} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryAddressLine2: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Suite, floor, or building" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary city</span>
-            <input value={payoutProfile.beneficiaryCity} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryCity: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Cape Town" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary region / state</span>
-            <input value={payoutProfile.beneficiaryRegion} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryRegion: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Western Cape" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary postal code</span>
-            <input value={payoutProfile.beneficiaryPostalCode} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryPostalCode: event.target.value.slice(0, 30) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="8000" />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Beneficiary country</span>
-            <select value={payoutProfile.beneficiaryCountry} onChange={(event) => setPayoutProfile((current) => ({ ...current, beneficiaryCountry: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
-              {SUPPORTED_PAYOUT_COUNTRIES.map((country) => <option key={country.code} value={country.code}>{country.label}</option>)}
-            </select>
-          </label>
+          <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Status</p>
+              <p className="mt-1 font-semibold text-[#202020]">
+                {(toStr(payoutSummaryStatus).replace(/_/g, " ")) || "not started"}
+              </p>
+            </div>
+            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Recipient id</p>
+              <p className="mt-1 break-all font-semibold text-[#202020]">{payoutProfile.stripeRecipientAccountId || "Not connected yet"}</p>
+            </div>
+            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Bank</p>
+              <p className="mt-1 font-semibold text-[#202020]">{payoutSummaryBank}</p>
+            </div>
+            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{stripeStatusLoading ? "Stripe status" : "Last Stripe sync"}</p>
+              <p className="mt-1 font-semibold text-[#202020]">{stripeStatusLoading ? "Checking..." : payoutSummarySyncedAt ? formatDateTime(payoutSummarySyncedAt) : "Not yet"}</p>
+            </div>
+          </div>
         </div>
 
         {payoutProfile.verificationNotes ? (
@@ -1505,7 +1609,7 @@ export function SellerSettingsWorkspace({
             {payoutProfile.verificationNotes}
           </div>
         ) : null}
-      </div>
+      </SettingsSection>
 
       <GooglePlacePickerModal
         open={originPickerOpen}

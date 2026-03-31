@@ -45,7 +45,7 @@ export function generateVendorNameSuggestions(input: string, existing: Iterable<
     `${base} Trading`,
     `${base} Group`,
     `${base} Supplies`,
-    `${base} Bevgo`,
+    `${base} Piessang`,
     `${base} 2`,
   ];
 

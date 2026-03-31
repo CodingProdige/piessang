@@ -120,7 +120,7 @@ export async function POST(req) {
     const productSnap = await productRef.get();
     if (!productSnap.exists) return err(404, "Product Not Found", "Unable to find the reported product.");
     const product = productSnap.data() || {};
-    const vendorName = toStr(report?.product?.vendorName || product?.product?.vendorName || "Bevgo seller");
+    const vendorName = toStr(report?.product?.vendorName || product?.product?.vendorName || "Piessang seller");
     const sellerSlug = toStr(report?.product?.sellerSlug || product?.seller?.sellerSlug || product?.product?.sellerSlug);
     const fulfillmentMode = toStr(product?.fulfillment?.mode || "seller").toLowerCase();
     const statusLabel = action === "block" ? "Blocked" : action === "restore" ? "Restored" : "Report resolved";

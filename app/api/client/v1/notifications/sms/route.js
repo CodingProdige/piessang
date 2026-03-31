@@ -4,6 +4,11 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { smsTemplates } from "./messages.js";
+import {
+  canSendNotificationToUser,
+  resolveNotificationPreferenceRecipient,
+  shouldRespectNotificationPreferences,
+} from "@/lib/notifications/preferences";
 
 /* -----------------------------------------
    RESPONSE HELPERS
@@ -40,7 +45,7 @@ function resolveNotificationName(input = {}) {
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { type="custom", to, message, data={} } = body;
+    const { type="custom", to, message, data={}, uid } = body;
     const resolvedName = resolveNotificationName(data || {});
     const safeData = {
       ...(data || {}),
@@ -53,6 +58,23 @@ export async function POST(req) {
 
     if (!to) {
       return err(400, "Missing Number", "Field 'to' is required.");
+    }
+
+    if (type !== "custom" && shouldRespectNotificationPreferences(type)) {
+      const recipientUser = await resolveNotificationPreferenceRecipient({
+        uid: uid || safeData?.uid || safeData?.userId || safeData?.customerUid,
+        phone: to,
+      });
+      if (recipientUser && !canSendNotificationToUser({ channel: "sms", type, user: recipientUser })) {
+        return ok({
+          sent: false,
+          suppressed: true,
+          channel: "sms",
+          to,
+          type,
+          message: "SMS suppressed by notification preferences.",
+        });
+      }
     }
 
     /* -----------------------------------------

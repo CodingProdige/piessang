@@ -63,6 +63,7 @@ type SettlementRecord = {
     released_incl: number;
     remaining_due_incl: number;
     status: string;
+    hold_reason?: string;
     releaseReference: string;
     releasedAt: string;
     releasedBy: string;
@@ -101,9 +102,10 @@ type SettlementsWorkspaceProps = {
   sellerCode: string;
   vendorName: string;
   isSystemAdmin: boolean;
+  allowGlobalScope?: boolean;
 };
 
-type FilterKey = "all" | "review_queue" | "ready_for_payout" | "paid" | "late" | "blocked" | "cancelled" | "held";
+type FilterKey = "all" | "review_queue" | "ready_for_payout" | "processing_payout" | "paid" | "late" | "blocked" | "cancelled" | "held";
 type ScopeMode = "seller" | "all";
 
 function toStr(value: unknown, fallback = "") {
@@ -186,6 +188,8 @@ function formatFilterLabel(filter: FilterKey) {
       return "Review queue";
     case "ready_for_payout":
       return "Ready to pay";
+    case "processing_payout":
+      return "Processing payout";
     case "paid":
       return "Paid";
     case "late":
@@ -212,6 +216,8 @@ function matchesFilter(record: SettlementRecord, filter: FilterKey) {
       return status === "pending_review" || reviewStatus === "pending_review";
     case "ready_for_payout":
       return status === "ready_for_payout" || payoutStatus === "ready_for_payout";
+    case "processing_payout":
+      return status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus);
     case "paid":
       return status === "paid" || payoutStatus === "paid";
     case "late":
@@ -231,6 +237,7 @@ function getStatusTone(status: string) {
   switch (status) {
     case "ready_for_payout":
       return "success";
+    case "processing_payout":
     case "pending_review":
       return "warning";
     case "paid":
@@ -254,6 +261,8 @@ function getStatusLabel(status: string) {
       return "Pending review";
     case "ready_for_payout":
       return "Ready for payout";
+    case "processing_payout":
+      return "Processing payout";
     case "awaiting_stock":
       return "Awaiting stock";
     case "blocked":
@@ -273,6 +282,10 @@ function getPayoutLabel(status: string) {
   switch (status) {
     case "ready_for_payout":
       return "Ready";
+    case "pending_submission":
+    case "submitted":
+    case "in_transit":
+      return "Processing";
     case "paid":
       return "Paid";
     case "held":
@@ -306,9 +319,11 @@ export function SellerSettlementsWorkspace({
   sellerCode,
   vendorName,
   isSystemAdmin,
+  allowGlobalScope = false,
 }: SettlementsWorkspaceProps) {
   const { profile, refreshProfile } = useAuth();
-  const [scopeMode, setScopeMode] = useState<ScopeMode>(isSystemAdmin ? "all" : "seller");
+  const canUseGlobalScope = isSystemAdmin && allowGlobalScope;
+  const [scopeMode, setScopeMode] = useState<ScopeMode>(canUseGlobalScope ? "all" : "seller");
   const [filter, setFilter] = useState<FilterKey>("all");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -352,7 +367,7 @@ export function SellerSettlementsWorkspace({
         scope: scopeMode,
         filter: "all",
       });
-      if (scopeMode !== "all" || !isSystemAdmin) {
+      if (scopeMode !== "all" || !canUseGlobalScope) {
         if (sellerCode) params.set("sellerCode", sellerCode);
         if (sellerSlug) params.set("sellerSlug", sellerSlug);
       }
@@ -377,11 +392,11 @@ export function SellerSettlementsWorkspace({
   useEffect(() => {
     void loadSettlements();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile?.uid, sellerSlug, sellerCode, scopeMode]);
+  }, [profile?.uid, sellerSlug, sellerCode, scopeMode, canUseGlobalScope]);
 
   useEffect(() => {
-    setScopeMode(isSystemAdmin ? "all" : "seller");
-  }, [isSystemAdmin]);
+    setScopeMode(canUseGlobalScope ? "all" : "seller");
+  }, [canUseGlobalScope]);
 
   useEffect(() => {
     setExpandedIds((current) => current.filter((id) => settlements.some((item) => item.settlementId === id)));
@@ -402,14 +417,30 @@ export function SellerSettlementsWorkspace({
         acc.gross += toNum(record?.payout?.gross_incl || 0);
         acc.net += toNum(record?.payout?.net_due_incl || 0);
         acc.ready += status === "ready_for_payout" || payoutStatus === "ready_for_payout" ? 1 : 0;
+        acc.processing += status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus) ? 1 : 0;
         acc.review += status === "pending_review" || toStr(record?.fulfilment?.reviewStatus || "").toLowerCase() === "pending_review" ? 1 : 0;
         acc.paid += status === "paid" || payoutStatus === "paid" ? 1 : 0;
         acc.late += record?.accountability?.late || record?.fulfilment?.late ? 1 : 0;
         return acc;
       },
-      { total: 0, gross: 0, net: 0, ready: 0, review: 0, paid: 0, late: 0 },
+      { total: 0, gross: 0, net: 0, ready: 0, processing: 0, review: 0, paid: 0, late: 0 },
     );
   }, [settlements]);
+
+  const holdSummary = useMemo(
+    () =>
+      settlements.reduce(
+        (acc, record) => {
+          const reason = toStr(record?.payout?.hold_reason || "").toLowerCase();
+          if (reason === "awaiting_delivery") acc.awaitingDelivery += 1;
+          if (reason === "return_window_open") acc.returnWindowOpen += 1;
+          if (reason === "missing_bank_details") acc.missingBankDetails += 1;
+          return acc;
+        },
+        { awaitingDelivery: 0, returnWindowOpen: 0, missingBankDetails: 0 },
+      ),
+    [settlements],
+  );
 
   const filteredSettlements = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -577,11 +608,11 @@ export function SellerSettlementsWorkspace({
   }
 
   const selectedSellerSummary = useMemo(() => {
-    if (scopeMode === "all" && isSystemAdmin) return "All sellers";
+    if (scopeMode === "all" && canUseGlobalScope) return "All sellers";
     return vendorName || sellerSlug || "This seller";
-  }, [isSystemAdmin, scopeMode, sellerSlug, vendorName]);
+  }, [canUseGlobalScope, scopeMode, sellerSlug, vendorName]);
 
-  const filterOptions: FilterKey[] = ["all", "review_queue", "ready_for_payout", "paid", "late", "blocked", "cancelled", "held"];
+  const filterOptions: FilterKey[] = ["all", "review_queue", "ready_for_payout", "processing_payout", "paid", "late", "blocked", "cancelled", "held"];
 
   return (
     <section className="space-y-4">
@@ -605,7 +636,7 @@ export function SellerSettlementsWorkspace({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {isSystemAdmin ? (
+            {canUseGlobalScope ? (
               <div className="inline-flex rounded-[8px] border border-black/10 bg-[#f6f6f6] p-1">
                 <button
                   type="button"
@@ -647,12 +678,13 @@ export function SellerSettlementsWorkspace({
         </div>
       </section>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
         {[
           { label: "Gross sales", value: formatMoney(stats.gross), tone: "neutral" as const },
           { label: "Net due", value: formatMoney(stats.net), tone: "success" as const },
           { label: "Pending review", value: String(stats.review), tone: "warning" as const },
           { label: "Ready to pay", value: String(stats.ready), tone: "info" as const },
+          { label: "Processing payout", value: String(stats.processing), tone: "info" as const },
           { label: "Paid", value: String(stats.paid), tone: "success" as const },
           { label: "Late", value: String(stats.late), tone: "danger" as const },
         ].map((item) => (
@@ -674,6 +706,17 @@ export function SellerSettlementsWorkspace({
           </div>
         ))}
       </div>
+
+      {holdSummary.awaitingDelivery || holdSummary.returnWindowOpen || holdSummary.missingBankDetails ? (
+        <section className="rounded-[8px] border border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] px-4 py-3 text-[12px] leading-[1.7] text-[#6f5d2d]">
+          <p className="font-semibold text-[#202020]">What is still holding payouts back</p>
+          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+            {holdSummary.awaitingDelivery ? <p>{holdSummary.awaitingDelivery} settlement{holdSummary.awaitingDelivery === 1 ? "" : "s"} still need delivery before payout timing can begin.</p> : null}
+            {holdSummary.returnWindowOpen ? <p>{holdSummary.returnWindowOpen} settlement{holdSummary.returnWindowOpen === 1 ? "" : "s"} are still inside the 7-day return window.</p> : null}
+            {holdSummary.missingBankDetails ? <p>{holdSummary.missingBankDetails} settlement{holdSummary.missingBankDetails === 1 ? "" : "s"} are waiting for payout details or Stripe setup.</p> : null}
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -714,7 +757,7 @@ export function SellerSettlementsWorkspace({
 
       <section className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
         <div className="border-b border-black/5 px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">
-          {scopeMode === "all" && isSystemAdmin ? "All seller settlements" : `${selectedSellerSummary} settlements`}
+          {scopeMode === "all" && canUseGlobalScope ? "All seller settlements" : `${selectedSellerSummary} settlements`}
         </div>
 
         {loading ? (

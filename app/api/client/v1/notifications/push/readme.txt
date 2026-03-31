@@ -1,11 +1,11 @@
 ====================================================================
-                BEVGO PUSH NOTIFICATION SYSTEM (FCM v1)
+              PIESSANG PUSH NOTIFICATION SYSTEM (FCM v1)
 ====================================================================
 
 This folder contains the backend logic for sending Firebase Cloud 
 Messaging (FCM) push notifications using the modern OAuth2 HTTP v1 API.
 
-This system allows the Bevgo backend to trigger push notifications 
+This system allows the Piessang backend to trigger push notifications 
 from anywhere — FlutterFlow, Postman, admin dashboards, CRON jobs, 
 credit approval endpoints, Slack bots, etc.
 

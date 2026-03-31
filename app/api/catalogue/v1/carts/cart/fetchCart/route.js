@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } from "@/lib/marketplace/fees";
+import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
 import { normalizeSellerDeliveryProfile, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
@@ -14,7 +15,6 @@ const err = (s,t,m,e={})=>NextResponse.json({ ok:false,title:t,message:m,...e },
 
 const now = () => new Date().toISOString();
 const VAT = 0.15;
-const DELIVERY_FEE_URL = "https://bevgo-client.vercel.app/api/v1/delivery/fee";
 const r2 = v => Number((+v).toFixed(2));
 const REBATE_TIER_MAX_CAP = 5;
 const CREDIT_NOTE_OPEN_STATUSES = new Set(["open", "partially_used"]);
@@ -377,86 +377,45 @@ async function fetchDeliveryFee(address, userId){
   }
 
   try {
-    const payload = JSON.stringify({
-      address,
-      userId: userId || null
-    });
-    const urls = DELIVERY_FEE_URL.endsWith("/")
-      ? [DELIVERY_FEE_URL.slice(0, -1), DELIVERY_FEE_URL]
-      : [DELIVERY_FEE_URL, `${DELIVERY_FEE_URL}/`];
-
-    let res = null;
-    let lastBody = null;
-    let tried = [];
-
-    for (const url of urls) {
-      tried.push(url);
-      res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-        cache: "no-store",
-        redirect: "manual",
-        body: payload
-      });
-
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get("location");
-        if (location) {
-          tried.push(location);
-          res = await fetch(location, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Accept": "application/json"
-            },
-            cache: "no-store",
-            body: payload
-          });
+    const shopperArea = {
+      city: address?.city || address?.suburb || "",
+      suburb: address?.suburb || "",
+      province: address?.province || address?.stateProvinceRegion || "",
+      stateProvinceRegion: address?.stateProvinceRegion || address?.province || "",
+      postalCode: address?.postalCode || "",
+      country: address?.country || "South Africa",
+      latitude: address?.latitude == null ? null : Number(address.latitude),
+      longitude: address?.longitude == null ? null : Number(address.longitude),
+    };
+    const resolved = await resolvePlatformDeliveryOption({ shopperArea, subtotalIncl: 0 });
+    if (!resolved?.available) {
+      return {
+        amount: 0,
+        meta: {
+          ok: false,
+          supported: false,
+          canPlaceOrder: false,
+          reasonCode: "OUTSIDE_SERVICE_AREA",
+          message: "Delivery is not available for this address.",
         }
-      }
-
-      const text = await res.text();
-      lastBody = text;
-      let json = null;
-      try {
-        json = text ? JSON.parse(text) : null;
-      } catch {
-        json = null;
-      }
-
-      if (!res.ok) {
-        if (res.status === 405) {
-          continue;
-        }
-        return {
-          amount: 0,
-          meta: {
-            ok: false,
-            status: res.status,
-            body: json ?? text ?? null,
-            tried
-          }
-        };
-      }
-
-      if (json && json.ok === false) {
-        return { amount: 0, meta: json };
-      }
-
-      const amount = r2(Number(json?.fee?.amount || 0));
-      return { amount, meta: json };
+      };
     }
 
     return {
-      amount: 0,
+      amount: r2(Number(resolved?.amountIncl || 0)),
       meta: {
-        ok: false,
-        status: res?.status || 405,
-        body: lastBody ?? null,
-        tried
+        ok: true,
+        supported: true,
+        canPlaceOrder: true,
+        fee: {
+          amount: r2(Number(resolved?.amountIncl || 0)),
+          currency: "ZAR",
+          band: resolved?.matchedRule?.label || resolved?.kind || null,
+          reason: resolved?.kind || null,
+        },
+        leadTimeDays: resolved?.leadTimeDays ?? null,
+        cutoffTime: resolved?.cutoffTime || null,
+        matchedRule: resolved?.matchedRule || null,
       }
     };
   } catch (e) {

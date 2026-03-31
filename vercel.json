@@ -19,6 +19,10 @@
     {
       "path": "/api/cron/seller-payout-submit",
       "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/support-ticket-lifecycle",
+      "schedule": "0 6 * * *"
     }
   ]
 }

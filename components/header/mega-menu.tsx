@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { CartActionStack } from "@/components/cart/cart-actions";
@@ -126,6 +127,7 @@ type MenuState = {
   hoveredSlug: string;
   activeSubcategories: SubCategory[];
   brands: Brand[];
+  productCountsBySubCategory: Record<string, number>;
   setHoveredSlug: (slug: string) => void;
   hoveredSubcategorySlug: string;
   setHoveredSubcategorySlug: (slug: string) => void;
@@ -521,26 +523,257 @@ function useCatalogueMenu(): MenuState {
     ? brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? []
     : [];
 
-    return {
-      departments,
-      hoveredSlug,
-      activeSubcategories,
-      brands: activeBrands,
-      setHoveredSlug,
-      setHoveredSubcategorySlug,
-      hoveredSubcategorySlug,
-    };
-  }
+  return {
+    departments,
+    hoveredSlug,
+    activeSubcategories,
+    brands: activeBrands,
+    productCountsBySubCategory,
+    setHoveredSlug,
+    setHoveredSubcategorySlug,
+    hoveredSubcategorySlug,
+  };
+}
 
 function SearchBar() {
+  const router = useRouter();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [trendingSearches, setTrendingSearches] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<
+    Array<{
+      id: string;
+      title: string;
+      href: string;
+      brand: string;
+      imageUrl: string;
+    }>
+  >([]);
+  const hasTypedQuery = query.trim().length >= 2;
+  const searchHistoryKey = "piessang_search_history_v1";
+
+  const pageSuggestions = useMemo(() => {
+    const queryText = query.trim().toLowerCase();
+    if (queryText.length < 2) return [];
+
+    const pages = [
+      { title: "All products", description: "Browse the full catalogue", href: "/products", keywords: ["products", "shop", "browse", "catalogue", "catalog"] },
+      { title: "Categories", description: "Browse product categories", href: "/categories", keywords: ["categories", "category", "departments"] },
+      { title: "New arrivals", description: "See what just landed on Piessang", href: "/products?newArrivals=true", keywords: ["new", "new arrivals", "latest", "fresh"] },
+      { title: "Deals", description: "View products currently on sale", href: "/products?onSale=true", keywords: ["deals", "sale", "discount", "offers"] },
+      { title: "My account", description: "Manage your account and preferences", href: "/account", keywords: ["account", "profile", "settings"] },
+      { title: "Orders", description: "Track your orders and returns", href: "/account?section=orders", keywords: ["orders", "purchases", "returns"] },
+      { title: "Support tickets", description: "Open or manage your support requests", href: "/support/tickets", keywords: ["support", "ticket", "tickets", "help"] },
+      { title: "Contact us", description: "Get help from Piessang support", href: "/contact", keywords: ["contact", "support", "email", "help"] },
+      { title: "Delivery", description: "Read delivery information and policies", href: "/delivery", keywords: ["delivery", "shipping", "courier"] },
+      { title: "Returns", description: "Read the returns and refunds policy", href: "/returns", keywords: ["returns", "refunds", "refund"] },
+      { title: "Privacy policy", description: "Read how Piessang handles your data", href: "/privacy", keywords: ["privacy", "data", "policy"] },
+      { title: "Terms", description: "Read the marketplace terms and rules", href: "/terms", keywords: ["terms", "legal", "policy"] },
+    ];
+
+    return pages
+      .filter((page) => {
+        const haystack = [page.title, page.description, ...page.keywords].join(" ").toLowerCase();
+        return haystack.includes(queryText);
+      })
+      .slice(0, 4);
+  }, [query]);
+
+  const filteredRecentSearches = useMemo(() => {
+    const queryText = query.trim().toLowerCase();
+    if (!queryText) return recentSearches.slice(0, 6);
+    return recentSearches.filter((item) => item.toLowerCase().includes(queryText)).slice(0, 6);
+  }, [query, recentSearches]);
+
+  const filteredTrendingSearches = useMemo(() => {
+    const queryText = query.trim().toLowerCase();
+    const withoutRecent = trendingSearches.filter(
+      (item) => !recentSearches.some((recent) => recent.toLowerCase() === item.toLowerCase()),
+    );
+    if (!queryText) return withoutRecent.slice(0, 6);
+    return withoutRecent.filter((item) => item.toLowerCase().includes(queryText)).slice(0, 6);
+  }, [query, recentSearches, trendingSearches]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(searchHistoryKey);
+      const parsed = JSON.parse(raw || "[]");
+      if (!Array.isArray(parsed)) return;
+      setRecentSearches(
+        parsed
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+          .slice(0, 6),
+      );
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTrendingSearches() {
+      try {
+        const response = await fetch("/api/client/v1/search/queries", { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (cancelled || !response.ok || payload?.ok === false) return;
+        const items = Array.isArray(payload?.data?.items)
+          ? payload.data.items
+          : Array.isArray(payload?.items)
+            ? payload.items
+            : [];
+        if (cancelled) return;
+        setTrendingSearches(
+          items
+            .map((item: any) => String(item?.query || "").trim())
+            .filter(Boolean)
+            .slice(0, 6),
+        );
+      } catch {}
+    }
+
+    loadTrendingSearches();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (trimmed.length < 2) {
+      setSuggestions([]);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams({
+          search: trimmed,
+          limit: "6",
+          isActive: "true",
+        });
+        const response = await fetch(`/api/catalogue/v1/products/product/get?${params.toString()}`, {
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (cancelled || !response.ok || payload?.ok === false) {
+          if (!cancelled) setSuggestions([]);
+          return;
+        }
+
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        if (cancelled) return;
+        setSuggestions(
+          items
+            .map((item: any) => {
+              const slug = String(
+                item?.data?.product?.slug ||
+                item?.data?.product?.handle ||
+                item?.data?.docId ||
+                item?.data?.product?.unique_id ||
+                item?.id ||
+                "",
+              ).trim();
+              const title = String(item?.data?.product?.title || "").trim();
+              if (!slug || !title) return null;
+              return {
+                id: String(item?.id || item?.data?.docId || slug),
+                title,
+                href: `/products/${encodeURIComponent(slug)}`,
+                brand: String(item?.data?.brand?.title || item?.data?.grouping?.brand || "").trim(),
+                imageUrl: String(item?.data?.media?.images?.[0]?.imageUrl || "").trim(),
+              };
+            })
+            .filter(Boolean),
+        );
+      } catch {
+        if (!cancelled) setSuggestions([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  function persistRecentSearch(search: string) {
+    const normalized = search.trim();
+    if (!normalized || typeof window === "undefined") return;
+    const next = [normalized, ...recentSearches.filter((item) => item.toLowerCase() !== normalized.toLowerCase())].slice(0, 6);
+    setRecentSearches(next);
+    try {
+      window.localStorage.setItem(searchHistoryKey, JSON.stringify(next));
+    } catch {}
+  }
+
+  async function trackSearch(search: string) {
+    try {
+      await fetch("/api/client/v1/search/queries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: search }),
+      });
+    } catch {}
+  }
+
+  function submitSearch(nextQuery?: string) {
+    const search = String(nextQuery ?? query).trim();
+    if (!search) return;
+    persistRecentSearch(search);
+    void trackSearch(search);
+    setOpen(false);
+    router.push(`/products?search=${encodeURIComponent(search)}`);
+  }
+
+  const shouldShowDropdown =
+    open &&
+    (hasTypedQuery ||
+      filteredRecentSearches.length > 0 ||
+      filteredTrendingSearches.length > 0 ||
+      loading);
+
   return (
-    <form action="/" className="flex min-w-0 flex-1">
+    <div ref={containerRef} className="relative flex min-w-0 flex-1">
+      <form
+        action="/products"
+        className="flex min-w-0 flex-1"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submitSearch();
+        }}
+      >
       <label className="flex min-w-0 flex-1 items-center rounded-l-[4px] bg-white px-4 py-1.5 shadow-[0_4px_14px_rgba(20,24,27,0.08)]">
         <input
           type="search"
-          name="q"
+          name="search"
+          value={query}
           placeholder="Search for products, brands..."
           className="w-full bg-transparent text-[15px] text-[#4b5563] outline-none placeholder:text-[#8a94a3]"
+          autoComplete="off"
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
         />
       </label>
       <button
@@ -550,7 +783,148 @@ function SearchBar() {
       >
         ⌕
       </button>
-    </form>
+      </form>
+
+      {shouldShowDropdown ? (
+        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-[80] overflow-hidden rounded-[10px] border border-black/5 bg-white shadow-[0_18px_40px_rgba(20,24,27,0.16)]">
+          {hasTypedQuery ? (
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => submitSearch()}
+              className="flex w-full items-center justify-between border-b border-black/5 px-4 py-3 text-left hover:bg-[#faf7ef]"
+            >
+              <span>
+                <span className="block text-[13px] font-semibold text-[#202020]">Search for "{query.trim()}"</span>
+                <span className="mt-0.5 block text-[12px] text-[#57636c]">View all matching products</span>
+              </span>
+              <span className="text-[16px] text-[#b8b8b8]">→</span>
+            </button>
+          ) : null}
+
+          {filteredRecentSearches.length ? (
+            <div className="border-b border-black/5">
+              <div className="bg-[#fcfbf7] px-4 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Recent searches</p>
+              </div>
+              <div>
+                {filteredRecentSearches.map((item) => (
+                  <button
+                    key={`recent-${item}`}
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => submitSearch(item)}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
+                  >
+                    <span>
+                      <span className="block text-[13px] font-semibold text-[#202020]">{item}</span>
+                      <span className="mt-0.5 block text-[12px] text-[#57636c]">Search again</span>
+                    </span>
+                    <span className="text-[16px] text-[#b8b8b8]">↺</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {filteredTrendingSearches.length ? (
+            <div className="border-b border-black/5">
+              <div className="bg-[#fcfbf7] px-4 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Popular searches</p>
+              </div>
+              <div>
+                {filteredTrendingSearches.map((item) => (
+                  <button
+                    key={`trending-${item}`}
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => submitSearch(item)}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
+                  >
+                    <span>
+                      <span className="block text-[13px] font-semibold text-[#202020]">{item}</span>
+                      <span className="mt-0.5 block text-[12px] text-[#57636c]">Popular on Piessang</span>
+                    </span>
+                    <span className="text-[16px] text-[#b8b8b8]">↗</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {pageSuggestions.length ? (
+            <div className="border-b border-black/5">
+              <div className="bg-[#fcfbf7] px-4 py-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Suggested pages</p>
+              </div>
+              <div>
+                {pageSuggestions.map((page) => (
+                  <button
+                    key={page.href}
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      setOpen(false);
+                      router.push(page.href);
+                    }}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
+                  >
+                    <span>
+                      <span className="block text-[13px] font-semibold text-[#202020]">{page.title}</span>
+                      <span className="mt-0.5 block text-[12px] text-[#57636c]">{page.description}</span>
+                    </span>
+                    <span className="text-[16px] text-[#b8b8b8]">→</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {suggestions.length ? (
+            <div className="border-y border-black/5 bg-[#fcfbf7] px-4 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Matching products</p>
+            </div>
+          ) : null}
+
+          {loading ? (
+            <div className="px-4 py-3 text-[12px] text-[#57636c]">Searching…</div>
+          ) : suggestions.length ? (
+            <div className="max-h-[360px] overflow-y-auto">
+              {suggestions.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setOpen(false);
+                    router.push(item.href);
+                  }}
+                  className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
+                >
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-[8px] bg-[#f5f5f5]">
+                    {item.imageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={item.imageUrl} alt={item.title} className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Item</span>
+                    )}
+                  </div>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13px] font-semibold text-[#202020]">{item.title}</span>
+                    {item.brand ? (
+                      <span className="mt-0.5 block truncate text-[12px] text-[#57636c]">{item.brand}</span>
+                    ) : null}
+                  </span>
+                  <span className="text-[16px] text-[#b8b8b8]">→</span>
+                </button>
+              ))}
+            </div>
+          ) : !pageSuggestions.length && !filteredRecentSearches.length && !filteredTrendingSearches.length && hasTypedQuery ? (
+            <div className="px-4 py-3 text-[12px] text-[#57636c]">No matching products found yet.</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1116,6 +1490,7 @@ function MobileDrawer({
   open,
   onClose,
   departments,
+  productCountsBySubCategory,
   isAuthenticated,
   isSeller,
   favoriteCount,
@@ -1128,6 +1503,7 @@ function MobileDrawer({
   open: boolean;
   onClose: () => void;
   departments: Department[];
+  productCountsBySubCategory: Record<string, number>;
   isAuthenticated: boolean;
   isSeller: boolean;
   favoriteCount: number;
@@ -1157,7 +1533,12 @@ function MobileDrawer({
     setView("subcategories");
     setSubcategoriesLoading(true);
     const items = await fetchSubcategories(department.slug);
-    setMobileSubcategories(items);
+    setMobileSubcategories(
+      items.filter((item) => {
+        const key = `${department.slug}::${item.slug}`;
+        return (productCountsBySubCategory[key] ?? 0) > 0;
+      }),
+    );
     setSubcategoriesLoading(false);
   }
 
@@ -1431,6 +1812,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     hoveredSlug,
     activeSubcategories,
     brands,
+    productCountsBySubCategory,
     hoveredSubcategorySlug,
     setHoveredSlug,
     setHoveredSubcategorySlug,
@@ -1464,8 +1846,12 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
 
   return (
     <header id="bevgo-site-header" className="bg-white shadow-[0_2px_16px_rgba(20,24,27,0.08)]">
-      <div className="border-b border-black/5 bg-[#faf8f2]">
-        <div className="flex h-11 w-full items-center justify-end px-3 lg:px-4">
+      <div className="relative overflow-hidden border-b border-black/5 bg-white">
+        <div
+          className="pointer-events-none absolute inset-0 bg-center bg-cover bg-no-repeat opacity-[0.13]"
+          style={{ backgroundImage: "url('/backgrounds/piessang-repeat-background.png')" }}
+        />
+        <div className="relative flex h-11 w-full items-center justify-end px-3 lg:px-4">
           <div className="flex h-full items-center justify-end gap-4">
             <div className="flex h-full shrink-0 items-center">
               <HeaderDeliveryLocationControl className="h-full border-r-0 px-0 text-[11px]" />
@@ -1625,7 +2011,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         </div>
       </div>
 
-      <div className="hidden bg-[rgba(203,178,107,0.18)] lg:block">
+      <div className="hidden bg-[linear-gradient(90deg,#fdf070_0%,#e4c62d_34%,#e3c52f_68%,#cba726_100%)] lg:block">
         <div className="mx-auto w-full max-w-[1180px] px-3 py-2 lg:px-4">
           <SearchBar />
         </div>
@@ -1644,7 +2030,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
             >
               <div className="relative w-[300px] shrink-0" style={{ height: MENU_HEIGHT }}>
                 <aside className="relative h-full overflow-hidden rounded-[4px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-                  <div className="flex h-[48px] items-center justify-between bg-[#4a4545] px-5 text-[16px] font-semibold text-white">
+                  <div className="flex h-[48px] items-center justify-between bg-[linear-gradient(90deg,#e4c62d_0%,#e3c52f_45%,#cba726_100%)] px-5 text-[16px] font-semibold text-[#5a4916]">
                     <span>Shop by Category</span>
                     <span aria-hidden="true">⌄</span>
                   </div>
@@ -1714,6 +2100,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         open={mobileOpen}
         onClose={() => setMobileOpen(false)}
         departments={departments}
+        productCountsBySubCategory={productCountsBySubCategory}
         isAuthenticated={isAuthenticated}
         isSeller={isSeller}
         favoriteCount={favoriteCount}

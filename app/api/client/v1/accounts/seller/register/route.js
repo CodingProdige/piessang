@@ -3,9 +3,12 @@ export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
-import { isAllowedSellerServiceArea } from "@/lib/seller/service-areas";
 import { getSellerCatalogueCategory, getSellerCatalogueSubCategories } from "@/lib/seller/catalogue-categories";
 import { canCreateSellerAccount } from "@/lib/seller/access";
+import {
+  SUPPORTED_PAYOUT_COUNTRIES,
+  SUPPORTED_PAYOUT_CURRENCIES,
+} from "@/lib/seller/payout-config";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { cleanVendorName, generateVendorNameSuggestions, normalizeVendorName, toSellerSlug, trimVendorNameToLength, titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { jsonError, rateLimit, requireSessionUser } from "@/lib/api/security";
@@ -27,6 +30,10 @@ function sanitizeDigits(value) {
 
 function normalizeSlug(value) {
   return toStr(value).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+
+function normalizeCountry(value) {
+  return toStr(value).slice(0, 2).toUpperCase();
 }
 
 async function collectExistingVendorNames(excludeUid = "") {
@@ -98,6 +105,7 @@ export async function POST(req) {
     const countryCode = sanitizeDigits(seller?.countryCode || seller?.dialCode || "27");
     const phoneNumber = sanitizeDigits(seller?.phoneNumber || seller?.contactPhone || current?.account?.phoneNumber);
     const baseLocation = toStr(seller?.baseLocation || seller?.location || seller?.city);
+    const sellerCountry = normalizeCountry(seller?.sellerCountry || current?.seller?.sellerCountry || "ZA");
     const vendorDescription = normalizeSellerDescription(
       seller?.vendorDescription || seller?.description || current?.seller?.vendorDescription || current?.seller?.description,
     );
@@ -105,6 +113,20 @@ export async function POST(req) {
     const subCategorySlug = normalizeSlug(seller?.subCategory || "");
     const category = categorySlug ? getSellerCatalogueCategory(categorySlug) : null;
     const subCategories = category ? getSellerCatalogueSubCategories(categorySlug) : [];
+    const supportedCountry = SUPPORTED_PAYOUT_COUNTRIES.find((entry) => entry.code === sellerCountry) || null;
+    const defaultCurrencyByCountry = {
+      ZA: "ZAR",
+      KE: "KES",
+      MU: "MUR",
+      GB: "GBP",
+      US: "USD",
+      AE: "AED",
+      DE: "EUR",
+      NL: "EUR",
+    };
+    const payoutCurrency = SUPPORTED_PAYOUT_CURRENCIES.find(
+      (entry) => entry.code === (defaultCurrencyByCountry[sellerCountry] || "ZAR"),
+    )?.code || "ZAR";
     const hasValidSubCategory =
       !subCategorySlug || !category || subCategories.some((item) => item.slug === subCategorySlug);
 
@@ -135,12 +157,16 @@ export async function POST(req) {
       return err(400, "Missing Phone Number", "phoneNumber is required for seller registration.");
     }
 
-    if (!baseLocation || !isAllowedSellerServiceArea(baseLocation)) {
+    if (!supportedCountry) {
       return err(
         400,
-        "Invalid Base Location",
-        "Select one of the supported service areas: Cape Town, Paarl, Stellenbosch, Franschhoek, Wellington, Strand, or Klapmuts.",
+        "Unsupported Seller Country",
+        "Select a seller country supported by our automated payout system before continuing.",
       );
+    }
+
+    if (!baseLocation) {
+      return err(400, "Missing Base Location", "Add your city or primary operating location for seller registration.");
     }
 
     if (!hasValidSubCategory) {
@@ -167,8 +193,18 @@ export async function POST(req) {
       contactEmail,
       countryCode: countryCode || "27",
       contactPhone: phoneNumber,
+      sellerCountry,
       baseLocation,
       serviceArea: baseLocation,
+      payoutProvider: "stripe_global_payouts",
+      payoutProfile: current?.seller?.payoutProfile || {
+        payoutMethod: "same_country_bank",
+        country: sellerCountry,
+        bankCountry: sellerCountry,
+        beneficiaryCountry: sellerCountry,
+        currency: payoutCurrency,
+        verificationStatus: "not_submitted",
+      },
       category: category?.slug || null,
       categoryTitle: category?.title || null,
       subCategory: subCategorySlug || null,
@@ -201,6 +237,7 @@ export async function POST(req) {
       to: contactEmail,
       data: {
         vendorName: vendorNameFormatted,
+        sellerCountry,
         baseLocation,
         categoryTitle: category?.title || "",
         subCategory: subCategorySlug ? (subCategories.find((item) => item.slug === subCategorySlug)?.title || subCategorySlug) : "",
@@ -208,13 +245,14 @@ export async function POST(req) {
     };
     const internalEmailPayload = {
       type: "seller-registration-internal",
-      to: "info@bevgo.co.za",
+      to: "support@piessang.com",
       data: {
         uid,
         vendorName: vendorNameFormatted,
         contactEmail,
         countryCode: countryCode || "27",
         contactPhone: phoneNumber,
+        sellerCountry,
         baseLocation,
         categoryTitle: category?.title || "",
         subCategory: subCategorySlug ? (subCategories.find((item) => item.slug === subCategorySlug)?.title || subCategorySlug) : "",

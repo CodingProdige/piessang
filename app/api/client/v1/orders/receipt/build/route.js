@@ -18,13 +18,12 @@ const ok = (data = {}, status = 200) =>
 const err = (status = 500, title = "Server Error", message = "Unknown error") =>
   NextResponse.json({ ok: false, title, message }, { status });
 
-const LOGO_URL =
-  "https://firebasestorage.googleapis.com/v0/b/bevgo-client-management-rckxs5.firebasestorage.app/o/Bevgo%20Media%2FBevgo_Main_Logo%20-%20Google%20Version%201000x500.png?alt=media&token=bf97d121-8a9b-4949-abd7-8d707f78d4a1";
+const LOGO_URL = "/logo/Piessang Logo.png";
 const COMPANY_DETAILS = {
-  name: "Bevgo Distributions",
+  name: "Piessang",
   address: "Unit 2, 4 EK Green Str, Charleston Hill, Paarl, 7646",
   contact: "021 818 6153",
-  email: "info@bevgo.co.za",
+  email: "support@piessang.com",
   vat: "4760314296",
   registration: "2023/779316/07"
 };

@@ -90,6 +90,7 @@ type ProductItem = {
       count?: number;
     };
     has_sale_variant?: boolean;
+    is_new_arrival?: boolean;
     is_favorite?: boolean;
     has_in_stock_variants?: boolean;
     is_eligible_by_variant_availability?: boolean;
@@ -98,6 +99,14 @@ type ProductItem = {
     seller_unavailable_reason_code?: string | null;
     seller_unavailable_reason_message?: string | null;
     seller_account_status?: string | null;
+  };
+  ad?: {
+    sponsored?: boolean;
+    campaignId?: string | null;
+    placement?: string | null;
+    sellerCode?: string | null;
+    sellerSlug?: string | null;
+    label?: string | null;
   };
 };
 
@@ -970,6 +979,7 @@ export async function ProductsPage({
   const catalogItems = catalogPayload.items ?? catalogPayload.groups?.flatMap((group) => group.items ?? []) ?? [];
   const singleItem = payload.data ? { id: payload.id, data: payload.data } : null;
   const items = rawItems.filter((item): item is ProductItem => Boolean(item?.data));
+  const placement = currentParam(resolvedSearchParams, "search") ? "search_results" : "category_grid";
   const displayItems = singleItem ? [singleItem] : items;
   const countItems = catalogItems.filter((item): item is ProductItem => Boolean(item?.data));
   const options = payload.options ?? {};
@@ -996,6 +1006,7 @@ export async function ProductsPage({
   const currentPackUnit = currentParam(resolvedSearchParams, "packUnit");
   const currentInStock = currentParam(resolvedSearchParams, "inStock") === "true";
   const currentOnSale = currentParam(resolvedSearchParams, "onSale") === "true";
+  const currentNewArrivals = currentParam(resolvedSearchParams, "newArrivals") === "true";
   const currentFeatured = currentParam(resolvedSearchParams, "isFeatured") === "true";
   const currentMinRating = currentNumberParam(resolvedSearchParams, "minRating");
   const currentView = currentParam(resolvedSearchParams, "view") === "list" ? "list" : "grid";
@@ -1079,6 +1090,7 @@ export async function ProductsPage({
     Boolean(currentPackUnit) ||
     currentInStock ||
     currentOnSale ||
+    currentNewArrivals ||
     currentFeatured ||
     currentMinRating != null;
 
@@ -1159,6 +1171,14 @@ export async function ProductsPage({
               scroll={false}
             />
           ) : null}
+          {currentNewArrivals ? (
+            <ToggleFilter
+              title="New arrivals"
+              enabled
+              href={buildProductsHref(baseParams, { newArrivals: undefined })}
+              scroll={false}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -1181,6 +1201,7 @@ export async function ProductsPage({
         currentMinRating={currentMinRating}
         currentInStock={currentInStock}
         currentOnSale={currentOnSale}
+        currentNewArrivals={currentNewArrivals}
         currentFeatured={currentFeatured}
         currentMinPrice={activePriceRange?.min ?? 0}
         currentMaxPrice={activePriceRange?.max ?? 0}
@@ -1269,6 +1290,12 @@ export async function ProductsPage({
                   scroll={false}
                 />
                 <ToggleFilter
+                  title="New arrivals"
+                  enabled={currentNewArrivals}
+                  href={buildProductsHref(baseParams, { newArrivals: currentNewArrivals ? undefined : "true" })}
+                  scroll={false}
+                />
+                <ToggleFilter
                   title="Featured"
                   enabled={currentFeatured}
                   href={buildProductsHref(baseParams, { isFeatured: currentFeatured ? undefined : "true" })}
@@ -1299,6 +1326,12 @@ export async function ProductsPage({
           openInNewTab={openInNewTab}
           searchParams={resolvedSearchParams}
           totalCount={totalCount}
+          sponsoredPlacement={singleItem ? undefined : placement}
+          sponsoredContext={{
+            category: currentParam(resolvedSearchParams, "category") || undefined,
+            subCategory: currentParam(resolvedSearchParams, "subCategory") || undefined,
+            search: currentParam(resolvedSearchParams, "search") || undefined,
+          }}
         />
         </section>
       </section>

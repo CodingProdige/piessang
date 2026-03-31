@@ -1,5 +1,5 @@
 /* ==========================================================================  
-   BEVGO SMS ENDPOINT — FULL FEATURE BREAKDOWN  
+   PIESSANG SMS ENDPOINT — FULL FEATURE BREAKDOWN  
    File: /api/v1/notifications/sms/send/route.js  
    Templates: /api/v1/notifications/sms/messages.js
    --------------------------------------------------------------------------
@@ -10,7 +10,7 @@
 
    1) PURPOSE
    -----------------------------------------
-   This endpoint allows Bevgo to send SMS messages from the backend.  
+   This endpoint allows Piessang to send SMS messages from the backend.  
    It supports:
       • Simple "send this custom message" mode  
       • Template-based messages (eg: "order-dispatched")  
@@ -35,7 +35,7 @@
       }
 
       → System loads template from messages.js  
-      → Message: "Your Bevgo order has just been dispatched! 🚚💨 Delivery is on the way."
+      → Message: "Your Piessang order has just been dispatched! 🚚💨 Delivery is on the way."
 
    ------------------------------------------------------
 

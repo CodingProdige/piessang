@@ -42,6 +42,7 @@ export async function POST(req) {
           ...updates,
           recipientName: updates.recipientName ?? loc.recipientName ?? "",
           suburb: updates.suburb ?? loc.suburb ?? "",
+          phoneCountryCode: updates.phoneCountryCode ?? loc.phoneCountryCode ?? "27",
           phoneNumber: updates.phoneNumber ?? loc.phoneNumber ?? "",
           instructions: updates.instructions ?? loc.instructions ?? loc.deliveryInstructions ?? "",
           deliveryInstructions: updates.deliveryInstructions ?? updates.instructions ?? loc.deliveryInstructions ?? loc.instructions ?? "",

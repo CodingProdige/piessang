@@ -467,7 +467,7 @@ export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps
           <button
             type="button"
             onClick={() => openAuthModal("Sign in to manage your seller team.")}
-            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+            className="brand-button mt-5 inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
           >
             Sign in
           </button>

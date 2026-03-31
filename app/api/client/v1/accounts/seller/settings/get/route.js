@@ -50,7 +50,10 @@ function normalizePayoutProfile(profile) {
     beneficiaryCountry: toStr(source.beneficiaryCountry || source.beneficiary_country || source.country || "ZA"),
     verificationStatus: toStr(source.verificationStatus || "not_submitted"),
     verificationNotes: toStr(source.verificationNotes || ""),
-    peachRecipientId: toStr(source.peachRecipientId || ""),
+    stripeRecipientAccountId: toStr(source.stripeRecipientAccountId || ""),
+    stripeRecipientEntityType: toStr(source.stripeRecipientEntityType || ""),
+    stripeRecipientCountry: toStr(source.stripeRecipientCountry || ""),
+    stripeLastAccountLinkCreatedAt: toStr(source.stripeLastAccountLinkCreatedAt || ""),
     lastVerifiedAt: toStr(source.lastVerifiedAt || ""),
   };
 }

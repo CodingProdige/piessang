@@ -178,7 +178,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
         <button
           type="button"
           onClick={() => openAuthModal("Sign in to manage your cart.")}
-          className="mt-5 inline-flex items-center rounded-[8px] bg-[#cbb26b] px-4 py-2.5 text-[13px] font-semibold text-white"
+          className="brand-button mt-5 inline-flex items-center rounded-[8px] px-4 py-2.5 text-[13px] font-semibold"
         >
           Sign in
         </button>

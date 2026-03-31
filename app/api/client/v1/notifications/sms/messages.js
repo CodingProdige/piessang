@@ -14,15 +14,15 @@ export const smsTemplates = {
     },
 
     "order-dispatched": {
-      message: "Your Bevgo order has just been dispatched! 🚚💨 Delivery is on the way."
+      message: "Your Piessang order has just been dispatched! 🚚💨 Delivery is on the way."
     },
   
     "order-delivered": {
-      message: "Your delivery has been completed! Thank you for choosing Bevgo. 🍻"
+      message: "Your delivery has been completed! Thank you for choosing Piessang. 🍻"
     },
   
     "welcome": {
-      message: "Welcome to Bevgo! Your account setup is complete — happy ordering! 🎉"
+      message: "Welcome to Piessang! Your account setup is complete — happy ordering! 🎉"
     },
   
     "otp": {
@@ -30,7 +30,7 @@ export const smsTemplates = {
     },
   
     "account-pending-activation": {
-      message: "Your Bevgo account is created and pending activation. We'll notify you once it's ready."
+      message: "Your Piessang account is created and pending activation. We'll notify you once it's ready."
     },
   
     "invoice-overdue": {

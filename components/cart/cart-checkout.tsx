@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
+import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 
 type CartItem = {
@@ -71,6 +72,7 @@ type DeliveryLocation = {
   province?: string;
   postalCode?: string;
   country?: string;
+  phoneCountryCode?: string;
   phoneNumber?: string;
   instructions?: string;
   is_default?: boolean;
@@ -106,6 +108,7 @@ type AddressDraft = {
   stateProvinceRegion: string;
   postalCode: string;
   country: string;
+  phoneCountryCode: string;
   phoneNumber: string;
   instructions: string;
   is_default: boolean;
@@ -115,8 +118,42 @@ type AddressDraft = {
 
 type CheckoutContactDraft = {
   recipientName: string;
+  phoneCountryCode: string;
   phoneNumber: string;
 };
+
+type StripeCheckoutState = {
+  clientSecret: string;
+  publishableKey: string;
+  paymentIntentId: string;
+  orderId: string;
+  orderNumber: string;
+  merchantTransactionId: string;
+};
+
+let stripeJsPromise: Promise<any> | null = null;
+
+function loadStripeJs() {
+  if (typeof window === "undefined") return Promise.resolve(null);
+  if ((window as any).Stripe) return Promise.resolve((window as any).Stripe);
+  if (!stripeJsPromise) {
+    stripeJsPromise = new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[src="https://js.stripe.com/v3/"]');
+      if (existing) {
+        existing.addEventListener("load", () => resolve((window as any).Stripe), { once: true });
+        existing.addEventListener("error", () => reject(new Error("Stripe.js failed to load.")), { once: true });
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://js.stripe.com/v3/";
+      script.async = true;
+      script.onload = () => resolve((window as any).Stripe);
+      script.onerror = () => reject(new Error("Stripe.js failed to load."));
+      document.head.appendChild(script);
+    });
+  }
+  return stripeJsPromise;
+}
 
 function getCartTotalIncl(cart: CartPayload | null) {
   return Number(cart?.totals?.final_payable_incl ?? cart?.totals?.final_incl ?? 0);
@@ -263,6 +300,7 @@ function defaultAddressDraft(profile?: { accountName?: string | null; displayNam
     stateProvinceRegion: "",
     postalCode: "",
     country: "South Africa",
+    phoneCountryCode: "27",
     phoneNumber: "",
     instructions: "",
     is_default: true,
@@ -297,8 +335,14 @@ function togglePickupSelection(current: string[], sellerKey: string, enabled: bo
 
 export function CartCheckout() {
   const router = useRouter();
-  const { isAuthenticated, uid, profile, openAuthModal, refreshCart } = useAuth();
+  const { isAuthenticated, uid, profile, openAuthModal, refreshCart, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
+  const stripePublishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || "";
+  const stripeRef = useRef<any>(null);
+  const elementsRef = useRef<any>(null);
+  const cardNumberRef = useRef<any>(null);
+  const cardExpiryRef = useRef<any>(null);
+  const cardCvcRef = useRef<any>(null);
   const [cart, setCart] = useState<CartPayload | null>(null);
   const [locations, setLocations] = useState<DeliveryLocation[]>([]);
   const [cards, setCards] = useState<SavedCard[]>([]);
@@ -309,7 +353,11 @@ export function CartCheckout() {
   const [addressEditing, setAddressEditing] = useState(false);
   const [selectedLocationIndex, setSelectedLocationIndex] = useState(0);
   const [pickupSelections, setPickupSelections] = useState<string[]>([]);
-  const [contactDraft, setContactDraft] = useState<CheckoutContactDraft>({ recipientName: "", phoneNumber: "" });
+  const [contactDraft, setContactDraft] = useState<CheckoutContactDraft>({
+    recipientName: "",
+    phoneCountryCode: "27",
+    phoneNumber: "",
+  });
   const [paymentMode, setPaymentMode] = useState<"saved" | "new">("saved");
   const [selectedCardId, setSelectedCardId] = useState("");
   const [newCard, setNewCard] = useState<NewCardState>({
@@ -326,12 +374,26 @@ export function CartCheckout() {
   const [addressDraft, setAddressDraft] = useState<AddressDraft>(() => defaultAddressDraft());
   const [addressSaving, setAddressSaving] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
+  const [stripeCheckout, setStripeCheckout] = useState<StripeCheckoutState | null>(null);
+  const [stripeLoading, setStripeLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [deliveryFeeLoading, setDeliveryFeeLoading] = useState(false);
   const [checkoutReserveLoading, setCheckoutReserveLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successState, setSuccessState] = useState<{ orderNumber: string; orderId: string } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      cardNumberRef.current?.unmount?.();
+      cardExpiryRef.current?.unmount?.();
+      cardCvcRef.current?.unmount?.();
+      cardNumberRef.current = null;
+      cardExpiryRef.current = null;
+      cardCvcRef.current = null;
+      elementsRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isAuthenticated || !uid) return;
@@ -379,11 +441,16 @@ export function CartCheckout() {
   const selectedLocation = locations[selectedLocationIndex] || null;
 
   useEffect(() => {
+    const nextPhone = splitPhoneNumber(
+      String(selectedLocation?.phoneNumber || "").trim(),
+      String(selectedLocation?.phoneCountryCode || "27"),
+    );
     setContactDraft({
       recipientName: String(selectedLocation?.recipientName || profile?.accountName || profile?.displayName || "").trim(),
-      phoneNumber: String(selectedLocation?.phoneNumber || "").trim(),
+      phoneCountryCode: nextPhone.countryCode,
+      phoneNumber: nextPhone.localNumber,
     });
-  }, [selectedLocation?.recipientName, selectedLocation?.phoneNumber, profile?.accountName, profile?.displayName]);
+  }, [selectedLocation?.phoneCountryCode, selectedLocation?.phoneNumber, selectedLocation?.recipientName, profile?.accountName, profile?.displayName]);
 
   useEffect(() => {
     if (!uid) return;
@@ -456,6 +523,85 @@ export function CartCheckout() {
     return () => window.clearTimeout(timer);
   }, [snackbarMessage]);
 
+  useEffect(() => {
+    if (paymentMode !== "new" || !stripePublishableKey) return undefined;
+    let cancelled = false;
+
+    async function mountCardElements() {
+      try {
+        const Stripe = await loadStripeJs();
+        if (!Stripe) throw new Error("Stripe.js is not available.");
+        cardNumberRef.current?.unmount?.();
+        cardExpiryRef.current?.unmount?.();
+        cardCvcRef.current?.unmount?.();
+        cardNumberRef.current = null;
+        cardExpiryRef.current = null;
+        cardCvcRef.current = null;
+        const stripe = Stripe(stripePublishableKey);
+        stripeRef.current = stripe;
+        const elements = stripe.elements({
+          appearance: {
+            theme: "stripe",
+            variables: {
+              colorPrimary: "#e3c52f",
+              colorText: "#202020",
+              colorBackground: "#ffffff",
+              colorDanger: "#b91c1c",
+              borderRadius: "10px",
+            },
+          },
+        });
+        if (!elements) throw new Error("Stripe payment fields are not available.");
+        elementsRef.current = elements;
+        const baseStyle = {
+          style: {
+            base: {
+              fontSize: "14px",
+              color: "#202020",
+              fontFamily: "var(--font-geist-sans), sans-serif",
+              "::placeholder": {
+                color: "#8a94a3",
+              },
+            },
+            invalid: {
+              color: "#b91c1c",
+            },
+          },
+        };
+        const cardNumber = elements.create("cardNumber", baseStyle);
+        const cardExpiry = elements.create("cardExpiry", baseStyle);
+        const cardCvc = elements.create("cardCvc", baseStyle);
+        if (cancelled) return;
+        cardNumber.mount("#piessang-card-number");
+        cardExpiry.mount("#piessang-card-expiry");
+        cardCvc.mount("#piessang-card-cvc");
+        cardNumberRef.current = cardNumber;
+        cardExpiryRef.current = cardExpiry;
+        cardCvcRef.current = cardCvc;
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "We could not open secure payment.";
+        setErrorMessage(message);
+        setSnackbarMessage(message);
+      } finally {
+        if (!cancelled) setStripeLoading(false);
+      }
+    }
+
+    setStripeLoading(true);
+    void mountCardElements();
+
+    return () => {
+      cancelled = true;
+      cardNumberRef.current?.unmount?.();
+      cardExpiryRef.current?.unmount?.();
+      cardCvcRef.current?.unmount?.();
+      cardNumberRef.current = null;
+      cardExpiryRef.current = null;
+      cardCvcRef.current = null;
+    };
+  }, [paymentMode, stripePublishableKey]);
+
   const cartTotalIncl = getCartTotalIncl(cart);
   const productsTotalIncl = Number(
     (
@@ -496,21 +642,168 @@ export function CartCheckout() {
   );
   const checkoutBlocked = unavailableItems.length > 0;
   const canUseSavedCard = paymentMode === "saved" && Boolean(selectedCard?.id);
-  const canUseNewCard =
-    paymentMode === "new" &&
-    newCard.holder.trim().length > 1 &&
-    sanitizeCardNumber(newCard.number).length >= 13 &&
-    validateExpiryMonth(newCard.expiryMonth) &&
-    validateExpiryYear(newCard.expiryYear) &&
-    sanitizeCvv(newCard.cvv).length >= 3;
-  const hasCheckoutContactDetails = Boolean(contactDraft.recipientName.trim() && contactDraft.phoneNumber.trim());
+  const canUseNewCard = paymentMode === "new" && newCard.holder.trim().length > 1;
+  const hasCheckoutContactDetails = Boolean(
+    contactDraft.recipientName.trim() &&
+      combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
+  );
   const cardErrors = {
     holder: newCard.holder.trim().length > 1 ? "" : "Enter the name exactly as it appears on the card.",
-    number: sanitizeCardNumber(newCard.number).length >= 13 ? "" : "Enter a valid card number.",
-    expiryMonth: validateExpiryMonth(newCard.expiryMonth) ? "" : "Use a valid month from 01 to 12.",
-    expiryYear: validateExpiryYear(newCard.expiryYear) ? "" : "Use a valid future expiry year.",
-    cvv: sanitizeCvv(newCard.cvv).length >= 3 ? "" : "Enter the card security code.",
+    number: "",
+    expiryMonth: "",
+    expiryYear: "",
+    cvv: "",
   };
+
+  async function finalizeStripeCheckout(currentCheckout: StripeCheckoutState, paymentIntentId?: string) {
+    try {
+      const finalizeResponse = await fetch("/api/client/v1/orders/payment-success", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: currentCheckout.orderId,
+          payment: {
+            provider: "stripe",
+            method: "card",
+            chargeType: paymentMode === "saved" ? "saved_payment_method" : "elements_card",
+            merchantTransactionId: currentCheckout.merchantTransactionId,
+            stripePaymentIntentId: paymentIntentId || currentCheckout.paymentIntentId,
+            amount_incl: payableIncl,
+            currency: "ZAR",
+          },
+        }),
+      });
+      const finalizePayload = await finalizeResponse.json().catch(() => ({}));
+      if (!finalizeResponse.ok || finalizePayload?.ok === false) {
+        await fetch("/api/client/v1/orders/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            orderId: currentCheckout.orderId,
+            orderNumber: currentCheckout.orderNumber,
+            merchantTransactionId: currentCheckout.merchantTransactionId,
+          }),
+        }).catch(() => null);
+        throw new Error(finalizePayload?.message || "We couldn’t confirm your Stripe payment.");
+      }
+
+      const clearCartResponse = await fetch("/api/client/v1/carts/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid }),
+      });
+      const clearCartPayload = await clearCartResponse.json().catch(() => ({}));
+      if (!clearCartResponse.ok || clearCartPayload?.ok === false) {
+        throw new Error(clearCartPayload?.message || "Your payment went through, but we could not clear your cart yet.");
+      }
+
+      syncCartState({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
+      await refreshCart();
+      setStripeCheckout(null);
+      setSuccessState({ orderNumber: currentCheckout.orderNumber, orderId: currentCheckout.orderId });
+      setCart({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
+      setSnackbarMessage("Payment successful.");
+      router.replace(
+        `/checkout/success?orderId=${encodeURIComponent(currentCheckout.orderId)}&orderNumber=${encodeURIComponent(currentCheckout.orderNumber)}`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "We could not confirm your payment.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function cancelEmbeddedStripeCheckout() {
+    cardNumberRef.current?.unmount?.();
+    cardExpiryRef.current?.unmount?.();
+    cardCvcRef.current?.unmount?.();
+    cardNumberRef.current = null;
+    cardExpiryRef.current = null;
+    cardCvcRef.current = null;
+    const currentCheckout = stripeCheckout;
+    setStripeCheckout(null);
+    setStripeLoading(false);
+    if (!currentCheckout) return;
+    await fetch("/api/client/v1/orders/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orderId: currentCheckout.orderId,
+        orderNumber: currentCheckout.orderNumber,
+        merchantTransactionId: currentCheckout.merchantTransactionId,
+      }),
+    }).catch(() => null);
+    setSubmitting(false);
+    setSnackbarMessage("Secure payment was cancelled.");
+  }
+
+  async function handleStripePaymentSubmit(currentCheckout: StripeCheckoutState) {
+    try {
+      const Stripe = await loadStripeJs();
+      const stripe = stripeRef.current || (Stripe ? Stripe(currentCheckout.publishableKey) : null);
+      if (!stripe) throw new Error("Stripe.js is not available.");
+
+      let result: any;
+      if (paymentMode === "saved" && selectedCard?.id) {
+        result = await stripe.confirmCardPayment(currentCheckout.clientSecret, {
+          payment_method: String(selectedCard.id),
+        });
+      } else {
+        const cardElement = cardNumberRef.current;
+        if (!cardElement) throw new Error("Secure card fields are not ready yet.");
+        result = await stripe.confirmCardPayment(currentCheckout.clientSecret, {
+          payment_method: {
+            card: cardElement,
+            billing_details: {
+              name: newCard.holder.trim(),
+              email: String(profile?.email || "").trim() || undefined,
+              phone: combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim() || undefined,
+            },
+          },
+        });
+      }
+
+      const recoveredPaymentIntent =
+        result?.error?.code === "payment_intent_unexpected_state" &&
+        String(result?.error?.payment_intent?.status || "").trim().toLowerCase() === "succeeded"
+          ? result.error.payment_intent
+          : null;
+
+      if (result?.error && !recoveredPaymentIntent) {
+        throw new Error(result.error.message || "Your payment could not be completed.");
+      }
+
+      const paymentIntentId = String(
+        result?.paymentIntent?.id || recoveredPaymentIntent?.id || currentCheckout.paymentIntentId || "",
+      );
+      const paymentIntentStatus = String(
+        result?.paymentIntent?.status || recoveredPaymentIntent?.status || "",
+      )
+        .trim()
+        .toLowerCase();
+      if (paymentIntentStatus && paymentIntentStatus !== "succeeded") {
+        const statusResponse = await fetch(
+          `/api/client/v1/payments/stripe/payment-intent-status?paymentIntentId=${encodeURIComponent(paymentIntentId)}`,
+          { cache: "no-store" },
+        );
+        const statusPayload = await statusResponse.json().catch(() => ({}));
+        const confirmedStatus = String(statusPayload?.data?.status || "").trim().toLowerCase();
+        if (confirmedStatus !== "succeeded") {
+          throw new Error(statusPayload?.message || "Your payment is still waiting for confirmation.");
+        }
+      }
+
+      await finalizeStripeCheckout(currentCheckout, paymentIntentId);
+      await refreshSavedCards().catch(() => null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Your payment could not be completed.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+      setSubmitting(false);
+    }
+  }
 
   async function refreshSavedCards() {
     if (!uid) return;
@@ -582,7 +875,8 @@ export function CartCheckout() {
             stateProvinceRegion: addressDraft.stateProvinceRegion.trim(),
             postalCode: addressDraft.postalCode.trim(),
             country: addressDraft.country.trim(),
-            phoneNumber: addressDraft.phoneNumber.trim(),
+            phoneCountryCode: addressDraft.phoneCountryCode.trim(),
+            phoneNumber: combinePhoneNumber(addressDraft.phoneCountryCode, addressDraft.phoneNumber).trim(),
             deliveryInstructions: addressDraft.instructions.trim(),
             is_default: addressDraft.is_default,
             latitude: Number.isFinite(Number(addressDraft.latitude)) ? Number(addressDraft.latitude) : null,
@@ -641,7 +935,8 @@ export function CartCheckout() {
             province: addressDraft.stateProvinceRegion.trim(),
             postalCode: addressDraft.postalCode.trim(),
             country: addressDraft.country.trim(),
-            phoneNumber: addressDraft.phoneNumber.trim(),
+            phoneCountryCode: addressDraft.phoneCountryCode.trim(),
+            phoneNumber: combinePhoneNumber(addressDraft.phoneCountryCode, addressDraft.phoneNumber).trim(),
             deliveryInstructions: addressDraft.instructions.trim(),
             instructions: addressDraft.instructions.trim(),
             is_default: addressDraft.is_default,
@@ -691,21 +986,10 @@ export function CartCheckout() {
       setSnackbarMessage("Remove the out-of-stock items from your cart before placing your order.");
       return;
     }
-    if (!canUseSavedCard && !canUseNewCard) {
-      if (paymentMode === "new") {
-        setCardTouched({
-          holder: true,
-          number: true,
-          expiryMonth: true,
-          expiryYear: true,
-          cvv: true,
-        });
-      }
-      setErrorMessage(
-        paymentMode === "saved"
-          ? "Choose a saved card before placing your order."
-          : "Complete your new card details before placing your order.",
-      );
+    if (stripeCheckout) {
+      setSubmitting(true);
+      setErrorMessage(null);
+      await handleStripePaymentSubmit(stripeCheckout);
       return;
     }
 
@@ -725,7 +1009,8 @@ export function CartCheckout() {
           deliveryAddress: {
             ...(selectedLocation || {}),
             recipientName: contactDraft.recipientName.trim(),
-            phoneNumber: contactDraft.phoneNumber.trim(),
+            phoneCountryCode: contactDraft.phoneCountryCode.trim(),
+            phoneNumber: combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
           },
           pickupSelections,
           source: "web",
@@ -746,75 +1031,38 @@ export function CartCheckout() {
       createdOrderNumber = orderNumber;
       createdMerchantTransactionId = merchantTransactionId;
 
-      const chargeEndpoint = paymentMode === "saved"
-        ? "/api/client/v1/payments/peach/charge-token"
-        : "/api/client/v1/payments/peach/charge-card";
-      const paymentRequestBody =
-        paymentMode === "saved"
-          ? {
-              userId: uid,
-              cardId: selectedCard?.id,
-              amount: payableIncl,
-              currency: "ZAR",
-              merchantTransactionId,
-            }
-          : {
-              shopperResultUrl:
-                typeof window !== "undefined"
-                  ? `${window.location.origin}/cart?step=success&orderId=${encodeURIComponent(orderId)}&orderNumber=${encodeURIComponent(orderNumber || merchantTransactionId)}`
-                  : undefined,
-              userId: uid,
-              amount: payableIncl,
-              currency: "ZAR",
-              merchantTransactionId,
-              saveCard: newCard.saveCard,
-              customer: {
-                email: profile?.email || "unknown@piessang.co.za",
-              },
-              billing: {
-                name: newCard.holder.trim(),
-              },
-              card: {
-                brand: detectCardBrand(newCard.number),
-                holder: newCard.holder.trim(),
-                number: sanitizeCardNumber(newCard.number),
-                expiryMonth: sanitizeMonth(newCard.expiryMonth),
-                expiryYear: sanitizeYear(newCard.expiryYear),
-                cvv: sanitizeCvv(newCard.cvv),
-              },
-            };
-      const chargeResponse = await fetch(chargeEndpoint, {
+      const chargeResponse = await fetch("/api/client/v1/payments/stripe/create-payment-intent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(paymentRequestBody),
+        body: JSON.stringify({
+          userId: uid,
+          orderId,
+          savePaymentMethod: paymentMode === "new" ? newCard.saveCard : false,
+          selectedPaymentMethodId: paymentMode === "saved" ? String(selectedCard?.id || "") : "",
+        }),
       });
       const chargeJson = await chargeResponse.json().catch(() => ({}));
       if (!chargeResponse.ok || chargeJson?.ok === false) {
         throw new Error(chargeJson?.message || "Your payment could not be completed.");
       }
 
-      if (paymentMode === "new") {
-        const redirectUrl = String(chargeJson?.shopperResultUrl || "").trim();
-        if (redirectUrl) {
-          window.location.assign(redirectUrl);
-          return;
-        }
+      const clientSecret = String(chargeJson?.data?.clientSecret || chargeJson?.clientSecret || "").trim();
+      const paymentIntentId = String(chargeJson?.data?.paymentIntentId || chargeJson?.paymentIntentId || "").trim();
+      const publishableKey = String(chargeJson?.data?.publishableKey || chargeJson?.publishableKey || "").trim();
+      if (!clientSecret || !paymentIntentId || !publishableKey) {
+        throw new Error("Stripe payment did not return the details we expected.");
       }
 
-      await fetch("/api/client/v1/carts/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid }),
-      }).catch(() => null);
-
-      await refreshCart();
-      const finalOrderNumber = orderNumber || merchantTransactionId;
-      setSuccessState({ orderNumber: finalOrderNumber, orderId });
-      setCart({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
-      setSnackbarMessage("Payment successful.");
-      router.replace(
-        `/cart?step=success&orderId=${encodeURIComponent(orderId)}&orderNumber=${encodeURIComponent(finalOrderNumber)}`,
-      );
+      const nextCheckout = {
+        clientSecret,
+        publishableKey,
+        paymentIntentId,
+        orderId,
+        orderNumber: orderNumber || merchantTransactionId,
+        merchantTransactionId,
+      };
+      setStripeCheckout(nextCheckout);
+      await handleStripePaymentSubmit(nextCheckout);
     } catch (error) {
       if (createdOrderId || createdOrderNumber || createdMerchantTransactionId) {
         await fetch("/api/client/v1/orders/delete", {
@@ -846,7 +1094,7 @@ export function CartCheckout() {
         <button
           type="button"
           onClick={() => openAuthModal("Sign in to continue to checkout.")}
-          className="mt-5 inline-flex items-center rounded-[8px] bg-[#cbb26b] px-4 py-2.5 text-[13px] font-semibold text-white"
+          className="brand-button mt-5 inline-flex items-center rounded-[8px] px-4 py-2.5 text-[13px] font-semibold"
         >
           Sign in
         </button>
@@ -920,15 +1168,14 @@ export function CartCheckout() {
                     placeholder="Who should receive or collect this order?"
                   />
                 </div>
-                <div>
-                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Phone number</label>
-                  <input
-                    value={contactDraft.phoneNumber}
-                    onChange={(event) => setContactDraft((current) => ({ ...current, phoneNumber: event.target.value }))}
-                    className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                    placeholder="Contact number for delivery or collection"
-                  />
-                </div>
+                <PhoneInput
+                  label="Mobile number"
+                  countryCode={contactDraft.phoneCountryCode}
+                  localNumber={contactDraft.phoneNumber}
+                  onCountryCodeChange={(value) => setContactDraft((current) => ({ ...current, phoneCountryCode: value }))}
+                  onLocalNumberChange={(value) => setContactDraft((current) => ({ ...current, phoneNumber: value }))}
+                  hint="We’ll use this for delivery and order updates."
+                />
               </div>
             </section>
 
@@ -988,21 +1235,21 @@ export function CartCheckout() {
                       />
                     </div>
                     <div className="sm:col-span-2">
+                      <PhoneInput
+                        label="Mobile number"
+                        countryCode={addressDraft.phoneCountryCode}
+                        localNumber={addressDraft.phoneNumber}
+                        onCountryCodeChange={(value) => setAddressDraft((current) => ({ ...current, phoneCountryCode: value }))}
+                        onLocalNumberChange={(value) => setAddressDraft((current) => ({ ...current, phoneNumber: value }))}
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
                       <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address</label>
                       <input
                         value={addressDraft.streetAddress}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
                         placeholder="Street number and street name"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Phone number</label>
-                      <input
-                        value={addressDraft.phoneNumber}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, phoneNumber: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Contact number for delivery"
                       />
                     </div>
                     <div className="sm:col-span-2">
@@ -1213,52 +1460,22 @@ export function CartCheckout() {
                   </div>
                   <div className="sm:col-span-2">
                     <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Card number</label>
-                    <input
-                      inputMode="numeric"
-                      value={formatCardNumberInput(newCard.number)}
-                      onChange={(event) => setNewCard((current) => ({ ...current, number: sanitizeCardNumber(event.target.value) }))}
-                      onBlur={() => setCardTouched((current) => ({ ...current, number: true }))}
-                      className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                      placeholder="0000 0000 0000 0000"
-                    />
-                    <p className="mt-2 text-[12px] text-[#7a7a7a]">{detectCardBrand(newCard.number) === "MASTER" ? "Mastercard" : "Visa"} card</p>
-                    {cardTouched.number && cardErrors.number ? <p className="mt-2 text-[12px] text-[#b91c1c]">{cardErrors.number}</p> : null}
+                    <div className="mt-2 flex h-11 w-full items-center rounded-[10px] border border-black/10 bg-white px-3">
+                      <div id="piessang-card-number" className="w-full" />
+                    </div>
+                    <p className="mt-2 text-[12px] text-[#7a7a7a]">Securely captured by Stripe inside Piessang</p>
                   </div>
                   <div>
-                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Expiry month</label>
-                    <input
-                      inputMode="numeric"
-                      value={newCard.expiryMonth}
-                      onChange={(event) => setNewCard((current) => ({ ...current, expiryMonth: formatMonthInput(event.target.value) }))}
-                      onBlur={() => setCardTouched((current) => ({ ...current, expiryMonth: true }))}
-                      className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                      placeholder="MM"
-                    />
-                    {cardTouched.expiryMonth && cardErrors.expiryMonth ? <p className="mt-2 text-[12px] text-[#b91c1c]">{cardErrors.expiryMonth}</p> : null}
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Expiry</label>
+                    <div className="mt-2 flex h-11 w-full items-center rounded-[10px] border border-black/10 bg-white px-3">
+                      <div id="piessang-card-expiry" className="w-full" />
+                    </div>
                   </div>
                   <div>
-                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Expiry year</label>
-                    <input
-                      inputMode="numeric"
-                      value={newCard.expiryYear}
-                      onChange={(event) => setNewCard((current) => ({ ...current, expiryYear: sanitizeYear(event.target.value) }))}
-                      onBlur={() => setCardTouched((current) => ({ ...current, expiryYear: true }))}
-                      className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                      placeholder="YYYY"
-                    />
-                    {cardTouched.expiryYear && cardErrors.expiryYear ? <p className="mt-2 text-[12px] text-[#b91c1c]">{cardErrors.expiryYear}</p> : null}
-                  </div>
-                  <div className="sm:col-span-2">
                     <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">CVV</label>
-                    <input
-                      inputMode="numeric"
-                      value={newCard.cvv}
-                      onChange={(event) => setNewCard((current) => ({ ...current, cvv: sanitizeCvv(event.target.value) }))}
-                      onBlur={() => setCardTouched((current) => ({ ...current, cvv: true }))}
-                      className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                      placeholder="CVV"
-                    />
-                    {cardTouched.cvv && cardErrors.cvv ? <p className="mt-2 text-[12px] text-[#b91c1c]">{cardErrors.cvv}</p> : null}
+                    <div className="mt-2 flex h-11 w-full items-center rounded-[10px] border border-black/10 bg-white px-3">
+                      <div id="piessang-card-cvc" className="w-full" />
+                    </div>
                   </div>
                   <label className="sm:col-span-2 mt-1 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
                     <input
@@ -1269,6 +1486,18 @@ export function CartCheckout() {
                     />
                     Save this card for faster checkout next time
                   </label>
+                  {stripeCheckout ? (
+                    <div className="sm:col-span-2 flex items-center justify-between gap-3 rounded-[8px] border border-[rgba(203,178,107,0.35)] bg-[rgba(203,178,107,0.08)] px-4 py-3 text-[12px] text-[#6b5b34]">
+                      <span>{stripeLoading ? "Loading secure card fields..." : "Secure payment is ready. Complete the payment below."}</span>
+                      <button
+                        type="button"
+                        onClick={() => void cancelEmbeddedStripeCheckout()}
+                        className="font-semibold text-[#202020]"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </section>
@@ -1338,7 +1567,11 @@ export function CartCheckout() {
                   {contactDraft.recipientName || resolveLocationTitle(selectedLocation, selectedLocationIndex)}
                 </p>
                 <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">{formatAddress(selectedLocation)}</p>
-                {contactDraft.phoneNumber ? <p className="mt-2 text-[12px] font-semibold text-[#202020]">{contactDraft.phoneNumber}</p> : null}
+                {contactDraft.phoneNumber ? (
+                  <p className="mt-2 text-[12px] font-semibold text-[#202020]">
+                    {combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber)}
+                  </p>
+                ) : null}
               </div>
             ) : null}
             <div className="mt-5 space-y-3 text-[13px] text-[#57636c]">
@@ -1395,6 +1628,7 @@ export function CartCheckout() {
               onClick={() => void handleCheckout()}
               disabled={
                 submitting ||
+                stripeLoading ||
                 checkoutBlocked ||
                 !locations.length ||
                 !hasCheckoutContactDetails ||
@@ -1403,7 +1637,9 @@ export function CartCheckout() {
               }
               className="mt-5 inline-flex h-12 w-full items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold uppercase tracking-[0.08em] text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {submitting ? "Placing your order..." : "Pay and place order"}
+              {submitting
+                ? "Processing payment..."
+                : "Pay and place order"}
             </button>
 
             <Link href="/cart" className="mt-3 inline-flex h-11 w-full items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]">
@@ -1556,6 +1792,7 @@ export function CartCheckout() {
                       key={`${locationId || location.label || "address"}-${index}`}
                       type="button"
                       onClick={() => {
+                        const nextPhone = splitPhoneNumber(location.phoneNumber || "", location.phoneCountryCode || "27");
                         setEditingLocationId(locationId);
                         setAddressDraft({
                           locationName: (location as any)?.locationName || location.label || "",
@@ -1567,7 +1804,8 @@ export function CartCheckout() {
                           stateProvinceRegion: location.stateProvinceRegion || location.province || "",
                           postalCode: location.postalCode || "",
                           country: location.country || "",
-                          phoneNumber: location.phoneNumber || "",
+                          phoneCountryCode: nextPhone.countryCode,
+                          phoneNumber: nextPhone.localNumber,
                           instructions: location.instructions || "",
                           is_default: location.is_default === true,
                           latitude: location.latitude == null ? "" : String(location.latitude),
@@ -1622,18 +1860,19 @@ export function CartCheckout() {
                       />
                     </div>
                     <div className="sm:col-span-2">
+                      <PhoneInput
+                        label="Mobile number"
+                        countryCode={addressDraft.phoneCountryCode}
+                        localNumber={addressDraft.phoneNumber}
+                        onCountryCodeChange={(value) => setAddressDraft((current) => ({ ...current, phoneCountryCode: value }))}
+                        onLocalNumberChange={(value) => setAddressDraft((current) => ({ ...current, phoneNumber: value }))}
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
                       <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address</label>
                       <input
                         value={addressDraft.streetAddress}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Phone number</label>
-                      <input
-                        value={addressDraft.phoneNumber}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, phoneNumber: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
                       />
                     </div>

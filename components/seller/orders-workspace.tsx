@@ -23,6 +23,18 @@ type SellerOrderSlice = {
     destination?: string;
     instructions?: string;
     trackingMode?: string;
+    cutoffTime?: string;
+  };
+  fulfilmentDeadline?: {
+    dueAt?: string;
+    dueAtLabel?: string;
+    overdue?: boolean;
+    showDeadline?: boolean;
+  };
+  actionPlan?: {
+    title?: string;
+    summary?: string;
+    checklist?: string[];
   };
   customerContact?: {
     recipientName?: string;
@@ -167,6 +179,40 @@ function paymentStatusTone(status: string) {
   return "border-[#e5e7eb] bg-[#f9fafb] text-[#57636c]";
 }
 
+function getDeadlineState(item: SellerOrderSlice, nowTick: number) {
+  const dueAt = toStr(item.fulfilmentDeadline?.dueAt);
+  if (!dueAt || item.fulfilmentDeadline?.showDeadline !== true) {
+    return { label: "No fulfilment deadline set", tone: "text-[#57636c]", overdue: false };
+  }
+  const deadline = new Date(dueAt);
+  if (Number.isNaN(deadline.getTime())) {
+    return { label: "Deadline unavailable", tone: "text-[#57636c]", overdue: false };
+  }
+  const diffMs = deadline.getTime() - nowTick;
+  if (diffMs <= 0 || item.fulfilmentDeadline?.overdue) {
+    const hoursLate = Math.max(1, Math.floor(Math.abs(diffMs) / (1000 * 60 * 60)));
+    return {
+      label: `Late by ${hoursLate}h • should have been fulfilled by ${formatTime(dueAt)}`,
+      tone: "text-[#b91c1c]",
+      overdue: true,
+    };
+  }
+  const totalMinutes = Math.floor(diffMs / (1000 * 60));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  const countdown = days > 0 ? `${days}d ${hours}h left` : hours > 0 ? `${hours}h ${minutes}m left` : `${minutes}m left`;
+  return {
+    label: `${countdown} • fulfil by ${formatTime(dueAt)}`,
+    tone: "text-[#8f7531]",
+    overdue: false,
+  };
+}
+
+function modalBackdropClass(open: boolean) {
+  return `fixed inset-0 z-[140] flex items-center justify-center px-4 py-6 transition ${open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`;
+}
+
 export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }: SellerOrdersWorkspaceProps) {
   const { authReady, isAuthenticated } = useAuth();
   const [items, setItems] = useState<SellerOrderSlice[]>([]);
@@ -174,13 +220,17 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [actionDrafts, setActionDrafts] = useState<Record<string, SellerActionDraft>>({});
-  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
-  const [bulkUpdating, setBulkUpdating] = useState(false);
   const [documentLoadingOrderId, setDocumentLoadingOrderId] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!authReady) return undefined;
@@ -209,7 +259,6 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
         if (cancelled) return;
         setItems(Array.isArray(payload?.items) ? payload.items : []);
         setCounts(payload?.counts || { all: 0, new: 0, unfulfilled: 0, fulfilled: 0 });
-        setSelectedOrderIds([]);
       } catch (cause) {
         if (!cancelled) {
           setItems([]);
@@ -303,68 +352,6 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
     }
   }
 
-  async function handleBulkStatusUpdate(nextStatus: "confirmed" | "processing" | "dispatched" | "delivered") {
-    const selectedItems = filteredItems.filter((item) => selectedOrderIds.includes(item.orderId));
-    if (!selectedItems.length) return;
-    setBulkUpdating(true);
-    setError(null);
-    setNotice(null);
-    try {
-      for (const item of selectedItems) {
-        const draft = getDraft(item.orderId);
-        const trackingMode = toStr(item.deliveryOption?.trackingMode).toLowerCase();
-        const response = await fetch("/api/client/v1/orders/seller/update-status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            orderId: item.orderId,
-            orderNumber: item.orderNumber,
-            sellerCode: sellerCode || item.sellerCode,
-            sellerSlug: sellerSlug || item.sellerSlug,
-            status: nextStatus,
-            trackingNumber: trackingMode === "courier" ? draft.trackingNumber : "",
-            courierName: trackingMode === "courier" ? draft.courierName : "",
-            notes: draft.notes,
-          }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload?.ok === false) {
-          throw new Error(payload?.message || `Unable to update ${item.orderNumber || item.orderId}.`);
-        }
-      }
-
-      setItems((current) =>
-        current.map((entry) =>
-          selectedOrderIds.includes(entry.orderId)
-            ? {
-                ...entry,
-                orderStatus: nextStatus === "delivered" ? "completed" : nextStatus,
-                fulfillmentStatus: nextStatus === "delivered" ? "delivered" : nextStatus,
-                lines: {
-                  selfFulfilment: entry.lines.selfFulfilment.map((line) => ({
-                    ...line,
-                    fulfillment_tracking: {
-                      ...(line?.fulfillment_tracking || {}),
-                      status: nextStatus,
-                      label: statusLabelText(nextStatus),
-                      delivered: nextStatus === "delivered",
-                    },
-                  })),
-                  piessangFulfilment: entry.lines.piessangFulfilment,
-                },
-              }
-            : entry,
-        ),
-      );
-      setSelectedOrderIds([]);
-      setNotice(`${selectedItems.length} order${selectedItems.length === 1 ? "" : "s"} marked ${statusLabelText(nextStatus).toLowerCase()}.`);
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to update the selected orders.");
-    } finally {
-      setBulkUpdating(false);
-    }
-  }
-
   async function handleGenerateDocument(item: SellerOrderSlice, docType: "picking_slip" | "delivery_note" | "invoice") {
     setDocumentLoadingOrderId(item.orderId);
     setError(null);
@@ -385,8 +372,8 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
         throw new Error(payload?.message || "Unable to generate that document right now.");
       }
       window.open(String(payload.data.url), "_blank", "noopener,noreferrer");
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to generate that document right now.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to generate that document right now.");
     } finally {
       setDocumentLoadingOrderId(null);
     }
@@ -419,14 +406,14 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const totalUnits = useMemo(() => filteredItems.reduce((sum, item) => sum + Number(item.counts.quantity || 0), 0), [filteredItems]);
   const totalValue = useMemo(() => filteredItems.reduce((sum, item) => sum + Number(item.totals.subtotalIncl || 0), 0), [filteredItems]);
   const totalSelfFulfilment = useMemo(() => filteredItems.reduce((sum, item) => sum + Number(item.counts.selfFulfilment || 0), 0), [filteredItems]);
-  const selectedCount = selectedOrderIds.length;
+  const activeItem = useMemo(() => filteredItems.find((item) => item.orderId === activeOrderId) || null, [activeOrderId, filteredItems]);
 
   return (
     <div className="space-y-4">
       <section className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] p-4">
         <p className="text-[12px] font-semibold text-[#202020]">Seller orders</p>
         <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">
-          Each order here already shows only your seller items. Inside each order, your items are grouped into the lines you handle yourself and the lines Piessang handles.
+          Each order already shows only your seller slice. Open an order to see the exact fulfilment steps, deadline, and customer details you need.
         </p>
       </section>
 
@@ -435,7 +422,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
           <div>
             <p className="text-[12px] font-semibold text-[#202020]">{summaryLabel}</p>
             <p className="mt-1 text-[12px] text-[#57636c]">
-              You only see the order lines, delivery progress, and actions that belong to your seller account.
+              Open any order card to see the seller action plan, delivery deadline, documents, and status controls.
             </p>
           </div>
           <label className="block w-full max-w-[320px]">
@@ -476,321 +463,57 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       {notice ? <div className="rounded-[8px] border border-[#d1fae5] bg-[#ecfdf5] px-4 py-3 text-[12px] text-[#166534]">{notice}</div> : null}
       {error ? <div className="rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">{error}</div> : null}
 
-      {selectedCount ? (
-        <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <p className="text-[13px] font-semibold text-[#202020]">
-              {selectedCount} selected order{selectedCount === 1 ? "" : "s"}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {(["processing", "dispatched", "delivered"] as const).map((status) => (
-                <button
-                  key={status}
-                  type="button"
-                  onClick={() => void handleBulkStatusUpdate(status)}
-                  disabled={bulkUpdating}
-                  className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {bulkUpdating ? "Updating..." : `Mark ${statusLabelText(status).toLowerCase()}`}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => setSelectedOrderIds([])}
-                className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)]"
-              >
-                Clear selection
-              </button>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
       <section className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
         <div className="divide-y divide-black/5">
           {loading ? (
             <div className="px-4 py-8 text-[13px] text-[#57636c]">Loading seller orders...</div>
           ) : filteredItems.length ? (
             filteredItems.map((item) => {
-              const open = expandedOrderId === item.orderId;
-              const nextActions = getNextSellerActions(item);
+              const deadlineState = getDeadlineState(item, nowTick);
               return (
-                <div key={item.orderId} className="px-4 py-4">
-                  <div className="grid gap-3 md:grid-cols-[auto_1.4fr_.9fr_1fr_auto] md:items-center">
-                    <label className="inline-flex items-center justify-center pt-1 md:pt-0">
-                      <input
-                        type="checkbox"
-                        checked={selectedOrderIds.includes(item.orderId)}
-                        onChange={(event) =>
-                          setSelectedOrderIds((current) =>
-                            event.target.checked
-                              ? current.includes(item.orderId)
-                                ? current
-                                : [...current, item.orderId]
-                              : current.filter((id) => id !== item.orderId),
-                          )
-                        }
-                        className="h-4 w-4 rounded border-black/20"
-                        aria-label={`Select order ${item.orderNumber || item.orderId}`}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setExpandedOrderId((current) => (current === item.orderId ? null : item.orderId))}
-                      className="grid w-full gap-3 text-left md:col-span-4 md:grid-cols-[1.4fr_.9fr_1fr_auto] md:items-center"
-                    >
-                    <div>
+                <button
+                  key={item.orderId}
+                  type="button"
+                  onClick={() => setActiveOrderId(item.orderId)}
+                  className="grid w-full gap-4 px-4 py-4 text-left transition hover:bg-[rgba(32,32,32,0.02)] lg:grid-cols-[1.4fr_.8fr_.85fr_1fr]"
+                >
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
                       <p className="text-[14px] font-semibold text-[#202020]">{item.orderNumber || item.orderId}</p>
-                      <p className="mt-1 text-[12px] text-[#57636c]">
-                        {item.customerName || "Customer"} • {formatTime(item.createdAt)}
-                      </p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${orderStatusTone(item.orderStatus)}`}>
-                          {toStr(item.orderStatus || "unknown")}
-                        </span>
-                        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${paymentStatusTone(item.paymentStatus)}`}>
-                          Payment {toStr(item.paymentStatus || "unknown")}
-                        </span>
-                      </div>
+                      <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${orderStatusTone(item.orderStatus)}`}>
+                        {toStr(item.orderStatus || "unknown")}
+                      </span>
+                      <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${paymentStatusTone(item.paymentStatus)}`}>
+                        Payment {toStr(item.paymentStatus || "unknown")}
+                      </span>
                     </div>
-                    <div className="text-[12px] text-[#57636c]">
-                      <p>{pluralize(item.counts.quantity, "unit")}</p>
-                      <p>{pluralize(item.counts.items, "line")}</p>
-                    </div>
-                    <div className="text-[12px] text-[#57636c]">
-                      <p>{item.counts.selfFulfilment} seller-handled</p>
-                      <p>{item.counts.piessangFulfilment} Piessang-handled</p>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-[13px] font-semibold text-[#202020]">{formatMoney(item.totals.subtotalIncl)}</div>
-                      <p className="mt-1 text-[11px] text-[#57636c]">{item.deliveryProgress?.percentageDelivered ?? 0}% delivered</p>
-                    </div>
-                    </button>
+                    <p className="mt-2 text-[12px] text-[#57636c]">
+                      {item.customerName || "Customer"} • {formatTime(item.createdAt)}
+                    </p>
+                    <p className={`mt-2 text-[12px] font-semibold ${deadlineState.tone}`}>{deadlineState.label}</p>
                   </div>
 
-                  {open ? (
-                    <div className="mt-4 space-y-4 rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] p-4">
-                      <section className="rounded-[10px] border border-black/5 bg-white p-4">
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <p className="text-[12px] font-semibold text-[#202020]">Delivery progress</p>
-                            <p className="mt-1 text-[11px] text-[#57636c]">
-                              {item.deliveryProgress?.deliveredUnits ?? 0} of {item.deliveryProgress?.totalUnits ?? 0} units delivered across this seller order.
-                            </p>
-                          </div>
-                          <span className="text-[13px] font-semibold text-[#202020]">{item.deliveryProgress?.percentageDelivered ?? 0}%</span>
-                        </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {nextActions.map((nextStatus) => (
-                            <button
-                              key={nextStatus}
-                              type="button"
-                              onClick={() => updateSellerOrderStatus(item, nextStatus)}
-                              disabled={updatingOrderId === item.orderId}
-                              className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)] disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {updatingOrderId === item.orderId ? "Updating..." : `Mark ${statusLabelText(nextStatus).toLowerCase()}`}
-                            </button>
-                          ))}
-                          <Link
-                            href={`/account?section=orders&orderNumber=${encodeURIComponent(item.orderNumber || item.orderId)}`}
-                            className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)]"
-                          >
-                            Customer view
-                          </Link>
-                          {(["picking_slip", "delivery_note", "invoice"] as const).map((docType) => (
-                            <button
-                              key={docType}
-                              type="button"
-                              onClick={() => void handleGenerateDocument(item, docType)}
-                              disabled={documentLoadingOrderId === item.orderId}
-                              className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)] disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {documentLoadingOrderId === item.orderId
-                                ? "Preparing..."
-                                : docType === "picking_slip"
-                                  ? "Packing slip"
-                                  : docType === "delivery_note"
-                                    ? "Delivery note"
-                                    : "Invoice"}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e5e7eb]">
-                          <div
-                            className="h-full rounded-full bg-[#1d4ed8]"
-                            style={{ width: `${Math.max(0, Math.min(100, item.deliveryProgress?.percentageDelivered ?? 0))}%` }}
-                          />
-                        </div>
-                        <div className="mt-3 grid gap-3 text-[11px] text-[#57636c] md:grid-cols-3">
-                          <p>{item.deliveryProgress?.deliveredLines ?? 0} delivered lines</p>
-                          <p>{item.deliveryProgress?.pendingLines ?? 0} pending lines</p>
-                          <p>{item.deliveryProgress?.isComplete ? "Order fully delivered" : "Awaiting remaining deliveries"}</p>
-                        </div>
-                      </section>
+                  <div className="text-[12px] text-[#57636c]">
+                    <p className="font-semibold text-[#202020]">{item.deliveryOption?.label || "Delivery method pending"}</p>
+                    <p className="mt-1">{pluralize(item.counts.quantity, "unit")}</p>
+                    <p>{pluralize(item.counts.items, "line")}</p>
+                  </div>
 
-                      <section className="rounded-[10px] border border-black/5 bg-white p-4">
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                          <div>
-                            <p className="text-[12px] font-semibold text-[#202020]">How you should fulfil this order</p>
-                            <p className="mt-1 text-[11px] text-[#57636c]">
-                              {item.deliveryOption?.instructions || "Use the delivery method saved on this order when you fulfil it."}
-                            </p>
-                          </div>
-                          <span className="inline-flex rounded-full border border-black/10 bg-[#f9fafb] px-3 py-1 text-[11px] font-semibold text-[#202020]">
-                            {item.deliveryOption?.label || "Delivery method pending"}
-                          </span>
-                        </div>
-                        <div className="mt-4 grid gap-3 text-[12px] text-[#57636c] md:grid-cols-4">
-                          <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Delivery type</p>
-                            <p className="mt-1 font-semibold text-[#202020]">{item.deliveryOption?.label || "Pending"}</p>
-                          </div>
-                          <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Customer paid</p>
-                            <p className="mt-1 font-semibold text-[#202020]">{formatMoney(Number(item.deliveryOption?.amountIncl || 0))}</p>
-                          </div>
-                          <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Expected timing</p>
-                            <p className="mt-1 font-semibold text-[#202020]">
-                              {item.deliveryOption?.leadTimeDays ? `${item.deliveryOption.leadTimeDays} day${item.deliveryOption.leadTimeDays === 1 ? "" : "s"}` : "Not set"}
-                            </p>
-                          </div>
-                          <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Destination</p>
-                            <p className="mt-1 font-semibold text-[#202020]">{item.deliveryOption?.destination || "No destination saved"}</p>
-                          </div>
-                        </div>
+                  <div className="text-[12px] text-[#57636c]">
+                    <p className="font-semibold text-[#202020]">{item.actionPlan?.title || "Review fulfilment plan"}</p>
+                    <p className="mt-1">{item.counts.selfFulfilment} seller-handled</p>
+                    <p>{item.counts.piessangFulfilment} Piessang-handled</p>
+                  </div>
 
-                        {toStr(item.deliveryOption?.trackingMode).toLowerCase() === "courier" ? (
-                          <div className="mt-4 grid gap-3 rounded-[8px] border border-black/5 bg-[#fafafa] p-4 md:grid-cols-3">
-                            <div>
-                              <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Courier name</label>
-                              <input
-                                value={getDraft(item.orderId).courierName}
-                                onChange={(event) => updateDraft(item.orderId, { courierName: event.target.value })}
-                                className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                                placeholder="The Courier Guy"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Tracking number</label>
-                              <input
-                                value={getDraft(item.orderId).trackingNumber}
-                                onChange={(event) => updateDraft(item.orderId, { trackingNumber: event.target.value })}
-                                className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                                placeholder="Tracking reference"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Delivery note</label>
-                              <input
-                                value={getDraft(item.orderId).notes}
-                                onChange={(event) => updateDraft(item.orderId, { notes: event.target.value })}
-                                className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                                placeholder="Optional note"
-                              />
-                            </div>
-                          </div>
-                        ) : toStr(item.deliveryOption?.trackingMode).toLowerCase() === "direct" ? (
-                          <div className="mt-4 rounded-[8px] border border-[#dbeafe] bg-[#eff6ff] px-4 py-3 text-[12px] text-[#1d4ed8]">
-                            This order is inside your direct delivery coverage, so courier tracking fields are hidden here.
-                          </div>
-                        ) : toStr(item.deliveryOption?.type).toLowerCase() === "collection" ? (
-                          <div className="mt-4 rounded-[8px] border border-[#d1fae5] bg-[#ecfdf5] px-4 py-3 text-[12px] text-[#166534]">
-                            The customer chose collection. Prepare the items for pickup and mark the order delivered once collection is complete.
-                          </div>
-                        ) : null}
-                      </section>
-
-                      <section className="rounded-[10px] border border-black/5 bg-white p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-[12px] font-semibold text-[#202020]">Customer delivery details</p>
-                            <p className="mt-1 text-[11px] text-[#57636c]">
-                              Use these details when you need to call the customer, arrange delivery, or prepare collection.
-                            </p>
-                          </div>
-                        </div>
-                        <div className="mt-4 grid gap-3 text-[12px] text-[#57636c] md:grid-cols-3">
-                          <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Recipient</p>
-                            <p className="mt-1 font-semibold text-[#202020]">{item.customerContact?.recipientName || item.customerName || "Customer"}</p>
-                          </div>
-                          <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Phone</p>
-                            <p className="mt-1 font-semibold text-[#202020]">{item.customerContact?.phone || "Not provided yet"}</p>
-                          </div>
-                          <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Address</p>
-                            <p className="mt-1 font-semibold text-[#202020]">{item.customerContact?.destination || "No address saved on this order"}</p>
-                          </div>
-                        </div>
-                        {item.customerContact?.notes ? (
-                          <div className="mt-3 rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-3 text-[12px] text-[#57636c]">
-                            <span className="font-semibold text-[#202020]">Delivery notes:</span> {item.customerContact.notes}
-                          </div>
-                        ) : null}
-                      </section>
-
-                      <div className="grid gap-4 lg:grid-cols-2">
-                        <section className="rounded-[10px] border border-black/5 bg-white p-4">
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <p className="text-[12px] font-semibold text-[#202020]">Self fulfilment</p>
-                              <p className="mt-1 text-[11px] text-[#57636c]">Your seller-managed lines that you need to prepare and fulfil.</p>
-                            </div>
-                            <span className="text-[11px] font-semibold text-[#8f7531]">{item.counts.selfFulfilment}</span>
-                          </div>
-                          <div className="mt-3 space-y-3">
-                            {item.lines.selfFulfilment.length ? item.lines.selfFulfilment.map((line, index) => (
-                              <div key={`${item.orderId}-self-${index}`} className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <p className="text-[13px] font-semibold text-[#202020]">{getLineTitle(line)}</p>
-                                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusTone(line?.fulfillment_tracking?.status)}`}>
-                                    {getLineStatus(line)}
-                                  </span>
-                                </div>
-                                {getLineSubtitle(line) ? <p className="mt-1 text-[11px] text-[#7d7d7d]">{getLineSubtitle(line)}</p> : null}
-                                <div className="mt-2 flex items-center justify-between gap-3 text-[12px] text-[#57636c]">
-                                  <p>Qty: {getLineQty(line)}</p>
-                                  <p>{line?.fulfillment_tracking?.actionOwner === "seller" ? "Actioned by seller" : "Tracked by Piessang"}</p>
-                                </div>
-                              </div>
-                            )) : <div className="text-[12px] text-[#57636c]">No self-fulfilment lines on this order.</div>}
-                          </div>
-                        </section>
-
-                        <section className="rounded-[10px] border border-black/5 bg-white p-4">
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <p className="text-[12px] font-semibold text-[#202020]">Piessang fulfilment</p>
-                              <p className="mt-1 text-[11px] text-[#57636c]">Piessang-managed lines are shown here so you can follow the full customer order.</p>
-                            </div>
-                            <span className="text-[11px] font-semibold text-[#166534]">{item.counts.piessangFulfilment}</span>
-                          </div>
-                          <div className="mt-3 space-y-3">
-                            {item.lines.piessangFulfilment.length ? item.lines.piessangFulfilment.map((line, index) => (
-                              <div key={`${item.orderId}-piessang-${index}`} className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <p className="text-[13px] font-semibold text-[#202020]">{getLineTitle(line)}</p>
-                                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusTone(line?.fulfillment_tracking?.status)}`}>
-                                    {getLineStatus(line)}
-                                  </span>
-                                </div>
-                                {getLineSubtitle(line) ? <p className="mt-1 text-[11px] text-[#7d7d7d]">{getLineSubtitle(line)}</p> : null}
-                                <div className="mt-2 flex items-center justify-between gap-3 text-[12px] text-[#57636c]">
-                                  <p>Qty: {getLineQty(line)}</p>
-                                  <p>Tracked from Piessang fulfilment</p>
-                                </div>
-                              </div>
-                            )) : <div className="text-[12px] text-[#57636c]">No Piessang-fulfilled lines on this order.</div>}
-                          </div>
-                        </section>
-                      </div>
+                  <div className="lg:text-right">
+                    <div className="text-[13px] font-semibold text-[#202020]">{formatMoney(item.totals.subtotalIncl)}</div>
+                    <p className="mt-1 text-[11px] text-[#57636c]">{item.deliveryProgress?.percentageDelivered ?? 0}% delivered</p>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e5e7eb]">
+                      <div className={`h-full rounded-full ${deadlineState.overdue ? "bg-[#b91c1c]" : "bg-[#1d4ed8]"}`} style={{ width: `${Math.max(0, Math.min(100, item.deliveryProgress?.percentageDelivered ?? 0))}%` }} />
                     </div>
-                  ) : null}
-                </div>
+                    <p className="mt-2 text-[11px] font-semibold text-[#907d4c]">Open order actions</p>
+                  </div>
+                </button>
               );
             })
           ) : (
@@ -800,6 +523,237 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
           )}
         </div>
       </section>
+
+      {activeItem ? (
+        <div className={modalBackdropClass(true)} role="dialog" aria-modal="true">
+          <button type="button" className="absolute inset-0 bg-black/45" aria-label="Close seller order details" onClick={() => setActiveOrderId(null)} />
+          <div className="relative h-[92svh] w-full max-w-[1120px] overflow-hidden rounded-[8px] bg-white shadow-[0_20px_50px_rgba(20,24,27,0.2)]" onClick={(event) => event.stopPropagation()}>
+            <div className="flex h-full flex-col">
+              <div className="flex items-start justify-between gap-4 border-b border-black/5 px-5 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller order</p>
+                  <h3 className="mt-1 text-[22px] font-semibold text-[#202020]">{activeItem.orderNumber || activeItem.orderId}</h3>
+                  <p className="mt-1 text-[13px] leading-[1.6] text-[#57636c]">
+                    {activeItem.customerName || "Customer"} • {formatTime(activeItem.createdAt)} • {activeItem.deliveryOption?.label || "Delivery method pending"}
+                  </p>
+                </div>
+                <button type="button" onClick={() => setActiveOrderId(null)} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#f5f5f5] text-[20px] leading-none text-[#57636c]" aria-label="Close seller order details">
+                  ×
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
+                  <div className="space-y-4">
+                    <section className={`rounded-[10px] border p-4 ${getDeadlineState(activeItem, nowTick).overdue ? "border-[#fecaca] bg-[#fff5f5]" : "border-[#f0e7c9] bg-[rgba(203,178,107,0.08)]"}`}>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">What you need to do now</p>
+                      <h4 className="mt-2 text-[20px] font-semibold text-[#202020]">{activeItem.actionPlan?.title || "Review this order and action the next fulfilment step"}</h4>
+                      <p className="mt-2 text-[13px] leading-[1.7] text-[#3f3f46]">{activeItem.actionPlan?.summary || activeItem.deliveryOption?.instructions || "Use the saved delivery method for this order."}</p>
+                      <div className="mt-4 rounded-[8px] border border-black/5 bg-white/80 px-4 py-3">
+                        <p className={`text-[13px] font-semibold ${getDeadlineState(activeItem, nowTick).tone}`}>{getDeadlineState(activeItem, nowTick).label}</p>
+                      </div>
+                      {Array.isArray(activeItem.actionPlan?.checklist) && activeItem.actionPlan.checklist.length ? (
+                        <div className="mt-4 space-y-2">
+                          {activeItem.actionPlan.checklist.map((step, index) => (
+                            <div key={`${activeItem.orderId}-check-${index}`} className="flex gap-3 rounded-[8px] bg-white/80 px-4 py-3 text-[13px] text-[#202020]">
+                              <span className="mt-[1px] inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#202020] text-[11px] font-semibold text-white">{index + 1}</span>
+                              <span className="leading-[1.6]">{step}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </section>
+
+                    <section className="rounded-[10px] border border-black/5 bg-white p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-[12px] font-semibold text-[#202020]">Delivery progress</p>
+                          <p className="mt-1 text-[11px] text-[#57636c]">
+                            {activeItem.deliveryProgress?.deliveredUnits ?? 0} of {activeItem.deliveryProgress?.totalUnits ?? 0} units delivered across this seller order.
+                          </p>
+                        </div>
+                        <span className="text-[13px] font-semibold text-[#202020]">{activeItem.deliveryProgress?.percentageDelivered ?? 0}%</span>
+                      </div>
+                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e5e7eb]">
+                        <div className={`h-full rounded-full ${getDeadlineState(activeItem, nowTick).overdue ? "bg-[#b91c1c]" : "bg-[#1d4ed8]"}`} style={{ width: `${Math.max(0, Math.min(100, activeItem.deliveryProgress?.percentageDelivered ?? 0))}%` }} />
+                      </div>
+                      <div className="mt-3 grid gap-3 text-[11px] text-[#57636c] md:grid-cols-3">
+                        <p>{activeItem.deliveryProgress?.deliveredLines ?? 0} delivered lines</p>
+                        <p>{activeItem.deliveryProgress?.pendingLines ?? 0} pending lines</p>
+                        <p>{activeItem.deliveryProgress?.isComplete ? "Order fully delivered" : "Awaiting remaining deliveries"}</p>
+                      </div>
+                    </section>
+
+                    <section className="rounded-[10px] border border-black/5 bg-white p-4">
+                      <p className="text-[12px] font-semibold text-[#202020]">Customer delivery details</p>
+                      <p className="mt-1 text-[11px] text-[#57636c]">Use these details exactly as saved when you need to call the customer, arrange delivery, or prepare collection.</p>
+                      <div className="mt-4 grid gap-3 text-[12px] text-[#57636c] md:grid-cols-3">
+                        <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Recipient</p>
+                          <p className="mt-1 font-semibold text-[#202020]">{activeItem.customerContact?.recipientName || activeItem.customerName || "Customer"}</p>
+                        </div>
+                        <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Phone</p>
+                          <p className="mt-1 font-semibold text-[#202020]">{activeItem.customerContact?.phone || "Not provided yet"}</p>
+                        </div>
+                        <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Address</p>
+                          <p className="mt-1 font-semibold text-[#202020]">{activeItem.customerContact?.destination || "No address saved on this order"}</p>
+                        </div>
+                      </div>
+                      {activeItem.customerContact?.notes ? (
+                        <div className="mt-3 rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-3 text-[12px] text-[#57636c]">
+                          <span className="font-semibold text-[#202020]">Delivery notes:</span> {activeItem.customerContact.notes}
+                        </div>
+                      ) : null}
+                    </section>
+
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <section className="rounded-[10px] border border-black/5 bg-white p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[12px] font-semibold text-[#202020]">Self fulfilment</p>
+                            <p className="mt-1 text-[11px] text-[#57636c]">These are the lines you must action yourself.</p>
+                          </div>
+                          <span className="text-[11px] font-semibold text-[#8f7531]">{activeItem.counts.selfFulfilment}</span>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {activeItem.lines.selfFulfilment.length ? activeItem.lines.selfFulfilment.map((line, index) => (
+                            <div key={`${activeItem.orderId}-self-${index}`} className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <p className="text-[13px] font-semibold text-[#202020]">{getLineTitle(line)}</p>
+                                <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusTone(line?.fulfillment_tracking?.status)}`}>
+                                  {getLineStatus(line)}
+                                </span>
+                              </div>
+                              {getLineSubtitle(line) ? <p className="mt-1 text-[11px] text-[#7d7d7d]">{getLineSubtitle(line)}</p> : null}
+                              <div className="mt-2 flex items-center justify-between gap-3 text-[12px] text-[#57636c]">
+                                <p>Qty: {getLineQty(line)}</p>
+                                <p>Seller action required</p>
+                              </div>
+                            </div>
+                          )) : <div className="text-[12px] text-[#57636c]">No self-fulfilment lines on this order.</div>}
+                        </div>
+                      </section>
+
+                      <section className="rounded-[10px] border border-black/5 bg-white p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[12px] font-semibold text-[#202020]">Piessang fulfilment</p>
+                            <p className="mt-1 text-[11px] text-[#57636c]">These lines are handled by Piessang. Use them as visibility only.</p>
+                          </div>
+                          <span className="text-[11px] font-semibold text-[#166534]">{activeItem.counts.piessangFulfilment}</span>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {activeItem.lines.piessangFulfilment.length ? activeItem.lines.piessangFulfilment.map((line, index) => (
+                            <div key={`${activeItem.orderId}-piessang-${index}`} className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <p className="text-[13px] font-semibold text-[#202020]">{getLineTitle(line)}</p>
+                                <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${statusTone(line?.fulfillment_tracking?.status)}`}>
+                                  {getLineStatus(line)}
+                                </span>
+                              </div>
+                              {getLineSubtitle(line) ? <p className="mt-1 text-[11px] text-[#7d7d7d]">{getLineSubtitle(line)}</p> : null}
+                              <div className="mt-2 flex items-center justify-between gap-3 text-[12px] text-[#57636c]">
+                                <p>Qty: {getLineQty(line)}</p>
+                                <p>Piessang is handling this line</p>
+                              </div>
+                            </div>
+                          )) : <div className="text-[12px] text-[#57636c]">No Piessang-fulfilled lines on this order.</div>}
+                        </div>
+                      </section>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <section className="rounded-[10px] border border-black/5 bg-white p-4">
+                      <p className="text-[12px] font-semibold text-[#202020]">Order actions</p>
+                      <p className="mt-1 text-[11px] text-[#57636c]">Keep status updates, courier details, and seller documents in one place here.</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {getNextSellerActions(activeItem).map((nextStatus) => (
+                          <button
+                            key={nextStatus}
+                            type="button"
+                            onClick={() => void updateSellerOrderStatus(activeItem, nextStatus)}
+                            disabled={updatingOrderId === activeItem.orderId}
+                            className="rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)] disabled:opacity-50"
+                          >
+                            {updatingOrderId === activeItem.orderId ? "Updating..." : `Mark ${statusLabelText(nextStatus).toLowerCase()}`}
+                          </button>
+                        ))}
+                        <Link href={`/account/orders/${encodeURIComponent(activeItem.orderId)}`} className="rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)]">
+                          Customer order view
+                        </Link>
+                      </div>
+
+                      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                        {(["picking_slip", "delivery_note", "invoice"] as const).map((docType) => (
+                          <button
+                            key={docType}
+                            type="button"
+                            onClick={() => void handleGenerateDocument(activeItem, docType)}
+                            disabled={documentLoadingOrderId === activeItem.orderId}
+                            className="rounded-[8px] border border-black/10 bg-[#fafafa] px-3 py-2 text-[12px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.04)] disabled:opacity-50"
+                          >
+                            {documentLoadingOrderId === activeItem.orderId
+                              ? "Preparing..."
+                              : docType === "picking_slip"
+                                ? "Packing slip"
+                                : docType === "delivery_note"
+                                  ? "Delivery note"
+                                  : "Invoice"}
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+
+                    {toStr(activeItem.deliveryOption?.trackingMode).toLowerCase() === "courier" ? (
+                      <section className="rounded-[10px] border border-black/5 bg-white p-4">
+                        <p className="text-[12px] font-semibold text-[#202020]">Courier details</p>
+                        <p className="mt-1 text-[11px] text-[#57636c]">Add these before you mark the order dispatched.</p>
+                        <div className="mt-4 grid gap-3">
+                          <label className="block">
+                            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Courier name</span>
+                            <input value={getDraft(activeItem.orderId).courierName} onChange={(event) => updateDraft(activeItem.orderId, { courierName: event.target.value })} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none" placeholder="The Courier Guy" />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Tracking number</span>
+                            <input value={getDraft(activeItem.orderId).trackingNumber} onChange={(event) => updateDraft(activeItem.orderId, { trackingNumber: event.target.value })} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none" placeholder="Tracking reference" />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Dispatch note</span>
+                            <textarea value={getDraft(activeItem.orderId).notes} onChange={(event) => updateDraft(activeItem.orderId, { notes: event.target.value })} rows={4} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-3 text-[13px] outline-none" placeholder="Optional note for this dispatch." />
+                          </label>
+                        </div>
+                      </section>
+                    ) : null}
+
+                    {toStr(activeItem.deliveryOption?.trackingMode).toLowerCase() === "direct" ? (
+                      <div className="rounded-[10px] border border-[#dbeafe] bg-[#eff6ff] px-4 py-3 text-[12px] text-[#1d4ed8]">
+                        This is a direct-delivery order. Do not wait for courier tracking here. Use the saved address and phone number to arrange delivery yourself.
+                      </div>
+                    ) : null}
+
+                    {toStr(activeItem.deliveryOption?.type).toLowerCase() === "collection" ? (
+                      <div className="rounded-[10px] border border-[#d1fae5] bg-[#ecfdf5] px-4 py-3 text-[12px] text-[#166534]">
+                        This is a collection order. Prepare the items for pickup and only mark the order delivered after the customer has collected them.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-black/5 px-5 py-4">
+                <button type="button" onClick={() => setActiveOrderId(null)} className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
+
+export default SellerOrdersWorkspace;

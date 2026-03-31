@@ -253,7 +253,7 @@ export async function POST(req){
         ? money2(variant.sale.sale_price_incl)
         : 0;
       if (fulfillmentMode === "bevgo" && !marketplaceVariantLogisticsComplete(logistics)) {
-        return err(400, "Missing Logistics", "Each Bevgo-fulfilled variant requires weight, dimensions, monthly sales and stock metadata.");
+        return err(400, "Missing Logistics", "Each Piessang-fulfilled variant requires weight, dimensions, monthly sales and stock metadata.");
       }
       if (fulfillmentMode === "bevgo" && !barcode) {
         return err(400, "Missing Barcode", "Each Piessang-fulfilled variant requires a barcode before the product can be saved.");
@@ -367,7 +367,7 @@ export async function POST(req){
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: "brand-request-internal",
-          to: "info@bevgo.co.za",
+          to: "support@piessang.com",
           data: {
             brandTitle: resolvedBrand.title,
             brandSlug: resolvedBrand.slug,

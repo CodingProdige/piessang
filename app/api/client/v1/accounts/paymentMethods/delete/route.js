@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
+import { stripeRequest } from "@/lib/payments/stripe";
 
 /* ---------- helpers ---------- */
 const ok = (p = {}, s = 200) =>
@@ -35,31 +36,37 @@ export async function POST(req) {
       return err(404, "User Not Found", "Could not find user.");
     }
 
-    const userData = snap.data();
+    const userData = snap.data() || {};
+    const stripeCustomerId = String(
+      userData?.paymentMethods?.stripeCustomerId ||
+        userData?.billing?.stripeCustomerId ||
+        userData?.stripeCustomerId ||
+        "",
+    ).trim();
 
-    const cards =
-      userData.paymentMethods?.cards ?? [];
+    if (stripeCustomerId) {
+      await stripeRequest(`/v1/payment_methods/${encodeURIComponent(cardId)}/detach`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "",
+      });
+    } else {
+      const cards = userData.paymentMethods?.cards ?? [];
+      const filteredCards = cards.filter(c => c.id !== cardId);
 
-    const filteredCards = cards.filter(
-      c => c.id !== cardId
-    );
+      if (filteredCards.length === cards.length) {
+        return err(404, "Card Not Found", "No card found with that id.");
+      }
 
-    if (filteredCards.length === cards.length) {
-      return err(
-        404,
-        "Card Not Found",
-        "No card found with that id."
-      );
+      await userRef.update({
+        "paymentMethods.cards": filteredCards,
+        "paymentMethods.updatedAt": new Date().toISOString()
+      });
     }
-
-    await userRef.update({
-      "paymentMethods.cards": filteredCards,
-      "paymentMethods.updatedAt": new Date().toISOString()
-    });
 
     return ok({
       message: "Payment method deleted.",
-      remainingCards: filteredCards.length
+      remainingCards: null
     });
 
   } catch (error) {

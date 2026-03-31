@@ -1,8 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { db } from "@/lib/firebase";
-import { doc, runTransaction } from "firebase/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { releaseStockLotReservations } from "@/lib/warehouse/stock-lots";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, data: p }, { status: s });
@@ -11,13 +10,18 @@ const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, messag
 const now = () => new Date().toISOString();
 export async function POST(req) {
   try {
+    const adminDb = getAdminDb();
+    if (!adminDb) {
+      return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
+    }
+
     const { customerId, channel = "unknown" } = await req.json();
     if (!customerId) {
       return err(400, "Invalid Request", "customerId is required.");
     }
 
-    const cartRef = doc(db, "carts", customerId);
-    const txResult = await runTransaction(db, async (tx) => {
+    const cartRef = adminDb.collection("carts").doc(String(customerId));
+    const txResult = await adminDb.runTransaction(async (tx) => {
       const snap = await tx.get(cartRef);
 
       const emptyCart = {
@@ -50,7 +54,7 @@ export async function POST(req) {
         warnings: { global: [], items: [] }
       };
 
-      if (!snap.exists()) {
+      if (!snap.exists) {
         tx.set(cartRef, emptyCart);
         return { cart: emptyCart, warnings: emptyCart.warnings };
       }

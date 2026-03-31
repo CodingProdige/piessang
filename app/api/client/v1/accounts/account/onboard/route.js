@@ -111,7 +111,7 @@ export async function POST(req) {
       return err(
         400,
         "Trade Agreement Required",
-        "You must agree to the Bevgo Master Trade Agreement to continue."
+        "You must agree to the Piessang Master Trade Agreement to continue."
       );
     }
 

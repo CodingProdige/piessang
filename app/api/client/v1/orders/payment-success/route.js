@@ -1,12 +1,14 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { syncOrderSellerSettlements } from "@/lib/seller/settlements";
 import { buildPaidStatePatch } from "@/lib/orders/platform-order";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
 import { recordLiveCommerceEvent } from "@/lib/analytics/live-commerce";
+import { ensureOrderInvoice } from "@/lib/orders/invoices";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -136,6 +138,14 @@ function getLineVariantId(item) {
   ).trim();
 }
 
+function getLineRevenueIncl(item) {
+  const lineTotals = item?.line_totals && typeof item.line_totals === "object" ? item.line_totals : {};
+  const explicit = Number(lineTotals?.final_incl ?? lineTotals?.total_incl);
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+  return Number(variant?.pricing?.selling_price_incl || 0) * getLineQty(item);
+}
+
 /* ───────────────── ENDPOINT ───────────────── */
 
 export async function POST(req) {
@@ -151,31 +161,24 @@ export async function POST(req) {
       return err(400, "Missing Order ID", "orderId is required.");
     }
 
-    if (!payment || payment.provider !== "peach") {
+    const provider = toStr(payment?.provider || "").toLowerCase();
+    if (!payment || (provider !== "peach" && provider !== "stripe")) {
       return err(
         400,
         "Invalid Provider",
-        "payment.provider must be 'peach'."
+        "payment.provider must be 'peach' or 'stripe'."
       );
     }
 
-    if (!payment.peachTransactionId) {
-      return err(
-        400,
-        "Missing Transaction ID",
-        "payment.peachTransactionId is required."
-      );
+    if (provider === "peach" && !payment.peachTransactionId) {
+      return err(400, "Missing Transaction ID", "payment.peachTransactionId is required.");
     }
 
-    const chargeType = payment.chargeType || "card";
-
-    if (chargeType !== "card" && chargeType !== "token") {
-      return err(
-        400,
-        "Invalid Charge Type",
-        "payment.chargeType must be 'card' or 'token'."
-      );
+    if (provider === "stripe" && !payment.stripeSessionId && !payment.stripePaymentIntentId) {
+      return err(400, "Missing Stripe Reference", "payment.stripeSessionId or payment.stripePaymentIntentId is required.");
     }
+
+    const chargeType = payment.chargeType || (provider === "stripe" ? "embedded_checkout" : "card");
 
     if (!payment.currency || typeof payment.amount_incl !== "number") {
       return err(
@@ -195,15 +198,24 @@ export async function POST(req) {
     }
 
     const order = snap.data();
+    const createIntentKey =
+      typeof order?.meta?.createIntentKey === "string" ? order.meta.createIntentKey.trim() : "";
 
     /* ───── Idempotency Guard ───── */
 
-    const existingAttempts = Array.isArray(order?.payment?.attempts)
-      ? order.payment.attempts
-      : [];
+    const existingAttempts = Array.isArray(order?.payment?.attempts) ? order.payment.attempts : [];
+    const transactionIdentity =
+      provider === "stripe"
+        ? toStr(payment.stripeSessionId || payment.stripePaymentIntentId || payment.merchantTransactionId || "")
+        : toStr(payment.peachTransactionId || payment.merchantTransactionId || "");
 
     const alreadyProcessed = existingAttempts.some(
-      a => a?.peachTransactionId === payment.peachTransactionId
+      (attempt) =>
+        toStr(
+          provider === "stripe"
+            ? attempt?.stripeSessionId || attempt?.stripePaymentIntentId || attempt?.merchantTransactionId
+            : attempt?.peachTransactionId || attempt?.merchantTransactionId,
+        ) === transactionIdentity
     );
 
     if (alreadyProcessed) {
@@ -245,17 +257,19 @@ export async function POST(req) {
     /* ───── Build Attempt (CIT + MIT) ───── */
 
     const attempt = {
-      provider: "peach",
+      provider,
       method: payment.method || "card",
       chargeType,
 
-      threeDSecureId: payment.threeDSecureId || null,
+      threeDSecureId: provider === "peach" ? payment.threeDSecureId || null : null,
 
       merchantTransactionId: payment.merchantTransactionId || null,
-      peachTransactionId: payment.peachTransactionId,
+      peachTransactionId: provider === "peach" ? payment.peachTransactionId : null,
+      stripeSessionId: provider === "stripe" ? payment.stripeSessionId || null : null,
+      stripePaymentIntentId: provider === "stripe" ? payment.stripePaymentIntentId || null : null,
 
       token:
-        chargeType === "token"
+        provider === "peach" && chargeType === "token"
           ? {
               registrationId: payment.token?.registrationId || null,
               cardId: payment.token?.cardId || null
@@ -278,16 +292,18 @@ export async function POST(req) {
     const timestamp = now();
     const updatePayload = {
       ...buildPaidStatePatch(order, {
-        provider: "peach",
+        provider,
         method: payment.method || "card",
         chargeType,
         merchantTransactionId: payment.merchantTransactionId || null,
-        peachTransactionId: payment.peachTransactionId,
-        threeDSecureId: payment.threeDSecureId || null,
+        peachTransactionId: provider === "peach" ? payment.peachTransactionId : null,
+        stripeSessionId: provider === "stripe" ? payment.stripeSessionId || null : null,
+        stripePaymentIntentId: provider === "stripe" ? payment.stripePaymentIntentId || null : null,
+        threeDSecureId: provider === "peach" ? payment.threeDSecureId || null : null,
         amount_incl: paidAmount,
         currency: payment.currency,
         token:
-          chargeType === "token"
+          provider === "peach" && chargeType === "token"
             ? {
                 registrationId: payment.token?.registrationId || null,
                 cardId: payment.token?.cardId || null
@@ -296,11 +312,6 @@ export async function POST(req) {
         timestamp,
       }),
       "payment.attempts": nextAttempts,
-      timestamps: {
-        ...(order.timestamps || {}),
-        updatedAt: timestamp,
-        lockedAt: order?.timestamps?.lockedAt || timestamp,
-      }
     };
 
     const paymentDoc = {
@@ -310,8 +321,14 @@ export async function POST(req) {
         remaining_amount_incl: 0,
         currency: payment.currency,
         status: "allocated",
-        reference: payment.peachTransactionId || null,
-        note: "Card payment captured via Peach."
+        reference:
+          provider === "stripe"
+            ? payment.stripePaymentIntentId || payment.stripeSessionId || null
+            : payment.peachTransactionId || null,
+        note:
+          provider === "stripe"
+            ? "Card payment captured via Stripe Embedded Checkout."
+            : "Card payment captured via Peach."
       },
       customer: {
         customerId: order?.order?.customerId || null,
@@ -341,6 +358,10 @@ export async function POST(req) {
     await db.collection("payments_v2").add(paymentDoc);
 
     await ref.update(updatePayload);
+
+    if (createIntentKey) {
+      await db.collection("idempotency_order_create_v2").doc(createIntentKey).delete().catch(() => null);
+    }
 
     const items = Array.isArray(order?.items) ? order.items : [];
     const productSales = new Map();
@@ -402,6 +423,93 @@ export async function POST(req) {
       orderNumber: order?.order?.orderNumber || null,
       eventType: "payment_success",
     });
+
+    await ensureOrderInvoice({
+      db,
+      orderId,
+      generatedBy: "payment_success",
+      issuedAt: timestamp,
+    }).catch((invoiceError) => {
+      console.error("order invoice creation failed:", invoiceError);
+    });
+
+    const customerId = toStr(order?.order?.customerId || order?.customer?.customerId || "");
+    if (customerId) {
+      const windowStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const clicksSnap = await db
+        .collection("campaign_clicks_v1")
+        .where("userId", "==", customerId)
+        .where("createdAt", ">=", windowStart)
+        .get()
+        .catch(() => null);
+
+      const clickDocs = clicksSnap?.docs ?? [];
+      if (clickDocs.length) {
+        const latestByProduct = new Map();
+        for (const doc of clickDocs) {
+          const click = doc.data() || {};
+          const productId = getLineProductId({ product_unique_id: click?.productId });
+          if (!productId) continue;
+          const current = latestByProduct.get(productId);
+          if (!current || String(click?.createdAt || "") > String(current?.createdAt || "")) {
+            latestByProduct.set(productId, { id: doc.id, ...click });
+          }
+        }
+
+        for (const item of items) {
+          const productId = getLineProductId(item);
+          const attributedClick = latestByProduct.get(productId);
+          if (!productId || !attributedClick?.campaignId) continue;
+
+          const quantity = getLineQty(item);
+          const revenueIncl = Number(getLineRevenueIncl(item).toFixed(2));
+
+          await db.collection("campaign_conversions_v1").add({
+            campaignId: attributedClick.campaignId,
+            clickId: attributedClick.id || null,
+            orderId,
+            orderNumber: order?.order?.orderNumber || null,
+            userId: customerId,
+            productId,
+            variantId: getLineVariantId(item) || null,
+            quantity,
+            revenueIncl,
+            attributedBy: "last_click",
+            createdAt: timestamp,
+            _createdAt: timestamp,
+          });
+
+          await db.collection("campaign_daily_stats_v1").doc(`${String(attributedClick.campaignId)}:${timestamp.slice(0, 10)}`).set(
+            {
+              campaignId: String(attributedClick.campaignId),
+              dayKey: timestamp.slice(0, 10),
+              conversions: FieldValue.increment(1),
+              revenue: FieldValue.increment(revenueIncl),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true },
+          );
+
+          await db.collection("campaigns_v1").doc(String(attributedClick.campaignId)).set(
+            {
+              analytics: {
+                conversions: FieldValue.increment(1),
+                revenue: FieldValue.increment(revenueIncl),
+              },
+              dailyMetrics: {
+                dayKey: timestamp.slice(0, 10),
+                conversionsToday: FieldValue.increment(1),
+                revenueToday: FieldValue.increment(revenueIncl),
+              },
+              timestamps: {
+                updatedAt: timestamp,
+              },
+            },
+            { merge: true },
+          );
+        }
+      }
+    }
 
     const originBase = new URL(req.url).origin;
     const sellerGroups = new Map();

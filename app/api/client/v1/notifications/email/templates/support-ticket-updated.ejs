@@ -1,0 +1,7 @@
+<p style="margin:0 0 16px;">Hi <%= customerName || "there" %>,</p>
+<p style="margin:0 0 16px;"><%= summary || "There is a new update on your support ticket." %></p>
+<p style="margin:0 0 16px;"><strong>Ticket ID:</strong> <%= ticketId %><br /><strong>Subject:</strong> <%= subject %></p>
+<% if (replyPreview) { %>
+  <p style="margin:0 0 16px;"><strong>Latest update:</strong><br /><%= replyPreview %></p>
+<% } %>
+<p style="margin:0;">Open your Piessang account support area to read the full thread and reply directly on the ticket.</p>

@@ -30,13 +30,12 @@ const err = (status, title, message, extra = {}) =>
 const now = () => new Date().toISOString();
 
 const COMPANY = {
-  name: "Bevgo Distributions",
+  name: "Piessang",
   address: "Unit 2, 4 EK Green Str, Charleston Hill, Paarl, 7646",
   contact: "021 818 6153",
-  email: "info@bevgo.co.za",
+  email: "support@piessang.com",
   vat: "4760314296",
-  logoURL:
-    "https://firebasestorage.googleapis.com/v0/b/bevgo-client-management-rckxs5.firebasestorage.app/o/Bevgo%20Media%2FBevgo%20Header%20Banner.png?alt=media&token=fb6ef880-b618-46c5-a1c3-e9bc1dd3690e"
+  logoURL: "/logo/Piessang Logo.png"
 };
 
 const DOCS = {

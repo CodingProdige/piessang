@@ -203,6 +203,7 @@ export function MobileProductFilters({
   currentMinRating,
   currentInStock,
   currentOnSale,
+  currentNewArrivals,
   currentFeatured,
   currentMinPrice,
   currentMaxPrice,
@@ -218,6 +219,7 @@ export function MobileProductFilters({
   currentMinRating?: number;
   currentInStock: boolean;
   currentOnSale: boolean;
+  currentNewArrivals: boolean;
   currentFeatured: boolean;
   currentMinPrice?: number;
   currentMaxPrice?: number;
@@ -340,6 +342,7 @@ export function MobileProductFilters({
                 {[
                   { title: "In stock", key: "inStock", enabled: currentInStock },
                   { title: "On sale", key: "onSale", enabled: currentOnSale },
+                  { title: "New arrivals", key: "newArrivals", enabled: currentNewArrivals },
                   { title: "Featured", key: "isFeatured", enabled: currentFeatured },
                 ].map((item) => (
                   <Link

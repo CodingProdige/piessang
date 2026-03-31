@@ -3,6 +3,11 @@ import sgMail from "@sendgrid/mail";
 import ejs from "ejs";
 import path from "path";
 import { emailMessages } from "./messages";
+import {
+  canSendNotificationToUser,
+  resolveNotificationPreferenceRecipient,
+  shouldRespectNotificationPreferences,
+} from "@/lib/notifications/preferences";
 
 if (process.env.SENDGRID_API_KEY?.startsWith("SG.")) {
   sgMail.setApiKey(process.env.SENDGRID_API_KEY);
@@ -34,10 +39,18 @@ function resolveNotificationName(input = {}) {
   );
 }
 
+function resolveBaseUrl() {
+  return firstNonEmptyString(
+    process.env.BASE_URL,
+    process.env.NEXT_PUBLIC_BASE_URL,
+    "https://piessang.com",
+  ).replace(/\/+$/, "");
+}
+
 export async function POST(req){
   try{
     const body = await req.json();
-    const { type, to, data } = body;
+    const { type, to, data, uid } = body;
 
     if(!type || !to) return err(400,"Missing Fields","type and to are required");
 
@@ -54,6 +67,22 @@ export async function POST(req){
       } : {})
     };
 
+    if (shouldRespectNotificationPreferences(type) && !Array.isArray(to)) {
+      const recipientUser = await resolveNotificationPreferenceRecipient({
+        uid: uid || safeData?.uid || safeData?.userId || safeData?.customerUid,
+        email: typeof to === "string" ? to : "",
+      });
+      if (recipientUser && !canSendNotificationToUser({ channel: "email", type, user: recipientUser })) {
+        return ok({
+          message: "Email suppressed by notification preferences",
+          suppressed: true,
+          channel: "email",
+          type,
+          to,
+        });
+      }
+    }
+
     const templatePath = path.join(process.cwd(),"app/api/client/v1/notifications/email/templates",config.template);
     const wrapperPath = path.join(process.cwd(),"app/api/client/v1/notifications/email/partials",config.wrapper);
 
@@ -62,7 +91,9 @@ export async function POST(req){
 
     // Render wrapper with body injected
     const finalHTML = await ejs.renderFile(wrapperPath, {
-      body: contentHTML
+      body: contentHTML,
+      baseUrl: resolveBaseUrl(),
+      logoUrl: `${resolveBaseUrl()}/logo/Piessang%20Logo.png`,
     });
 
     // Render subject
@@ -70,7 +101,7 @@ export async function POST(req){
 
     const msg = {
       to,
-      from: "no-reply@bevgo.co.za",
+      from: "no-reply@piessang.com",
       subject,
       html: finalHTML
     };

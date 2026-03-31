@@ -23,6 +23,8 @@ export async function applyOrderPaymentSuccess({
   chargeType = "card",
   merchantTransactionId = null,
   peachTransactionId = null,
+  stripeSessionId = null,
+  stripePaymentIntentId = null,
   threeDSecureId = null,
   amount_incl,
   currency,
@@ -52,6 +54,8 @@ export async function applyOrderPaymentSuccess({
   const alreadyRecorded = attempts.some(
     attempt =>
       attempt?.peachTransactionId === peachTransactionId ||
+      attempt?.stripeSessionId === stripeSessionId ||
+      attempt?.stripePaymentIntentId === stripePaymentIntentId ||
       attempt?.merchantTransactionId === merchantTransactionId
   );
 
@@ -62,6 +66,8 @@ export async function applyOrderPaymentSuccess({
       chargeType,
       merchantTransactionId,
       peachTransactionId,
+      stripeSessionId,
+      stripePaymentIntentId,
       threeDSecureId,
       amount_incl: paidAmountIncl,
       currency,
@@ -77,6 +83,8 @@ export async function applyOrderPaymentSuccess({
       chargeType,
       merchantTransactionId,
       peachTransactionId,
+      stripeSessionId,
+      stripePaymentIntentId,
       threeDSecureId,
       amount_incl: paidAmountIncl,
       currency,
@@ -98,6 +106,8 @@ export async function applyOrderPaymentSuccess({
       chargeType,
       merchantTransactionId,
       peachTransactionId,
+      stripeSessionId,
+      stripePaymentIntentId,
       threeDSecureId,
       amount_incl: paidAmountIncl,
       currency,

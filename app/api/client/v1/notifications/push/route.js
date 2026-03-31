@@ -3,6 +3,11 @@ import crypto from "crypto";
 import { collection, collectionGroup, doc, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
 import { pushTemplates } from "./messages";
+import {
+  canSendNotificationToUser,
+  resolveNotificationPreferenceRecipient,
+  shouldRespectNotificationPreferences,
+} from "@/lib/notifications/preferences";
 
 const FCM_BATCH_LIMIT = 500;
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
@@ -119,7 +124,7 @@ function buildMessage(type, vars = {}) {
   }
 
   return {
-    title: "Bevgo Notification",
+    title: "Piessang Notification",
     body: "You have a new message."
   };
 }
@@ -332,6 +337,21 @@ export async function POST(req) {
         },
         { status: 400 }
       );
+    }
+
+    if (!global && uid && shouldRespectNotificationPreferences(type)) {
+      const recipientUser = await resolveNotificationPreferenceRecipient({ uid });
+      if (recipientUser && !canSendNotificationToUser({ channel: "push", type, user: recipientUser })) {
+        return NextResponse.json({
+          ok: true,
+          suppressed: true,
+          channel: "push",
+          uid,
+          devicesReceived: 0,
+          devicesFailed: 0,
+          message: "Push notification suppressed by notification preferences.",
+        });
+      }
     }
 
     let tokens = [];

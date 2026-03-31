@@ -64,6 +64,90 @@ function getLinePriceIncl(item) {
   return Number.isFinite(price) ? price * getLineQuantity(item) : 0;
 }
 
+function toIsoOrEmpty(value) {
+  const input = toStr(value);
+  if (!input) return "";
+  const date = new Date(input);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function addLeadWindow({ createdAt = "", leadTimeDays = null, cutoffTime = "" } = {}) {
+  const created = new Date(createdAt);
+  if (Number.isNaN(created.getTime())) return "";
+  const safeLeadDays = Math.max(0, Number(leadTimeDays || 0));
+  created.setDate(created.getDate() + safeLeadDays);
+  const [hours, minutes] = toStr(cutoffTime || "17:00")
+    .split(":")
+    .map((part) => Number(part || 0));
+  created.setHours(Number.isFinite(hours) ? hours : 17, Number.isFinite(minutes) ? minutes : 0, 0, 0);
+  return created.toISOString();
+}
+
+function buildDeliveryActionPlan({ deliveryType = "", leadTimeDays = null, dueAt = "", overdue = false, selfFulfilmentCount = 0, piessangCount = 0 } = {}) {
+  const introSuffix = dueAt
+    ? overdue
+      ? "This order is now late, so action it immediately."
+      : "Action it before the fulfilment deadline shown below."
+    : "Action it using the steps below.";
+
+  if (deliveryType === "collection") {
+    return {
+      title: "Prepare this order for customer collection",
+      summary: `Pick, pack, and stage the seller-handled items for pickup. ${introSuffix}`,
+      checklist: [
+        "Pick and pack only your seller-handled lines.",
+        "Contact the customer if pickup timing needs to be confirmed.",
+        "Keep the order in processing until collection is complete.",
+        "Mark it delivered only once the customer has collected it.",
+      ],
+    };
+  }
+
+  if (deliveryType === "direct_delivery") {
+    return {
+      title: "You must deliver this order yourself",
+      summary: `This order sits inside your direct delivery coverage, so do not wait for a courier. ${introSuffix}`,
+      checklist: [
+        "Pick and pack your seller-handled lines now.",
+        "Use the saved customer address and phone number to arrange delivery.",
+        "Send the order out with your own driver or delivery runner.",
+        "Mark it delivered as soon as the customer has received it.",
+      ],
+    };
+  }
+
+  if (deliveryType === "shipping") {
+    return {
+      title: "Book courier dispatch for this order",
+      summary: `This order uses your shipping rules, so you need to dispatch it with courier details. ${introSuffix}`,
+      checklist: [
+        "Pick and pack your seller-handled lines now.",
+        "Book the courier and capture the courier name and tracking number.",
+        "Mark the order dispatched once the parcel is handed over.",
+        "Mark it delivered after confirmed delivery or POD.",
+      ],
+    };
+  }
+
+  if (piessangCount > 0 && selfFulfilmentCount === 0) {
+    return {
+      title: "Piessang is handling fulfilment on this order",
+      summary: "There is nothing for you to dispatch on this order. Piessang will fulfil the lines shown under Piessang fulfilment.",
+      checklist: [
+        "Review the customer-facing order details if needed.",
+        "Do not dispatch or update tracking from your seller account.",
+        "Use the Piessang fulfilment section only as visibility into customer progress.",
+      ],
+    };
+  }
+
+  return {
+    title: "Review this order and action the next fulfilment step",
+    summary: "Follow the saved delivery method for this order and keep the fulfilment status up to date.",
+    checklist: ["Review the seller-handled lines.", "Follow the saved delivery method.", "Update the order status after each fulfilment step."],
+  };
+}
+
 function getSellerDeliveryDetails(order, sellerIdentity) {
   const snapshot = order?.delivery_snapshot && typeof order.delivery_snapshot === "object" ? order.delivery_snapshot : {};
   const delivery = order?.delivery && typeof order.delivery === "object" ? order.delivery : {};
@@ -113,6 +197,7 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
       destination,
       instructions: "The customer chose collection, so you should prepare these items for pickup instead of dispatching them.",
       trackingMode: "hidden",
+      cutoffTime: null,
     };
   }
   if (deliveryType === "direct_delivery") {
@@ -125,6 +210,7 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
       destination,
       instructions: "This order falls within your direct delivery coverage, so you should handle the delivery yourself instead of using courier tracking.",
       trackingMode: "direct",
+      cutoffTime: toStr(entry?.cutoff_time || entry?.cutoffTime || ""),
     };
   }
   if (deliveryType === "shipping") {
@@ -137,6 +223,7 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
       destination,
       instructions: "This order uses your shipping settings, so you can add courier and tracking details when you dispatch it.",
       trackingMode: "courier",
+      cutoffTime: toStr(entry?.cutoff_time || entry?.cutoffTime || ""),
     };
   }
 
@@ -149,6 +236,7 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
     destination,
     instructions: "Use the delivery method saved on this order when you fulfil it.",
     trackingMode: "hidden",
+    cutoffTime: toStr(entry?.cutoff_time || entry?.cutoffTime || ""),
   };
 }
 
@@ -200,6 +288,27 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const deliveryProgress = buildOrderDeliveryProgress({ ...order, items: enrichedItems }).progress;
   const deliveryOption = getSellerDeliveryDetails(order, sellerIdentity);
   const customerContact = getSellerCustomerContact(order);
+  const dueAt = addLeadWindow({
+    createdAt: order?.timestamps?.createdAt || "",
+    leadTimeDays: deliveryOption?.leadTimeDays,
+    cutoffTime: deliveryOption?.cutoffTime || "",
+  });
+  const dueDate = dueAt ? new Date(dueAt) : null;
+  const overdue = Boolean(
+    dueDate &&
+      dueDate.getTime() < Date.now() &&
+      selfFulfilmentLines.length > 0 &&
+      !deliveryProgress?.isComplete &&
+      !["cancelled", "completed", "delivered"].includes(fulfillmentStatus || orderStatus),
+  );
+  const actionPlan = buildDeliveryActionPlan({
+    deliveryType: deliveryOption?.type,
+    leadTimeDays: deliveryOption?.leadTimeDays,
+    dueAt,
+    overdue,
+    selfFulfilmentCount: selfFulfilmentLines.length,
+    piessangCount: piessangFulfilmentLines.length,
+  });
   const newOrder = ["payment_pending", "confirmed"].includes(orderStatus);
   const fulfilled = orderStatus === "completed" || fulfillmentStatus === "delivered";
   const unfulfilled = !fulfilled && orderStatus !== "cancelled";
@@ -222,6 +331,13 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
     fulfillmentStatus,
     deliveryProgress,
     deliveryOption,
+    fulfilmentDeadline: {
+      dueAt,
+      dueAtLabel: toIsoOrEmpty(dueAt),
+      overdue,
+      showDeadline: Boolean(dueAt && selfFulfilmentLines.length > 0 && !fulfilled),
+    },
+    actionPlan,
     customerContact,
     counts: {
       items: enrichedItems.length,

@@ -131,7 +131,10 @@ function parsePayoutProfile(payload) {
     beneficiaryCountry: sanitizeEnum(source.beneficiaryCountry || source.beneficiary_country || source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase(),
     verificationStatus: sanitizeEnum(source.verificationStatus, ["not_submitted", "pending", "verified", "failed"], "not_submitted"),
     verificationNotes: sanitizeLongText(source.verificationNotes || ""),
-    peachRecipientId: sanitizeText(source.peachRecipientId || "").slice(0, 120),
+    stripeRecipientAccountId: sanitizeText(source.stripeRecipientAccountId || "").slice(0, 120),
+    stripeRecipientEntityType: sanitizeText(source.stripeRecipientEntityType || "").slice(0, 40),
+    stripeRecipientCountry: sanitizeText(source.stripeRecipientCountry || "").slice(0, 2).toUpperCase(),
+    stripeLastAccountLinkCreatedAt: toStr(source.stripeLastAccountLinkCreatedAt || ""),
     lastVerifiedAt: toStr(source.lastVerifiedAt || ""),
   };
 }

@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { submitPendingPeachPayoutBatches } from "@/lib/seller/payout-provider";
+import { submitPendingStripePayoutBatches } from "@/lib/seller/payout-provider";
 import { isSystemAdminUser } from "@/lib/seller/settlement-access";
 
 const ok = (data = {}, status = 200) => NextResponse.json({ ok: true, data }, { status });
@@ -30,7 +30,7 @@ export async function POST(req) {
       return err(403, "Access Denied", "System admin access required.");
     }
 
-    const result = await submitPendingPeachPayoutBatches();
+    const result = await submitPendingStripePayoutBatches();
     return ok(result);
   } catch (e) {
     console.error("manual seller payout submit failed:", e);
@@ -39,4 +39,3 @@ export async function POST(req) {
     });
   }
 }
-

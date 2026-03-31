@@ -415,14 +415,14 @@ export async function POST(req) {
       return err(
         400,
         "Missing Logistics",
-        "Weight, dimensions, stock and monthly sales estimates are required for Bevgo fulfilment variants."
+        "Weight, dimensions, stock and monthly sales estimates are required for Piessang fulfilment variants."
       );
     }
     if (requiresLogistics && incomingInventory.length === 0) {
       return err(
         400,
         "Missing Stock",
-        "Bevgo fulfilment variants require stock quantities."
+        "Piessang fulfilment variants require stock quantities."
       );
     }
     const nextBarcode = toStr(data?.barcode ?? list[idx]?.barcode);
@@ -617,7 +617,7 @@ export async function POST(req) {
           type: "seller-low-stock",
           to: recipients,
           data: {
-            vendorName: docData?.product?.vendorName || docData?.seller?.vendorName || "Bevgo seller",
+            vendorName: docData?.product?.vendorName || docData?.seller?.vendorName || "Piessang seller",
             productTitle: docData?.product?.title || "your product",
             variantLabel: list[idx]?.label || "variant",
             currentStock: String(nextStock),

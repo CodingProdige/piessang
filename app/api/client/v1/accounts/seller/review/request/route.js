@@ -69,6 +69,7 @@ export async function POST(req) {
 
     const owner = await findSellerOwnerByIdentifier(sellerSlug);
     if (!owner) return err(404, "Seller Not Found", "Could not find a seller account for that seller slug.");
+    const ownerSeller = owner.data?.seller && typeof owner.data.seller === "object" ? owner.data.seller : {};
 
     if (!isSellerAccountBlocked(owner.data)) {
       return err(400, "Seller Not Blocked", "This seller account is not currently blocked.");
@@ -143,9 +144,9 @@ export async function POST(req) {
       await sendSellerNotificationEmails({
         origin: new URL(req.url).origin,
         type: "seller-review-request-internal",
-        to: ["info@bevgo.co.za"],
+        to: ["support@piessang.com"],
         data: {
-          vendorName: seller?.vendorName || owner.data?.seller?.vendorName || "Bevgo seller",
+          vendorName: ownerSeller?.vendorName || "Piessang seller",
           sellerSlug,
           requestedBy: uid,
           requestedByEmail: requester?.email || requester?.seller?.contactEmail || "",

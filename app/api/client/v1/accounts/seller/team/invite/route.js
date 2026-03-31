@@ -164,7 +164,7 @@ export async function POST(req) {
       return err(
         404,
         "User Not Found",
-        "We could not find a Bevgo account for that email. Ask them to sign in once first, then add them again.",
+        "We could not find a Piessang account for that email. Ask them to sign in once first, then add them again.",
       );
     }
 

@@ -1,9 +1,9 @@
 export const SUPPORTED_PAYOUT_COUNTRIES = [
+  { code: "US", label: "United States" },
   { code: "ZA", label: "South Africa" },
   { code: "KE", label: "Kenya" },
   { code: "MU", label: "Mauritius" },
   { code: "GB", label: "United Kingdom" },
-  { code: "US", label: "United States" },
   { code: "AE", label: "United Arab Emirates" },
   { code: "DE", label: "Germany" },
   { code: "NL", label: "Netherlands" },
@@ -19,6 +19,9 @@ export const SUPPORTED_PAYOUT_CURRENCIES = [
   { code: "AED", label: "UAE dirham" },
 ] as const;
 
-export const PEACH_LIVE_PAYOUT_COUNTRIES = new Set(["ZA"]);
-export const PEACH_LIVE_PAYOUT_CURRENCIES = new Set(["ZAR"]);
-
+export const STRIPE_GLOBAL_PAYOUT_COUNTRIES = new Set(
+  SUPPORTED_PAYOUT_COUNTRIES.map((entry) => entry.code),
+);
+export const STRIPE_GLOBAL_PAYOUT_CURRENCIES = new Set(
+  SUPPORTED_PAYOUT_CURRENCIES.map((entry) => entry.code),
+);

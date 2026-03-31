@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
-import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import {
   getSellerUnavailableReason,
   isSellerAccountUnavailable,
@@ -36,6 +36,21 @@ function toBool(v){
 }
 
 function tsToIso(v){ return v && typeof v?.toDate==="function" ? v.toDate().toISOString() : v ?? null; }
+function isoToDate(value){
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+function getFirstPublishedAt(data){
+  return data?.marketplace?.firstPublishedAt || data?.timestamps?.createdAt || null;
+}
+function isNewArrival(firstPublishedAt, windowDays = 30){
+  const publishedDate = isoToDate(firstPublishedAt);
+  if (!publishedDate) return false;
+  const ageMs = Date.now() - publishedDate.getTime();
+  if (ageMs < 0) return true;
+  return ageMs <= windowDays * 24 * 60 * 60 * 1000;
+}
 function normalizeTimestamps(doc){
   if (!doc || typeof doc!=="object") return doc;
   const ts = doc.timestamps;
@@ -397,6 +412,7 @@ export async function GET(req){
     const keywordsRaw  = normStr(searchParams.get("keywords"));
     const searchRaw    = normStr(searchParams.get("search"));
     const userId       = normStr(searchParams.get("userId"));
+    const newArrivals  = toBool(searchParams.get("newArrivals"));
     const isActive     = toBool(searchParams.get("isActive"));
     const isFeatured   = toBool(searchParams.get("isFeatured"));
     const groupByBrand = toBool(searchParams.get("group_by_brand")) === true;
@@ -531,6 +547,10 @@ export async function GET(req){
         const uid = String(data?.product?.unique_id ?? "");
         if (!favorites.includes(uid)) return false;
       }
+      if (newArrivals !== null){
+        const matchesNewArrival = isNewArrival(getFirstPublishedAt(data));
+        if (matchesNewArrival !== newArrivals) return false;
+      }
       if (isActive    !== null && !!data?.placement?.isActive   !== isActive)   return false;
       if (isFeatured  !== null && !!data?.placement?.isFeatured !== isFeatured) return false;
       if (inStock     !== null){
@@ -582,11 +602,19 @@ export async function GET(req){
       const isFavorite = userId ? (favorites.length > 0 && uid ? favorites.includes(uid) : false) : false;
       const isEligibleByVariantAvailability = productHasListableAvailability(dataWithSellerDisplay);
       const hiddenByDeliverySettings = productMissingSellerDeliverySettings(dataWithSellerDisplay, sellerOwner);
+      const firstPublishedAt = getFirstPublishedAt(dataWithSellerDisplay);
       return {
         id,
         data: {
           ...dataWithSellerDisplay,
           has_sale_variant: hasSaleVariant,
+          is_new_arrival: isNewArrival(firstPublishedAt),
+          marketplace: {
+            ...(dataWithSellerDisplay?.marketplace && typeof dataWithSellerDisplay.marketplace === "object"
+              ? dataWithSellerDisplay.marketplace
+              : {}),
+            firstPublishedAt,
+          },
           is_favorite: isFavorite,
           has_in_stock_variants: hasInStockVariants(dataWithSellerDisplay),
           is_eligible_by_variant_availability: isEligibleByVariantAvailability,

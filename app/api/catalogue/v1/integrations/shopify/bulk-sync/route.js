@@ -258,7 +258,7 @@ function buildProductInput(docId, data, existingVariants = []) {
 
   const desc =
     product.description ||
-    `${product.title} — available from Bevgo. Fast delivery, competitive pricing, loyalty rebates and bulk options.`;
+    `${product.title} — available from Piessang. Fast delivery, competitive pricing, loyalty rebates and bulk options.`;
 
   const tagSet = new Set(product.keywords || []);
   tagSet.add(`category:${grouping.category}`);

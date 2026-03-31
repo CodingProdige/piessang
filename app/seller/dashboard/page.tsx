@@ -5,13 +5,18 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import CreateProductPage from "@/app/seller/catalogue/new/page";
 import { SellerCustomersWorkspace } from "@/components/seller/customers-workspace";
+import { SellerCampaignReviewsWorkspace } from "@/components/seller/campaign-reviews-workspace";
+import { SellerCampaignsWorkspace } from "@/components/seller/campaigns-workspace";
 import { SellerBillingWorkspace } from "@/components/seller/billing-workspace";
 import { SellerAccountsWorkspace } from "@/components/seller/admin-seller-accounts";
+import { SellerAdminOrdersWorkspace } from "@/components/seller/admin-orders-workspace";
 import { SellerBrandRequestsWorkspace } from "@/components/seller/brand-requests-workspace";
 import { SellerFeesWorkspace } from "@/components/seller/fees-workspace";
-import { SellerMarketingWorkspace } from "@/components/seller/marketing-workspace";
 import { SellerLiveCommerceWorkspace } from "@/components/seller/live-commerce-workspace";
+import { SellerNewslettersWorkspace } from "@/components/seller/newsletters-workspace";
 import { SellerOrdersWorkspace } from "@/components/seller/orders-workspace";
+import { SellerPayoutBatchesWorkspace } from "@/components/seller/payout-batches-workspace";
+import { SellerPlatformDeliveryWorkspace } from "@/components/seller/platform-delivery-workspace";
 import { SellerProductReportsWorkspace } from "@/components/seller/product-reports-workspace";
 import { SellerProductReviewsWorkspace } from "@/components/seller/product-reviews-workspace";
 import { SellerProductsWorkspace } from "@/components/seller/products-workspace";
@@ -20,6 +25,7 @@ import { SellerSettlementsWorkspace } from "@/components/seller/settlements-work
 import { SellerWarehouseWorkspace } from "@/components/seller/warehouse-workspace";
 import { SellerPageIntro } from "@/components/seller/page-intro";
 import { SellerSettingsWorkspace } from "@/components/seller/settings-workspace";
+import { SellerSupportTicketsWorkspace } from "@/components/seller/support-tickets-workspace";
 import SellerTeamPage from "@/app/seller/team/page";
 import {
   getSellerBlockReasonFix,
@@ -43,6 +49,12 @@ type SidebarSection =
   | "brand-requests"
   | "admin-analytics"
   | "admin-live-view"
+  | "admin-newsletters"
+  | "admin-orders"
+  | "admin-platform-delivery"
+  | "admin-payouts"
+  | "admin-support"
+  | "admin-campaign-reviews"
   | "product-reviews"
   | "product-reports"
   | "admin-returns"
@@ -152,6 +164,12 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   "brand-requests": ["admin"],
   "admin-analytics": ["admin"],
   "admin-live-view": ["admin"],
+  "admin-newsletters": ["admin"],
+  "admin-orders": ["admin"],
+  "admin-platform-delivery": ["admin"],
+  "admin-payouts": ["admin"],
+  "admin-support": ["admin"],
+  "admin-campaign-reviews": ["admin"],
   "product-reviews": ["admin"],
   "product-reports": ["admin"],
   "admin-returns": ["admin"],
@@ -324,6 +342,14 @@ function SidebarIcon({ icon }: { icon: string }) {
           <path d="M10 12l1.5 2L14 10" />
         </svg>
       );
+    case "help":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M9.5 9a2.5 2.5 0 1 1 4 2c-.9.6-1.5 1.1-1.5 2.5" />
+          <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -434,6 +460,11 @@ function SidebarMenu({
     brandRequestCount?: number;
     productReviewCount?: number;
     productReportCount?: number;
+    newsletterCount?: number;
+    orderCount?: number;
+    payoutCount?: number;
+    supportCount?: number;
+    campaignReviewCount?: number;
   };
   sellerBadges?: {
     newOrders?: number;
@@ -442,7 +473,7 @@ function SidebarMenu({
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "admin-analytics", "admin-live-view", "admin-returns", "fees", "product-reports", "product-reviews"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "admin-analytics", "admin-live-view", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -613,6 +644,47 @@ function SidebarMenu({
               />
             </div>
             <SidebarButton
+              label="Newsletters"
+              icon="marketing"
+              active={activeSection === "admin-newsletters"}
+              badgeCount={adminBadges?.newsletterCount || 0}
+              onClick={() => handleNavigate("admin-newsletters")}
+            />
+            <SidebarButton
+              label="Orders"
+              icon="orders"
+              active={activeSection === "admin-orders"}
+              badgeCount={adminBadges?.orderCount || 0}
+              onClick={() => handleNavigate("admin-orders")}
+            />
+            <SidebarButton
+              label="Platform delivery"
+              icon="truck"
+              active={activeSection === "admin-platform-delivery"}
+              onClick={() => handleNavigate("admin-platform-delivery")}
+            />
+            <SidebarButton
+              label="Payouts"
+              icon="cash"
+              active={activeSection === "admin-payouts"}
+              badgeCount={adminBadges?.payoutCount || 0}
+              onClick={() => handleNavigate("admin-payouts")}
+            />
+            <SidebarButton
+              label="Support"
+              icon="help"
+              active={activeSection === "admin-support"}
+              badgeCount={adminBadges?.supportCount || 0}
+              onClick={() => handleNavigate("admin-support")}
+            />
+            <SidebarButton
+              label="Campaign reviews"
+              icon="marketing"
+              active={activeSection === "admin-campaign-reviews"}
+              badgeCount={adminBadges?.campaignReviewCount || 0}
+              onClick={() => handleNavigate("admin-campaign-reviews")}
+            />
+            <SidebarButton
               label="Product reviews"
               icon="check"
               active={activeSection === "product-reviews"}
@@ -670,7 +742,7 @@ function SellerDashboardContent() {
   const { authReady, isAuthenticated, isSeller, sellerStatus, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
   const [activeSection, setActiveSection] = useState<SidebarSection>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0 });
+  const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
   const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0 });
   const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
   const [reviewRequestReason, setReviewRequestReason] = useState("other");
@@ -719,6 +791,26 @@ function SellerDashboardContent() {
       case "admin-live-view":
       case "live-view":
         return "admin-live-view";
+      case "admin-newsletters":
+      case "newsletters":
+        return "admin-newsletters";
+      case "admin-orders":
+      case "orders-admin":
+      case "marketplace-orders":
+        return "admin-orders";
+      case "admin-platform-delivery":
+      case "platform-delivery":
+      case "shipping-admin":
+        return "admin-platform-delivery";
+      case "admin-payouts":
+      case "payouts":
+        return "admin-payouts";
+      case "admin-support":
+      case "support":
+        return "admin-support";
+      case "admin-campaign-reviews":
+      case "campaign-reviews":
+        return "admin-campaign-reviews";
       case "product-reviews":
       case "product-review":
       case "review-products":
@@ -784,16 +876,30 @@ function SellerDashboardContent() {
         headers: { "Content-Type": "application/json" },
       }).catch(() => null);
 
-      const [sellerResponse, brandResponse, productResponse, reportResponse] = await Promise.all([
+      const [sellerResponse, brandResponse, productResponse, reportResponse, newsletterResponse, ordersResponse, payoutResponse, supportResponse, campaignResponse] = await Promise.all([
         fetch(`/api/client/v1/accounts/seller/list?uid=${encodeURIComponent(profile.uid)}&filter=review`, { cache: "no-store" }),
         fetch("/api/client/v1/admin/brand-requests?status=pending", { cache: "no-store" }),
         fetch("/api/catalogue/v1/products/product/get?limit=all&includeUnavailable=true", { cache: "no-store" }),
         fetch("/api/client/v1/admin/product-reports?status=pending", { cache: "no-store" }),
+        fetch("/api/client/v1/newsletters/list?adminMode=true", { cache: "no-store" }),
+        fetch("/api/client/v1/orders/get", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: profile.uid, returnAll: true }),
+        }),
+        fetch(`/api/client/v1/orders/settlement/payout-batches/list?uid=${encodeURIComponent(profile.uid)}&status=all`, { cache: "no-store" }),
+        fetch("/api/client/v1/support/tickets/list?adminMode=true", { cache: "no-store" }),
+        fetch("/api/client/v1/campaigns/list?adminMode=true", { cache: "no-store" }),
       ]);
       const sellerPayload = await sellerResponse.json().catch(() => ({}));
       const brandPayload = await brandResponse.json().catch(() => ({}));
       const productPayload = await productResponse.json().catch(() => ({}));
       const reportPayload = await reportResponse.json().catch(() => ({}));
+      const newsletterPayload = await newsletterResponse.json().catch(() => ({}));
+      const ordersPayload = await ordersResponse.json().catch(() => ({}));
+      const payoutPayload = await payoutResponse.json().catch(() => ({}));
+      const supportPayload = await supportResponse.json().catch(() => ({}));
+      const campaignPayload = await campaignResponse.json().catch(() => ({}));
       const productReviewCount =
         productResponse.ok && productPayload?.ok !== false && Array.isArray(productPayload?.items)
           ? productPayload.items.filter((item: any) => String(item?.data?.moderation?.status || "").trim().toLowerCase() === "in_review").length
@@ -803,9 +909,23 @@ function SellerDashboardContent() {
         brandRequestCount: brandResponse.ok && brandPayload?.ok !== false ? Number(brandPayload?.count || 0) : 0,
         productReviewCount,
         productReportCount: reportResponse.ok && reportPayload?.ok !== false ? Number(reportPayload?.count || 0) : 0,
+        newsletterCount: newsletterResponse.ok && newsletterPayload?.ok !== false ? Number(newsletterPayload?.data?.counts?.active || 0) : 0,
+        orderCount:
+          ordersResponse.ok && ordersPayload?.ok !== false
+            ? Number(ordersPayload?.data?.totals?.totalNotCompleted || ordersPayload?.data?.totals?.totalOrders || 0)
+            : 0,
+        payoutCount:
+          payoutResponse.ok && payoutPayload?.ok !== false
+            ? Number(payoutPayload?.data?.counts?.pendingSubmission || 0) +
+              Number(payoutPayload?.data?.counts?.awaitingProviderConfig || 0) +
+              Number(payoutPayload?.data?.counts?.awaitingManualPayout || 0) +
+              Number(payoutPayload?.data?.counts?.submissionFailed || 0)
+            : 0,
+        supportCount: supportResponse.ok && supportPayload?.ok !== false ? Number(supportPayload?.data?.counts?.active || 0) : 0,
+        campaignReviewCount: campaignResponse.ok && campaignPayload?.ok !== false ? Number(campaignPayload?.data?.counts?.pendingReview || 0) : 0,
       });
     } catch {
-      setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0 });
+      setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
     }
   }
   useEffect(() => {
@@ -817,7 +937,7 @@ function SellerDashboardContent() {
         if (cancelled) return;
       } catch {
         if (!cancelled) {
-          setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0 });
+          setAdminBadges({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
         }
       }
     }
@@ -1008,7 +1128,7 @@ function SellerDashboardContent() {
   const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
   const sectionLocked = sellerUnavailable
     ? blockedSections.includes(activeSection)
-      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
+      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "admin-newsletters" || activeSection === "admin-orders" || activeSection === "admin-platform-delivery" || activeSection === "admin-payouts" || activeSection === "admin-support" || activeSection === "admin-campaign-reviews" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
         ? !canManageSellerDashboard
         : !canAccessSellerSection(activeSellerRole, activeSection);
   const firstAllowedSection = useMemo(() => {
@@ -1086,7 +1206,7 @@ function SellerDashboardContent() {
   }, [activeSection, pathname, router, searchParams]);
 
   function setSection(nextSection: SidebarSection) {
-    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
+    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
     if (!canAccessSellerSection(activeSellerRole, nextSection)) return;
     setActiveSection(nextSection);
     setMobileMenuOpen(false);
@@ -1153,6 +1273,18 @@ function SellerDashboardContent() {
         return "Analytics";
       case "admin-live-view":
         return "Live view";
+      case "admin-newsletters":
+        return "Newsletters";
+      case "admin-orders":
+        return "Orders";
+      case "admin-platform-delivery":
+        return "Platform delivery";
+      case "admin-payouts":
+        return "Payouts";
+      case "admin-support":
+        return "Support";
+      case "admin-campaign-reviews":
+        return "Campaign reviews";
       case "product-reviews":
         return "Product reviews";
       case "product-reports":
@@ -1218,6 +1350,18 @@ function SellerDashboardContent() {
         return "View marketplace-wide admin analytics and live commerce insights.";
       case "admin-live-view":
         return "Track live marketplace activity across carts, checkouts, and purchases.";
+      case "admin-newsletters":
+        return "Create and manage the newsletters customers can subscribe to from their account settings.";
+      case "admin-orders":
+        return "See every marketplace order in one place, including payment, fulfilment, and delivery progress.";
+      case "admin-platform-delivery":
+        return "Manage the Piessang fulfilment shipping origin, direct-delivery radius, shipping zones, and pickup rules.";
+      case "admin-payouts":
+        return "Prepare, submit, and reconcile seller payout batches from one admin queue.";
+      case "admin-support":
+        return "Review support tickets, reply to customers, and close resolved cases from one admin queue.";
+      case "admin-campaign-reviews":
+        return "Review seller advertising campaigns before they can run on Piessang.";
       case "product-reviews":
         return "Approve or reject seller product submissions before they become visible on the marketplace.";
       case "product-reports":
@@ -1279,7 +1423,7 @@ function SellerDashboardContent() {
           <button
             type="button"
             onClick={() => openAuthModal("Sign in to access your seller tools.")}
-            className="mt-5 inline-flex h-10 items-center rounded-[8px] bg-[#cbb26b] px-4 text-[13px] font-semibold text-white"
+            className="brand-button mt-5 inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold"
           >
             Sign in
           </button>
@@ -1438,6 +1582,18 @@ function SellerDashboardContent() {
               <SellerBrandRequestsWorkspace />
             ) : activeSection === "admin-live-view" && canManageSellerDashboard ? (
               <SellerLiveCommerceWorkspace />
+            ) : activeSection === "admin-newsletters" && canManageSellerDashboard ? (
+              <SellerNewslettersWorkspace />
+            ) : activeSection === "admin-orders" && canManageSellerDashboard ? (
+              <SellerAdminOrdersWorkspace userId={profile?.uid || ""} />
+            ) : activeSection === "admin-platform-delivery" && canManageSellerDashboard ? (
+              <SellerPlatformDeliveryWorkspace />
+            ) : activeSection === "admin-payouts" && canManageSellerDashboard ? (
+              <SellerPayoutBatchesWorkspace />
+            ) : activeSection === "admin-support" && canManageSellerDashboard ? (
+              <SellerSupportTicketsWorkspace />
+            ) : activeSection === "admin-campaign-reviews" && canManageSellerDashboard ? (
+              <SellerCampaignReviewsWorkspace />
             ) : activeSection === "product-reviews" && canManageSellerDashboard ? (
               <SellerProductReviewsWorkspace onQueueChanged={() => { void refreshAdminBadges(); }} />
             ) : activeSection === "product-reports" && canManageSellerDashboard ? (
@@ -1501,7 +1657,11 @@ function SellerDashboardContent() {
                 vendorName={activeVendorName}
               />
             ) : activeSection === "marketing" ? (
-              <SellerMarketingWorkspace />
+              <SellerCampaignsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                vendorName={activeVendorName}
+              />
             ) : activeSection === "analytics" ? (
               <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
                 <div className="max-w-[460px]">

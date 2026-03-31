@@ -89,7 +89,7 @@ function marketplaceLink(uniqueId, title) {
   params.set("uniqueId", String(uniqueId || ""));
   const t = String(title || "").trim();
   if (t) params.set("title", t);
-  return `https://marketplace.bevgo.co.za/product?${params.toString()}`;
+  return `https://piessang.com/products?${params.toString()}`;
 }
 
 function buildActiveSlugSet(rows, slugReader) {
@@ -115,9 +115,9 @@ function buildContentApiProduct(product, variant) {
   const variantLabel = String(variant?.label || "").trim();
   const title = variantLabel ? `${baseTitle} - ${variantLabel}` : baseTitle;
   const description =
-    String(product?.product?.description || "").trim() || `${title} available on Bevgo Marketplace`;
+    String(product?.product?.description || "").trim() || `${title} available on Piessang Marketplace`;
   const imageLink = Array.isArray(product?.media?.images) ? product.media.images[0]?.imageUrl : null;
-  const brand = String(product?.grouping?.brand || "").trim() || "Bevgo";
+  const brand = String(product?.grouping?.brand || "").trim() || "Piessang";
   const productType = [product?.grouping?.category, product?.grouping?.subCategory]
     .filter(Boolean)
     .join(" > ");

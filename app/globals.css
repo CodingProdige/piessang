@@ -3,8 +3,10 @@
 :root {
   --background: #f9f9f7;
   --foreground: #1a1a1a;
-  --brand-primary: #cbb26b;
-  --brand-primary-hover: #b89e55;
+  --brand-primary: #e3c52f;
+  --brand-primary-hover: #cba726;
+  --brand-primary-strong: #c19b24;
+  --brand-primary-text: #3d3420;
   --brand-surface: #ffffff;
   --brand-text-secondary: #6b7280;
   --brand-border: #e5e7eb;
@@ -64,4 +66,30 @@ body {
   box-shadow: 0 12px 28px rgba(20, 24, 27, 0.11);
   outline: 1px solid color-mix(in srgb, var(--brand-primary) 20%, transparent);
   outline-offset: 0;
+}
+
+.brand-button {
+  background: var(--brand-primary);
+  color: var(--brand-primary-text);
+  transition:
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease,
+    transform 180ms ease;
+  box-shadow: 0 8px 20px rgba(193, 155, 36, 0.18);
+}
+
+.brand-button:hover,
+.brand-button:focus-visible {
+  background: var(--brand-primary-hover);
+}
+
+.brand-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand-primary) 58%, white);
+  outline-offset: 2px;
+}
+
+.brand-button:disabled {
+  box-shadow: none;
 }

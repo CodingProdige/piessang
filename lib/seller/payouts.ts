@@ -52,7 +52,7 @@ function groupBySeller(settlements) {
   return Array.from(groups.values());
 }
 
-export async function createPendingSellerPayoutBatches({ createdBy = "system", provider = "peach_payouts" } = {}) {
+export async function createPendingSellerPayoutBatches({ createdBy = "system", provider = "stripe_global_payouts" } = {}) {
   const db = getAdminDb();
   if (!db) {
     throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");
@@ -97,11 +97,12 @@ export async function createPendingSellerPayoutBatches({ createdBy = "system", p
         sellerCode: group.sellerCode,
         sellerSlug: group.sellerSlug,
         vendorName: group.vendorName,
+        country: toStr(sellerPayoutProfile?.bankCountry || sellerPayoutProfile?.country || ""),
       },
       bankProfile: sellerPayoutProfile && typeof sellerPayoutProfile === "object" && Object.keys(sellerPayoutProfile).length
         ? sellerPayoutProfile
         : group.bankProfile || {},
-      currency: "ZAR",
+      currency: toStr(sellerPayoutProfile?.currency || group.bankProfile?.currency || "ZAR") || "ZAR",
       grossIncl: r2(group.totals.grossIncl),
       netDueIncl: r2(group.totals.netDueIncl),
       settlementIds,

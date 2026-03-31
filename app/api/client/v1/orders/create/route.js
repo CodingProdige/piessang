@@ -2,11 +2,11 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
-import { evaluateDeliveryArea } from "@/lib/deliveryAreaCheck";
 import crypto from "crypto";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } from "@/lib/marketplace/fees";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
 import { consumeReservedStockLots, consumeStockLotsFifo } from "@/lib/warehouse/stock-lots";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
@@ -26,6 +26,20 @@ const err = (status, title, message, extra = {}) =>
 const now = () => new Date().toISOString();
 const VAT_RATE = 0.15;
 const r2 = v => Number((Number(v) || 0).toFixed(2));
+
+function buildShopperArea(address = null) {
+  if (!address || typeof address !== "object") return null;
+  return {
+    city: address?.city || address?.suburb || "",
+    suburb: address?.suburb || "",
+    province: address?.province || address?.stateProvinceRegion || "",
+    stateProvinceRegion: address?.stateProvinceRegion || address?.province || "",
+    postalCode: address?.postalCode || "",
+    country: address?.country || "South Africa",
+    latitude: address?.latitude == null ? null : Number(address.latitude),
+    longitude: address?.longitude == null ? null : Number(address.longitude),
+  };
+}
 
 function firstNonEmptyString(...values) {
   for (const value of values) {
@@ -420,16 +434,25 @@ export async function POST(req) {
     /* ───── Validate general delivery area support ───── */
 
     if (!inStoreCollection) {
-      const deliveryAreaCheck = evaluateDeliveryArea(resolvedDeliveryAddress);
-      if (!deliveryAreaCheck.supported) {
+      const cartItems = Array.isArray(cart?.items) ? cart.items : [];
+      const hasPiessangFulfilledItems = cartItems.some(
+        (item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "bevgo",
+      );
+      const platformDelivery = hasPiessangFulfilledItems
+        ? await resolvePlatformDeliveryOption({
+            shopperArea: buildShopperArea(resolvedDeliveryAddress),
+            subtotalIncl: Number(cart?.totals?.final_incl || 0),
+          })
+        : null;
+      if (hasPiessangFulfilledItems && !platformDelivery?.available) {
         return err(
           400,
           "Delivery Area Not Supported",
-          deliveryAreaCheck.message,
+          "Delivery is not available for this address.",
           {
             supported: false,
             canPlaceOrder: false,
-            reasonCode: deliveryAreaCheck.reasonCode
+            reasonCode: "OUTSIDE_SERVICE_AREA"
           }
         );
       }
@@ -540,13 +563,20 @@ export async function POST(req) {
       const idemSnap = await tx.get(idemRef);
       if (idemSnap.exists) {
         const idem = idemSnap.data() || {};
-        return {
-          replayed: true,
-          orderId: idem.orderId || null,
-          orderNumber: idem.orderNumber || null,
-          merchantTransactionId: idem.merchantTransactionId || null,
-          status: idem.status || "payment_pending"
-        };
+        const existingOrderId = typeof idem.orderId === "string" ? idem.orderId.trim() : "";
+        if (existingOrderId) {
+          const existingOrderRef = adminDb.collection("orders_v2").doc(existingOrderId);
+          const existingOrderSnap = await tx.get(existingOrderRef);
+          if (existingOrderSnap.exists) {
+            return {
+              replayed: true,
+              orderId: idem.orderId || null,
+              orderNumber: idem.orderNumber || null,
+              merchantTransactionId: idem.merchantTransactionId || null,
+              status: idem.status || "payment_pending"
+            };
+          }
+        }
       }
 
       const counterRef = adminDb.collection("system_counters").doc("orders");
@@ -554,7 +584,7 @@ export async function POST(req) {
       const last = snap.exists ? snap.data().last : 0;
       const next = last + 1;
 
-      orderNumber = `BVG-${String(next).padStart(6, "0")}`;
+      orderNumber = `PSS-${String(next).padStart(6, "0")}`;
       merchantTransactionId = orderNumber.replace("-", "");
 
       const orderDoc = buildPlatformOrderDocument({

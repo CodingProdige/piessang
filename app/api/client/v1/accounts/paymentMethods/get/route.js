@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
+import { stripeRequest } from "@/lib/payments/stripe";
 
 /* ---------- helpers ---------- */
 const ok = (p = {}, s = 200) =>
@@ -38,20 +39,37 @@ export async function POST(req) {
       );
     }
 
-    const userData = snap.data();
+    const userData = snap.data() || {};
+    const stripeCustomerId = String(
+      userData?.paymentMethods?.stripeCustomerId ||
+        userData?.billing?.stripeCustomerId ||
+        userData?.stripeCustomerId ||
+        "",
+    ).trim();
 
-    const cards =
-      userData.paymentMethods?.cards ?? [];
-
-    // only expose active cards by default
-    const activeCards = cards.filter(
-      c => c.status === "active"
-    );
+    let activeCards = [];
+    if (stripeCustomerId) {
+      const payload = await stripeRequest(
+        `/v1/payment_methods?customer=${encodeURIComponent(stripeCustomerId)}&type=card`,
+      ).catch(() => ({ data: [] }));
+      activeCards = (Array.isArray(payload?.data) ? payload.data : []).map((paymentMethod) => ({
+        id: String(paymentMethod?.id || ""),
+        brand: String(paymentMethod?.card?.brand || "").toUpperCase(),
+        last4: String(paymentMethod?.card?.last4 || ""),
+        expiryMonth: String(paymentMethod?.card?.exp_month || "").padStart(2, "0"),
+        expiryYear: String(paymentMethod?.card?.exp_year || ""),
+        status: "active",
+      }));
+    } else {
+      const cards = userData.paymentMethods?.cards ?? [];
+      activeCards = cards.filter((c) => c.status === "active");
+    }
 
     return ok({
       paymentMethods: {
         cards: activeCards,
-        count: activeCards.length
+        count: activeCards.length,
+        stripeCustomerId: stripeCustomerId || null,
       }
     });
 
