@@ -27,6 +27,10 @@
   <p><%= statusMessage %></p>
 <% } %>
 
+<% if (typeof cancellationReason !== "undefined" && cancellationReason) { %>
+  <p><strong>Cancellation reason:</strong> <%= cancellationReason %></p>
+<% } %>
+
 <% if (safeItems.length) { %>
   <p>The following products were included in this update:</p>
   <ul>

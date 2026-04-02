@@ -11,6 +11,13 @@ import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
 import { ensureCatalogueTaxonomySeed } from "@/lib/marketplace/fees-store";
 import { refreshCartsForSaleChange } from "@/lib/cart/sale-refresh";
+import {
+  getVariantActivePriceIncl,
+  isProductPublished,
+  listFollowersForSeller,
+  listUsersWhoFavoritedProduct,
+} from "@/lib/notifications/customer-inbox";
+import { dispatchCustomerNotification } from "@/lib/notifications/customer-delivery";
 
 const ok  = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) =>
@@ -731,6 +738,101 @@ export async function POST(req){
         await ref.update({
           live_snapshot: FieldValue.delete(),
         });
+      }
+
+      if (!currentFirstPublishedAt && isProductPublished(updated)) {
+        const followers = await listFollowersForSeller({
+          sellerCode: updated?.product?.sellerCode || sellerCode,
+          sellerSlug: updated?.product?.sellerSlug || currentSellerSlug,
+        });
+        await Promise.all(
+          followers.map((entry) =>
+            dispatchCustomerNotification({
+              origin: new URL(req.url).origin,
+              userId: entry?.userId,
+              type: "followed_seller_new_product",
+              title: `${updated?.product?.vendorName || "A seller you follow"} released a new product`,
+              message: `${updated?.product?.title || "A new product"} is now live on Piessang.`,
+              href: `/products/${encodeURIComponent(updated?.product?.slug || updated?.docId || pid)}`,
+              metadata: {
+                sellerCode: updated?.product?.sellerCode || sellerCode,
+                sellerSlug: updated?.product?.sellerSlug || currentSellerSlug,
+                productId: pid,
+              },
+              dedupeKey: `followed-seller-published:${entry?.userId}:${pid}`,
+              email: entry?.followerEmail || "",
+              phone: entry?.followerPhone || "",
+              emailType: "followed-seller-new-product",
+              emailData: {
+                vendorName: updated?.product?.vendorName || "A seller you follow",
+                productTitle: updated?.product?.title || "A new product",
+              },
+              smsType: "followed-seller-new-product",
+              smsData: {
+                vendorName: updated?.product?.vendorName || "A seller you follow",
+                productTitle: updated?.product?.title || "A new product",
+              },
+              pushType: "followed-seller-new-product",
+              pushVariables: {
+                vendorName: updated?.product?.vendorName || "A seller you follow",
+                productTitle: updated?.product?.title || "A new product",
+                link: `/products/${encodeURIComponent(updated?.product?.slug || updated?.docId || pid)}`,
+              },
+            }),
+          ),
+        );
+      }
+
+      const pendingSaleNotificationEntries = Array.isArray(current?.meta?.pendingSaleRefreshes)
+        ? current.meta.pendingSaleRefreshes
+        : [];
+      if (pendingSaleNotificationEntries.length) {
+        const favoritedUsers = await listUsersWhoFavoritedProduct(pid);
+        for (const entry of pendingSaleNotificationEntries) {
+          const variantId = toStr(entry?.variantId);
+          if (!variantId) continue;
+          const variantAfter =
+            Array.isArray(updated?.variants)
+              ? updated.variants.find((variant) => toStr(variant?.variant_id) === variantId)
+              : null;
+          if (!variantAfter || variantAfter?.sale?.is_on_sale !== true || variantAfter?.sale?.disabled_by_admin === true) continue;
+          const salePrice = Number(getVariantActivePriceIncl(variantAfter) || 0).toFixed(2);
+          await Promise.all(
+            favoritedUsers.map((user) =>
+              dispatchCustomerNotification({
+                origin: new URL(req.url).origin,
+                userId: user.userId,
+                type: "favorite_on_sale",
+                title: "A favourite just went on sale",
+                message: `${updated?.product?.title || "A saved product"} is now on sale${variantAfter?.label ? ` for ${variantAfter.label}` : ""}.`,
+                href: `/products/${encodeURIComponent(updated?.product?.slug || updated?.docId || pid)}`,
+                metadata: {
+                  productId: pid,
+                  variantId,
+                  salePrice,
+                },
+                dedupeKey: `favorite-sale:${user.userId}:${pid}:${variantId}:${salePrice}`,
+                email: user.email || "",
+                phone: user.phone || "",
+                emailType: "favorite-on-sale",
+                emailData: {
+                  productTitle: updated?.product?.title || "A saved product",
+                  variantLabel: variantAfter?.label || "",
+                  salePrice,
+                },
+                smsType: "favorite-on-sale",
+                smsData: {
+                  productTitle: updated?.product?.title || "A saved product",
+                },
+                pushType: "favorite-on-sale",
+                pushVariables: {
+                  productTitle: updated?.product?.title || "A saved product",
+                  link: `/products/${encodeURIComponent(updated?.product?.slug || updated?.docId || pid)}`,
+                },
+              }),
+            ),
+          );
+        }
       }
     }
 

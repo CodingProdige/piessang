@@ -4,7 +4,10 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { ProductsResults } from "@/components/products/products-results";
+import { VendorFollowControls } from "@/components/vendors/vendor-follow-controls";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { getSellerFollowerCount } from "@/lib/social/seller-follows";
+import { getSellerRatingsSummary } from "@/lib/social/seller-ratings";
 import {
   getSellerUnavailableReason,
   isSellerAccountUnavailable,
@@ -93,6 +96,8 @@ export default async function VendorPage({
   const sellerCode = String(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode || sellerSlug).trim() || sellerSlug;
   const branding = (seller?.branding && typeof seller.branding === "object" ? seller.branding : seller?.media) || {};
   const unavailableReason = getSellerUnavailableReason(owner.data);
+  const followerCount = await getSellerFollowerCount({ sellerCode, sellerSlug });
+  const sellerRatings = await getSellerRatingsSummary({ sellerCode, sellerSlug });
 
   const requestHeaders = await headers();
   const origin = requestHeaders.get("origin") || "http://localhost:3000";
@@ -165,6 +170,18 @@ export default async function VendorPage({
                     <span className="rounded-full bg-[rgba(203,178,107,0.12)] px-3 py-1.5 text-[12px] font-semibold text-[#907d4c]">
                       {totalCount} products
                     </span>
+                    <Link
+                      href={`/vendors/${encodeURIComponent(sellerSlug)}/reviews`}
+                      className="rounded-full bg-[rgba(15,128,195,0.1)] px-3 py-1.5 text-[12px] font-semibold text-[#0f80c3]"
+                    >
+                      {sellerRatings.average ? `${sellerRatings.average.toFixed(1)}★` : "No ratings"} · {sellerRatings.count} rating{sellerRatings.count === 1 ? "" : "s"}
+                    </Link>
+                    <VendorFollowControls
+                      sellerCode={sellerCode}
+                      sellerSlug={sellerSlug}
+                      vendorName={vendorName}
+                      initialFollowerCount={followerCount}
+                    />
                     <Link
                       href={`/products?vendor=${encodeURIComponent(sellerCode)}`}
                       className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b]"

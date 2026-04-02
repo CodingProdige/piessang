@@ -6,6 +6,10 @@ import { getServerAuthBootstrap } from "@/lib/auth/server";
 export const metadata: Metadata = {
   title: "My Tickets | Piessang",
   description: "View your active and previous support tickets, reply to Piessang, and close resolved conversations.",
+  robots: {
+    index: false,
+    follow: false,
+  },
 };
 
 export default async function SupportTicketsPage() {

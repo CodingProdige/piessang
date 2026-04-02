@@ -146,20 +146,65 @@ export async function ensureCatalogueTaxonomySeed() {
     db.collection("sub_categories").get(),
   ]);
 
-  if (categorySnap.empty) {
-    const batch = db.batch();
-    for (const [categoryIndex, category] of (DEFAULT_MARKETPLACE_FEE_CONFIG.categories || []).entries()) {
-      const categoryRef = db.collection("categories").doc(category.slug);
-      batch.set(categoryRef, {
-        docId: category.slug,
-        category: {
-          slug: category.slug,
-          title: category.title,
+  const existingCategoryIds = new Set(categorySnap.docs.map((doc) => doc.id));
+  const existingSubCategoryIds = new Set(subCategorySnap.docs.map((doc) => doc.id));
+
+  const categoryBatch = db.batch();
+  let hasCategoryWrites = false;
+  for (const [categoryIndex, category] of (DEFAULT_MARKETPLACE_FEE_CONFIG.categories || []).entries()) {
+    if (existingCategoryIds.has(category.slug)) continue;
+    const categoryRef = db.collection("categories").doc(category.slug);
+    categoryBatch.set(categoryRef, {
+      docId: category.slug,
+      category: {
+        slug: category.slug,
+        title: category.title,
+        description: null,
+        keywords: [],
+      },
+      placement: {
+        position: categoryIndex + 1,
+        isActive: true,
+        isFeatured: false,
+      },
+      media: {
+        color: null,
+        images: [],
+        video: null,
+        icon: null,
+      },
+      timestamps: {
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    });
+    hasCategoryWrites = true;
+  }
+  if (hasCategoryWrites) {
+    await categoryBatch.commit();
+  }
+
+  const subCategoryBatch = db.batch();
+  let hasSubCategoryWrites = false;
+  for (const category of DEFAULT_MARKETPLACE_FEE_CONFIG.categories || []) {
+    for (const [subCategoryIndex, subCategory] of (category.subCategories || []).entries()) {
+      const subCategoryId = `${category.slug}__${subCategory.slug}`;
+      if (existingSubCategoryIds.has(subCategoryId)) continue;
+      const subCategoryRef = db.collection("sub_categories").doc(subCategoryId);
+      subCategoryBatch.set(subCategoryRef, {
+        docId: subCategoryId,
+        grouping: {
+          category: category.slug,
+        },
+        subCategory: {
+          slug: subCategory.slug,
+          kind: "consumable",
+          title: subCategory.title,
           description: null,
           keywords: [],
         },
         placement: {
-          position: categoryIndex + 1,
+          position: subCategoryIndex + 1,
           isActive: true,
           isFeatured: false,
         },
@@ -174,46 +219,11 @@ export async function ensureCatalogueTaxonomySeed() {
           updatedAt: FieldValue.serverTimestamp(),
         },
       });
+      hasSubCategoryWrites = true;
     }
-    await batch.commit();
   }
-
-  if (subCategorySnap.empty) {
-    const batch = db.batch();
-    for (const category of DEFAULT_MARKETPLACE_FEE_CONFIG.categories || []) {
-      for (const [subCategoryIndex, subCategory] of (category.subCategories || []).entries()) {
-        const subCategoryRef = db.collection("sub_categories").doc(`${category.slug}__${subCategory.slug}`);
-        batch.set(subCategoryRef, {
-          docId: `${category.slug}__${subCategory.slug}`,
-          grouping: {
-            category: category.slug,
-          },
-          subCategory: {
-            slug: subCategory.slug,
-            kind: "consumable",
-            title: subCategory.title,
-            description: null,
-            keywords: [],
-          },
-          placement: {
-            position: subCategoryIndex + 1,
-            isActive: true,
-            isFeatured: false,
-          },
-          media: {
-            color: null,
-            images: [],
-            video: null,
-            icon: null,
-          },
-          timestamps: {
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-          },
-        });
-      }
-    }
-    await batch.commit();
+  if (hasSubCategoryWrites) {
+    await subCategoryBatch.commit();
   }
 }
 
@@ -240,44 +250,48 @@ async function ensureSeedData() {
     db.collection(STORAGE_FEES_COLLECTION).get(),
   ]);
 
-  if (categorySnap.empty) {
-    await Promise.all(
-      DEFAULT_MARKETPLACE_FEE_CONFIG.categories.flatMap((category) => {
-        const categoryId = `${category.slug}__root`;
-        const docs = [
-          db.collection(CATEGORY_SUCCESS_FEES_COLLECTION).doc(categoryId).set({
-            id: categoryId,
-            categorySlug: category.slug,
-            subCategorySlug: null,
-            title: category.title,
-            rule: serializeFeeRule(category.feeRule),
-            isActive: true,
-            timestamps: {
-              createdAt: FieldValue.serverTimestamp(),
-              updatedAt: FieldValue.serverTimestamp(),
-            },
-          }),
-        ];
-        for (const subCategory of category.subCategories || []) {
-          const subId = `${category.slug}__${subCategory.slug}`;
-          docs.push(
-            db.collection(CATEGORY_SUCCESS_FEES_COLLECTION).doc(subId).set({
-              id: subId,
-              categorySlug: category.slug,
-              subCategorySlug: subCategory.slug,
-              title: subCategory.title,
-              rule: serializeFeeRule(subCategory.feeRule || category.feeRule),
-              isActive: true,
-              timestamps: {
-                createdAt: FieldValue.serverTimestamp(),
-                updatedAt: FieldValue.serverTimestamp(),
-              },
-            }),
-          );
-        }
-        return docs;
-      }),
-    );
+  const existingFeeIds = new Set(categorySnap.docs.map((doc) => doc.id));
+  const feeWrites = DEFAULT_MARKETPLACE_FEE_CONFIG.categories.flatMap((category) => {
+    const writes = [];
+    const categoryId = `${category.slug}__root`;
+    if (!existingFeeIds.has(categoryId)) {
+      writes.push(
+        db.collection(CATEGORY_SUCCESS_FEES_COLLECTION).doc(categoryId).set({
+          id: categoryId,
+          categorySlug: category.slug,
+          subCategorySlug: null,
+          title: category.title,
+          rule: serializeFeeRule(category.feeRule),
+          isActive: true,
+          timestamps: {
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        }),
+      );
+    }
+    for (const subCategory of category.subCategories || []) {
+      const subId = `${category.slug}__${subCategory.slug}`;
+      if (existingFeeIds.has(subId)) continue;
+      writes.push(
+        db.collection(CATEGORY_SUCCESS_FEES_COLLECTION).doc(subId).set({
+          id: subId,
+          categorySlug: category.slug,
+          subCategorySlug: subCategory.slug,
+          title: subCategory.title,
+          rule: serializeFeeRule(subCategory.feeRule || category.feeRule),
+          isActive: true,
+          timestamps: {
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+        }),
+      );
+    }
+    return writes;
+  });
+  if (feeWrites.length) {
+    await Promise.all(feeWrites);
   }
 
   if (!fulfilmentSnap.exists) {

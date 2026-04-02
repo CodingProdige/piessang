@@ -127,19 +127,23 @@ export async function POST(req) {
 
     const ratings = product?.ratings && typeof product.ratings === "object" ? product.ratings : {};
     const entries = Array.isArray(ratings.entries) ? [...ratings.entries] : [];
-    if (entries.some((entry) => toStr(entry?.userId) === sessionUser.uid)) {
-      return err(409, "Already Reviewed", "You have already reviewed this product.");
-    }
-
-    entries.push({
+    const existingIndex = entries.findIndex((entry) => toStr(entry?.userId) === sessionUser.uid);
+    const nextEntry = {
       userId: sessionUser.uid,
       name: toStr(body?.name || sessionUser?.displayName || "Verified buyer"),
       stars,
       comment,
       images,
       verifiedPurchase: true,
-      createdAt: nowIso(),
-    });
+      createdAt: existingIndex >= 0 ? entries[existingIndex]?.createdAt || nowIso() : nowIso(),
+      updatedAt: nowIso(),
+    };
+
+    if (existingIndex >= 0) {
+      entries[existingIndex] = nextEntry;
+    } else {
+      entries.push(nextEntry);
+    }
 
     const nextRatings = normalizeRatings(entries);
     await productDoc.ref.update({
@@ -150,10 +154,50 @@ export async function POST(req) {
       "timestamps.updatedAt": FieldValue.serverTimestamp(),
     });
 
-    return ok({ message: "Review submitted.", data: { ratings: nextRatings } });
+    return ok({ message: existingIndex >= 0 ? "Review updated." : "Review submitted.", data: { ratings: nextRatings } });
   } catch (e) {
     console.error("product reviews create failed:", e);
     return err(500, "Unexpected Error", "Unable to submit your review.", {
+      details: String(e?.message || "").slice(0, 300),
+    });
+  }
+}
+
+export async function DELETE(req) {
+  try {
+    const db = getAdminDb();
+    if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
+    const sessionUser = await requireSessionUser();
+    if (!sessionUser?.uid) return err(401, "Unauthorized", "Sign in again to manage your review.");
+
+    const body = await req.json().catch(() => ({}));
+    const productId = toStr(body?.productId || body?.product_unique_id || body?.id);
+    if (!productId) return err(400, "Missing Product", "Provide a productId to delete your review.");
+
+    const productDoc = await findProductDoc(db, productId);
+    if (!productDoc) return err(404, "Not Found", "We could not find that product.");
+    const product = productDoc.data() || {};
+    const ratings = product?.ratings && typeof product.ratings === "object" ? product.ratings : {};
+    const entries = Array.isArray(ratings.entries) ? [...ratings.entries] : [];
+    const nextEntries = entries.filter((entry) => toStr(entry?.userId) !== sessionUser.uid);
+
+    if (nextEntries.length === entries.length) {
+      return err(404, "Review Not Found", "We could not find your review for this product.");
+    }
+
+    const nextRatings = normalizeRatings(nextEntries);
+    await productDoc.ref.update({
+      ratings: {
+        ...ratings,
+        ...nextRatings,
+      },
+      "timestamps.updatedAt": FieldValue.serverTimestamp(),
+    });
+
+    return ok({ message: "Review deleted.", data: { ratings: nextRatings } });
+  } catch (e) {
+    console.error("product reviews delete failed:", e);
+    return err(500, "Unexpected Error", "Unable to delete your review.", {
       details: String(e?.message || "").slice(0, 300),
     });
   }

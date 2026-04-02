@@ -29,10 +29,8 @@ function getVariantInventoryTotal(variant){
 }
 
 function getVariantAvailableQuantity(variant){
-  const saleActive = Boolean(variant?.sale?.is_on_sale && !variant?.sale?.disabled_by_admin);
-  const saleQty = saleActive ? Math.max(0, Number(variant?.sale?.qty_available || 0)) : 0;
   const inventoryQty = getVariantInventoryTotal(variant);
-  return Math.max(0, saleQty + inventoryQty);
+  return Math.max(0, inventoryQty);
 }
 
 function isCheckoutCart(cart) {
@@ -141,14 +139,10 @@ function computeLineTotals(v, qty){
   let unitPriceIncl = 0;
   if (v?.sale?.is_on_sale && Number.isFinite(Number(v?.sale?.sale_price_incl))){
     unitPriceIncl = r2(v.sale.sale_price_incl);
-  } else if (Number.isFinite(Number(v?.pricing?.sale_price_incl))) {
-    unitPriceIncl = r2(v.pricing.sale_price_incl);
   } else if (Number.isFinite(Number(v?.pricing?.selling_price_incl))) {
     unitPriceIncl = r2(v.pricing.selling_price_incl);
   } else if (v?.sale?.is_on_sale && Number.isFinite(Number(v?.sale?.sale_price_excl))) {
     unitPriceIncl = r2(Number(v.sale.sale_price_excl) * (1 + VAT));
-  } else if (Number.isFinite(Number(v?.pricing?.sale_price_excl))) {
-    unitPriceIncl = r2(Number(v.pricing.sale_price_excl) * (1 + VAT));
   } else {
     unitPriceIncl = r2(Number(v?.pricing?.selling_price_excl || 0) * (1 + VAT));
   }

@@ -90,6 +90,11 @@ function normalizeSettlement(docSnap) {
       releasedAt: toStr(payout.releasedAt || ""),
       releasedBy: toStr(payout.releasedBy || ""),
     },
+    adjustments: {
+      refunded_incl: 0,
+      credit_note_count: 0,
+      credit_notes: [],
+    },
     accountability: {
       late: Boolean(accountability.late === true),
       strikeReasonCode: toStr(accountability.strikeReasonCode || ""),
@@ -118,6 +123,44 @@ function normalizeSettlement(docSnap) {
     updatedAt: toStr(data.updatedAt || ""),
     lastSyncedAt: toStr(data.lastSyncedAt || ""),
     lineCount: lines.length,
+  };
+}
+
+async function attachSettlementAdjustments(db, record) {
+  const orderId = toStr(record?.orderId);
+  if (!orderId) return record;
+  const orderSnap = await db.collection("orders_v2").doc(orderId).get();
+  if (!orderSnap.exists) return record;
+  const order = orderSnap.data() || {};
+  const notesMap =
+    order?.credit_notes?.seller_notes && typeof order.credit_notes.seller_notes === "object"
+      ? order.credit_notes.seller_notes
+      : {};
+  const sellerCode = toStr(record?.sellerCode).toLowerCase();
+  const sellerSlug = toStr(record?.sellerSlug).toLowerCase();
+  const notes = Object.values(notesMap)
+    .filter((entry) => entry && typeof entry === "object")
+    .filter((entry) => {
+      const entryCode = toStr(entry?.sellerCode).toLowerCase();
+      const entrySlug = toStr(entry?.sellerSlug).toLowerCase();
+      return Boolean((sellerCode && entryCode === sellerCode) || (sellerSlug && entrySlug === sellerSlug));
+    })
+    .map((entry) => ({
+      creditNoteId: toStr(entry?.creditNoteId || entry?.docId),
+      creditNoteNumber: toStr(entry?.creditNoteNumber),
+      amountIncl: toNum(entry?.amountIncl || 0),
+      issuedAt: toStr(entry?.issuedAt || entry?.createdAt || ""),
+      status: toStr(entry?.status || "issued").toLowerCase() || "issued",
+    }))
+    .sort((left, right) => toStr(right.issuedAt).localeCompare(toStr(left.issuedAt)));
+
+  return {
+    ...record,
+    adjustments: {
+      refunded_incl: toNum(notes.reduce((sum, entry) => sum + toNum(entry.amountIncl || 0), 0)),
+      credit_note_count: notes.length,
+      credit_notes: notes,
+    },
   };
 }
 
@@ -183,8 +226,8 @@ export async function GET(req) {
     const scopedSettlements = [];
     const settlements = [];
 
-    settlementsSnap.forEach((docSnap) => {
-      const record = normalizeSettlement(docSnap);
+    for (const docSnap of settlementsSnap.docs) {
+      let record = normalizeSettlement(docSnap);
       const sellerMatch =
         scope === "all" && systemAdmin
           ? true
@@ -193,11 +236,12 @@ export async function GET(req) {
                 (targetSellerSlug && toStr(record.sellerSlug).toLowerCase() === targetSellerSlug.toLowerCase()),
             );
 
-      if (!sellerMatch) return;
+      if (!sellerMatch) continue;
+      record = await attachSettlementAdjustments(db, record);
       scopedSettlements.push(record);
-      if (!matchesFilter(record, filter)) return;
+      if (!matchesFilter(record, filter)) continue;
       settlements.push(record);
-    });
+    }
 
     const counts = scopedSettlements.reduce(
       (acc, item) => {

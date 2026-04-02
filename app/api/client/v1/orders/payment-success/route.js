@@ -9,6 +9,8 @@ import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
 import { recordLiveCommerceEvent } from "@/lib/analytics/live-commerce";
 import { ensureOrderInvoice } from "@/lib/orders/invoices";
+import { getFrozenLineTotalIncl } from "@/lib/orders/frozen-money";
+import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -139,11 +141,7 @@ function getLineVariantId(item) {
 }
 
 function getLineRevenueIncl(item) {
-  const lineTotals = item?.line_totals && typeof item.line_totals === "object" ? item.line_totals : {};
-  const explicit = Number(lineTotals?.final_incl ?? lineTotals?.total_incl);
-  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
-  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
-  return Number(variant?.pricing?.selling_price_incl || 0) * getLineQty(item);
+  return getFrozenLineTotalIncl(item);
 }
 
 /* ───────────────── ENDPOINT ───────────────── */
@@ -313,6 +311,24 @@ export async function POST(req) {
       }),
       "payment.attempts": nextAttempts,
     };
+    updatePayload["timeline.events"] = appendOrderTimelineEvent(
+      order,
+      createOrderTimelineEvent({
+        type: "payment_success",
+        title: "Payment received",
+        message: `${provider === "stripe" ? "Stripe" : "Peach"} successfully captured payment for this order.`,
+        actorType: "system",
+        actorLabel: "Piessang",
+        createdAt: timestamp,
+        status: "confirmed",
+        metadata: {
+          provider,
+          amountIncl: paidAmount,
+          currency: payment.currency,
+        },
+      }),
+    );
+    updatePayload["timeline.updatedAt"] = timestamp;
 
     const paymentDoc = {
       payment: {

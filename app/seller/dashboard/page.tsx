@@ -14,6 +14,7 @@ import { SellerBrandRequestsWorkspace } from "@/components/seller/brand-requests
 import { SellerFeesWorkspace } from "@/components/seller/fees-workspace";
 import { SellerLiveCommerceWorkspace } from "@/components/seller/live-commerce-workspace";
 import { SellerNewslettersWorkspace } from "@/components/seller/newsletters-workspace";
+import { SellerNotificationsWorkspace } from "@/components/seller/notifications-workspace";
 import { SellerOrdersWorkspace } from "@/components/seller/orders-workspace";
 import { SellerPayoutBatchesWorkspace } from "@/components/seller/payout-batches-workspace";
 import { SellerPlatformDeliveryWorkspace } from "@/components/seller/platform-delivery-workspace";
@@ -68,6 +69,7 @@ type SidebarSection =
   | "unfulfilled"
   | "fulfilled"
   | "analytics"
+  | "notifications"
   | "team"
   | "settings";
 
@@ -183,6 +185,7 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   unfulfilled: ["admin", "manager", "orders"],
   fulfilled: ["admin", "manager", "orders"],
   analytics: ["admin", "manager", "analytics"],
+  notifications: ["admin", "manager", "catalogue", "orders", "analytics"],
   team: ["admin"],
   settings: ["admin", "manager", "catalogue", "orders", "analytics"],
 };
@@ -312,6 +315,13 @@ function SidebarIcon({ icon }: { icon: string }) {
           <path d="M12 19V5" />
           <path d="M19 19v-7" />
           <path d="M3 19h18" />
+        </svg>
+      );
+    case "notifications":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M12 4a5 5 0 0 0-5 5v2.4c0 .7-.2 1.4-.6 2L5 16h14l-1.4-2.6c-.4-.6-.6-1.3-.6-2V9a5 5 0 0 0-5-5Z" />
+          <path d="M10 19a2 2 0 0 0 4 0" />
         </svg>
       );
     case "settings":
@@ -469,11 +479,12 @@ function SidebarMenu({
   sellerBadges?: {
     newOrders?: number;
     warehouse?: number;
+    notifications?: number;
   };
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "admin", "admin-analytics", "admin-live-view", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -586,6 +597,14 @@ function SidebarMenu({
               active={activeSection === "analytics"}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "analytics")}
               onClick={() => handleNavigate("analytics")}
+            />
+            <SidebarButton
+              label="Notifications"
+              icon="notifications"
+              active={activeSection === "notifications"}
+              badgeCount={sellerBadges?.notifications || 0}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "notifications")}
+              onClick={() => handleNavigate("notifications")}
             />
             <SidebarButton
               label="Team"
@@ -743,7 +762,7 @@ function SellerDashboardContent() {
   const [activeSection, setActiveSection] = useState<SidebarSection>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
-  const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0 });
+  const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0, notifications: 0 });
   const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
   const [reviewRequestReason, setReviewRequestReason] = useState("other");
   const [reviewRequestMessage, setReviewRequestMessage] = useState("");
@@ -841,6 +860,8 @@ function SellerDashboardContent() {
         return "fulfilled";
       case "analytics":
         return "analytics";
+      case "notifications":
+        return "notifications";
       case "team":
         return "team";
       case "settings":
@@ -1071,7 +1092,7 @@ function SellerDashboardContent() {
     let cancelled = false;
     async function loadSellerBadges() {
       if (!authReady || !isAuthenticated) {
-        if (!cancelled) setSellerBadges({ newOrders: 0, warehouse: 0 });
+        if (!cancelled) setSellerBadges({ newOrders: 0, warehouse: 0, notifications: 0 });
         return;
       }
       const activeSellerCode = activeSellerContext?.sellerCode || profile?.sellerCode || "";
@@ -1082,14 +1103,16 @@ function SellerDashboardContent() {
         if (activeSellerCode) params.set("sellerCode", activeSellerCode);
         else if (activeSellerSlug) params.set("sellerSlug", activeSellerSlug);
         const warehouseParams = params.toString();
-        const [ordersResponse, inboundResponse, upliftmentResponse] = await Promise.all([
+        const [ordersResponse, inboundResponse, upliftmentResponse, notificationsResponse] = await Promise.all([
           fetch(`/api/client/v1/orders/seller/list?${warehouseParams}&filter=new`, { cache: "no-store" }),
           fetch(`/api/client/v1/accounts/seller/inbound-bookings?${warehouseParams}`, { cache: "no-store" }),
           fetch(`/api/client/v1/accounts/seller/stock-upliftments?${warehouseParams}`, { cache: "no-store" }),
+          fetch(`/api/client/v1/accounts/seller/notifications?${warehouseParams}`, { cache: "no-store" }),
         ]);
         const ordersPayload = await ordersResponse.json().catch(() => ({}));
         const inboundPayload = await inboundResponse.json().catch(() => ({}));
         const upliftmentPayload = await upliftmentResponse.json().catch(() => ({}));
+        const notificationsPayload = await notificationsResponse.json().catch(() => ({}));
         if (cancelled) return;
         const inboundItems = Array.isArray(inboundPayload?.items) ? inboundPayload.items : [];
         const upliftmentItems = Array.isArray(upliftmentPayload?.items) ? upliftmentPayload.items : [];
@@ -1098,9 +1121,10 @@ function SellerDashboardContent() {
         setSellerBadges({
           newOrders: ordersResponse.ok && ordersPayload?.ok !== false ? Number(ordersPayload?.counts?.new || 0) : 0,
           warehouse: inboundPending + upliftmentPending,
+          notifications: notificationsResponse.ok && notificationsPayload?.ok !== false ? Number(notificationsPayload?.unreadCount || 0) : 0,
         });
       } catch {
-        if (!cancelled) setSellerBadges({ newOrders: 0, warehouse: 0 });
+        if (!cancelled) setSellerBadges({ newOrders: 0, warehouse: 0, notifications: 0 });
       }
     }
     void loadSellerBadges();
@@ -1136,7 +1160,7 @@ function SellerDashboardContent() {
       ? ["home", "settings", "team"]
       : sellerClosed
         ? ["home", "settings"]
-      : ["products", "new-orders", "returns", "customers", "analytics", "home", "settings"];
+        : ["products", "new-orders", "notifications", "returns", "customers", "analytics", "home", "settings"];
     return preferredOrder.find((section) => canAccessSellerSection(activeSellerRole, section)) || "home";
   }, [activeSellerRole, sellerBlocked, sellerClosed]);
   const currentAccessLabel = formatSellerAccessLabel(activeSellerContext, homeSellerSlug, isSystemAdmin);
@@ -1309,6 +1333,8 @@ function SellerDashboardContent() {
         return "Fulfilled orders";
       case "analytics":
         return "Analytics";
+      case "notifications":
+        return "Notifications";
       case "team":
         return "Team";
       case "settings":
@@ -1388,6 +1414,8 @@ function SellerDashboardContent() {
         return "Review orders that have already been fulfilled.";
       case "analytics":
         return "Review seller performance and reporting.";
+      case "notifications":
+        return "Track followers, seller activity, and important product or account events from one inbox.";
       case "team":
         return "Manage teammate access and roles for this seller account.";
       case "settings":
@@ -1676,6 +1704,11 @@ function SellerDashboardContent() {
                   </p>
                 </div>
               </div>
+            ) : activeSection === "notifications" ? (
+              <SellerNotificationsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+              />
             ) : activeSection === "settlements" ? (
               <SellerSettlementsWorkspace
                 sellerSlug={resolvedSellerSlug}

@@ -5,6 +5,22 @@
 // ---------------------------------------------------------------------------
 
 export const smsTemplates = {
+    "followed-seller-new-product": {
+      message: "{{vendorName}} just released {{productTitle}} on Piessang."
+    },
+
+    "favorite-on-sale": {
+      message: "{{productTitle}} is now on sale on Piessang."
+    },
+
+    "favorite-back-in-stock": {
+      message: "{{productTitle}} is back in stock on Piessang."
+    },
+
+    "favorite-out-of-stock": {
+      message: "{{productTitle}} is currently out of stock on Piessang."
+    },
+
     "order-seller-fulfillment-update": {
       message: "Update for order {{orderNumber}}: {{statusMessage}}"
     },

@@ -324,12 +324,6 @@ function getVariantPriceExVat(variant?: ProductVariant) {
   if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_excl === "number") {
     return variant.sale.sale_price_excl;
   }
-  if (typeof variant.pricing?.sale_price_incl === "number") {
-    return variant.pricing.sale_price_incl / VAT_DIVISOR;
-  }
-  if (typeof variant.pricing?.sale_price_excl === "number") {
-    return variant.pricing.sale_price_excl;
-  }
   if (typeof variant.pricing?.selling_price_incl === "number") {
     return variant.pricing.selling_price_incl / VAT_DIVISOR;
   }
@@ -1011,6 +1005,8 @@ export async function ProductsPage({
   const currentMinRating = currentNumberParam(resolvedSearchParams, "minRating");
   const currentView = currentParam(resolvedSearchParams, "view") === "list" ? "list" : "grid";
   const currentSort = currentParam(resolvedSearchParams, "sort") ?? "relevance";
+  const imageSearchActive = currentParam(resolvedSearchParams, "imageSearch") === "true";
+  const imageSearchLabel = currentParam(resolvedSearchParams, "imageLabel");
   const currentBrandCount = currentBrand ? brandCounts[currentBrand] ?? 0 : 0;
   const baseParams = resolvedSearchParams;
   const optionPriceRange =
@@ -1123,6 +1119,14 @@ export async function ProductsPage({
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
+          {imageSearchActive ? (
+            <ToggleFilter
+              title={imageSearchLabel ? `Image match: ${imageSearchLabel}` : "Image search"}
+              enabled
+              href={buildProductsHref(baseParams, { imageSearch: undefined, imageLabel: undefined })}
+              scroll={false}
+            />
+          ) : null}
           {currentCategory ? (
             <ToggleFilter
               title={humanizeSlug(currentCategory)}
@@ -1180,6 +1184,12 @@ export async function ProductsPage({
             />
           ) : null}
         </div>
+
+        {imageSearchActive ? (
+          <div className="mt-4 rounded-[16px] border border-[#e5dcc1] bg-[#fcfbf7] px-4 py-3 text-[13px] text-[#5f5a4a]">
+            Showing visual matches{imageSearchLabel ? ` for "${imageSearchLabel}"` : ""}. Refine the results with filters if you want to narrow the match.
+          </div>
+        ) : null}
       </section>
 
       <section className="mt-5 overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">

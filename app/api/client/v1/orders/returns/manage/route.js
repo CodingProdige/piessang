@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
 import { canAccessSellerSettlement, isSystemAdminUser } from "@/lib/seller/settlement-access";
+import { createOrderTimelineEvent, appendOrderTimelineEvent } from "@/lib/orders/timeline";
 
 const ok = (data = {}, status = 200) => NextResponse.json({ ok: true, data }, { status });
 const err = (status, title, message, extra = {}) =>
@@ -81,6 +82,108 @@ function getRefundPaymentId(order = {}) {
 
 function getOrderPaymentProvider(order = {}) {
   return toStr(order?.payment?.provider || order?.order?.payment?.provider).toLowerCase();
+}
+
+function sentenceStatus(value) {
+  const normalized = toStr(value).replace(/[_-]+/g, " ").trim();
+  if (!normalized) return "Unknown";
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+async function ensureCreditNoteNumber({ db }) {
+  const counterRef = db.collection("system_counters").doc("credit_notes");
+  let nextNumber = "";
+  await db.runTransaction(async (tx) => {
+    const counterSnap = await tx.get(counterRef);
+    const last = Number(counterSnap.exists ? counterSnap.data()?.last : 0) || 0;
+    const next = last + 1;
+    nextNumber = `CN-${String(next).padStart(6, "0")}`;
+    tx.set(counterRef, { last: next }, { merge: true });
+  });
+  return nextNumber;
+}
+
+async function createSellerCreditNote({ db, orderRef, order, returnId, returnDoc, ownership, refundAmount, issuedBy, issuedAt }) {
+  const sellerCode = toStr(ownership?.sellerCode);
+  const sellerSlug = toStr(ownership?.sellerSlug);
+  const vendorName = toStr(ownership?.label || ownership?.vendorName || "Seller");
+  const creditNoteNumber = await ensureCreditNoteNumber({ db });
+  const creditNoteId = `cn_${creditNoteNumber.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}`;
+  const originalInvoiceNumber = toStr(order?.invoice?.invoiceNumber || order?.order?.orderNumber);
+  const originalSellerInvoiceNumber =
+    originalInvoiceNumber && (sellerCode || sellerSlug)
+      ? `${originalInvoiceNumber}-${toStr(sellerCode || sellerSlug).replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toUpperCase()}`
+      : originalInvoiceNumber;
+  const lines = Array.isArray(returnDoc?.lines) ? returnDoc.lines : [];
+  const creditNotePayload = {
+    creditNoteId,
+    docId: creditNoteId,
+    creditNoteNumber,
+    orderId: toStr(returnDoc?.return?.orderId),
+    orderNumber: toStr(returnDoc?.return?.orderNumber || order?.order?.orderNumber),
+    returnId,
+    sellerCode: sellerCode || null,
+    sellerSlug: sellerSlug || null,
+    vendorName,
+    customerId: toStr(returnDoc?.return?.customerId || order?.order?.customerId),
+    customerName: getCustomerName(returnDoc),
+    amountIncl: Number(refundAmount || 0),
+    reason: toStr(returnDoc?.return?.reason || "refund"),
+    reasonLabel: sentenceStatus(returnDoc?.return?.reason || "refund"),
+    status: "issued",
+    originalInvoiceNumber: originalInvoiceNumber || null,
+    originalSellerInvoiceNumber: originalSellerInvoiceNumber || null,
+    lines,
+    issuedAt,
+    createdAt: issuedAt,
+    updatedAt: issuedAt,
+    issuedBy,
+  };
+
+  const orderTimelineEvent = createOrderTimelineEvent({
+    type: "credit_note_issued",
+    title: "Credit note issued",
+    message: `${vendorName} issued credit note ${creditNoteNumber} for ${Number(refundAmount || 0).toFixed(2)}.`,
+    actorType: "admin",
+    actorId: issuedBy,
+    actorLabel: "Piessang",
+    createdAt: issuedAt,
+    status: "refunded",
+    sellerCode,
+    sellerSlug,
+    metadata: {
+      creditNoteId,
+      creditNoteNumber,
+      returnId,
+      amountIncl: Number(refundAmount || 0),
+    },
+  });
+
+  await Promise.all([
+    db.collection("credit_notes_v2").doc(creditNoteId).set(creditNotePayload, { merge: true }),
+    orderRef.set(
+      {
+        credit_notes: {
+          seller_notes: {
+            [creditNoteId]: {
+              ...creditNotePayload,
+              timelineEventId: orderTimelineEvent.id,
+            },
+          },
+        },
+        timeline: {
+          events: appendOrderTimelineEvent(order, orderTimelineEvent),
+        },
+        timestamps: {
+          ...(order?.timestamps || {}),
+          updatedAt: issuedAt,
+        },
+      },
+      { merge: true },
+    ),
+  ]);
+
+  return creditNotePayload;
 }
 
 export async function POST(req) {
@@ -207,6 +310,20 @@ export async function POST(req) {
       updatePayload["resolution.refundedAmountIncl"] = refundAmount;
       updatePayload["resolution.refundedAt"] = now;
       updatePayload["resolution.refundedBy"] = sessionUser.uid;
+
+      if (orderSnap?.exists) {
+        await createSellerCreditNote({
+          db,
+          orderRef: orderSnap.ref,
+          order,
+          returnId,
+          returnDoc,
+          ownership,
+          refundAmount,
+          issuedBy: sessionUser.uid,
+          issuedAt: now,
+        });
+      }
     }
 
     updatePayload["return.status"] = nextStatus;

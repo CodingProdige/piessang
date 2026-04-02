@@ -257,10 +257,7 @@ function variantInventoryQtyTotal(variant){
 }
 
 function variantSaleQtyAvailable(variant){
-  const isSaleEnabled = variant?.sale?.is_on_sale === true && variant?.sale?.disabled_by_admin !== true;
-  if (!isSaleEnabled) return 0;
-  const qty = Number(variant?.sale?.qty_available ?? 0);
-  return Number.isFinite(qty) && qty > 0 ? qty : 0;
+  return 0;
 }
 
 function variantTotalInStockItemsAvailable(variant){

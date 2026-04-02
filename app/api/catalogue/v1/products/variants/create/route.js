@@ -151,7 +151,7 @@ export async function POST(req){
     const current = psnap.data()||{};
     const productFulfillmentMode = toStr(current?.fulfillment?.mode, "seller") === "bevgo" ? "bevgo" : "seller";
     if (productFulfillmentMode === "bevgo" && !barcode) {
-      return err(400, "Missing Barcode", "Piessang fulfilment variants must have a barcode before they can be accepted.");
+      return err(400, "Missing Barcode", "A barcode is required for Piessang fulfilment variants. Seller-fulfilled variants may leave it blank.");
     }
     const variants = Array.isArray(current.variants)?[...current.variants]:[];
     const nextPos=(variants.length

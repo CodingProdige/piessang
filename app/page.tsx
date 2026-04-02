@@ -1,3 +1,11 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Home",
+  description:
+    "Shop Piessang for curated products from trusted sellers, with secure checkout, delivery support, and account tools built for repeat buying.",
+};
+
 export default function Home() {
   return (
     <main className="mx-auto max-w-[1180px] px-3 py-8 lg:px-4">

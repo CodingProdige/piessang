@@ -4,6 +4,8 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { upsertAutoReturnsExcessCreditNote } from "@/lib/creditNotes";
 import { syncOrderSellerSettlements } from "@/lib/seller/settlements";
+import { canTransitionOrderLifecycle } from "@/lib/orders/status-lifecycle";
+import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 
 /* ───────── HELPERS ───────── */
 
@@ -76,6 +78,9 @@ export async function POST(req) {
         `status must be one of: ${allowedOrderStatuses.join(", ")}`
       );
     }
+    if (status === "cancelled" && !reason) {
+      return err(400, "Missing Input", "A cancellation reason is required.");
+    }
 
     const resolvedOrderId = await resolveOrderId(null, orderNumber);
     if (!resolvedOrderId) {
@@ -89,23 +94,50 @@ export async function POST(req) {
     }
 
     const order = snap.data();
+    const currentStatus = String(order?.lifecycle?.orderStatus || order?.order?.status?.order || "").trim().toLowerCase();
+    if (!canTransitionOrderLifecycle({ currentStatus, nextStatus: status })) {
+      return err(409, "Invalid Status Change", `You cannot move this order from ${currentStatus || "unknown"} to ${status}.`);
+    }
     const paymentStatus =
       order?.payment?.status || order?.order?.status?.payment || null;
     const isRefunded =
       paymentStatus === "refunded" || paymentStatus === "partial_refund";
     const updatePayload = {
       "order.status.order": status,
+      "lifecycle.orderStatus": status,
+      "lifecycle.updatedAt": now(),
       "timestamps.updatedAt": now()
     };
+    const timelineEvent = createOrderTimelineEvent({
+      type: `order_${status}`,
+      title: defaultOrderReasons[status] || "Order status updated",
+      message: reason || defaultReason,
+      actorType: "admin",
+      actorLabel: "Piessang",
+      createdAt: now(),
+      status,
+    });
+    updatePayload["timeline.events"] = appendOrderTimelineEvent(order, timelineEvent);
+    updatePayload["timeline.updatedAt"] = now();
 
     if (status === "completed" || status === "cancelled") {
       updatePayload["order.editable"] = false;
       updatePayload["order.editable_reason"] =
         reason || `Order locked due to being ${status}.`;
+      updatePayload["lifecycle.editable"] = false;
+      updatePayload["lifecycle.editableReason"] =
+        reason || `Order locked due to being ${status}.`;
       updatePayload["timestamps.lockedAt"] = order?.timestamps?.lockedAt || now();
+      if (status === "cancelled") {
+        updatePayload["lifecycle.cancelledAt"] = now();
+        updatePayload["order.cancel_message"] = reason;
+        updatePayload["order.cancel_message_at"] = now();
+      }
     } else if (isRefunded) {
       updatePayload["order.editable"] = false;
       updatePayload["order.editable_reason"] = "Order locked due to being refunded.";
+      updatePayload["lifecycle.editable"] = false;
+      updatePayload["lifecycle.editableReason"] = "Order locked due to being refunded.";
       updatePayload["timestamps.lockedAt"] = order?.timestamps?.lockedAt || now();
     }
 

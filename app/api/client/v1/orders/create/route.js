@@ -119,6 +119,19 @@ function consumeInventoryRows(rows = [], quantity = 0) {
   });
 }
 
+function restoreInventoryRows(rows = [], quantity = 0) {
+  const nextRows = Array.isArray(rows) ? rows.map((row) => ({ ...(row || {}) })) : [];
+  const restoreQty = Math.max(0, Number(quantity) || 0);
+  if (restoreQty <= 0) return nextRows;
+  if (!nextRows.length) {
+    return [{ warehouse_id: "main", in_stock_qty: restoreQty }];
+  }
+  const firstRow = { ...(nextRows[0] || {}) };
+  firstRow.in_stock_qty = Math.max(0, Number(firstRow?.in_stock_qty || 0)) + restoreQty;
+  nextRows[0] = firstRow;
+  return nextRows;
+}
+
 async function consumeMarketplaceProductStock(adminDb, items = []) {
   if (!adminDb || !Array.isArray(items) || !items.length) return;
 
@@ -135,7 +148,6 @@ async function consumeMarketplaceProductStock(adminDb, items = []) {
     grouped.set(key, {
       productId,
       variantId,
-      isSaleLine: Boolean(variant?.sale?.is_on_sale),
       quantity: (grouped.get(key)?.quantity || 0) + quantity,
     });
   }
@@ -151,16 +163,72 @@ async function consumeMarketplaceProductStock(adminDb, items = []) {
       if (variantIndex < 0) return;
       const nextVariant = { ...(variants[variantIndex] || {}) };
 
-      if (entry.isSaleLine && nextVariant?.sale && !nextVariant.sale.disabled_by_admin) {
-        const currentSaleQty = Math.max(0, Number(nextVariant.sale.qty_available || 0));
-        const nextSaleQty = Math.max(0, currentSaleQty - entry.quantity);
+      nextVariant.inventory = consumeInventoryRows(nextVariant.inventory, entry.quantity);
+      const remainingInventory =
+        Array.isArray(nextVariant.inventory)
+          ? nextVariant.inventory.reduce((sum, row) => sum + Math.max(0, Number(row?.in_stock_qty || 0)), 0)
+          : 0;
+      if (nextVariant?.sale && !nextVariant.sale.disabled_by_admin && remainingInventory <= 0) {
         nextVariant.sale = {
           ...(nextVariant.sale || {}),
-          qty_available: nextSaleQty,
-          is_on_sale: nextSaleQty > 0,
+          is_on_sale: false,
         };
-      } else {
-        nextVariant.inventory = consumeInventoryRows(nextVariant.inventory, entry.quantity);
+      }
+
+      variants[variantIndex] = nextVariant;
+      tx.set(
+        productRef,
+        {
+          variants,
+          timestamps: {
+            ...(productData?.timestamps || {}),
+            updatedAt: now(),
+          },
+        },
+        { merge: true },
+      );
+    });
+  }
+}
+
+async function restoreMarketplaceProductStock(adminDb, items = []) {
+  if (!adminDb || !Array.isArray(items) || !items.length) return;
+
+  const grouped = new Map();
+  for (const item of items) {
+    const product = item?.product_snapshot || item?.product || {};
+    const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+    const productId =
+      String(product?.product?.unique_id || product?.docId || product?.product?.product_id || "").trim();
+    const variantId = String(variant?.variant_id || "").trim();
+    const quantity = Math.max(0, Number(item?.quantity || 0));
+    if (!productId || !variantId || quantity <= 0) continue;
+    const key = `${productId}::${variantId}::${variant?.sale?.is_on_sale ? "sale" : "regular"}`;
+    grouped.set(key, {
+      productId,
+      variantId,
+      restoreSaleFlag: Boolean(variant?.sale?.is_on_sale),
+      quantity: (grouped.get(key)?.quantity || 0) + quantity,
+    });
+  }
+
+  for (const entry of grouped.values()) {
+    const productRef = adminDb.collection("products_v2").doc(entry.productId);
+    await adminDb.runTransaction(async (tx) => {
+      const productSnap = await tx.get(productRef);
+      if (!productSnap.exists) return;
+      const productData = productSnap.data() || {};
+      const variants = Array.isArray(productData?.variants) ? [...productData.variants] : [];
+      const variantIndex = variants.findIndex((variant) => String(variant?.variant_id || "") === entry.variantId);
+      if (variantIndex < 0) return;
+      const nextVariant = { ...(variants[variantIndex] || {}) };
+
+      nextVariant.inventory = restoreInventoryRows(nextVariant.inventory, entry.quantity);
+      if (entry.restoreSaleFlag && nextVariant?.sale && !nextVariant.sale.disabled_by_admin) {
+        nextVariant.sale = {
+          ...(nextVariant.sale || {}),
+          is_on_sale: true,
+        };
       }
 
       variants[variantIndex] = nextVariant;

@@ -84,6 +84,17 @@ type CalendarMonthCursor = {
   month: number;
 };
 
+type MovementKind = "inbound" | "upliftment";
+
+type CalendarEventItem = {
+  id: string;
+  kind: MovementKind;
+  title: string;
+  date: string;
+  status: string;
+  row: MovementRow;
+};
+
 function formatDate(value: string | null | undefined) {
   if (!value) return "Not scheduled";
   const date = new Date(value);
@@ -118,6 +129,23 @@ function getMonthLabel(cursor: CalendarMonthCursor) {
 function shiftMonth(cursor: CalendarMonthCursor, delta: number): CalendarMonthCursor {
   const date = new Date(cursor.year, cursor.month + delta, 1);
   return { year: date.getFullYear(), month: date.getMonth() };
+}
+
+function buildCalendarGrid(cursor: CalendarMonthCursor) {
+  const firstDay = new Date(cursor.year, cursor.month, 1);
+  const startOffset = (firstDay.getDay() + 6) % 7;
+  const gridStart = new Date(cursor.year, cursor.month, 1 - startOffset);
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + index);
+    const key = `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, "0")}-${`${date.getDate()}`.padStart(2, "0")}`;
+    return {
+      key,
+      date,
+      inMonth: date.getMonth() === cursor.month,
+      isToday: key === toIsoDateInput(0),
+    };
+  });
 }
 
 function movementScheduledDate(row: MovementRow, kind: "inbound" | "upliftment") {
@@ -193,6 +221,8 @@ export function SellerWarehouseWorkspace({
     const now = new Date();
     return { year: now.getFullYear(), month: now.getMonth() };
   });
+  const [scheduleModalKind, setScheduleModalKind] = useState<MovementKind | null>(null);
+  const [selectedCalendarEvent, setSelectedCalendarEvent] = useState<CalendarEventItem | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -205,7 +235,9 @@ export function SellerWarehouseWorkspace({
           limit: "all",
           includeUnavailable: "true",
         });
-        if (vendorName.trim()) params.set("vendorName", vendorName.trim());
+        if (sellerSlug.trim()) params.set("sellerSlug", sellerSlug.trim());
+        else if (sellerCode.trim()) params.set("sellerCode", sellerCode.trim());
+        else if (vendorName.trim()) params.set("vendorName", vendorName.trim());
 
         const response = await fetch(`/api/catalogue/v1/products/product/get?${params.toString()}`, {
           cache: "no-store",
@@ -372,6 +404,7 @@ export function SellerWarehouseWorkspace({
       setSuccessMessage("Inbound booking saved.");
       setInboundNotes("");
       setVariantSelections(buildVariantSelections(selectedProduct));
+      setScheduleModalKind(null);
       await refreshMovements();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to save the inbound booking.");
@@ -417,6 +450,7 @@ export function SellerWarehouseWorkspace({
       setUpliftNotes("");
       setUpliftReason("");
       setVariantSelections(buildVariantSelections(selectedProduct));
+      setScheduleModalKind(null);
       await refreshMovements();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to save the stock upliftment request.");
@@ -573,6 +607,10 @@ export function SellerWarehouseWorkspace({
   const movementIntro = selectedProduct
     ? `${selectedProduct?.data?.product?.title || selectedProduct.id} is fulfilled by Piessang, so inbound deliveries and upliftments can be planned here.`
     : "Choose a Piessang fulfilment product to manage inbound deliveries and stock upliftments.";
+  const noWarehouseProductsMessage =
+    !loadingProducts && products.length === 0
+      ? "No Piessang-fulfilled products are available yet. Switch a product to Piessang fulfilment first, then come back to schedule inbound or outbound stock."
+      : null;
 
   const filteredInboundRows = useMemo(() => {
     const needle = movementSearch.trim().toLowerCase();
@@ -637,6 +675,288 @@ export function SellerWarehouseWorkspace({
     return Array.from(groups.entries()).map(([dateKey, items]) => ({ dateKey, items }));
   }, [calendarItems]);
 
+  const calendarItemsByDate = useMemo(() => {
+    const groups = new Map<string, CalendarEventItem[]>();
+    for (const item of calendarItems) {
+      const key = item.date.slice(0, 10);
+      const current = groups.get(key) || [];
+      current.push(item);
+      groups.set(key, current);
+    }
+    return groups;
+  }, [calendarItems]);
+
+  const calendarGrid = useMemo(() => buildCalendarGrid(calendarCursor), [calendarCursor]);
+
+  if (!adminCalendarOnly) {
+    return (
+      <div className="space-y-4">
+        <section className="rounded-[12px] border border-black/5 bg-[linear-gradient(180deg,#ffffff_0%,#f7f5ef_100%)] p-5 shadow-[0_16px_40px_rgba(20,24,27,0.06)]">
+          <div className="max-w-[760px]">
+            <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Warehouse calendar</p>
+            <h2 className="mt-2 text-[26px] font-semibold tracking-[-0.04em] text-[#202020]">Schedule inbound and outbound stock like a calendar</h2>
+            <p className="mt-2 text-[13px] leading-[1.7] text-[#57636c]">
+              Keep track of what is heading into Piessang and what is scheduled to head back out.
+            </p>
+          </div>
+
+          <div className="mt-5 rounded-[12px] border border-black/6 bg-white px-4 py-4 shadow-[0_8px_24px_rgba(20,24,27,0.04)]">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setSuccessMessage(null);
+                  setDeliveryDate(toIsoDateInput(1));
+                  setVariantSelections(buildVariantSelections(selectedProduct));
+                  setScheduleModalKind("inbound");
+                }}
+                className="inline-flex h-11 items-center rounded-[10px] bg-[#202020] px-4 text-[13px] font-semibold text-white transition hover:bg-black"
+              >
+                Book Inbound
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setSuccessMessage(null);
+                  setUpliftDate(toIsoDateInput(1));
+                  setVariantSelections(buildVariantSelections(selectedProduct));
+                  setScheduleModalKind("upliftment");
+                }}
+                className="inline-flex h-11 items-center rounded-[10px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020] transition hover:bg-[rgba(32,32,32,0.03)]"
+              >
+                Book Outbound
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {error ? <div className="rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">{error}</div> : null}
+        {successMessage ? <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.1)] px-4 py-3 text-[12px] text-[#166534]">{successMessage}</div> : null}
+
+        <section className="rounded-[12px] border border-black/5 bg-white p-4 shadow-[0_10px_28px_rgba(20,24,27,0.06)]">
+          <div className="flex flex-col gap-3 border-b border-black/5 pb-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-[12px] font-semibold text-[#202020]">Monthly schedule</p>
+              <p className="mt-1 text-[12px] text-[#57636c]">Click any event to view its details. Inbound and outbound bookings are color-coded.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setCalendarCursor((current) => shiftMonth(current, -1))} className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]">Previous</button>
+              <div className="min-w-[190px] text-center text-[13px] font-semibold text-[#202020]">{getMonthLabel(calendarCursor)}</div>
+              <button type="button" onClick={() => setCalendarCursor((current) => shiftMonth(current, 1))} className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]">Next</button>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-7 gap-2 text-center text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7d7d7d]">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
+              <div key={day} className="py-2">{day}</div>
+            ))}
+          </div>
+
+          <div className="mt-2 grid grid-cols-7 gap-2">
+            {calendarGrid.map((day) => {
+              const items = calendarItemsByDate.get(day.key) || [];
+              return (
+                <div
+                  key={day.key}
+                  className={`min-h-[136px] rounded-[10px] border p-2 ${day.inMonth ? "border-black/8 bg-white" : "border-black/5 bg-[rgba(32,32,32,0.025)]"} ${day.isToday ? "ring-2 ring-[#cbb26b]/45" : ""}`}
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className={`text-[12px] font-semibold ${day.inMonth ? "text-[#202020]" : "text-[#a3a3a3]"}`}>{day.date.getDate()}</span>
+                    {items.length ? <span className="rounded-full bg-[rgba(32,32,32,0.05)] px-2 py-0.5 text-[10px] font-semibold text-[#57636c]">{items.length}</span> : null}
+                  </div>
+                  <div className="space-y-1.5">
+                    {items.slice(0, 3).map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setSelectedCalendarEvent(item)}
+                        className={`w-full rounded-[8px] border px-2 py-1.5 text-left transition hover:shadow-[0_8px_20px_rgba(20,24,27,0.08)] ${item.kind === "inbound" ? "border-[#eadfb8] bg-[rgba(203,178,107,0.12)]" : "border-[#cfe8d8] bg-[rgba(57,169,107,0.08)]"}`}
+                      >
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#57636c]">{item.kind === "inbound" ? "Inbound" : "Outbound"}</p>
+                        <p className="mt-1 line-clamp-2 text-[11px] font-semibold text-[#202020]">{item.title}</p>
+                      </button>
+                    ))}
+                    {items.length > 3 ? <p className="px-1 text-[10px] font-semibold text-[#57636c]">+{items.length - 3} more</p> : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {scheduleModalKind ? (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(20,24,27,0.48)] px-4" onClick={() => setScheduleModalKind(null)}>
+            <div className="w-full max-w-[760px] rounded-[14px] bg-white p-6 shadow-[0_24px_80px_rgba(20,24,27,0.24)]" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">{scheduleModalKind === "inbound" ? "Book Inbound" : "Book Outbound"}</p>
+                  <h3 className="mt-2 text-[24px] font-semibold text-[#202020]">{scheduleModalKind === "inbound" ? "Schedule inbound stock" : "Schedule outbound stock"}</h3>
+                  <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
+                    {scheduleModalKind === "inbound"
+                      ? "Use this to tell Piessang when you plan to send stock into the warehouse for fulfilment."
+                      : "Use this to book stock that should be prepared and released back out of the Piessang warehouse."}
+                  </p>
+                </div>
+                <button type="button" onClick={() => setScheduleModalKind(null)} className="rounded-[8px] border border-black/10 px-3 py-2 text-[12px] font-semibold text-[#202020]">Close</button>
+              </div>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <label className="block">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Product</span>
+                  <select
+                    value={selectedProductId}
+                    onChange={(event) => {
+                      setSelectedProductId(event.target.value);
+                      setError(null);
+                      setSuccessMessage(null);
+                    }}
+                    className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c] focus:ring-2 focus:ring-[#907d4c]/15"
+                  >
+                    <option value="">{loadingProducts ? "Loading products..." : "Choose a Piessang fulfilment product"}</option>
+                    {products.map((product) => (
+                      <option key={product.id} value={product.id}>{(product?.data?.product?.title || product.id).trim()}</option>
+                    ))}
+                  </select>
+                  {noWarehouseProductsMessage ? <p className="mt-2 text-[12px] leading-[1.6] text-[#b45309]">{noWarehouseProductsMessage}</p> : null}
+                </label>
+                <label className="block">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{scheduleModalKind === "inbound" ? "Inbound date" : "Outbound date"}</span>
+                  <input
+                    type="date"
+                    value={scheduleModalKind === "inbound" ? deliveryDate : upliftDate}
+                    onChange={(event) => scheduleModalKind === "inbound" ? setDeliveryDate(event.target.value) : setUpliftDate(event.target.value)}
+                    className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c] focus:ring-2 focus:ring-[#907d4c]/15"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-4 rounded-[10px] border border-black/5">
+                <div className="grid grid-cols-[1.2fr_.55fr_.55fr] gap-3 border-b border-black/5 bg-[rgba(32,32,32,0.025)] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">
+                  <div>Variant</div><div>Barcode</div><div>Qty</div>
+                </div>
+                <div className="max-h-[280px] overflow-y-auto divide-y divide-black/5">
+                  {variantSelections.length ? variantSelections.map((variant) => (
+                    <div key={variant.variantId} className="grid grid-cols-[1.2fr_.55fr_.55fr] gap-3 px-4 py-3 text-[13px]">
+                      <div><p className="font-semibold text-[#202020]">{variant.label}</p><p className="mt-0.5 text-[11px] text-[#7d7d7d]">{variant.variantId}</p></div>
+                      <div className="truncate text-[#57636c]">{variant.barcode || "No barcode"}</div>
+                      <div><input inputMode="numeric" value={variant.quantity} onChange={(event) => updateVariantQuantity(variant.variantId, event.target.value)} placeholder="0" className="h-10 w-full rounded-[8px] border border-black/10 bg-white px-3 text-[13px] text-[#202020] outline-none transition focus:border-[#907d4c] focus:ring-2 focus:ring-[#907d4c]/15" /></div>
+                    </div>
+                  )) : <div className="px-4 py-8 text-[13px] text-[#57636c]">Choose a Piessang product to load its variants.</div>}
+                </div>
+              </div>
+
+              {scheduleModalKind === "upliftment" ? (
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <label className="block">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Reason</span>
+                    <input value={upliftReason} onChange={(event) => setUpliftReason(event.target.value)} placeholder="Optional reason for the upliftment request." className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c] focus:ring-2 focus:ring-[#907d4c]/15" />
+                  </label>
+                  <label className="block">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Notes</span>
+                    <textarea value={upliftNotes} onChange={(event) => setUpliftNotes(event.target.value)} rows={3} placeholder="Optional upliftment notes for the warehouse team." className="mt-2 w-full rounded-[10px] border border-black/10 bg-white px-3 py-2.5 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c] focus:ring-2 focus:ring-[#907d4c]/15" />
+                  </label>
+                </div>
+              ) : (
+                <label className="mt-4 block">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Notes</span>
+                  <textarea value={inboundNotes} onChange={(event) => setInboundNotes(event.target.value)} rows={3} placeholder="Optional delivery notes for the warehouse team." className="mt-2 w-full rounded-[10px] border border-black/10 bg-white px-3 py-2.5 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c] focus:ring-2 focus:ring-[#907d4c]/15" />
+                </label>
+              )}
+
+              <div className="mt-5 flex items-center justify-between gap-3 rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Selected units</p>
+                  <p className="mt-1 text-[18px] font-semibold text-[#202020]">{totalSelectedUnits}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void (scheduleModalKind === "inbound" ? handleInboundSubmit() : handleUpliftmentSubmit())}
+                  disabled={scheduleModalKind === "inbound" ? savingInbound || !selectedProductId : savingUpliftment || !selectedProductId}
+                  className="inline-flex h-11 items-center rounded-[10px] bg-[#202020] px-4 text-[13px] font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {scheduleModalKind === "inbound" ? (savingInbound ? "Saving..." : "Save inbound booking") : (savingUpliftment ? "Saving..." : "Save outbound booking")}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {selectedCalendarEvent ? (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(20,24,27,0.48)] px-4" onClick={() => setSelectedCalendarEvent(null)}>
+            <div className="w-full max-w-[640px] rounded-[14px] bg-white p-6 shadow-[0_24px_80px_rgba(20,24,27,0.24)]" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">{selectedCalendarEvent.kind === "inbound" ? "Inbound event" : "Outbound event"}</p>
+                  <h3 className="mt-2 text-[24px] font-semibold text-[#202020]">{selectedCalendarEvent.title}</h3>
+                </div>
+                <button type="button" onClick={() => setSelectedCalendarEvent(null)} className="rounded-[8px] border border-black/10 px-3 py-2 text-[12px] font-semibold text-[#202020]">Close</button>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Schedule date</p>
+                  <p className="mt-1 text-[14px] font-semibold text-[#202020]">{formatDate(selectedCalendarEvent.date)}</p>
+                </div>
+                <div className="rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Status</p>
+                  <p className="mt-1 text-[14px] font-semibold text-[#202020]">{selectedCalendarEvent.status.replace(/_/g, " ")}</p>
+                </div>
+                <div className="rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Reference</p>
+                  <p className="mt-1 text-[14px] font-semibold text-[#202020]">{selectedCalendarEvent.kind === "inbound" ? selectedCalendarEvent.row.bookingId || selectedCalendarEvent.row.id : selectedCalendarEvent.row.upliftmentId || selectedCalendarEvent.row.id}</p>
+                </div>
+                <div className="rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Total units</p>
+                  <p className="mt-1 text-[14px] font-semibold text-[#202020]">{Number(selectedCalendarEvent.row.totalUnits || 0)}</p>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[10px] border border-black/5">
+                <div className="border-b border-black/5 px-4 py-3">
+                  <p className="text-[12px] font-semibold text-[#202020]">Variants</p>
+                </div>
+                <div className="divide-y divide-black/5">
+                  {(Array.isArray(selectedCalendarEvent.row.variants) ? selectedCalendarEvent.row.variants : []).length ? (
+                    (selectedCalendarEvent.row.variants || []).map((variant, index) => (
+                      <div key={`${selectedCalendarEvent.id}-${variant.variantId || index}`} className="flex items-center justify-between gap-3 px-4 py-3 text-[13px]">
+                        <div>
+                          <p className="font-semibold text-[#202020]">{variant.label || variant.variantId || "Variant"}</p>
+                          <p className="mt-0.5 text-[11px] text-[#7d7d7d]">{variant.barcode || "No barcode"}</p>
+                        </div>
+                        <p className="font-semibold text-[#202020]">{Number(variant.quantity || 0)} units</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="px-4 py-6 text-[13px] text-[#57636c]">No variant lines were saved on this booking.</div>
+                  )}
+                </div>
+              </div>
+
+              {selectedCalendarEvent.row.reason || selectedCalendarEvent.row.notes ? (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  {selectedCalendarEvent.row.reason ? (
+                    <div className="rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Reason</p>
+                      <p className="mt-1 text-[13px] leading-[1.6] text-[#202020]">{selectedCalendarEvent.row.reason}</p>
+                    </div>
+                  ) : null}
+                  {selectedCalendarEvent.row.notes ? (
+                    <div className="rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Notes</p>
+                      <p className="mt-1 text-[13px] leading-[1.6] text-[#202020]">{selectedCalendarEvent.row.notes}</p>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <section className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] p-4">
@@ -678,6 +998,7 @@ export function SellerWarehouseWorkspace({
                   </option>
                 ))}
               </select>
+              {noWarehouseProductsMessage ? <p className="mt-2 text-[12px] leading-[1.6] text-[#b45309]">{noWarehouseProductsMessage}</p> : null}
             </div>
             <div className="rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.6] text-[#57636c]">
               {movementIntro}

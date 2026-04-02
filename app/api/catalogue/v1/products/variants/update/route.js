@@ -430,7 +430,7 @@ export async function POST(req) {
       return err(
         400,
         "Missing Barcode",
-        "Piessang fulfilment variants must have a barcode before they can be accepted."
+        "A barcode is required for Piessang fulfilment variants. Seller-fulfilled variants may leave it blank."
       );
     }
 

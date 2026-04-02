@@ -2,6 +2,8 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { canTransitionOrderLifecycle } from "@/lib/orders/status-lifecycle";
+import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 
 /* ───────── HELPERS ───────── */
 
@@ -78,7 +80,7 @@ export async function POST(req) {
     }
 
     const order = snap.data();
-    const currentStatus = order?.lifecycle?.orderStatus || order?.order?.status?.order || null;
+    const currentStatus = String(order?.lifecycle?.orderStatus || order?.order?.status?.order || "").trim().toLowerCase();
 
     if (currentStatus === "cancelled") {
       return ok({
@@ -88,6 +90,9 @@ export async function POST(req) {
         status: "cancelled",
         alreadyCancelled: true
       });
+    }
+    if (!canTransitionOrderLifecycle({ currentStatus, nextStatus: "cancelled" })) {
+      return err(409, "Invalid Status Change", `You cannot cancel an order once it has reached ${currentStatus || "its current"} status.`);
     }
 
     const updatePayload = {
@@ -104,6 +109,19 @@ export async function POST(req) {
       "timestamps.updatedAt": now(),
       "timestamps.lockedAt": order?.timestamps?.lockedAt || now()
     };
+    updatePayload["timeline.events"] = appendOrderTimelineEvent(
+      order,
+      createOrderTimelineEvent({
+        type: "order_cancelled",
+        title: "Order cancelled",
+        message: cancelMessage,
+        actorType: "system",
+        actorLabel: "Piessang",
+        createdAt: now(),
+        status: "cancelled",
+      }),
+    );
+    updatePayload["timeline.updatedAt"] = now();
 
     await ref.update(updatePayload);
 

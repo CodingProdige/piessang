@@ -6,6 +6,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
 import { canAccessSellerSettlement, isSystemAdminUser } from "@/lib/seller/settlement-access";
 import { buildOrderDeliveryProgress, deriveAggregateOrderStatuses, enrichOrderItemFulfillment } from "@/lib/orders/fulfillment-progress";
+import { canTransitionSellerFulfillment, getSellerFulfillmentStatusLabel, normalizeSellerFulfillmentStatus, requiresCancellationReason } from "@/lib/orders/status-lifecycle";
+import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
@@ -66,14 +68,6 @@ function getCustomerName(order) {
   );
 }
 
-function statusLabel(status) {
-  if (status === "delivered") return "Delivered";
-  if (status === "dispatched") return "Dispatched";
-  if (status === "processing") return "Processing";
-  if (status === "confirmed") return "Confirmed";
-  return "Updated";
-}
-
 function getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug) {
   const pricingSnapshot = order?.pricing_snapshot && typeof order.pricing_snapshot === "object" ? order.pricing_snapshot : {};
   const delivery = order?.delivery && typeof order.delivery === "object" ? order.delivery : {};
@@ -93,10 +87,19 @@ function getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug) {
   );
 }
 
-function buildCustomerUpdateCopy({ deliveryType, status, courierName, trackingNumber, sellerVendorName }) {
+function buildCustomerUpdateCopy({ deliveryType, status, courierName, trackingNumber, sellerVendorName, cancellationReason }) {
   const normalizedDeliveryType = toLower(deliveryType);
-  const normalizedStatus = toLower(status);
+  const normalizedStatus = normalizeSellerFulfillmentStatus(status);
   const vendorLabel = toStr(sellerVendorName || "your seller");
+
+  if (normalizedStatus === "cancelled") {
+    const reasonText = toStr(cancellationReason);
+    return {
+      statusLabel: "Cancelled",
+      statusHeadline: "Your order has been cancelled",
+      statusMessage: `${vendorLabel} cancelled this order${reasonText ? ` for the following reason: ${reasonText}` : "."}`,
+    };
+  }
 
   if (normalizedDeliveryType === "collection") {
     if (normalizedStatus === "processing") {
@@ -136,7 +139,7 @@ function buildCustomerUpdateCopy({ deliveryType, status, courierName, trackingNu
       };
     }
     return {
-      statusLabel: statusLabel(status),
+      statusLabel: getSellerFulfillmentStatusLabel(status),
       statusHeadline: "Your order has a delivery update",
       statusMessage: `${vendorLabel} updated the delivery status for your order.`,
     };
@@ -163,7 +166,7 @@ function buildCustomerUpdateCopy({ deliveryType, status, courierName, trackingNu
   }
 
   return {
-    statusLabel: statusLabel(status),
+    statusLabel: getSellerFulfillmentStatusLabel(status),
     statusHeadline: "Your order has a new update",
     statusMessage: `${vendorLabel} updated the status of your order.`,
   };
@@ -190,10 +193,11 @@ export async function POST(req) {
     const orderNumberInput = toStr(body?.orderNumber);
     const sellerCode = toStr(body?.sellerCode);
     const sellerSlug = toStr(body?.sellerSlug);
-    const status = toLower(body?.status);
+    const status = normalizeSellerFulfillmentStatus(body?.status);
     const trackingNumber = toStr(body?.trackingNumber);
     const courierName = toStr(body?.courierName);
     const notes = toStr(body?.notes);
+    const cancellationReason = toStr(body?.cancellationReason || body?.reason);
 
     if (!orderIdInput && !orderNumberInput) {
       return err(400, "Missing Order", "orderId or orderNumber is required.");
@@ -201,8 +205,11 @@ export async function POST(req) {
     if (!sellerCode && !sellerSlug) {
       return err(400, "Missing Seller", "sellerCode or sellerSlug is required.");
     }
-    if (!["confirmed", "processing", "dispatched", "delivered"].includes(status)) {
-      return err(400, "Invalid Status", "status must be confirmed, processing, dispatched, or delivered.");
+    if (!["processing", "dispatched", "delivered", "cancelled"].includes(status)) {
+      return err(400, "Invalid Status", "status must be processing, dispatched, delivered, or cancelled.");
+    }
+    if (requiresCancellationReason(status) && !cancellationReason) {
+      return err(400, "Missing Cancellation Reason", "A cancellation reason is required before cancelling an order.");
     }
 
     const requesterSnap = await db.collection("users").doc(sessionUser.uid).get();
@@ -225,6 +232,28 @@ export async function POST(req) {
     const touchedItems = [];
     const sellerDeliveryEntry = getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug);
 
+    const sellerSourceItems = sourceItems
+      .filter((item) => {
+        const lineSeller = getLineSellerIdentity(item);
+        return (
+          (sellerCode && toLower(lineSeller.sellerCode) === toLower(sellerCode)) ||
+          (sellerSlug && toLower(lineSeller.sellerSlug) === toLower(sellerSlug))
+        );
+      })
+      .map((item) => enrichOrderItemFulfillment(item, order));
+    const currentSellerStatus = deriveAggregateOrderStatuses(sellerSourceItems, order)?.fulfillmentStatus || "confirmed";
+
+    if (
+      !canTransitionSellerFulfillment({
+        currentStatus: currentSellerStatus,
+        nextStatus: status,
+        deliveryType: sellerDeliveryEntry?.delivery_type || sellerDeliveryEntry?.method || "",
+        isComplete: sellerSourceItems.every((item) => toLower(item?.fulfillment_tracking?.status) === "delivered"),
+      })
+    ) {
+      return err(409, "Invalid Status Change", `You cannot move this order from ${getSellerFulfillmentStatusLabel(currentSellerStatus)} to ${getSellerFulfillmentStatusLabel(status)}.`);
+    }
+
     const nextItems = sourceItems.map((item) => {
       const lineSeller = getLineSellerIdentity(item);
       const matchesSeller =
@@ -243,6 +272,8 @@ export async function POST(req) {
             trackingNumber: trackingNumber || item?.fulfillment_tracking?.trackingNumber || null,
             courierName: courierName || item?.fulfillment_tracking?.courierName || null,
             notes: notes || item?.fulfillment_tracking?.notes || null,
+            cancellationReason: cancellationReason || item?.fulfillment_tracking?.cancellationReason || null,
+            cancelledAt: status === "cancelled" ? now : item?.fulfillment_tracking?.cancelledAt || null,
           },
         },
         order,
@@ -258,6 +289,55 @@ export async function POST(req) {
     const aggregate = deriveAggregateOrderStatuses(nextItems, order);
     const { items: enrichedItems, progress } = buildOrderDeliveryProgress({ ...order, items: nextItems });
 
+    const wholeOrderCancelled = aggregate.orderStatus === "cancelled";
+    const sellerVendorName = touchedItems[0]?.product_snapshot?.product?.vendorName || touchedItems[0]?.product_snapshot?.seller?.vendorName || "";
+    const timelineEvent = createOrderTimelineEvent({
+      type: `seller_${status}`,
+      title:
+        status === "cancelled"
+          ? "Seller cancelled this order"
+          : status === "dispatched"
+            ? (trackingNumber || courierName ? "Order handed to courier" : "Order out for delivery")
+            : status === "delivered"
+              ? "Seller marked this order delivered"
+              : "Seller started processing this order",
+      message:
+        status === "cancelled"
+          ? `The seller cancelled this order.${cancellationReason ? ` Reason: ${cancellationReason}` : ""}`
+          : status === "dispatched"
+            ? [
+                "The seller marked this order as on the way.",
+                courierName ? `Courier: ${courierName}.` : "",
+                trackingNumber ? `Tracking number: ${trackingNumber}.` : "",
+                notes ? `Note: ${notes}` : "",
+              ].filter(Boolean).join(" ")
+            : status === "delivered"
+              ? "The seller confirmed that this order has been delivered."
+              : "The seller started preparing this order.",
+      actorType: isSystemAdminUser(requester) ? "admin" : "seller",
+      actorId: sessionUser.uid,
+      actorLabel: toStr(
+        requester?.seller?.vendorName ||
+          requester?.account?.accountName ||
+          requester?.personal?.fullName ||
+          requester?.email ||
+          sellerVendorName ||
+          "Seller",
+      ),
+      createdAt: now,
+      status,
+      sellerCode: sellerCode || touchedItems[0]?.product_snapshot?.product?.sellerCode || "",
+      sellerSlug: sellerSlug || touchedItems[0]?.product_snapshot?.product?.sellerSlug || "",
+      metadata: {
+        courierName: courierName || null,
+        trackingNumber: trackingNumber || null,
+        note: notes || null,
+        itemCount: touchedItems.length,
+        cancellationReason: cancellationReason || null,
+      },
+    });
+    const nextTimelineEvents = appendOrderTimelineEvent(order, timelineEvent);
+
     await orderRef.set(
       {
         items: enrichedItems,
@@ -268,9 +348,36 @@ export async function POST(req) {
             order: aggregate.orderStatus,
             fulfillment: aggregate.fulfillmentStatus,
           },
+          ...(wholeOrderCancelled
+            ? {
+                editable: false,
+                editable_reason: cancellationReason,
+                cancel_message: cancellationReason,
+                cancel_message_at: now,
+              }
+            : {}),
+        },
+        lifecycle: {
+          ...(order?.lifecycle || {}),
+          orderStatus: aggregate.orderStatus,
+          fulfillmentStatus: aggregate.fulfillmentStatus,
+          updatedAt: now,
+          ...(wholeOrderCancelled
+            ? {
+                cancelledAt: now,
+                editable: false,
+                editableReason: cancellationReason,
+              }
+            : {}),
         },
         timestamps: {
           ...(order?.timestamps || {}),
+          updatedAt: now,
+          ...(wholeOrderCancelled ? { lockedAt: order?.timestamps?.lockedAt || now } : {}),
+        },
+        timeline: {
+          ...(order?.timeline || {}),
+          events: nextTimelineEvents,
           updatedAt: now,
         },
       },
@@ -281,13 +388,13 @@ export async function POST(req) {
     const customerPhone = getCustomerPhone(order);
     const customerName = getCustomerName(order);
     const origin = new URL(req.url).origin;
-    const sellerVendorName = touchedItems[0]?.product_snapshot?.product?.vendorName || touchedItems[0]?.product_snapshot?.seller?.vendorName || "";
     const copy = buildCustomerUpdateCopy({
       deliveryType: sellerDeliveryEntry?.delivery_type || sellerDeliveryEntry?.method || "",
       status,
       courierName: courierName || touchedItems[0]?.fulfillment_tracking?.courierName || "",
       trackingNumber: trackingNumber || touchedItems[0]?.fulfillment_tracking?.trackingNumber || "",
       sellerVendorName,
+      cancellationReason,
     });
     if (customerEmail) {
       await fetch(`${origin}/api/client/v1/notifications/email`, {
@@ -302,6 +409,7 @@ export async function POST(req) {
             statusLabel: copy.statusLabel,
             statusHeadline: copy.statusHeadline,
             statusMessage: copy.statusMessage,
+            cancellationReason,
             sellerVendorName,
             itemCount: touchedItems.length,
             items: touchedItems.map((item) => ({
@@ -327,6 +435,27 @@ export async function POST(req) {
             vendorName: sellerVendorName || "your seller",
             statusLabel: copy.statusLabel,
             statusMessage: copy.statusMessage,
+            cancellationReason,
+          },
+        }),
+      }).catch(() => null);
+    }
+
+    if (status === "delivered" && currentSellerStatus !== "delivered" && customerEmail) {
+      const reviewSellerSlug =
+        sellerSlug ||
+        toStr(touchedItems[0]?.product_snapshot?.product?.sellerSlug || touchedItems[0]?.product_snapshot?.seller?.sellerSlug || "");
+      await fetch(`${origin}/api/client/v1/notifications/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "seller-rating-request",
+          to: customerEmail,
+          data: {
+            customerName,
+            vendorName: sellerVendorName || "your seller",
+            orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || resolvedOrderId),
+            reviewUrl: `${origin}/account/orders/${encodeURIComponent(resolvedOrderId)}${reviewSellerSlug ? `?rateSeller=${encodeURIComponent(reviewSellerSlug)}` : ""}`,
           },
         }),
       }).catch(() => null);

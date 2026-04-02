@@ -77,14 +77,15 @@ export function FooterAppActions() {
   const [pushSupported, setPushSupported] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<"install" | "notifications" | null>(null);
+  const [ios, setIos] = useState(false);
   const tokenRef = useRef<string | null>(null);
   const messageTimeoutRef = useRef<number | null>(null);
 
   const standalone = useMemo(() => isStandaloneMode(), []);
-  const ios = useMemo(() => isIosDevice(), []);
 
   useEffect(() => {
     let cancelled = false;
+    setIos(isIosDevice());
     void getMessagingSupport().then((supported) => {
       if (cancelled) return;
       setPushSupported(supported);

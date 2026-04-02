@@ -1,0 +1,14 @@
+<h2 style="margin:0 0 16px;"><%= reminderTimingLabel %>: <%= eventKindLabel %> scheduled</h2>
+<p style="margin:0 0 12px;">This is a reminder for your upcoming warehouse event on Piessang.</p>
+<p style="margin:0 0 8px;"><strong>Seller:</strong> <%= vendorName %></p>
+<p style="margin:0 0 8px;"><strong>Product:</strong> <%= productTitle %></p>
+<p style="margin:0 0 8px;"><strong>Schedule date:</strong> <%= scheduleDate %></p>
+<p style="margin:0 0 8px;"><strong>Reference:</strong> <%= reference %></p>
+<p style="margin:0 0 8px;"><strong>Total units:</strong> <%= totalUnits %></p>
+<% if (reason) { %>
+  <p style="margin:0 0 8px;"><strong>Reason:</strong> <%= reason %></p>
+<% } %>
+<% if (notes) { %>
+  <p style="margin:0 0 12px;"><strong>Notes:</strong> <%= notes %></p>
+<% } %>
+<p style="margin:16px 0 0;">You can review or update this booking from your seller warehouse calendar.</p>

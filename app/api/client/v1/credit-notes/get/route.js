@@ -1,8 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { collection, doc, getDoc, getDocs, limit, query, where } from "firebase/firestore";
-import { db } from "@/lib/firebaseConfig";
+import { getAdminDb } from "@/lib/firebase/admin";
 
 const ok = (data = {}, status = 200) =>
   NextResponse.json({ ok: true, data }, { status });
@@ -39,6 +38,11 @@ function sortByRecent(a, b) {
 
 export async function POST(req) {
   try {
+    const db = getAdminDb();
+    if (!db) {
+      return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
+    }
+
     const body = await req.json().catch(() => ({}));
     const creditNoteId = asMeaningfulString(body?.creditNoteId);
     const customerId = asMeaningfulString(body?.customerId);
@@ -64,7 +68,7 @@ export async function POST(req) {
     }
 
     if (creditNoteId) {
-      const snap = await getDoc(doc(db, "credit_notes_v2", creditNoteId));
+      const snap = await db.collection("credit_notes_v2").doc(creditNoteId).get();
       if (!snap.exists()) {
         return err(404, "Credit Note Not Found", "No credit note found for provided creditNoteId.");
       }
@@ -77,21 +81,17 @@ export async function POST(req) {
 
     let sourceSnap;
     if (customerId) {
-      sourceSnap = await getDocs(
-        query(
-          collection(db, "credit_notes_v2"),
-          where("customerId", "==", customerId),
-          limit(500)
-        )
-      );
+      sourceSnap = await db
+        .collection("credit_notes_v2")
+        .where("customerId", "==", customerId)
+        .limit(500)
+        .get();
     } else {
-      sourceSnap = await getDocs(
-        query(
-          collection(db, "credit_notes_v2"),
-          where("source.orderNumber", "==", orderNumber),
-          limit(500)
-        )
-      );
+      sourceSnap = await db
+        .collection("credit_notes_v2")
+        .where("source.orderNumber", "==", orderNumber)
+        .limit(500)
+        .get();
     }
 
     let notes = sourceSnap.docs.map(d => ({
@@ -130,4 +130,3 @@ export async function POST(req) {
     );
   }
 }
-

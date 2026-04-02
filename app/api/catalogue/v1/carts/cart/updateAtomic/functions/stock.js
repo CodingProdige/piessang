@@ -14,9 +14,6 @@ export function capQuantity(variant, desiredQty, { currentQty = 0, ignoreSale = 
   let available = null;
   let reason = null;
 
-  const saleActive = variant?.sale?.is_on_sale && !ignoreSale;
-  const saleDisabled = Boolean(variant?.sale?.disabled_by_admin);
-
   // Hard block if supplier is out of stock for any increase
   if (supplierOOS && requestedIncrease > 0) {
     return { quantity: current, capped: requested !== current, available: current, reason: "supplier_out_of_stock" };
@@ -27,18 +24,7 @@ export function capQuantity(variant, desiredQty, { currentQty = 0, ignoreSale = 
     return { quantity: requested, capped: false, available: null, reason: null };
   }
 
-  if (saleActive) {
-    const saleQty = Math.max(0, toNum(variant?.sale?.qty_available));
-    const invQty = sumInventory(variant);
-    available = saleQty + invQty;
-    reason = invQty > 0 ? "sale + inventory stock" : "sale stock";
-
-    // If admin disabled, don't cap; treat like regular item.
-    if (saleDisabled) {
-      available = null;
-      reason = null;
-    }
-  } else if (Array.isArray(variant?.inventory) && variant.inventory.length) {
+  if (Array.isArray(variant?.inventory) && variant.inventory.length) {
     available = sumInventory(variant);
     reason = "inventory";
   } else if (!continueSellingOOS) {

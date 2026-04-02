@@ -5,6 +5,8 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
 import { buildOrderDeliveryProgress, enrichOrderItemFulfillment } from "@/lib/orders/fulfillment-progress";
+import { getFrozenLineTotalIncl, getFrozenSellerSliceSubtotalIncl } from "@/lib/orders/frozen-money";
+import { createOrderTimelineEvent, getOrderTimelineEvents } from "@/lib/orders/timeline";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
@@ -56,12 +58,7 @@ function getLineQuantity(item) {
 }
 
 function getLinePriceIncl(item) {
-  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
-  const lineTotals = item?.line_totals && typeof item.line_totals === "object" ? item.line_totals : {};
-  const explicit = Number(lineTotals?.total_incl);
-  if (Number.isFinite(explicit) && explicit > 0) return explicit;
-  const price = Number(variant?.pricing?.selling_price_incl || 0);
-  return Number.isFinite(price) ? price * getLineQuantity(item) : 0;
+  return getFrozenLineTotalIncl(item);
 }
 
 function toIsoOrEmpty(value) {
@@ -276,12 +273,86 @@ function getSellerCustomerContact(order) {
   };
 }
 
+function buildSellerTimeline(order, sellerIdentity) {
+  const sellerCode = toLower(sellerIdentity?.sellerCode);
+  const sellerSlug = toLower(sellerIdentity?.sellerSlug);
+  const stored = getOrderTimelineEvents(order).filter((entry) => {
+    const entrySellerCode = toLower(entry?.sellerCode);
+    const entrySellerSlug = toLower(entry?.sellerSlug);
+    if (!entrySellerCode && !entrySellerSlug) return true;
+    return Boolean((sellerCode && entrySellerCode === sellerCode) || (sellerSlug && entrySellerSlug === sellerSlug));
+  });
+
+  const fallback = [
+    createOrderTimelineEvent({
+      type: "order_placed",
+      title: "Order placed",
+      message: `${toStr(
+        order?.customer_snapshot?.account?.accountName ||
+          order?.customer_snapshot?.business?.companyName ||
+          order?.customer_snapshot?.personal?.fullName ||
+          "Customer",
+      )} placed this order.`,
+      actorType: "customer",
+      actorLabel: toStr(
+        order?.customer_snapshot?.account?.accountName ||
+          order?.customer_snapshot?.business?.companyName ||
+          order?.customer_snapshot?.personal?.fullName ||
+          "Customer",
+      ),
+      createdAt: toStr(order?.timestamps?.createdAt || ""),
+      status: toStr(order?.lifecycle?.orderStatus || order?.order?.status?.order || "confirmed"),
+    }),
+  ];
+
+  const paymentStatus = toLower(order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "");
+  if (paymentStatus) {
+    fallback.push(
+      createOrderTimelineEvent({
+        type: "payment_status",
+        title: "Payment status updated",
+        message: `Payment is currently ${paymentStatus.replace(/_/g, " ")}.`,
+        actorType: "system",
+        actorLabel: "Piessang",
+        createdAt: toStr(order?.payment?.paidAt || order?.timestamps?.updatedAt || order?.timestamps?.createdAt || ""),
+        status: paymentStatus,
+      }),
+    );
+  }
+
+  const combined = [...stored];
+  for (const entry of fallback) {
+    if (!combined.some((item) => toLower(item?.type) === toLower(entry?.type))) {
+      combined.push(entry);
+    }
+  }
+  return combined.sort((left, right) => toStr(right?.createdAt).localeCompare(toStr(left?.createdAt)));
+}
+
+function getSellerCreditNotes(order, sellerIdentity) {
+  const sellerCode = toLower(sellerIdentity?.sellerCode);
+  const sellerSlug = toLower(sellerIdentity?.sellerSlug);
+  const notesMap =
+    order?.credit_notes?.seller_notes && typeof order.credit_notes.seller_notes === "object"
+      ? order.credit_notes.seller_notes
+      : {};
+
+  return Object.values(notesMap)
+    .filter((entry) => entry && typeof entry === "object")
+    .filter((entry) => {
+      const entryCode = toLower(entry?.sellerCode);
+      const entrySlug = toLower(entry?.sellerSlug);
+      return Boolean((sellerCode && entryCode === sellerCode) || (sellerSlug && entrySlug === sellerSlug));
+    })
+    .sort((left, right) => toStr(right?.issuedAt || right?.createdAt).localeCompare(toStr(left?.issuedAt || left?.createdAt)));
+}
+
 function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const enrichedItems = items.map((item) => enrichOrderItemFulfillment(item, order));
   const selfFulfilmentLines = enrichedItems.filter((item) => getLineFulfillmentMode(item) === "seller");
   const piessangFulfilmentLines = enrichedItems.filter((item) => getLineFulfillmentMode(item) === "bevgo");
   const allQty = items.reduce((sum, item) => sum + getLineQuantity(item), 0);
-  const subtotalIncl = Number(items.reduce((sum, item) => sum + getLinePriceIncl(item), 0).toFixed(2));
+  const subtotalIncl = getFrozenSellerSliceSubtotalIncl(items);
   const orderStatus = toLower(order?.lifecycle?.orderStatus || order?.order?.status?.order || "");
   const paymentStatus = toLower(order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "");
   const fulfillmentStatus = toLower(order?.lifecycle?.fulfillmentStatus || order?.order?.status?.fulfillment || "");
@@ -312,6 +383,8 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const newOrder = ["payment_pending", "confirmed"].includes(orderStatus);
   const fulfilled = orderStatus === "completed" || fulfillmentStatus === "delivered";
   const unfulfilled = !fulfilled && orderStatus !== "cancelled";
+  const deliveryAmountIncl = Number(deliveryOption?.amountIncl || 0);
+  const totalIncl = Number((subtotalIncl + deliveryAmountIncl).toFixed(2));
 
   return {
     sellerCode: sellerIdentity.sellerCode || "",
@@ -347,6 +420,8 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
     },
     totals: {
       subtotalIncl,
+      deliveryIncl: deliveryAmountIncl,
+      totalIncl,
     },
     flags: {
       new: newOrder,
@@ -357,6 +432,8 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
       selfFulfilment: selfFulfilmentLines,
       piessangFulfilment: piessangFulfilmentLines,
     },
+    timeline: buildSellerTimeline(order, sellerIdentity),
+    creditNotes: getSellerCreditNotes(order, sellerIdentity),
   };
 }
 

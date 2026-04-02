@@ -7,6 +7,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import { useAuth } from "@/components/auth/auth-provider";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { clientStorage } from "@/lib/firebase";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
@@ -103,6 +104,15 @@ type SellerPayoutProfile = {
   lastVerifiedAt: string;
 };
 
+type SellerBusinessDetails = {
+  companyName: string;
+  registrationNumber: string;
+  vatNumber: string;
+  email: string;
+  phoneNumber: string;
+  addressText: string;
+};
+
 type SellerSettingsWorkspaceProps = {
   sellerSlug: string;
   vendorName: string;
@@ -175,6 +185,15 @@ const EMPTY_PAYOUT_PROFILE: SellerPayoutProfile = {
   stripeRecipientCountry: "",
   stripeLastAccountLinkCreatedAt: "",
   lastVerifiedAt: "",
+};
+
+const EMPTY_BUSINESS_DETAILS: SellerBusinessDetails = {
+  companyName: "",
+  registrationNumber: "",
+  vatNumber: "",
+  email: "",
+  phoneNumber: "",
+  addressText: "",
 };
 
 function makePricingRule(seed = Date.now()) {
@@ -343,6 +362,7 @@ function buildSettingsSnapshot(input: {
   branding: SellerBranding;
   deliveryProfile: SellerDeliveryProfile;
   payoutProfile: SellerPayoutProfile;
+  businessDetails: SellerBusinessDetails;
   vendorNameValue: string;
   vendorDescriptionValue: string;
 }) {
@@ -350,6 +370,7 @@ function buildSettingsSnapshot(input: {
     branding: input.branding,
     deliveryProfile: input.deliveryProfile,
     payoutProfile: input.payoutProfile,
+    businessDetails: input.businessDetails,
     vendorNameValue: sanitizeVendorName(input.vendorNameValue),
     vendorDescriptionValue: toStr(input.vendorDescriptionValue).slice(0, 500),
   });
@@ -432,6 +453,7 @@ export function SellerSettingsWorkspace({
   const [branding, setBranding] = useState<SellerBranding>(EMPTY_BRANDING);
   const [deliveryProfile, setDeliveryProfile] = useState<SellerDeliveryProfile>(EMPTY_DELIVERY_PROFILE);
   const [payoutProfile, setPayoutProfile] = useState<SellerPayoutProfile>(EMPTY_PAYOUT_PROFILE);
+  const [businessDetails, setBusinessDetails] = useState<SellerBusinessDetails>(EMPTY_BUSINESS_DETAILS);
   const [vendorNameValue, setVendorNameValue] = useState(vendorName);
   const [vendorDescriptionValue, setVendorDescriptionValue] = useState("");
   const [sellerCodeValue, setSellerCodeValue] = useState("");
@@ -450,6 +472,7 @@ export function SellerSettingsWorkspace({
   const [sectionOpen, setSectionOpen] = useState({
     branding: true,
     shipping: true,
+    business: true,
     payouts: true,
   });
   const [sellerNameCheck, setSellerNameCheck] = useState<{
@@ -482,10 +505,11 @@ export function SellerSettingsWorkspace({
         branding,
         deliveryProfile,
         payoutProfile,
+        businessDetails,
         vendorNameValue,
         vendorDescriptionValue,
       }) !== savedSnapshot,
-    [branding, deliveryProfile, payoutProfile, savedSnapshot, vendorDescriptionValue, vendorNameValue],
+    [branding, businessDetails, deliveryProfile, payoutProfile, savedSnapshot, vendorDescriptionValue, vendorNameValue],
   );
   
   function showSnackbar(message: string, tone: "success" | "error" = "success") {
@@ -573,6 +597,7 @@ export function SellerSettingsWorkspace({
           payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {},
         );
         const nextPayoutProfile = payload?.payoutProfile && typeof payload.payoutProfile === "object" ? payload.payoutProfile : {};
+        const nextBusinessDetails = payload?.businessDetails && typeof payload.businessDetails === "object" ? payload.businessDetails : {};
         if (!cancelled && sellerRecord) {
           const nextVendorName = sanitizeVendorName(
             sellerRecord.vendorName || sellerRecord.groupVendorName || vendorName,
@@ -621,6 +646,14 @@ export function SellerSettingsWorkspace({
             stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
             stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
             lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+          });
+          setBusinessDetails({
+            companyName: toStr(nextBusinessDetails?.companyName || nextVendorName || vendorName),
+            registrationNumber: toStr(nextBusinessDetails?.registrationNumber),
+            vatNumber: toStr(nextBusinessDetails?.vatNumber),
+            email: toStr(nextBusinessDetails?.email || profile?.email || ""),
+            phoneNumber: toStr(nextBusinessDetails?.phoneNumber),
+            addressText: toStr(nextBusinessDetails?.addressText),
           });
           setSellerCodeValue(
             toStr(
@@ -671,6 +704,14 @@ export function SellerSettingsWorkspace({
                 stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
                 stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
                 lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+              },
+              businessDetails: {
+                companyName: toStr(nextBusinessDetails?.companyName || nextVendorName || vendorName),
+                registrationNumber: toStr(nextBusinessDetails?.registrationNumber),
+                vatNumber: toStr(nextBusinessDetails?.vatNumber),
+                email: toStr(nextBusinessDetails?.email || profile?.email || ""),
+                phoneNumber: toStr(nextBusinessDetails?.phoneNumber),
+                addressText: toStr(nextBusinessDetails?.addressText),
               },
               vendorNameValue: nextVendorName || vendorName,
               vendorDescriptionValue: nextVendorDescription,
@@ -900,6 +941,7 @@ export function SellerSettingsWorkspace({
             branding,
             deliveryProfile,
             payoutProfile,
+            businessDetails,
             vendorName: nextVendorName,
             vendorDescription: vendorDescriptionValue,
           },
@@ -913,6 +955,7 @@ export function SellerSettingsWorkspace({
       const nextBranding = payload?.branding || branding;
       const nextSeller = payload?.seller || {};
       const nextPayoutProfile = payload?.payoutProfile || payoutProfile;
+      const nextBusinessDetails = payload?.businessDetails || businessDetails;
       setBranding({
         bannerImageUrl: toStr(nextBranding?.bannerImageUrl),
         bannerBlurHashUrl: toStr(nextBranding?.bannerBlurHashUrl),
@@ -953,6 +996,14 @@ export function SellerSettingsWorkspace({
         stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
         stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
         lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+      });
+      setBusinessDetails({
+        companyName: toStr(nextBusinessDetails?.companyName || nextVendorName),
+        registrationNumber: toStr(nextBusinessDetails?.registrationNumber),
+        vatNumber: toStr(nextBusinessDetails?.vatNumber),
+        email: toStr(nextBusinessDetails?.email || profile?.email || ""),
+        phoneNumber: toStr(nextBusinessDetails?.phoneNumber),
+        addressText: toStr(nextBusinessDetails?.addressText),
       });
       setVendorNameValue(sanitizeVendorName(nextSeller?.vendorName || nextVendorName));
       setVendorDescriptionValue(toStr(nextSeller?.vendorDescription || vendorDescriptionValue).slice(0, 500));
@@ -998,6 +1049,14 @@ export function SellerSettingsWorkspace({
             stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
             stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
             lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
+          },
+          businessDetails: {
+            companyName: toStr(nextBusinessDetails?.companyName || nextVendorName),
+            registrationNumber: toStr(nextBusinessDetails?.registrationNumber),
+            vatNumber: toStr(nextBusinessDetails?.vatNumber),
+            email: toStr(nextBusinessDetails?.email || profile?.email || ""),
+            phoneNumber: toStr(nextBusinessDetails?.phoneNumber),
+            addressText: toStr(nextBusinessDetails?.addressText),
           },
           vendorNameValue: sanitizeVendorName(nextSeller?.vendorName || nextVendorName),
           vendorDescriptionValue: toStr(nextSeller?.vendorDescription || vendorDescriptionValue).slice(0, 500),
@@ -1540,6 +1599,78 @@ export function SellerSettingsWorkspace({
       </SettingsSection>
 
       <SettingsSection
+        eyebrow="Business details"
+        title="Supplier details for invoices"
+        description="Keep your legal business and VAT details current so customer invoices can show the right seller information."
+        expanded={sectionOpen.business}
+        onToggle={() => setSectionOpen((current) => ({ ...current, business: !current.business }))}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Registered business name</span>
+            <input
+              value={businessDetails.companyName}
+              onChange={(event) => setBusinessDetails((current) => ({ ...current, companyName: event.target.value.slice(0, 120) }))}
+              placeholder="Piessang Trading (Pty) Ltd"
+              disabled={!canEditSettings}
+              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">VAT number</span>
+            <input
+              value={businessDetails.vatNumber}
+              onChange={(event) => setBusinessDetails((current) => ({ ...current, vatNumber: event.target.value.slice(0, 40) }))}
+              placeholder="4760314296"
+              disabled={!canEditSettings}
+              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Registration number</span>
+            <input
+              value={businessDetails.registrationNumber}
+              onChange={(event) => setBusinessDetails((current) => ({ ...current, registrationNumber: event.target.value.slice(0, 60) }))}
+              placeholder="2026/123456/07"
+              disabled={!canEditSettings}
+              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Business email</span>
+            <input
+              value={businessDetails.email}
+              onChange={(event) => setBusinessDetails((current) => ({ ...current, email: event.target.value.slice(0, 120) }))}
+              placeholder="accounts@yourbusiness.com"
+              disabled={!canEditSettings}
+              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Business phone</span>
+            <input
+              value={businessDetails.phoneNumber}
+              onChange={(event) => setBusinessDetails((current) => ({ ...current, phoneNumber: event.target.value.slice(0, 40) }))}
+              placeholder="+27 21 555 0000"
+              disabled={!canEditSettings}
+              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+            />
+          </label>
+          <label className="block md:col-span-2">
+            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Registered business address</span>
+            <textarea
+              value={businessDetails.addressText}
+              onChange={(event) => setBusinessDetails((current) => ({ ...current, addressText: event.target.value.slice(0, 240) }))}
+              placeholder="Unit 2, 4 Example Street, Paarl, Western Cape, 7646"
+              disabled={!canEditSettings}
+              rows={3}
+              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+            />
+          </label>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
         eyebrow="Payout settings"
         title="Where Piessang should pay you"
         description="Complete Stripe payout setup so Piessang can release automated seller payouts after delivery, the hold window, and payout checks are complete."
@@ -1686,47 +1817,16 @@ export function SellerSettingsWorkspace({
         </div>
       ) : null}
 
-      {deleteOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setDeleteOpen(false)}
-        >
-          <div
-            className="max-h-[90svh] w-full max-w-[560px] overflow-y-auto rounded-[8px] bg-white p-6 shadow-[0_18px_42px_rgba(20,24,27,0.2)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d11c1c]">
-              Close seller account
-            </p>
-            <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">
-              This will close the seller profile and hide its products from the marketplace.
-            </h3>
-            <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
-              Confirming this action will close the active seller account for {vendorName || sellerSlug}. The seller
-              page and product links will no longer be available publicly, but the data remains saved in Piessang.
-            </p>
-            <div className="mt-5 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={() => setDeleteOpen(false)}
-                className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void deleteSellerAccount()}
-                disabled={deleting}
-                className="inline-flex h-10 items-center rounded-[8px] bg-[#b91c1c] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#991b1b] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {deleting ? "Closing..." : "Close seller account"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ConfirmModal
+        open={deleteOpen}
+        eyebrow="Close seller account"
+        title="This will close the seller profile and hide its products from the marketplace."
+        description={`Confirming this action will close the active seller account for ${vendorName || sellerSlug}. The seller page and product links will no longer be available publicly, but the data remains saved in Piessang.`}
+        confirmLabel={deleting ? "Closing..." : "Close seller account"}
+        busy={deleting}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => void deleteSellerAccount()}
+      />
 
       {snackbar ? (
         <div className="pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 px-4">

@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
 import { CartCheckout } from "@/components/cart/cart-checkout";
 
-export const metadata = {
-  title: "Checkout | Piessang",
+export const metadata: Metadata = {
+  title: "Checkout",
+  description: "Securely complete your Piessang order.",
+  robots: {
+    index: false,
+    follow: false,
+  },
 };
 
 export default function CheckoutPage() {

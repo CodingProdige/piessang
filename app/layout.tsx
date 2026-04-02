@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import { Analytics } from "@vercel/analytics/next";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import { AppShell } from "@/components/layout/app-shell";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 import "./globals.css";
@@ -17,8 +18,27 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Piessang",
-  description: "Piessang marketplace",
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://piessang.co.za"),
+  title: {
+    default: "Piessang | Marketplace, Delivery, and Seller Tools",
+    template: "%s | Piessang",
+  },
+  description:
+    "Piessang is a curated marketplace where customers discover products, track fulfilment, and shop across trusted sellers with secure checkout and delivery support.",
+  applicationName: "Piessang",
+  openGraph: {
+    type: "website",
+    siteName: "Piessang",
+    title: "Piessang | Marketplace, Delivery, and Seller Tools",
+    description:
+      "Discover products from trusted sellers, check out securely, and manage orders, delivery, and seller tools through Piessang.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Piessang | Marketplace, Delivery, and Seller Tools",
+    description:
+      "Discover products from trusted sellers, check out securely, and manage orders, delivery, and seller tools through Piessang.",
+  },
   icons: {
     icon: "/icon.png",
     apple: "/apple-icon.png",
@@ -59,6 +79,7 @@ export default async function RootLayout({
       >
         <AppShell initialAuthBootstrap={initialAuthBootstrap}>{children}</AppShell>
         <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   );

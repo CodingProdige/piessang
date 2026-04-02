@@ -33,6 +33,8 @@ function normalizePreferences(raw, existing = {}) {
       support: toBool(incomingTopics.support, toBool(currentTopics.support, true)),
       promotions: toBool(incomingTopics.promotions, toBool(currentTopics.promotions, false)),
       account: toBool(incomingTopics.account, toBool(currentTopics.account, true)),
+      following: toBool(incomingTopics.following, toBool(currentTopics.following, true)),
+      favorites: toBool(incomingTopics.favorites, toBool(currentTopics.favorites, true)),
     },
   };
 }

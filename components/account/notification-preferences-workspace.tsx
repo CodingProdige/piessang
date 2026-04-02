@@ -13,6 +13,8 @@ type NotificationPreferences = {
     support: boolean;
     promotions: boolean;
     account: boolean;
+    following: boolean;
+    favorites: boolean;
   };
 };
 
@@ -27,6 +29,8 @@ const defaultPreferences: NotificationPreferences = {
     support: true,
     promotions: false,
     account: true,
+    following: true,
+    favorites: true,
   },
 };
 
@@ -216,6 +220,28 @@ export function NotificationPreferencesWorkspace({ uid }: { uid: string }) {
                   setPreferences((current) => ({
                     ...current,
                     notificationTopics: { ...current.notificationTopics, promotions: checked },
+                  }))
+                }
+              />
+              <ToggleRow
+                label="Followed seller releases"
+                description="New product releases from seller profiles you follow."
+                checked={preferences.notificationTopics.following}
+                onChange={(checked) =>
+                  setPreferences((current) => ({
+                    ...current,
+                    notificationTopics: { ...current.notificationTopics, following: checked },
+                  }))
+                }
+              />
+              <ToggleRow
+                label="Favourite product alerts"
+                description="Sale changes, back-in-stock, and out-of-stock alerts for products you have favourited."
+                checked={preferences.notificationTopics.favorites}
+                onChange={(checked) =>
+                  setPreferences((current) => ({
+                    ...current,
+                    notificationTopics: { ...current.notificationTopics, favorites: checked },
                   }))
                 }
               />

@@ -212,8 +212,7 @@ export async function updateCartAtomic(tx, body, db) {
 
   const ignoreSale =
     Boolean(variantSnapshot?.sale?.disabled_by_admin) ||
-    !variantSnapshot?.sale?.is_on_sale ||
-    (variantSnapshot?.sale?.is_on_sale && Number(variantSnapshot?.sale?.qty_available) <= 0);
+    !variantSnapshot?.sale?.is_on_sale;
 
   const { quantity: finalQty, capped, available, reason } = capQuantity(variantSnapshot, desiredQty, {
     currentQty,
@@ -278,37 +277,7 @@ export async function updateCartAtomic(tx, body, db) {
   ------------------------------------------------------- */
   let generatedKey = null;
   let delta = finalQty - currentQty;
-  const isSaleLine = Boolean(existingItem?.selected_variant_snapshot?.sale?.is_on_sale) || Boolean(variantSnapshot?.sale?.is_on_sale);
-
-  const saleActiveLive = Boolean(variantSnapshot?.sale?.is_on_sale && !variantSnapshot?.sale?.disabled_by_admin);
-  const saleQtyLive = Math.max(0, Number(variantSnapshot?.sale?.qty_available) || 0);
-
-  const increaseAmount = Math.max(0, finalQty - currentQty);
-
-  let salePortion = 0;
-  if (increaseAmount > 0 && saleActiveLive) {
-    salePortion = Math.min(increaseAmount, saleQtyLive);
-  }
-  const regularQtyToAdd = Math.max(0, increaseAmount - salePortion);
-
-  let nextExistingQty = finalQty;
-  if (increaseAmount > 0) {
-    nextExistingQty = currentQty + salePortion;
-    delta = nextExistingQty - currentQty;
-  }
-
-  // For decrements or set lower, keep previous delta and quantity
-  if (mode === "decrement" || (mode === "set" && desiredQty < currentQty)) {
-    nextExistingQty = finalQty;
-    delta = finalQty - currentQty;
-  }
-
-  let deltaSale = 0;
-  if (increaseAmount > 0) {
-    deltaSale = salePortion;
-  } else if (delta < 0 && isSaleLine) {
-    deltaSale = delta;
-  }
+  const nextExistingQty = finalQty;
 
   const adjustedVariantSnapshot = (() => {
     const v = clone(variantSnapshot);
@@ -340,48 +309,6 @@ export async function updateCartAtomic(tx, body, db) {
     }
   }
 
-  // Add overflow as regular-priced line if sale stock was insufficient
-  if (regularQtyToAdd > 0 && (mode === "increment" || mode === "add" || mode === "set")) {
-    const regularVariant = clone(variantSnapshot) || {};
-    if (!regularVariant.sale) regularVariant.sale = {};
-    regularVariant.sale.is_on_sale = false;
-    // Try to merge with an existing non-sale line for this variant
-    const existingRegularIdx = items.findIndex(
-      (it) =>
-        String(it?.selected_variant_snapshot?.variant_id || "") === String(resolvedVariantId) &&
-        it?.selected_variant_snapshot?.sale?.is_on_sale === false
-    );
-
-    if (existingRegularIdx >= 0) {
-      const line = items[existingRegularIdx];
-      const nextQty = (Number(line?.quantity) || 0) + regularQtyToAdd;
-      const mergedLine = {
-        ...line,
-        quantity: nextQty,
-        selected_variant_snapshot: regularVariant,
-        line_totals: computeLineTotals(regularVariant, nextQty)
-      };
-      items[existingRegularIdx] = mergedLine;
-    } else {
-      const newKey = makeCartItemKey(resolvedProductId, resolvedVariantId);
-      const newLine = {
-        quantity: regularQtyToAdd,
-        cart_item_key: newKey,
-        product_snapshot: clone(productSnapshot),
-        selected_variant_snapshot: regularVariant,
-        line_totals: computeLineTotals(regularVariant, regularQtyToAdd)
-      };
-      items.push(newLine);
-      if (!generatedKey) generatedKey = newKey;
-    }
-
-    _ui = buildUiMessage({
-      type: "warning",
-      title: "Sale Depleted",
-      message: `Sale stock unavailable; added ${regularQtyToAdd} at regular price.`
-    });
-  }
-
   /* -------------------------------------------------------
      recompute totals + persist
   ------------------------------------------------------- */
@@ -399,7 +326,7 @@ export async function updateCartAtomic(tx, body, db) {
     items,
     totals,
     item_count,
-    cart_corrected: Boolean(capped && finalQty !== desiredQty) || regularQtyToAdd > 0,
+    cart_corrected: Boolean(capped && finalQty !== desiredQty),
     meta: {
       ...baseMeta,
       lastAction: `${mode}:${resolvedVariantId || cartItemKey || ""}`,

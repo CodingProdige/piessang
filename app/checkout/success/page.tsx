@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata = {
-  title: "Order placed | Piessang",
+export const metadata: Metadata = {
+  title: "Order Placed",
+  description: "Your Piessang order has been placed successfully.",
+  robots: {
+    index: false,
+    follow: false,
+  },
 };
 
 export default async function CheckoutSuccessPage({

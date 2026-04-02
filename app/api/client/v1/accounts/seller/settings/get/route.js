@@ -58,6 +58,19 @@ function normalizePayoutProfile(profile) {
   };
 }
 
+function normalizeBusinessDetails(details, seller, owner) {
+  const source = details && typeof details === "object" ? details : {};
+  const account = owner?.account && typeof owner.account === "object" ? owner.account : {};
+  return {
+    companyName: toStr(source.companyName || account?.accountName || seller?.vendorName || seller?.groupVendorName || ""),
+    registrationNumber: toStr(source.registrationNumber || account?.registrationNumber || ""),
+    vatNumber: toStr(source.vatNumber || account?.vatNumber || ""),
+    email: toStr(source.email || owner?.email || ""),
+    phoneNumber: toStr(source.phoneNumber || account?.phoneNumber || ""),
+    addressText: toStr(source.addressText || ""),
+  };
+}
+
 export async function GET(req) {
   try {
     const db = getAdminDb();
@@ -79,6 +92,7 @@ export async function GET(req) {
 
     const deliveryProfile = normalizeSellerDeliveryProfile(seller?.deliveryProfile || {});
     const payoutProfile = normalizePayoutProfile(seller?.payoutProfile || {});
+    const businessDetails = normalizeBusinessDetails(seller?.businessDetails || {}, seller, owner.data || {});
 
     return ok({
       seller: {
@@ -90,6 +104,7 @@ export async function GET(req) {
       },
       deliveryProfile,
       payoutProfile,
+      businessDetails,
       branding: {
         bannerImageUrl: toStr(branding?.bannerImageUrl || branding?.bannerUrl),
         bannerBlurHashUrl: toStr(branding?.bannerBlurHashUrl || branding?.bannerBlurHash),

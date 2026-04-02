@@ -68,6 +68,17 @@ type SettlementRecord = {
     releasedAt: string;
     releasedBy: string;
   };
+  adjustments: {
+    refunded_incl: number;
+    credit_note_count: number;
+    credit_notes: Array<{
+      creditNoteId?: string;
+      creditNoteNumber?: string;
+      amountIncl?: number;
+      issuedAt?: string;
+      status?: string;
+    }>;
+  };
   accountability: {
     late: boolean;
     strikeReasonCode: string;
@@ -124,6 +135,12 @@ function formatMoney(value: number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number.isFinite(value) ? value : 0);
+}
+
+function formatAdjustmentHint(amount: number) {
+  const safe = toNum(amount || 0);
+  if (safe <= 0) return "No refund adjustments";
+  return `Reduced by ${formatMoney(safe)} in credit notes`;
 }
 
 function formatTime(value?: string | null) {
@@ -416,6 +433,7 @@ export function SellerSettlementsWorkspace({
         acc.total += 1;
         acc.gross += toNum(record?.payout?.gross_incl || 0);
         acc.net += toNum(record?.payout?.net_due_incl || 0);
+        acc.adjustments += toNum(record?.adjustments?.refunded_incl || 0);
         acc.ready += status === "ready_for_payout" || payoutStatus === "ready_for_payout" ? 1 : 0;
         acc.processing += status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus) ? 1 : 0;
         acc.review += status === "pending_review" || toStr(record?.fulfilment?.reviewStatus || "").toLowerCase() === "pending_review" ? 1 : 0;
@@ -423,7 +441,7 @@ export function SellerSettlementsWorkspace({
         acc.late += record?.accountability?.late || record?.fulfilment?.late ? 1 : 0;
         return acc;
       },
-      { total: 0, gross: 0, net: 0, ready: 0, processing: 0, review: 0, paid: 0, late: 0 },
+      { total: 0, gross: 0, net: 0, adjustments: 0, ready: 0, processing: 0, review: 0, paid: 0, late: 0 },
     );
   }, [settlements]);
 
@@ -678,10 +696,11 @@ export function SellerSettlementsWorkspace({
         </div>
       </section>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
         {[
           { label: "Gross sales", value: formatMoney(stats.gross), tone: "neutral" as const },
           { label: "Net due", value: formatMoney(stats.net), tone: "success" as const },
+          { label: "Refund adjustments", value: formatMoney(stats.adjustments), tone: "warning" as const },
           { label: "Pending review", value: String(stats.review), tone: "warning" as const },
           { label: "Ready to pay", value: String(stats.ready), tone: "info" as const },
           { label: "Processing payout", value: String(stats.processing), tone: "info" as const },
@@ -703,6 +722,8 @@ export function SellerSettlementsWorkspace({
             >
               {item.value}
             </p>
+            {item.label === "Net due" ? <p className="mt-1 text-[11px] text-[#57636c]">After fees and any issued credit notes.</p> : null}
+            {item.label === "Refund adjustments" ? <p className="mt-1 text-[11px] text-[#57636c]">Seller credit notes reducing payout.</p> : null}
           </div>
         ))}
       </div>
@@ -793,7 +814,7 @@ export function SellerSettlementsWorkspace({
 
                     <div className="text-[13px] text-[#202020]">
                       <span className="block font-semibold">{formatMoney(record.payout?.net_due_incl || 0)}</span>
-                      <span className="block text-[11px] text-[#57636c]">Net due</span>
+                      <span className="block text-[11px] text-[#57636c]">{record.adjustments?.refunded_incl ? formatAdjustmentHint(record.adjustments.refunded_incl) : "Net due"}</span>
                     </div>
 
                     <div className="text-[13px] text-[#202020]">
@@ -828,6 +849,7 @@ export function SellerSettlementsWorkspace({
                               ["Fulfilment fee", record.payout?.fulfilment_fee_incl || 0],
                               ["Handling fee", record.payout?.handling_fee_incl || 0],
                               ["Storage accrued", record.payout?.storage_accrued_incl || 0],
+                              ["Refunded adjustments", record.adjustments?.refunded_incl || 0],
                               ["Released", record.payout?.released_incl || 0],
                               ["Remaining due", record.payout?.remaining_due_incl || 0],
                               ["Lines", record.lineCount || 0],
@@ -840,6 +862,31 @@ export function SellerSettlementsWorkspace({
                               </div>
                             ))}
                           </div>
+
+                          {record.adjustments?.credit_note_count ? (
+                            <div className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Refund adjustments</p>
+                                <p className="text-[12px] text-[#57636c]">
+                                  {record.adjustments.credit_note_count} credit note{record.adjustments.credit_note_count === 1 ? "" : "s"}
+                                </p>
+                              </div>
+                              <div className="mt-2 space-y-2">
+                                {record.adjustments.credit_notes.map((note) => (
+                                  <div key={note.creditNoteId || note.creditNoteNumber} className="flex items-center justify-between rounded-[8px] border border-black/5 bg-white px-3 py-2 text-[12px]">
+                                    <div>
+                                      <p className="font-semibold text-[#202020]">{note.creditNoteNumber || "Credit note"}</p>
+                                      <p className="text-[11px] text-[#57636c]">{formatTime(note.issuedAt)}</p>
+                                    </div>
+                                    <div className="text-right">
+                                      <p className="font-semibold text-[#202020]">{formatMoney(note.amountIncl || 0)}</p>
+                                      <p className="text-[11px] text-[#57636c]">{toStr(note.status || "issued").replace(/_/g, " ")}</p>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
 
                           <div className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">

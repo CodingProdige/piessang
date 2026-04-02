@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { SellerPageIntro } from "@/components/seller/page-intro";
 import { clientStorage } from "@/lib/firebase";
 import { getSellerBlockReasonFix, getSellerBlockReasonLabel } from "@/lib/seller/account-status";
@@ -3485,7 +3486,7 @@ export function SellerCatalogueEditor({
               </Link>
             ) : (
               <Link
-                href="/seller/catalogue"
+                href="/seller/dashboard?section=products"
                 className="inline-flex h-10 items-center rounded-[8px] border border-white/10 bg-white/10 px-4 text-[13px] font-semibold text-white transition-colors hover:bg-white/15"
               >
                 Discard
@@ -4148,8 +4149,8 @@ export function SellerCatalogueEditor({
                         />
                         <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
                           {fulfillmentMode === "bevgo"
-                            ? "Piessang can only receive inbound stock when the barcode on the delivered unit matches this platform variant."
-                            : "Use the supplier barcode or generate one if the item does not already have one."}
+                            ? "Required for Piessang fulfilment. Piessang can only receive inbound stock when the barcode on the delivered unit matches this platform variant."
+                            : "Optional for seller fulfilment. Use the supplier barcode or generate one if the item does not already have one."}
                         </p>
                         {variantBarcodeStatus === "taken" ? <p className="mt-1 text-[11px] text-[#b91c1c]">That barcode is already used on another variant.</p> : null}
                         {variantBarcodeStatus === "unique" ? <p className="mt-1 text-[11px] text-[#166534]">Barcode is available.</p> : null}
@@ -4975,42 +4976,16 @@ export function SellerCatalogueEditor({
         </div>
       ) : null}
 
-      {showDeleteModal ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setShowDeleteModal(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-[8px] bg-white p-5 shadow-[0_18px_50px_rgba(20,24,27,0.22)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d11c1c]">Delete product</p>
-            <h3 className="mt-2 text-[18px] font-semibold text-[#202020]">Are you sure?</h3>
-            <p className="mt-2 text-[13px] leading-[1.55] text-[#57636c]">
-              This will permanently remove the draft and any saved variants from your catalogue.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowDeleteModal(false)}
-                className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmDeleteProduct()}
-                disabled={submitting}
-                className="inline-flex h-10 items-center rounded-[8px] bg-[#b91c1c] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submitting ? "Deleting..." : "Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ConfirmModal
+        open={showDeleteModal}
+        eyebrow="Delete product"
+        title="Are you sure?"
+        description="This will permanently remove the draft and any saved variants from your catalogue."
+        confirmLabel={submitting ? "Deleting..." : "Delete"}
+        busy={submitting}
+        onClose={() => setShowDeleteModal(false)}
+        onConfirm={() => void confirmDeleteProduct()}
+      />
 
       {showDraftImpactModal ? (
         <div

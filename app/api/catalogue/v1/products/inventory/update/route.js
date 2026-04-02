@@ -4,6 +4,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { collectSellerNotificationEmails, getProductInventoryTotal, sendSellerNotificationEmails } from "@/lib/seller/notifications";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
+import { isProductPublished, listUsersWhoFavoritedProduct } from "@/lib/notifications/customer-inbox";
+import { dispatchCustomerNotification } from "@/lib/notifications/customer-delivery";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -26,6 +28,7 @@ export async function POST(req){
     if (!data || typeof data!=="object") return err(400,"Invalid Data","Provide a 'data' object.");
     let nextInventory = null;
     let productSnapshot = null;
+    let previousStockTotal = 0;
 
     await db.runTransaction(async (tx)=>{
       const ref = db.collection("products_v2").doc(pid);
@@ -34,6 +37,7 @@ export async function POST(req){
 
       const curr = snap.data()||{};
       productSnapshot = curr;
+      previousStockTotal = getProductInventoryTotal({ inventory: Array.isArray(curr.inventory) ? curr.inventory : [] });
       const inv = Array.isArray(curr.inventory)?[...curr.inventory]:[];
       const idx = inv.findIndex(r => String(r.warehouse_id||"").trim() === wh);
       if (idx<0) throw new Error("ROW_NOT_FOUND");
@@ -73,6 +77,50 @@ export async function POST(req){
             currentStock: String(stockTotal),
           },
         });
+      }
+    }
+
+    if (isProductPublished(productSnapshot) && stockTotal !== previousStockTotal) {
+      const previousState = previousStockTotal > 0 ? "in_stock" : "out_of_stock";
+      const nextState = stockTotal > 0 ? "in_stock" : "out_of_stock";
+      if (previousState !== nextState) {
+        const favoritedUsers = await listUsersWhoFavoritedProduct(pid);
+        await Promise.all(
+          favoritedUsers.map((user) =>
+            dispatchCustomerNotification({
+              origin: new URL(req.url).origin,
+              userId: user.userId,
+              type: nextState === "out_of_stock" ? "favorite_out_of_stock" : "favorite_back_in_stock",
+              title: nextState === "out_of_stock" ? "A favourite is out of stock" : "A favourite is back in stock",
+              message:
+                nextState === "out_of_stock"
+                  ? `${productSnapshot?.product?.title || "A saved product"} is currently out of stock.`
+                  : `${productSnapshot?.product?.title || "A saved product"} is back in stock.`,
+              href: `/products/${encodeURIComponent(productSnapshot?.product?.slug || productSnapshot?.docId || pid)}`,
+              metadata: {
+                productId: pid,
+                stockState: nextState,
+              },
+              dedupeKey: `favorite-stock:${user.userId}:${pid}:product:${nextState}`,
+              email: user.email || "",
+              phone: user.phone || "",
+              emailType: nextState === "out_of_stock" ? "favorite-out-of-stock" : "favorite-back-in-stock",
+              emailData: {
+                productTitle: productSnapshot?.product?.title || "A saved product",
+                variantLabel: "",
+              },
+              smsType: nextState === "out_of_stock" ? "favorite-out-of-stock" : "favorite-back-in-stock",
+              smsData: {
+                productTitle: productSnapshot?.product?.title || "A saved product",
+              },
+              pushType: nextState === "out_of_stock" ? "favorite-out-of-stock" : "favorite-back-in-stock",
+              pushVariables: {
+                productTitle: productSnapshot?.product?.title || "A saved product",
+                link: `/products/${encodeURIComponent(productSnapshot?.product?.slug || productSnapshot?.docId || pid)}`,
+              },
+            }),
+          ),
+        );
       }
     }
 

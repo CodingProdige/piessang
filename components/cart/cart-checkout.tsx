@@ -8,6 +8,7 @@ import { useDisplayCurrency } from "@/components/currency/display-currency-provi
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
 import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 
 type CartItem = {
@@ -348,6 +349,7 @@ export function CartCheckout() {
   const [cards, setCards] = useState<SavedCard[]>([]);
   const [cardsModalOpen, setCardsModalOpen] = useState(false);
   const [deletingCardId, setDeletingCardId] = useState("");
+  const [pendingDeleteCardId, setPendingDeleteCardId] = useState("");
   const [addressesModalOpen, setAddressesModalOpen] = useState(false);
   const [editingLocationId, setEditingLocationId] = useState("");
   const [addressEditing, setAddressEditing] = useState(false);
@@ -1722,7 +1724,7 @@ export function CartCheckout() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => void handleDeleteSavedCard(cardId)}
+                        onClick={() => setPendingDeleteCardId(cardId)}
                         disabled={deletingCardId === cardId}
                         className="inline-flex h-10 items-center justify-center rounded-[8px] border border-[rgba(185,28,28,0.16)] bg-white px-4 text-[12px] font-semibold text-[#b91c1c] disabled:cursor-not-allowed disabled:opacity-50"
                       >
@@ -1750,6 +1752,20 @@ export function CartCheckout() {
         </div>
       </div>
     ) : null}
+    <ConfirmModal
+      open={Boolean(cardsModalOpen && pendingDeleteCardId)}
+      eyebrow="Delete saved card"
+      title="Are you sure?"
+      description="This payment method will be removed from your saved cards and won’t be available for faster checkout anymore."
+      confirmLabel={deletingCardId === pendingDeleteCardId ? "Removing..." : "Delete card"}
+      busy={deletingCardId === pendingDeleteCardId}
+      onClose={() => setPendingDeleteCardId("")}
+      onConfirm={async () => {
+        const cardId = pendingDeleteCardId;
+        setPendingDeleteCardId("");
+        await handleDeleteSavedCard(cardId);
+      }}
+    />
     {addressesModalOpen ? (
       <div className="fixed inset-0 z-[130] flex items-center justify-center px-4 py-6" role="dialog" aria-modal="true">
         <button

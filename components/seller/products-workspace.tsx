@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
+import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
 import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
 
 type ProductItem = {
@@ -268,21 +270,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
     setExpandedIds((current) => current.filter((id) => rows.some((row) => row.id === id)));
   }, [rows]);
 
-  useEffect(() => {
-    if (!bulkMenuOpen) return undefined;
-
-    function handlePointerDown(event: MouseEvent) {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (bulkMenuRef.current?.contains(target)) return;
-      setBulkMenuOpen(false);
-    }
-
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-    };
-  }, [bulkMenuOpen]);
+  useOutsideDismiss(bulkMenuOpen, () => setBulkMenuOpen(false), { refs: [bulkMenuRef] });
 
   const stats = useMemo(() => {
     const totals = {
@@ -602,44 +590,16 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
         </section>
       ) : null}
 
-      {showDeleteConfirm ? (
-        <div
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 px-4 py-6"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setShowDeleteConfirm(false)}
-        >
-          <div
-            className="max-h-[90svh] w-full max-w-md overflow-y-auto rounded-[8px] bg-white p-5 shadow-[0_20px_48px_rgba(20,24,27,0.2)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Delete selected</p>
-            <h3 className="mt-2 text-[18px] font-semibold text-[#202020]">
-              Delete {selectedCount} product{selectedCount === 1 ? "" : "s"}?
-            </h3>
-            <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
-              This removes the selected products permanently. If the delete is already running, you can abort it below.
-            </p>
-            <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowDeleteConfirm(false)}
-                className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void deleteSelectedProducts()}
-                disabled={!selectedIds.length || deleteProgress !== null}
-                className="inline-flex h-9 items-center rounded-[8px] bg-[#b91c1c] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Delete selected
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ConfirmModal
+        open={showDeleteConfirm}
+        eyebrow="Delete selected"
+        title={`Delete ${selectedCount} product${selectedCount === 1 ? "" : "s"}?`}
+        description="This removes the selected products permanently. If the delete is already running, you can abort it below."
+        confirmLabel="Delete selected"
+        busy={!selectedIds.length || deleteProgress !== null}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={() => void deleteSelectedProducts()}
+      />
 
       <section className="rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
         <div className="flex flex-col gap-3 border-b border-black/5 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">

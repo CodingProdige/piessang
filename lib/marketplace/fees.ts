@@ -407,6 +407,21 @@ export const MARKETPLACE_CATEGORIES: MarketplaceCategory[] = [
     ],
   },
   {
+    slug: "pre-loved",
+    title: "Pre-Loved",
+    feeRule: fixed(10, "Pre-Loved"),
+    subCategories: [
+      { slug: "electronics", title: "Electronics", feeRule: fixed(10) },
+      { slug: "fashion-accessories", title: "Fashion & Accessories", feeRule: fixed(10) },
+      { slug: "home-living", title: "Home & Living", feeRule: fixed(10) },
+      { slug: "collectibles", title: "Collectibles", feeRule: fixed(10) },
+      { slug: "books-media", title: "Books & Media", feeRule: fixed(10) },
+      { slug: "sports-outdoor", title: "Sports & Outdoor", feeRule: fixed(10) },
+      { slug: "baby-kids", title: "Baby & Kids", feeRule: fixed(10) },
+      { slug: "other", title: "Other", feeRule: fixed(10) },
+    ],
+  },
+  {
     slug: "computers-hardware",
     title: "Computers & Hardware",
     feeRule: range(5, 10, 7, "Computers & Hardware"),

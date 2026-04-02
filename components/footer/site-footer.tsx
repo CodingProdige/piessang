@@ -108,8 +108,8 @@ export function PiessangFooter() {
           <div className="flex flex-wrap items-center justify-center gap-3 lg:justify-end">
             <p>Marketplace, simplified.</p>
             <Image
-              src="/badges/secured%20by%20peach-colour.png"
-              alt="Secured by Peach"
+              src="/badges/Stripe%20Secure%20Checkout%20Badge.png"
+              alt="Stripe Secure Checkout"
               width={160}
               height={40}
               className="h-8 w-auto object-contain"

@@ -120,6 +120,12 @@ export const emailMessages = {
       subjectTemplate: "Stock upliftment request — <%= vendorName %> — <%= productTitle %> on <%= upliftDate %>"
     },
 
+    "seller-warehouse-event-reminder": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-warehouse-event-reminder.ejs",
+      subjectTemplate: "<%= reminderTimingLabel %>: <%= eventKindLabel %> — <%= productTitle %> on <%= scheduleDate %>"
+    },
+
     "seller-order-received": {
       wrapper: "corporate-wrapper.ejs",
       template: "seller-order-received.ejs",
@@ -166,6 +172,12 @@ export const emailMessages = {
       wrapper: "corporate-wrapper.ejs",
       template: "order-seller-fulfillment-update.ejs",
       subjectTemplate: "Order <%= orderNumber || 'your order' %> update — <%= statusLabel %>"
+    },
+
+    "seller-rating-request": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-rating-request.ejs",
+      subjectTemplate: "How was <%= vendorName %> on order <%= orderNumber || 'your order' %>?"
     },
 
     "return-request-submitted": {
@@ -226,6 +238,30 @@ export const emailMessages = {
       wrapper: "corporate-wrapper.ejs",
       template: "cart-item-sale.ejs",
       subjectTemplate: "Good news: an item in your cart is now on sale"
+    },
+
+    "followed-seller-new-product": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "followed-seller-new-product.ejs",
+      subjectTemplate: "New from <%= vendorName %> — <%= productTitle %>"
+    },
+
+    "favorite-on-sale": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "favorite-on-sale.ejs",
+      subjectTemplate: "A favourite is now on sale — <%= productTitle %>"
+    },
+
+    "favorite-back-in-stock": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "favorite-back-in-stock.ejs",
+      subjectTemplate: "Back in stock — <%= productTitle %>"
+    },
+
+    "favorite-out-of-stock": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "favorite-out-of-stock.ejs",
+      subjectTemplate: "Out of stock — <%= productTitle %>"
     },
 
     "payment-received": {

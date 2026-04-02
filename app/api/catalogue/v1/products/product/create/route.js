@@ -256,7 +256,7 @@ export async function POST(req){
         return err(400, "Missing Logistics", "Each Piessang-fulfilled variant requires weight, dimensions, monthly sales and stock metadata.");
       }
       if (fulfillmentMode === "bevgo" && !barcode) {
-        return err(400, "Missing Barcode", "Each Piessang-fulfilled variant requires a barcode before the product can be saved.");
+        return err(400, "Missing Barcode", "A barcode is required for each Piessang-fulfilled variant. Seller-fulfilled variants may leave it blank.");
       }
       const trackInventory = fulfillmentMode === "bevgo" || Boolean(variant?.placement?.track_inventory) || inventoryRows.length > 0;
 

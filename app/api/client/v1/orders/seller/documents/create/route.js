@@ -7,6 +7,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
 import { canAccessSellerSettlement, isSystemAdminUser } from "@/lib/seller/settlement-access";
 import { buildSellerDocumentPayload, renderSellerDocumentHtml } from "@/lib/orders/seller-documents";
+import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, data: payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
@@ -90,6 +91,40 @@ export async function POST(req) {
         },
         timestamps: {
           ...(order?.timestamps || {}),
+          updatedAt: now,
+        },
+        timeline: {
+          ...(order?.timeline || {}),
+          events: appendOrderTimelineEvent(
+            order,
+            createOrderTimelineEvent({
+              type: `seller_document_${docType}`,
+              title:
+                docType === "packing_slip"
+                  ? "Packing slip generated"
+                  : docType === "delivery_note"
+                    ? "Delivery note generated"
+                    : "Invoice generated",
+              message: `${toStr(payload?.seller?.vendorName || payload?.seller?.sellerCode || payload?.seller?.sellerSlug || "Seller")} generated a ${docType.replace(/_/g, " ")}.`,
+              actorType: isSystemAdminUser(requester) ? "admin" : "seller",
+              actorId: sessionUser.uid,
+              actorLabel: toStr(
+                requester?.seller?.vendorName ||
+                  requester?.account?.accountName ||
+                  requester?.personal?.fullName ||
+                  requester?.email ||
+                  payload?.seller?.vendorName ||
+                  "Seller",
+              ),
+              createdAt: now,
+              sellerCode: payload?.seller?.sellerCode || null,
+              sellerSlug: payload?.seller?.sellerSlug || null,
+              metadata: {
+                docType,
+                url: pdfUrl,
+              },
+            }),
+          ),
           updatedAt: now,
         },
       },

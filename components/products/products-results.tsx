@@ -336,12 +336,6 @@ function getVariantPriceExVat(variant?: ProductVariant) {
   if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_excl === "number") {
     return variant.sale.sale_price_excl;
   }
-  if (typeof variant.pricing?.sale_price_incl === "number") {
-    return variant.pricing.sale_price_incl / VAT_DIVISOR;
-  }
-  if (typeof variant.pricing?.sale_price_excl === "number") {
-    return variant.pricing.sale_price_excl;
-  }
   if (typeof variant.pricing?.selling_price_incl === "number") {
     return variant.pricing.selling_price_incl / VAT_DIVISOR;
   }
@@ -357,10 +351,6 @@ function getCompareAtVariantPriceExVat(variant?: ProductVariant) {
     variant.pricing?.selling_price_excl,
     typeof variant.pricing?.selling_price_incl === "number"
       ? variant.pricing.selling_price_incl / VAT_DIVISOR
-      : undefined,
-    variant.pricing?.sale_price_excl,
-    typeof variant.pricing?.sale_price_incl === "number"
-      ? variant.pricing.sale_price_incl / VAT_DIVISOR
       : undefined,
   ].filter(
     (value): value is number => typeof value === "number" && Number.isFinite(value),

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
 import {
   getSellerBlockReasonFix,
   getSellerBlockReasonLabel,
@@ -110,7 +111,7 @@ function SellerActionsMenu({
   onReviewRequest: () => void;
 }) {
   return (
-    <div className="relative shrink-0">
+    <div data-seller-account-actions className="relative shrink-0">
       <button
         type="button"
         onClick={(event) => {
@@ -185,6 +186,7 @@ export function SellerAccountsWorkspace({
   const [activeActionMenu, setActiveActionMenu] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const bulkMenuRef = useRef<HTMLDivElement | null>(null);
 
   const activeSeller = useMemo(
     () => rows.find((item) => item.sellerSlug === activeSellerSlug) ?? null,
@@ -220,6 +222,18 @@ export function SellerAccountsWorkspace({
     void loadRows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.uid]);
+
+  useOutsideDismiss(
+    bulkMenuOpen || activeActionMenu !== null,
+    () => {
+      setBulkMenuOpen(false);
+      setActiveActionMenu(null);
+    },
+    {
+      refs: [bulkMenuRef],
+      selectors: ["[data-seller-account-actions]"],
+    },
+  );
 
   const counts = useMemo(() => {
     return rows.reduce(
@@ -558,7 +572,7 @@ export function SellerAccountsWorkspace({
               >
                 Block selected
               </button>
-              <div className="relative">
+              <div ref={bulkMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setBulkMenuOpen((current) => !current)}

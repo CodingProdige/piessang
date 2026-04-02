@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import {
@@ -174,6 +174,8 @@ type ProductReview = {
   createdAt?: string | null;
 };
 
+type RecommendationSource = "co_purchase" | "catalog_pairing" | "none";
+
 const VAT_MULTIPLIER = 1.15;
 const LOW_STOCK_THRESHOLD = 13;
 const LIVE_VIEWER_FLAME_THRESHOLD = 5;
@@ -205,6 +207,31 @@ function getDiscountPercent(compareAt?: number | null, salePrice?: number | null
     return null;
   }
   return Math.max(1, Math.round(((compareAt - salePrice) / compareAt) * 100));
+}
+
+function hasMeaningfulSale(compareAt?: number | null, salePrice?: number | null) {
+  if (
+    typeof compareAt !== "number" ||
+    typeof salePrice !== "number" ||
+    !Number.isFinite(compareAt) ||
+    !Number.isFinite(salePrice)
+  ) {
+    return false;
+  }
+  const compareAtRounded = Math.round(compareAt * 100) / 100;
+  const saleRounded = Math.round(salePrice * 100) / 100;
+  if (compareAtRounded <= saleRounded) return false;
+  const percent = getDiscountPercent(compareAtRounded, saleRounded);
+  return typeof percent === "number" && percent >= 2;
+}
+
+function getDefaultVariant(item?: ProductItem | null) {
+  const variants = Array.isArray(item?.data?.variants) ? item.data.variants : [];
+  return (
+    variants.find((variant) => variant?.placement?.is_default === true) ||
+    variants.find((variant) => String(variant?.variant_id || "").trim()) ||
+    null
+  );
 }
 
 function formatSoldCount(value?: number | null) {
@@ -252,17 +279,11 @@ function getVariantPriceInclVat(variant?: ProductVariant) {
   if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_incl === "number") {
     return variant.sale.sale_price_incl;
   }
-  if (typeof variant.pricing?.sale_price_incl === "number") {
-    return variant.pricing.sale_price_incl;
-  }
   if (typeof variant.pricing?.selling_price_incl === "number") {
     return variant.pricing.selling_price_incl;
   }
   if (variant.sale?.is_on_sale && typeof variant.sale.sale_price_excl === "number") {
     return variant.sale.sale_price_excl * VAT_MULTIPLIER;
-  }
-  if (typeof variant.pricing?.sale_price_excl === "number") {
-    return variant.pricing.sale_price_excl * VAT_MULTIPLIER;
   }
   if (typeof variant.pricing?.selling_price_excl === "number") {
     return variant.pricing.selling_price_excl * VAT_MULTIPLIER;
@@ -274,9 +295,7 @@ function getCompareAtVariantPriceInclVat(variant?: ProductVariant) {
   if (!variant) return null;
   const prices = [
     variant.pricing?.selling_price_incl,
-    variant.pricing?.sale_price_incl,
     typeof variant.pricing?.selling_price_excl === "number" ? variant.pricing.selling_price_excl * VAT_MULTIPLIER : undefined,
-    typeof variant.pricing?.sale_price_excl === "number" ? variant.pricing.sale_price_excl * VAT_MULTIPLIER : undefined,
   ].filter(
     (value): value is number => typeof value === "number" && Number.isFinite(value),
   );
@@ -537,9 +556,7 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
   const compareAtPriceInclVat = getCompareAtVariantPriceInclVat(activeVariant ?? undefined);
   const saleActive = Boolean(
     activeVariant?.sale?.is_on_sale &&
-      typeof priceInclVat === "number" &&
-      typeof compareAtPriceInclVat === "number" &&
-      compareAtPriceInclVat > priceInclVat,
+      hasMeaningfulSale(compareAtPriceInclVat, priceInclVat),
   );
   const salePercent = saleActive ? getDiscountPercent(compareAtPriceInclVat, priceInclVat) : null;
   const totalUnitsSold = Number(
@@ -576,17 +593,62 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
   const [reviews, setReviews] = useState<ProductReview[]>([]);
   const [reviewsLoading, setReviewsLoading] = useState(true);
   const [canReview, setCanReview] = useState(false);
+  const [reviewFilterStars, setReviewFilterStars] = useState<number | "all">("all");
+  const [reviewFilterWithImages, setReviewFilterWithImages] = useState(false);
+  const [reviewSort, setReviewSort] = useState<"newest" | "oldest" | "highest" | "lowest">("newest");
   const [reviewStars, setReviewStars] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
   const [reviewImages, setReviewImages] = useState<string[]>([]);
+  const [activeReviewImage, setActiveReviewImage] = useState<string | null>(null);
+  const [reviewImagesUploading, setReviewImagesUploading] = useState(false);
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [reviewMessage, setReviewMessage] = useState<string | null>(null);
   const [oftenBought, setOftenBought] = useState<any[]>([]);
   const [oftenBoughtLoading, setOftenBoughtLoading] = useState(true);
+  const [oftenBoughtSource, setOftenBoughtSource] = useState<RecommendationSource>("none");
+  const [oftenBoughtMessage, setOftenBoughtMessage] = useState<string | null>(null);
+  const [pairingCartSubmitting, setPairingCartSubmitting] = useState<Record<string, boolean>>({});
   const [similarProducts, setSimilarProducts] = useState<any[]>([]);
   const [similarProductsLoading, setSimilarProductsLoading] = useState(true);
   const reviewUploadRef = useRef<HTMLInputElement | null>(null);
   const isFavorite = favoriteState;
+  const currentUserReview = useMemo(
+    () => (profile?.uid ? reviews.find((review) => String(review?.userId || "") === profile.uid) || null : null),
+    [profile?.uid, reviews],
+  );
+
+  const reviewSummary = useMemo(() => {
+    const entries = Array.isArray(reviews) ? reviews : [];
+    const count = entries.length;
+    const average = count
+      ? Number((entries.reduce((sum, review) => sum + Number(review?.stars || 0), 0) / count).toFixed(1))
+      : 0;
+    const counts = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 } as Record<1 | 2 | 3 | 4 | 5, number>;
+    for (const review of entries) {
+      const stars = Math.max(1, Math.min(5, Number(review?.stars || 0))) as 1 | 2 | 3 | 4 | 5;
+      counts[stars] += 1;
+    }
+    return { average, count, counts };
+  }, [reviews]);
+
+  const filteredReviews = useMemo(() => {
+    const entries = [...reviews];
+    const filtered = entries.filter((review) => {
+      const stars = Math.max(1, Math.min(5, Number(review?.stars || 0)));
+      if (reviewFilterStars !== "all" && stars !== reviewFilterStars) return false;
+      if (reviewFilterWithImages && (!Array.isArray(review.images) || review.images.length === 0)) return false;
+      return true;
+    });
+    filtered.sort((a, b) => {
+      if (reviewSort === "highest") return Number(b?.stars || 0) - Number(a?.stars || 0);
+      if (reviewSort === "lowest") return Number(a?.stars || 0) - Number(b?.stars || 0);
+      const aTime = new Date(String(a?.createdAt || 0)).getTime();
+      const bTime = new Date(String(b?.createdAt || 0)).getTime();
+      if (reviewSort === "oldest") return aTime - bTime;
+      return bTime - aTime;
+    });
+    return filtered;
+  }, [reviewFilterStars, reviewFilterWithImages, reviewSort, reviews]);
 
   const categoryLabel = item.data?.grouping?.category ? String(item.data.grouping.category).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Products";
   const subCategoryLabel = item.data?.grouping?.subCategory ? String(item.data.grouping.subCategory).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "";
@@ -678,6 +740,8 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
         const payload = await response.json().catch(() => ({}));
         if (!cancelled && response.ok && payload?.ok !== false) {
           setOftenBought(Array.isArray(payload?.items) ? payload.items : []);
+          setOftenBoughtSource(payload?.source === "co_purchase" || payload?.source === "catalog_pairing" ? payload.source : "none");
+          setOftenBoughtMessage(typeof payload?.message === "string" ? payload.message : null);
         }
       } finally {
         if (!cancelled) setOftenBoughtLoading(false);
@@ -815,6 +879,47 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
     }
   }
 
+  async function addRelatedToCart(related: ProductItem) {
+    if (!isAuthenticated || !profile?.uid) {
+      openAuthModal("Sign in to add products to your cart.");
+      return;
+    }
+    const relatedVariant = getDefaultVariant(related);
+    const relatedVariantId = String(relatedVariant?.variant_id || "").trim();
+    if (!relatedVariantId) {
+      setSnackbarMessage("This product is not currently available to add to cart.");
+      return;
+    }
+
+    const relatedKey = String(related?.data?.product?.unique_id || related?.id || relatedVariantId);
+    setPairingCartSubmitting((current) => ({ ...current, [relatedKey]: true }));
+    try {
+      const response = await fetch("/api/client/v1/carts/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: profile.uid,
+          product: related.data,
+          variant_id: relatedVariantId,
+          mode: "change",
+          qty: 1,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) throw new Error(payload?.message || "Unable to add the product to your cart.");
+      syncCartState(payload?.data?.cart ?? null);
+      setSnackbarMessage("Added to cart.");
+    } catch (cause) {
+      setSnackbarMessage(cause instanceof Error ? cause.message : "Unable to add to cart.");
+    } finally {
+      setPairingCartSubmitting((current) => {
+        const next = { ...current };
+        delete next[relatedKey];
+        return next;
+      });
+    }
+  }
+
   async function toggleFavorite() {
     if (!isAuthenticated || !profile?.uid) {
       openAuthModal("Sign in to save favourites.");
@@ -850,13 +955,21 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
 
   async function uploadReviewImages(files: FileList | null) {
     if (!files?.length || !profile?.uid || !productId) return;
-    const uploads: string[] = [];
-    for (const file of Array.from(files).slice(0, Math.max(0, 6 - reviewImages.length))) {
-      const fileRef = storageRef(clientStorage, `users/${profile.uid}/product-reviews/${productId}/${Date.now()}-${file.name}`);
-      await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
-      uploads.push(await getDownloadURL(fileRef));
+    setReviewImagesUploading(true);
+    setReviewMessage(null);
+    try {
+      const uploads: string[] = [];
+      for (const file of Array.from(files).slice(0, Math.max(0, 6 - reviewImages.length))) {
+        const fileRef = storageRef(clientStorage, `users/${profile.uid}/product-reviews/${productId}/${Date.now()}-${file.name}`);
+        await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
+        uploads.push(await getDownloadURL(fileRef));
+      }
+      setReviewImages((current) => [...current, ...uploads].slice(0, 6));
+    } catch (cause) {
+      setReviewMessage(cause instanceof Error ? cause.message : "Unable to upload review images.");
+    } finally {
+      setReviewImagesUploading(false);
     }
-    setReviewImages((current) => [...current, ...uploads].slice(0, 6));
   }
 
   async function submitReview() {
@@ -895,6 +1008,24 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
     } finally {
       setReviewSubmitting(false);
     }
+  }
+
+  function removeReviewImage(url: string) {
+    setReviewImages((current) => current.filter((item) => item !== url));
+  }
+
+  function openReviewEditor(review?: ProductReview | null) {
+    if (review) {
+      setReviewStars(Math.max(1, Math.min(5, Number(review.stars || 5))));
+      setReviewComment(String(review.comment || ""));
+      setReviewImages(Array.isArray(review.images) ? review.images.filter(Boolean).slice(0, 6) : []);
+    } else {
+      setReviewStars(5);
+      setReviewComment("");
+      setReviewImages([]);
+    }
+    setReviewMessage(null);
+    setReviewModalOpen(true);
   }
 
   return (
@@ -943,111 +1074,179 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
         {reportFeedback ? <p className="mt-3 text-[12px] text-[#57636c]">{reportFeedback}</p> : null}
       </section>
       <section className="grid gap-4 lg:items-start lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-        <div className="self-start rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-          <div className="grid gap-3 md:grid-cols-[88px_minmax(0,1fr)]">
-            {activeImages.length > 1 ? (
-              <div className="order-2 flex gap-2 overflow-x-auto md:order-1 md:max-h-[620px] md:flex-col md:overflow-y-auto md:overflow-x-hidden md:pr-1">
-                {activeImages.map((image, index) => {
-                  const selected = index === activeImageIndex;
-                  return (
-                    <button
-                      key={`${image.imageUrl}-${index}`}
-                      type="button"
-                      onClick={() => setActiveImageIndex(index)}
-                      className={
-                        selected
-                          ? "relative h-[84px] min-w-[84px] overflow-hidden rounded-[8px] border border-[rgba(203,178,107,0.8)] bg-white"
-                          : "relative h-[84px] min-w-[84px] overflow-hidden rounded-[8px] border border-black/10 bg-white"
-                      }
-                    >
+        <div className="space-y-4 self-start">
+          <div className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <div className="grid gap-3 md:grid-cols-[88px_minmax(0,1fr)]">
+              {activeImages.length > 1 ? (
+                <div className="order-2 flex gap-2 overflow-x-auto md:order-1 md:max-h-[620px] md:flex-col md:overflow-y-auto md:overflow-x-hidden md:pr-1">
+                  {activeImages.map((image, index) => {
+                    const selected = index === activeImageIndex;
+                    return (
+                      <button
+                        key={`${image.imageUrl}-${index}`}
+                        type="button"
+                        onClick={() => setActiveImageIndex(index)}
+                        className={
+                          selected
+                            ? "relative h-[84px] min-w-[84px] overflow-hidden rounded-[8px] border border-[rgba(203,178,107,0.8)] bg-white"
+                            : "relative h-[84px] min-w-[84px] overflow-hidden rounded-[8px] border border-black/10 bg-white"
+                        }
+                      >
+                        <BlurhashImage
+                          src={image.imageUrl}
+                          blurHash={image.blurHashUrl}
+                          alt={`${item.data?.product?.title ?? "Product"} ${index + 1}`}
+                          className="h-full w-full"
+                          imageClassName="object-cover"
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              <div className="order-1">
+                <div
+                  className="relative aspect-[1/1] overflow-hidden rounded-[8px] bg-white"
+                  onMouseMove={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setZoomPoint({
+                      x: ((event.clientX - rect.left) / rect.width) * 100,
+                      y: ((event.clientY - rect.top) / rect.height) * 100,
+                    });
+                  }}
+                  onMouseLeave={() => setZoomPoint(null)}
+                >
+                  {activeImages[activeImageIndex] ? (
+                    <>
                       <BlurhashImage
-                        src={image.imageUrl}
-                        blurHash={image.blurHashUrl}
-                        alt={`${item.data?.product?.title ?? "Product"} ${index + 1}`}
+                        src={activeImages[activeImageIndex].imageUrl}
+                        blurHash={activeImages[activeImageIndex].blurHashUrl}
+                        alt={item.data?.product?.title ?? "Product image"}
+                        sizes="(max-width: 768px) 100vw, 60vw"
                         className="h-full w-full"
                         imageClassName="object-cover"
                       />
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-
-            <div className="order-1">
-              <div
-                className="relative aspect-[1/1] overflow-hidden rounded-[8px] bg-white"
-                onMouseMove={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  setZoomPoint({
-                    x: ((event.clientX - rect.left) / rect.width) * 100,
-                    y: ((event.clientY - rect.top) / rect.height) * 100,
-                  });
-                }}
-                onMouseLeave={() => setZoomPoint(null)}
-              >
-                {activeImages[activeImageIndex] ? (
-                  <>
-                    <BlurhashImage
-                      src={activeImages[activeImageIndex].imageUrl}
-                      blurHash={activeImages[activeImageIndex].blurHashUrl}
-                      alt={item.data?.product?.title ?? "Product image"}
-                      sizes="(max-width: 768px) 100vw, 60vw"
-                      className="h-full w-full"
-                      imageClassName="object-cover"
-                    />
-                    {activeImages.length > 1 ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => setActiveImageIndex((current) => (current === 0 ? activeImages.length - 1 : current - 1))}
-                          className="absolute left-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
-                          aria-label="Previous image"
-                        >
-                          ‹
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setActiveImageIndex((current) => (current === activeImages.length - 1 ? 0 : current + 1))}
-                          className="absolute right-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
-                          aria-label="Next image"
-                        >
-                          ›
-                        </button>
-                        <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-[rgba(20,24,27,0.56)] px-3 py-1.5">
-                          {activeImages.map((_, index) => (
-                            <span
-                              key={`indicator-${index}`}
-                              className={index === activeImageIndex ? "h-2 w-2 rounded-full bg-white" : "h-2 w-2 rounded-full bg-white/35"}
-                            />
-                          ))}
-                        </div>
-                      </>
-                    ) : null}
-                    {zoomPoint && activeImages[activeImageIndex]?.imageUrl ? (
-                      <div
-                        className="pointer-events-none absolute hidden h-32 w-32 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-2 border-white/90 shadow-[0_12px_32px_rgba(20,24,27,0.24)] lg:block"
-                        style={{ left: `${zoomPoint.x}%`, top: `${zoomPoint.y}%` }}
-                      >
+                      {activeImages.length > 1 ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setActiveImageIndex((current) => (current === 0 ? activeImages.length - 1 : current - 1))}
+                            className="absolute left-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
+                            aria-label="Previous image"
+                          >
+                            ‹
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActiveImageIndex((current) => (current === activeImages.length - 1 ? 0 : current + 1))}
+                            className="absolute right-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
+                            aria-label="Next image"
+                          >
+                            ›
+                          </button>
+                          <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-[rgba(20,24,27,0.56)] px-3 py-1.5">
+                            {activeImages.map((_, index) => (
+                              <span
+                                key={`indicator-${index}`}
+                                className={index === activeImageIndex ? "h-2 w-2 rounded-full bg-white" : "h-2 w-2 rounded-full bg-white/35"}
+                              />
+                            ))}
+                          </div>
+                        </>
+                      ) : null}
+                      {zoomPoint && activeImages[activeImageIndex]?.imageUrl ? (
                         <div
-                          className="h-full w-full bg-white"
-                          style={{
-                            backgroundImage: `url(${activeImages[activeImageIndex].imageUrl})`,
-                            backgroundRepeat: "no-repeat",
-                            backgroundSize: "240%",
-                            backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%`,
-                          }}
-                        />
-                      </div>
-                    ) : null}
-                  </>
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-[13px] text-[#8b94a3]">
-                    No image available
-                  </div>
-                )}
+                          className="pointer-events-none absolute hidden h-32 w-32 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-2 border-white/90 shadow-[0_12px_32px_rgba(20,24,27,0.24)] lg:block"
+                          style={{ left: `${zoomPoint.x}%`, top: `${zoomPoint.y}%` }}
+                        >
+                          <div
+                            className="h-full w-full bg-white"
+                            style={{
+                              backgroundImage: `url(${activeImages[activeImageIndex].imageUrl})`,
+                              backgroundRepeat: "no-repeat",
+                              backgroundSize: "240%",
+                              backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%`,
+                            }}
+                          />
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-[13px] text-[#8b94a3]">
+                      No image available
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
+
+          {(oftenBoughtLoading || oftenBought.length > 0 || oftenBoughtSource === "none") ? (
+            <section className="hidden rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)] lg:block">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-[20px] font-semibold text-[#202020]">Pairs well with</h2>
+                <p className="text-[12px] text-[#57636c]">
+                  {oftenBoughtSource === "co_purchase"
+                    ? "Based on previous orders"
+                    : oftenBoughtSource === "catalog_pairing"
+                      ? "Suggested from matching products in our catalog"
+                      : "Suggested combinations update as our catalog grows"}
+                </p>
+              </div>
+              {oftenBoughtLoading ? (
+                <p className="mt-4 text-[13px] text-[#57636c]">Loading recommendations...</p>
+              ) : oftenBought.length > 0 ? (
+                <div className="mt-4 flex gap-4 overflow-x-auto pb-2 [scrollbar-width:thin]">
+                  {oftenBought.map((related) => {
+                    const href = `/products/${String(related?.data?.product?.title || "product").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}?unique_id=${encodeURIComponent(String(related?.data?.product?.unique_id || related?.id || ""))}`;
+                    const image = related?.data?.media?.images?.[0]?.imageUrl || related?.data?.variants?.[0]?.media?.images?.[0]?.imageUrl || "";
+                    const relatedVariant = getDefaultVariant(related);
+                    const relatedPrice = getVariantPriceInclVat(relatedVariant ?? undefined);
+                    const relatedKey = String(related?.data?.product?.unique_id || related?.id || "");
+                    const isSubmitting = pairingCartSubmitting[relatedKey] === true;
+                    return (
+                      <div key={String(related?.id)} className="min-w-[248px] rounded-[10px] border border-black/10 bg-[linear-gradient(180deg,#fff_0%,#f8f7f3_100%)] p-3 shadow-[0_8px_18px_rgba(20,24,27,0.04)]">
+                        <Link href={href} className="block transition-transform duration-200 hover:-translate-y-0.5">
+                          <div className="aspect-square overflow-hidden rounded-[8px] bg-white">
+                            {image ? <img src={image} alt={String(related?.data?.product?.title || "Product")} className="h-full w-full object-cover" /> : null}
+                          </div>
+                          <p className="mt-3 line-clamp-2 text-[14px] font-semibold text-[#202020]">{String(related?.data?.product?.title || "Product")}</p>
+                        </Link>
+                        <div className="mt-3 flex items-end justify-between gap-3">
+                          <div>
+                            <p className="text-[15px] font-semibold text-[#202020]">
+                              {typeof relatedPrice === "number" ? formatMoney(relatedPrice) : "View product"}
+                            </p>
+                            {oftenBoughtSource === "co_purchase" && Number(related?.coPurchaseCount || 0) > 0 ? (
+                              <p className="text-[11px] text-[#57636c]">Bought together {Number(related.coPurchaseCount)} times</p>
+                            ) : oftenBoughtSource === "catalog_pairing" ? (
+                              <p className="text-[11px] text-[#57636c]">Suggested match</p>
+                            ) : null}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void addRelatedToCart(related)}
+                            disabled={isSubmitting || !relatedVariant?.variant_id}
+                            className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isSubmitting ? "Adding..." : "Add to cart"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-4 py-5">
+                  <p className="text-[14px] font-semibold text-[#202020]">No current product combinations yet.</p>
+                  <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">
+                    {oftenBoughtMessage || "We do not have a strong pairing suggestion for this item right now."}
+                  </p>
+                </div>
+              )}
+            </section>
+          ) : null}
         </div>
 
         <div className="space-y-4 overflow-hidden rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -1179,9 +1378,7 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
                 const variantSalePrice = getVariantPriceInclVat(variant);
                 const variantCompareAtPrice = getCompareAtVariantPriceInclVat(variant);
                 const variantOnSale =
-                  typeof variantSalePrice === "number" &&
-                  typeof variantCompareAtPrice === "number" &&
-                  variantCompareAtPrice > variantSalePrice;
+                  hasMeaningfulSale(variantCompareAtPrice, variantSalePrice);
                 const variantDiscountPercent = variantOnSale
                   ? getDiscountPercent(variantCompareAtPrice, variantSalePrice)
                   : null;
@@ -1301,11 +1498,11 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
             </div>
             <div className="rounded-[8px] bg-[#fafafa] px-3 py-3">
               <Image
-                src="/badges/secured%20by%20peach-colour.png"
-                alt="Secured by Peach"
-                width={160}
-                height={40}
-                className="h-8 w-auto object-contain"
+                src="/badges/Stripe%20Secure%20Checkout%20Badge.png"
+                alt="Stripe Secure Checkout"
+                width={1200}
+                height={300}
+                className="h-auto w-full object-contain"
               />
             </div>
           </div>
@@ -1371,69 +1568,185 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
           <p className="text-[12px] text-[#57636c]">{reviews.length} review{reviews.length === 1 ? "" : "s"}</p>
         </div>
 
+        <div className="mt-4 grid gap-4 rounded-[8px] border border-black/8 bg-[#fafafa] p-4 lg:grid-cols-[220px_1fr]">
+          <div>
+            <p className="text-[32px] font-semibold tracking-[-0.04em] text-[#202020]">
+              {reviewSummary.average ? reviewSummary.average.toFixed(1) : "0.0"}
+            </p>
+            <p className="mt-1 text-[12px] font-semibold text-[#cbb26b]">
+              {"★".repeat(Math.max(1, Math.round(reviewSummary.average || 0)))}<span className="ml-2 text-[#57636c]">{reviewSummary.count} total</span>
+            </p>
+            <p className="mt-2 text-[12px] text-[#57636c]">Average customer rating for this product.</p>
+          </div>
+
+          <div className="space-y-2">
+            {[5, 4, 3, 2, 1].map((star) => {
+              const count = reviewSummary.counts[star as 1 | 2 | 3 | 4 | 5];
+              const width = reviewSummary.count ? (count / reviewSummary.count) * 100 : 0;
+              return (
+                <div key={star} className="grid grid-cols-[52px_1fr_42px] items-center gap-3 text-[12px] text-[#57636c]">
+                  <button
+                    type="button"
+                    onClick={() => setReviewFilterStars((current) => (current === star ? "all" : (star as 1 | 2 | 3 | 4 | 5)))}
+                    className={`text-left font-semibold transition ${reviewFilterStars === star ? "text-[#202020]" : "hover:text-[#202020]"}`}
+                  >
+                    {star} star
+                  </button>
+                  <div className="h-2 overflow-hidden rounded-full bg-white">
+                    <div className="h-full rounded-full bg-[#cbb26b]" style={{ width: `${width}%` }} />
+                  </div>
+                  <span className="text-right">{count}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {canReview ? (
           <div className="mt-4 flex items-center justify-between gap-3 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
             <div>
-              <p className="text-[14px] font-semibold text-[#202020]">Used this item?</p>
-              <p className="mt-1 text-[12px] text-[#57636c]">Share your experience and add photos if you want to.</p>
+              <p className="text-[14px] font-semibold text-[#202020]">{currentUserReview ? "Want to update your review?" : "Used this item?"}</p>
+              <p className="mt-1 text-[12px] text-[#57636c]">
+                {currentUserReview ? "You can edit your rating, comment, and uploaded photos any time." : "Share your experience and add photos if you want to."}
+              </p>
             </div>
-            <button type="button" onClick={() => setReviewModalOpen(true)} className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white">
-              Add review
+            <button type="button" onClick={() => openReviewEditor(currentUserReview)} className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white">
+              {currentUserReview ? "Edit review" : "Add review"}
             </button>
           </div>
         ) : null}
         {reviewMessage ? <p className="mt-3 text-[12px] text-[#57636c]">{reviewMessage}</p> : null}
 
+        <div className="mt-4 flex flex-col gap-3 rounded-[8px] border border-black/8 bg-white p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setReviewFilterStars("all")}
+              className={`rounded-full border px-3 py-1.5 text-[12px] font-semibold transition ${reviewFilterStars === "all" ? "border-[#202020] bg-[#202020] text-white" : "border-black/10 bg-white text-[#202020]"}`}
+            >
+              All reviews
+            </button>
+            {[5, 4, 3, 2, 1].map((star) => (
+              <button
+                key={star}
+                type="button"
+                onClick={() => setReviewFilterStars(star as 1 | 2 | 3 | 4 | 5)}
+                className={`rounded-full border px-3 py-1.5 text-[12px] font-semibold transition ${reviewFilterStars === star ? "border-[#202020] bg-[#202020] text-white" : "border-black/10 bg-white text-[#202020]"}`}
+              >
+                {star} star
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setReviewFilterWithImages((current) => !current)}
+              className={`rounded-full border px-3 py-1.5 text-[12px] font-semibold transition ${reviewFilterWithImages ? "border-[#202020] bg-[#202020] text-white" : "border-black/10 bg-white text-[#202020]"}`}
+            >
+              With images
+            </button>
+          </div>
+
+          <label className="inline-flex items-center gap-2 text-[12px] font-semibold text-[#57636c]">
+            <span>Sort by</span>
+            <select
+              value={reviewSort}
+              onChange={(event) => setReviewSort(event.target.value as "newest" | "oldest" | "highest" | "lowest")}
+              className="h-10 rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] outline-none"
+            >
+              <option value="newest">Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="highest">Highest rating</option>
+              <option value="lowest">Lowest rating</option>
+            </select>
+          </label>
+        </div>
+
         <div className="mt-5 space-y-4">
           {reviewsLoading ? (
             <p className="text-[13px] text-[#57636c]">Loading reviews...</p>
-          ) : reviews.length ? (
-            reviews.map((review, index) => (
+          ) : filteredReviews.length ? (
+            filteredReviews.map((review, index) => (
               <article key={`${review.userId || "review"}-${index}`} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-[14px] font-semibold text-[#202020]">{review.name || "Verified buyer"}</p>
-                  {review.verifiedPurchase ? <span className="rounded-full bg-[rgba(26,133,83,0.12)] px-2 py-1 text-[10px] font-semibold text-[#1a8553]">Verified purchase</span> : null}
-                  <span className="text-[12px] text-[#cbb26b]">{"★".repeat(Math.max(1, Math.min(5, Number(review.stars || 0))))}</span>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[14px] font-semibold text-[#202020]">{review.name || "Verified buyer"}</p>
+                    {review.verifiedPurchase ? <span className="rounded-full bg-[rgba(26,133,83,0.12)] px-2 py-1 text-[10px] font-semibold text-[#1a8553]">Verified purchase</span> : null}
+                    <span className="text-[12px] text-[#cbb26b]">{"★".repeat(Math.max(1, Math.min(5, Number(review.stars || 0))))}</span>
+                    {profile?.uid && String(review.userId || "") === profile.uid ? (
+                      <button
+                        type="button"
+                        onClick={() => openReviewEditor(review)}
+                        className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-[10px] font-semibold text-[#202020]"
+                      >
+                        Edit review
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="text-[11px] text-[#8b94a3]">
+                    {review.createdAt ? new Intl.DateTimeFormat("en-ZA", { day: "numeric", month: "short", year: "numeric" }).format(new Date(review.createdAt)) : ""}
+                  </p>
                 </div>
                 {review.comment ? <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">{review.comment}</p> : null}
                 {Array.isArray(review.images) && review.images.length ? (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {review.images.map((url) => (
-                      <img key={url} src={url} alt="Customer review" className="h-20 w-20 rounded-[8px] object-cover" />
+                      <button
+                        key={url}
+                        type="button"
+                        onClick={() => setActiveReviewImage(url)}
+                        className="overflow-hidden rounded-[8px] border border-black/10 transition hover:border-[#cbb26b]"
+                        aria-label="Open review image"
+                      >
+                        <img src={url} alt="Customer review" className="h-20 w-20 object-cover" />
+                      </button>
                     ))}
                   </div>
                 ) : null}
               </article>
             ))
           ) : (
-            <p className="text-[13px] text-[#57636c]">No reviews yet.</p>
+            <p className="text-[13px] text-[#57636c]">
+              {reviews.length ? "No reviews match the selected filters." : "No reviews yet."}
+            </p>
           )}
         </div>
       </section>
 
-      {(oftenBoughtLoading || oftenBought.length > 0) ? (
-        <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+      {(oftenBoughtLoading || oftenBought.length > 0 || oftenBoughtSource === "none") ? (
+        <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)] lg:hidden">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-[20px] font-semibold text-[#202020]">Frequently bought together</h2>
-            <p className="text-[12px] text-[#57636c]">Based on previous orders</p>
+            <p className="text-[12px] text-[#57636c]">
+              {oftenBoughtSource === "co_purchase"
+                ? "Based on previous orders"
+                : oftenBoughtSource === "catalog_pairing"
+                  ? "Suggested from matching products in our catalog"
+                  : "Suggested combinations update as our catalog grows"}
+            </p>
           </div>
           {oftenBoughtLoading ? (
             <p className="mt-4 text-[13px] text-[#57636c]">Loading recommendations...</p>
+          ) : oftenBought.length > 0 ? (
+            <div className="mt-4 flex gap-4 overflow-x-auto pb-2 [scrollbar-width:thin]">
+              {oftenBought.map((related) => {
+                const href = `/products/${String(related?.data?.product?.title || "product").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}?unique_id=${encodeURIComponent(String(related?.data?.product?.unique_id || related?.id || ""))}`;
+                const image = related?.data?.media?.images?.[0]?.imageUrl || related?.data?.variants?.[0]?.media?.images?.[0]?.imageUrl || "";
+                return (
+                  <Link key={String(related?.id)} href={href} className="min-w-[220px] rounded-[8px] border border-black/10 bg-[#fafafa] p-3 transition-colors hover:border-[#cbb26b]">
+                    <div className="aspect-square overflow-hidden rounded-[8px] bg-white">
+                      {image ? <img src={image} alt={String(related?.data?.product?.title || "Product")} className="h-full w-full object-cover" /> : null}
+                    </div>
+                    <p className="mt-3 line-clamp-2 text-[14px] font-semibold text-[#202020]">{String(related?.data?.product?.title || "Product")}</p>
+                  </Link>
+                );
+              })}
+            </div>
           ) : (
-          <div className="mt-4 flex gap-4 overflow-x-auto pb-2 [scrollbar-width:thin]">
-            {oftenBought.map((related) => {
-              const href = `/products/${String(related?.data?.product?.title || "product").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}?unique_id=${encodeURIComponent(String(related?.data?.product?.unique_id || related?.id || ""))}`;
-              const image = related?.data?.media?.images?.[0]?.imageUrl || related?.data?.variants?.[0]?.media?.images?.[0]?.imageUrl || "";
-              return (
-                <Link key={String(related?.id)} href={href} className="min-w-[220px] rounded-[8px] border border-black/10 bg-[#fafafa] p-3 transition-colors hover:border-[#cbb26b]">
-                  <div className="aspect-square overflow-hidden rounded-[8px] bg-white">
-                    {image ? <img src={image} alt={String(related?.data?.product?.title || "Product")} className="h-full w-full object-cover" /> : null}
-                  </div>
-                  <p className="mt-3 line-clamp-2 text-[14px] font-semibold text-[#202020]">{String(related?.data?.product?.title || "Product")}</p>
-                </Link>
-              );
-            })}
-          </div>
+            <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-4 py-5">
+              <p className="text-[14px] font-semibold text-[#202020]">No current product combinations yet.</p>
+              <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">
+                {oftenBoughtMessage || "We do not have a strong pairing suggestion for this item right now."}
+              </p>
+            </div>
           )}
         </section>
       ) : null}
@@ -1578,7 +1891,7 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
           <div className="w-full max-w-[640px] rounded-[12px] bg-white p-6 shadow-[0_24px_80px_rgba(20,24,27,0.28)]">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Add review</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">{currentUserReview ? "Edit review" : "Add review"}</p>
                 <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">{item.data?.product?.title || "Product"}</h3>
               </div>
               <button type="button" onClick={() => setReviewModalOpen(false)} className="rounded-[8px] border border-black/10 px-3 py-2 text-[12px] font-semibold text-[#202020]">
@@ -1608,17 +1921,42 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
             />
 
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button type="button" onClick={() => reviewUploadRef.current?.click()} className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020]">
-                Add images
+              <button
+                type="button"
+                onClick={() => reviewUploadRef.current?.click()}
+                disabled={reviewImagesUploading}
+                className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {reviewImagesUploading ? "Uploading images..." : "Add images"}
               </button>
               <input ref={reviewUploadRef} type="file" accept="image/*" multiple className="hidden" onChange={(event) => void uploadReviewImages(event.target.files)} />
-              {reviewImages.length ? <span className="text-[12px] text-[#57636c]">{reviewImages.length} image{reviewImages.length === 1 ? "" : "s"} attached</span> : null}
+              {reviewImagesUploading ? (
+                <span className="text-[12px] font-semibold text-[#907d4c]">Uploading your review images...</span>
+              ) : reviewImages.length ? (
+                <span className="text-[12px] text-[#57636c]">{reviewImages.length} image{reviewImages.length === 1 ? "" : "s"} attached</span>
+              ) : null}
             </div>
+
+            {reviewMessage ? (
+              <div className="mt-3 rounded-[8px] border border-black/6 bg-[#fafafa] px-3 py-2 text-[12px] text-[#57636c]">
+                {reviewMessage}
+              </div>
+            ) : null}
 
             {reviewImages.length ? (
               <div className="mt-3 flex flex-wrap gap-2">
                 {reviewImages.map((url) => (
-                  <img key={url} src={url} alt="Review upload" className="h-16 w-16 rounded-[8px] object-cover" />
+                  <div key={url} className="relative">
+                    <img src={url} alt="Review upload" className="h-16 w-16 rounded-[8px] object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => removeReviewImage(url)}
+                      className="absolute -right-2 -top-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-black/10 bg-white text-[14px] font-semibold text-[#202020] shadow-[0_8px_20px_rgba(20,24,27,0.18)] transition hover:bg-[#fafafa]"
+                      aria-label="Remove uploaded review image"
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))}
               </div>
             ) : null}
@@ -1627,10 +1965,26 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
               <button type="button" onClick={() => setReviewModalOpen(false)} className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020]">
                 Cancel
               </button>
-              <button type="button" onClick={() => void submitReview()} disabled={reviewSubmitting} className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:opacity-50">
-                {reviewSubmitting ? "Submitting..." : "Submit review"}
+              <button type="button" onClick={() => void submitReview()} disabled={reviewSubmitting || reviewImagesUploading} className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:opacity-50">
+                {reviewSubmitting ? "Submitting..." : currentUserReview ? "Update review" : "Submit review"}
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeReviewImage ? (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-[rgba(20,24,27,0.72)] px-4" onClick={() => setActiveReviewImage(null)}>
+          <div className="relative max-h-[88vh] max-w-[88vw]" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setActiveReviewImage(null)}
+              className="absolute -right-3 -top-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-[18px] font-semibold text-[#202020] shadow-[0_12px_30px_rgba(20,24,27,0.24)]"
+              aria-label="Close review image"
+            >
+              ×
+            </button>
+            <img src={activeReviewImage} alt="Customer review full size" className="max-h-[88vh] max-w-[88vw] rounded-[12px] object-contain shadow-[0_24px_80px_rgba(20,24,27,0.28)]" />
           </div>
         </div>
       ) : null}

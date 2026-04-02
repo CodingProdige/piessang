@@ -139,7 +139,7 @@ type ProductAvailabilitySummary = {
 };
 
 function formatDeliveryAreaLabel(area: ShopperDeliveryArea | null) {
-  if (!area) return "Set delivery location";
+  if (!area) return "Set your location";
   return [area.suburb, area.city, area.province, area.country].filter(Boolean)[0] || "Delivery location";
 }
 
@@ -155,14 +155,17 @@ function HeaderDeliveryLocationControl({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
+  const [areaReady, setAreaReady] = useState(false);
 
   useEffect(() => {
     setArea(readShopperDeliveryArea());
+    setAreaReady(true);
     return subscribeToShopperDeliveryArea(setArea);
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!areaReady) return;
     if (area) return;
 
     if (isAuthenticated) {
@@ -223,7 +226,7 @@ function HeaderDeliveryLocationControl({
     return () => {
       cancelled = true;
     };
-  }, [area, isAuthenticated]);
+  }, [area, areaReady, isAuthenticated]);
 
   return (
     <>
@@ -232,7 +235,7 @@ function HeaderDeliveryLocationControl({
         type="button"
         onClick={() => setPickerOpen(true)}
         className={`inline-flex items-center gap-2 border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] hover:text-[#2f343b] ${className}`}
-        title={area ? `${area.city}${area.province ? `, ${area.province}` : ""}` : "Set your delivery location"}
+        title={area ? `${area.city}${area.province ? `, ${area.province}` : ""}` : "Set your location"}
       >
         <svg viewBox="0 0 20 20" className="h-4 w-4 fill-current" aria-hidden="true">
           <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
@@ -538,9 +541,28 @@ function useCatalogueMenu(): MenuState {
 function SearchBar() {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const imageCameraInputRef = useRef<HTMLInputElement | null>(null);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [imageSearchOpen, setImageSearchOpen] = useState(false);
+  const [imageSearchBusy, setImageSearchBusy] = useState(false);
+  const [imageSearchError, setImageSearchError] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<string>("");
+  const [imageSearchLabel, setImageSearchLabel] = useState("");
+  const [imageSearchNotes, setImageSearchNotes] = useState("");
+  const [imageSearchQuery, setImageSearchQuery] = useState("");
+  const [imageSearchAlternates, setImageSearchAlternates] = useState<string[]>([]);
+  const [imageSearchResults, setImageSearchResults] = useState<
+    Array<{
+      id: string;
+      title: string;
+      href: string;
+      brand: string;
+      imageUrl: string;
+    }>
+  >([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [trendingSearches, setTrendingSearches] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<
@@ -611,6 +633,26 @@ function SearchBar() {
       );
     } catch {}
   }, []);
+
+  useEffect(() => {
+    if (!imageSearchOpen) return undefined;
+    async function handlePaste(event: ClipboardEvent) {
+      const items = Array.from(event.clipboardData?.items || []);
+      const imageItem = items.find((item) => item.type.startsWith("image/"));
+      if (!imageItem) return;
+      const file = imageItem.getAsFile();
+      if (!file) return;
+      event.preventDefault();
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImagePreview(typeof reader.result === "string" ? reader.result : "");
+        setImageSearchError(null);
+      };
+      reader.readAsDataURL(file);
+    }
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [imageSearchOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -744,6 +786,109 @@ function SearchBar() {
     router.push(`/products?search=${encodeURIComponent(search)}`);
   }
 
+  function resetImageSearchModal() {
+    setImageSearchOpen(false);
+    setImageSearchBusy(false);
+    setImageSearchError(null);
+    setImagePreview("");
+    setImageSearchLabel("");
+    setImageSearchNotes("");
+    setImageSearchQuery("");
+    setImageSearchAlternates([]);
+    setImageSearchResults([]);
+    if (imageInputRef.current) imageInputRef.current.value = "";
+    if (imageCameraInputRef.current) imageCameraInputRef.current.value = "";
+  }
+
+  function readImageFile(file: File) {
+    if (!file.type.startsWith("image/")) {
+      setImageSearchError("Please choose an image file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImagePreview(typeof reader.result === "string" ? reader.result : "");
+      setImageSearchError(null);
+      setImageSearchLabel("");
+      setImageSearchNotes("");
+      setImageSearchQuery("");
+      setImageSearchAlternates([]);
+      setImageSearchResults([]);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function pushImageSearchResults(nextQuery: string, nextLabel = "") {
+    const params = new URLSearchParams({
+      search: nextQuery,
+      imageSearch: "true",
+    });
+    if (nextLabel) params.set("imageLabel", nextLabel);
+    router.push(`/products?${params.toString()}`);
+  }
+
+  async function runImageSearch() {
+    if (!imagePreview) {
+      setImageSearchError("Add an image first.");
+      return;
+    }
+    setImageSearchBusy(true);
+    setImageSearchError(null);
+    try {
+      const response = await fetch("/api/client/v1/search/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl: imagePreview }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to search with this image right now.");
+      }
+      const nextQuery = String(payload?.searchQuery || "").trim();
+      const nextLabel = String(payload?.label || "").trim();
+      const nextNotes = String(payload?.notes || "").trim();
+      const nextAlternates = Array.isArray(payload?.alternateQueries)
+        ? payload.alternateQueries.map((value: unknown) => String(value || "").trim()).filter(Boolean).slice(0, 4)
+        : [];
+      const nextResults = Array.isArray(payload?.items)
+        ? payload.items
+            .map((item: any) => {
+              const slug = String(
+                item?.data?.product?.slug ||
+                  item?.data?.product?.handle ||
+                  item?.data?.docId ||
+                  item?.data?.product?.unique_id ||
+                  item?.id ||
+                  "",
+              ).trim();
+              const title = String(item?.data?.product?.title || "").trim();
+              if (!slug || !title) return null;
+              return {
+                id: String(item?.id || item?.data?.docId || slug),
+                title,
+                href: `/products/${encodeURIComponent(slug)}`,
+                brand: String(item?.data?.brand?.title || item?.data?.grouping?.brand || "").trim(),
+                imageUrl: String(item?.data?.media?.images?.[0]?.imageUrl || "").trim(),
+              };
+            })
+            .filter(Boolean)
+            .slice(0, 8)
+        : [];
+      if (!nextQuery) {
+        throw new Error("We could not find a useful product match from that image.");
+      }
+      setImageSearchLabel(nextLabel);
+      setImageSearchNotes(nextNotes);
+      setImageSearchQuery(nextQuery);
+      setImageSearchAlternates(nextAlternates);
+      setImageSearchResults(nextResults);
+    } catch (cause) {
+      setImageSearchError(cause instanceof Error ? cause.message : "Unable to search with this image right now.");
+    } finally {
+      setImageSearchBusy(false);
+    }
+  }
+
   const shouldShowDropdown =
     open &&
     (hasTypedQuery ||
@@ -776,6 +921,18 @@ function SearchBar() {
           onFocus={() => setOpen(true)}
         />
       </label>
+      <button
+        type="button"
+        onClick={() => {
+          setImageSearchOpen(true);
+          setOpen(false);
+          setImageSearchError(null);
+        }}
+        className="inline-flex h-[36px] w-[44px] items-center justify-center border-l border-black/8 bg-white text-[#4a4545] shadow-[0_4px_14px_rgba(20,24,27,0.08)]"
+        aria-label="Search by image"
+      >
+        ◫
+      </button>
       <button
         type="submit"
         className="inline-flex h-[36px] w-[46px] items-center justify-center rounded-r-[4px] bg-[#4a4545] text-white shadow-[0_4px_14px_rgba(20,24,27,0.12)]"
@@ -924,6 +1081,200 @@ function SearchBar() {
           ) : null}
         </div>
       ) : null}
+
+      {imageSearchOpen ? (
+        <div className="fixed inset-0 z-[120] flex items-start justify-center bg-[rgba(20,24,27,0.48)] px-4 py-12 sm:py-20">
+          <div className="w-full max-w-[720px] rounded-[24px] border border-black/10 bg-white p-5 shadow-[0_28px_80px_rgba(20,24,27,0.22)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Image search</p>
+                <h3 className="mt-2 text-[28px] font-semibold tracking-[-0.03em] text-[#202020]">Find similar products from an image</h3>
+                <p className="mt-2 text-[14px] text-[#57636c]">Upload, drag in, or paste an image to search Piessang for visually similar products.</p>
+              </div>
+              <button
+                type="button"
+                onClick={resetImageSearchModal}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 text-[18px] text-[#57636c]"
+                aria-label="Close image search"
+              >
+                ×
+              </button>
+            </div>
+
+            <div
+              className="mt-5 rounded-[20px] border border-dashed border-black/10 bg-[#fbfaf7] p-5"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                const file = event.dataTransfer.files?.[0];
+                if (file) readImageFile(file);
+              }}
+            >
+              {imagePreview ? (
+                <div className="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)] md:items-center">
+                  <div className="overflow-hidden rounded-[16px] border border-black/8 bg-white">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={imagePreview} alt="Uploaded search reference" className="h-[220px] w-full object-cover" />
+                  </div>
+                  <div className="space-y-3">
+                    <p className="text-[15px] font-semibold text-[#202020]">Image ready</p>
+                    <p className="text-[13px] leading-[1.5] text-[#57636c]">We’ll analyze the image and turn it into a product search across the Piessang catalogue.</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" onClick={() => imageInputRef.current?.click()} className="rounded-[12px] border border-black/10 bg-white px-4 py-2 text-[13px] font-semibold text-[#202020]">
+                        Replace image
+                      </button>
+                      <button type="button" onClick={() => imageCameraInputRef.current?.click()} className="rounded-[12px] border border-black/10 bg-white px-4 py-2 text-[13px] font-semibold text-[#202020] sm:hidden">
+                        Use camera
+                      </button>
+                      <button type="button" onClick={() => setImagePreview("")} className="rounded-[12px] border border-black/10 bg-white px-4 py-2 text-[13px] font-semibold text-[#202020]">
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
+                  <div className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-white text-[24px] text-[#4a4545] shadow-[0_8px_24px_rgba(20,24,27,0.08)]">◫</div>
+                  <p className="mt-5 text-[16px] font-semibold text-[#202020]">Drop an image here or upload one</p>
+                  <p className="mt-2 max-w-[420px] text-[13px] leading-[1.5] text-[#57636c]">You can also paste a copied image with `Cmd/Ctrl + V` while this window is open.</p>
+                  <button type="button" onClick={() => imageInputRef.current?.click()} className="mt-5 rounded-[14px] bg-[#202020] px-5 py-3 text-[14px] font-semibold text-white">
+                    Upload image
+                  </button>
+                  <button type="button" onClick={() => imageCameraInputRef.current?.click()} className="mt-3 rounded-[14px] border border-black/10 bg-white px-5 py-3 text-[14px] font-semibold text-[#202020] sm:hidden">
+                    Take photo
+                  </button>
+                </div>
+              )}
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) readImageFile(file);
+                }}
+              />
+              <input
+                ref={imageCameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) readImageFile(file);
+                }}
+              />
+            </div>
+
+            {imageSearchError ? (
+              <div className="mt-4 rounded-[14px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[13px] text-[#b91c1c]">
+                {imageSearchError}
+              </div>
+            ) : null}
+
+            {imageSearchQuery ? (
+              <div className="mt-4 space-y-4">
+                <div className="rounded-[18px] border border-black/8 bg-[#fcfcfc] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Best match idea</p>
+                      <p className="mt-2 text-[18px] font-semibold text-[#202020]">{imageSearchLabel || imageSearchQuery}</p>
+                      <p className="mt-1 text-[13px] text-[#57636c]">Searching Piessang for: "{imageSearchQuery}"</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpen(false);
+                        resetImageSearchModal();
+                        pushImageSearchResults(imageSearchQuery, imageSearchLabel);
+                      }}
+                      className="rounded-[12px] bg-[#202020] px-4 py-2.5 text-[13px] font-semibold text-white"
+                    >
+                      View all results
+                    </button>
+                  </div>
+                  {imageSearchNotes ? <p className="mt-3 text-[13px] leading-[1.5] text-[#57636c]">{imageSearchNotes}</p> : null}
+                  {imageSearchAlternates.length ? (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {imageSearchAlternates.map((alternate) => (
+                        <button
+                          key={alternate}
+                          type="button"
+                          onClick={() => {
+                            setQuery(alternate);
+                            setOpen(false);
+                            resetImageSearchModal();
+                            submitSearch(alternate);
+                          }}
+                          className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[12px] font-semibold text-[#202020]"
+                        >
+                          {alternate}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                {imageSearchResults.length ? (
+                  <div>
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <p className="text-[14px] font-semibold text-[#202020]">Similar products</p>
+                      <p className="text-[12px] text-[#57636c]">Tap a result to open it directly.</p>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {imageSearchResults.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            setOpen(false);
+                            resetImageSearchModal();
+                            router.push(item.href);
+                          }}
+                          className="flex items-center gap-3 rounded-[18px] border border-black/8 bg-white p-3 text-left shadow-[0_8px_22px_rgba(20,24,27,0.05)] transition hover:-translate-y-[1px]"
+                        >
+                          <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-[#f5f5f5]">
+                            {item.imageUrl ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={item.imageUrl} alt={item.title} className="h-full w-full object-cover" />
+                            ) : (
+                              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Item</span>
+                            )}
+                          </div>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[14px] font-semibold leading-[1.3] text-[#202020]">{item.title}</span>
+                            {item.brand ? <span className="mt-1 block text-[12px] text-[#57636c]">{item.brand}</span> : null}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-[16px] border border-black/8 bg-[#fcfcfc] px-4 py-4 text-[13px] text-[#57636c]">
+                    No close visual matches were found yet, but you can still open the full results using the search terms we detected.
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex flex-wrap justify-end gap-3">
+              <button type="button" onClick={resetImageSearchModal} className="rounded-[12px] border border-black/10 bg-white px-4 py-2.5 text-[13px] font-semibold text-[#202020]">
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void runImageSearch()}
+                disabled={imageSearchBusy || !imagePreview}
+                className="rounded-[12px] bg-[#202020] px-4 py-2.5 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {imageSearchBusy ? "Searching image..." : "Search by image"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -963,6 +1314,17 @@ function CartIcon() {
   );
 }
 
+function BellIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4.5 w-4.5" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 3.5a4.8 4.8 0 0 0-4.8 4.8v2.4c0 .9-.2 1.8-.7 2.6L5 16h14l-1.5-2.7c-.5-.8-.7-1.7-.7-2.6V8.3A4.8 4.8 0 0 0 12 3.5Zm-2.2 14.8a2.2 2.2 0 0 0 4.4 0Z"
+      />
+    </svg>
+  );
+}
+
 function PiessangLogo() {
   return (
     <Link href="/" className="flex items-center">
@@ -974,6 +1336,46 @@ function PiessangLogo() {
         priority
         className="h-8 w-auto sm:h-9 lg:h-10"
       />
+    </Link>
+  );
+}
+
+function NotificationsButton({
+  isAuthenticated,
+  unreadCount,
+  notificationsHref,
+  onRequireAuth,
+}: {
+  isAuthenticated: boolean;
+  unreadCount: number;
+  notificationsHref: string;
+  onRequireAuth: () => void;
+}) {
+  const safeUnreadCount = Math.max(0, Number(unreadCount || 0));
+
+  if (!isAuthenticated) {
+    return (
+      <button
+        type="button"
+        onClick={onRequireAuth}
+        className="relative ml-4 inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-[#4a4545] shadow-[0_8px_18px_rgba(20,24,27,0.08)]"
+        aria-label="Notifications"
+      >
+        <BellIcon />
+      </button>
+    );
+  }
+
+  return (
+    <Link
+      href={notificationsHref}
+      className="relative ml-4 inline-flex h-9 items-center gap-2 rounded-full bg-white px-3 text-[#4a4545] shadow-[0_8px_18px_rgba(20,24,27,0.08)]"
+      aria-label="Notifications"
+    >
+      <BellIcon />
+      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1.5 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
+        {safeUnreadCount}
+      </span>
     </Link>
   );
 }
@@ -1795,6 +2197,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   const [mobileOpen, setMobileOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [cartPreviewOpen, setCartPreviewOpen] = useState(false);
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const {
     isAuthenticated,
     profile,
@@ -1829,6 +2232,32 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     });
     return `/products?${params.toString()}`;
   }, [isAuthenticated, uid]);
+  const notificationsHref = "/account/notifications";
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadNotificationCount() {
+      if (!isAuthenticated) {
+        if (!cancelled) setNotificationUnreadCount(0);
+        return;
+      }
+      try {
+        const response = await fetch("/api/client/v1/accounts/notifications", { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) return;
+        if (!cancelled) {
+          setNotificationUnreadCount(Number(payload?.unreadCount || 0));
+        }
+      } catch {
+        if (!cancelled) setNotificationUnreadCount(0);
+      }
+    }
+    void loadNotificationCount();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated]);
+
   const handleClearFavorites = async () => {
     if (!isAuthenticated || !uid) {
       openAuthModal("Sign in to manage your favourites.");
@@ -1929,6 +2358,12 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                 </button>
               </>
             )}
+            <NotificationsButton
+              isAuthenticated={isAuthenticated}
+              unreadCount={notificationUnreadCount}
+              notificationsHref={notificationsHref}
+              onRequireAuth={() => openAuthModal("Sign in to view your notifications.")}
+            />
             <HeartButton
               isAuthenticated={isAuthenticated}
               favoriteCount={favoriteCount}
@@ -1983,6 +2418,25 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               </button>
               <button type="button" className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]" aria-label="Search">
                 <SearchIcon />
+              </button>
+              <button
+                type="button"
+                onClick={
+                  isAuthenticated
+                    ? () => {
+                        window.location.assign(notificationsHref);
+                      }
+                    : () => openAuthModal("Sign in to view your notifications.")
+                }
+                className="relative inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
+                aria-label="Notifications"
+              >
+                <BellIcon />
+                {isAuthenticated && notificationUnreadCount > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
+                    {notificationUnreadCount}
+                  </span>
+                ) : null}
               </button>
               <button
                 type="button"

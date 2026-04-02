@@ -5,6 +5,10 @@
       "schedule": "0 5 * * *"
     },
     {
+      "path": "/api/cron/seller-warehouse-event-reminders",
+      "schedule": "15 5 * * *"
+    },
+    {
       "path": "/api/cron/orders/payment-success-reconciliation",
       "schedule": "*/10 * * * *"
     },

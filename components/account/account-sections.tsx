@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
+import { ConfirmModal } from "@/components/ui/confirm-modal";
 
 type OrderRecord = {
   docId?: string;
@@ -184,43 +185,6 @@ function WorkspaceShell({
         <p className="mt-1 text-[13px] leading-6 text-[#57636c]">{description}</p>
       </div>
       {children}
-    </div>
-  );
-}
-
-function ConfirmModal({
-  state,
-  onClose,
-}: {
-  state: ConfirmState | null;
-  onClose: () => void;
-}) {
-  if (!state) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
-      <div className="w-full max-w-[440px] rounded-[12px] bg-white p-5 shadow-[0_16px_40px_rgba(20,24,27,0.24)]">
-        <p className="text-[18px] font-semibold text-[#202020]">{state.title}</p>
-        <p className="mt-2 text-[14px] leading-6 text-[#57636c]">{state.description}</p>
-        <div className="mt-5 flex gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={state.busy}
-            className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020] disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void state.onConfirm()}
-            disabled={state.busy}
-            className="inline-flex h-10 items-center rounded-[8px] bg-[#b91c1c] px-4 text-[13px] font-semibold text-white disabled:opacity-50"
-          >
-            {state.confirmLabel}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -550,7 +514,15 @@ export function AccountPaymentsWorkspace({ uid }: { uid: string }) {
           </div>
         </div>
       </div>
-      <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />
+      <ConfirmModal
+        open={Boolean(confirmState)}
+        title={confirmState?.title || ""}
+        description={confirmState?.description || ""}
+        confirmLabel={confirmState?.confirmLabel || "Confirm"}
+        busy={Boolean(confirmState?.busy)}
+        onClose={() => setConfirmState(null)}
+        onConfirm={() => void confirmState?.onConfirm()}
+      />
     </WorkspaceShell>
   );
 }
@@ -969,7 +941,15 @@ export function AccountProfileWorkspace({
           </div>
         </div>
       ) : null}
-      <ConfirmModal state={confirmState} onClose={() => setConfirmState(null)} />
+      <ConfirmModal
+        open={Boolean(confirmState)}
+        title={confirmState?.title || ""}
+        description={confirmState?.description || ""}
+        confirmLabel={confirmState?.confirmLabel || "Confirm"}
+        busy={Boolean(confirmState?.busy)}
+        onClose={() => setConfirmState(null)}
+        onConfirm={() => void confirmState?.onConfirm()}
+      />
     </WorkspaceShell>
   );
 }

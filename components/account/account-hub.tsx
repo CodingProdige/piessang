@@ -10,7 +10,7 @@ import {
   AccountPaymentsWorkspace,
 } from "@/components/account/account-sections";
 
-type AccountSection = "overview" | "orders" | "payments" | "profile" | "lists" | "support" | "policies" | "seller";
+type AccountSection = "overview" | "orders" | "payments" | "profile" | "lists" | "following" | "notifications" | "support" | "policies" | "seller";
 
 type AccountCard = {
   title: string;
@@ -26,6 +26,8 @@ const sectionTitles: Record<AccountSection, string> = {
   payments: "Payments & Credit",
   profile: "Profile",
   lists: "My Lists",
+  following: "Following",
+  notifications: "Notifications",
   support: "Support",
   policies: "Policies",
   seller: "Seller Tools",
@@ -38,9 +40,9 @@ const accountCards: AccountCard[] = [
     icon: "cart",
     links: [
       { label: "Orders", href: "/account/orders" },
-      { label: "Invoices", href: "/account/orders" },
-      { label: "Returns", href: "/account/orders" },
-      { label: "Product reviews", href: "/account/orders" },
+      { label: "Invoices", href: "/account/orders/invoices" },
+      { label: "Returns", href: "/account/returns" },
+      { label: "Product reviews", href: "/account/reviews" },
     ],
     href: "/account/orders",
   },
@@ -49,10 +51,11 @@ const accountCards: AccountCard[] = [
     section: "payments" as const,
     icon: "card",
     links: [
-      { label: "Coupons & offers", href: "/account?section=payments" },
-      { label: "Credit & refunds", href: "/account?section=payments" },
-      { label: "Redeem gift voucher", href: "/account?section=payments" },
+      { label: "Coupons & offers", href: "/account/payments" },
+      { label: "Credit & refunds", href: "/account/payments" },
+      { label: "Redeem gift voucher", href: "/account/payments" },
     ],
+    href: "/account/payments",
   },
   {
     title: "Profile",
@@ -74,6 +77,25 @@ const accountCards: AccountCard[] = [
       { label: "Saved products", href: "/account?section=lists" },
       { label: "Create a list", href: "/account?section=lists" },
     ],
+  },
+  {
+    title: "Following",
+    section: "following" as const,
+    icon: "heart",
+    links: [
+      { label: "Followed sellers", href: "/account/following" },
+    ],
+    href: "/account/following",
+  },
+  {
+    title: "Notifications",
+    section: "notifications" as const,
+    icon: "help",
+    links: [
+      { label: "Product alerts", href: "/account/notifications" },
+      { label: "Seller releases", href: "/account/notifications" },
+    ],
+    href: "/account/notifications",
   },
   {
     title: "Support",
@@ -292,6 +314,8 @@ export function AccountHub() {
             {activeSection === "payments" && "View credits, refunds, and payment history for your account."}
             {activeSection === "profile" && "Update business details, security settings, and addresses."}
             {activeSection === "lists" && "Manage favourites and saved products from your storefront activity."}
+            {activeSection === "following" && "Review the seller profiles you follow and jump back into their storefronts."}
+            {activeSection === "notifications" && "See product alerts, seller releases, and favourite status changes in one inbox."}
             {activeSection === "support" && "Manage support conversations from the dedicated Piessang support area."}
             {activeSection === "policies" && "Read the customer-facing policies that govern shopping on Piessang."}
             {activeSection === "seller" && "Manage your seller catalogue, analytics, and order queue."}
@@ -302,6 +326,10 @@ export function AccountHub() {
               ? "Registering as a seller unlocks the marketplace tools on your account."
               : activeSection === "support"
                 ? "Open the dedicated support area to view your tickets, reply to Piessang, and close resolved conversations."
+                : activeSection === "following"
+                  ? "Your followed seller profiles live in their own space so you can keep tabs on the storefronts you care about."
+                  : activeSection === "notifications"
+                    ? "Your customer alerts now have their own inbox so seller releases and favourite product changes stay easy to follow."
                 : activeSection === "policies"
                   ? "Your account actions and your marketplace policies now live in separate places so the account area stays action-focused."
                 : "The sections below are now wired to your real customer data, so you can manage the important parts of your account from one place."}

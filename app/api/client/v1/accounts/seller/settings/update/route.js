@@ -153,6 +153,19 @@ function parseBranding(payload) {
   };
 }
 
+function parseBusinessDetails(payload, seller = {}, owner = {}) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const account = owner?.account && typeof owner.account === "object" ? owner.account : {};
+  return {
+    companyName: sanitizeText(source.companyName || account?.accountName || seller?.vendorName || seller?.groupVendorName || ""),
+    registrationNumber: sanitizeText(source.registrationNumber || account?.registrationNumber || ""),
+    vatNumber: sanitizeText(source.vatNumber || account?.vatNumber || ""),
+    email: sanitizeText(source.email || owner?.email || ""),
+    phoneNumber: sanitizeText(source.phoneNumber || account?.phoneNumber || ""),
+    addressText: sanitizeLongText(source.addressText || "").slice(0, 240),
+  };
+}
+
 function parseDeliveryProfile(payload) {
   const normalized = normalizeSellerDeliveryProfile(payload && typeof payload === "object" ? payload : {});
   return {
@@ -255,6 +268,7 @@ export async function POST(req) {
     if (!owner) return err(404, "Seller Not Found", "Could not find a seller account for that seller slug.");
 
     const currentSeller = owner.data?.seller && typeof owner.data.seller === "object" ? owner.data.seller : {};
+    const businessDetails = parseBusinessDetails(data?.businessDetails || data?.business || {}, currentSeller, owner.data || {});
     const nextVendorName = vendorName || toStr(currentSeller.vendorName || currentSeller.groupVendorName || "");
     const nextVendorDescription = sanitizeLongText(
       vendorDescription || currentSeller.vendorDescription || currentSeller.description || "",
@@ -263,6 +277,9 @@ export async function POST(req) {
 
     await db.collection("users").doc(owner.id).update({
       "account.accountName": nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
+      "account.vatNumber": businessDetails.vatNumber,
+      "account.registrationNumber": businessDetails.registrationNumber,
+      "account.phoneNumber": businessDetails.phoneNumber || requester?.account?.phoneNumber || "",
       "seller.vendorName": nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
       "seller.groupVendorName": nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
       "seller.vendorDescription": nextVendorDescription,
@@ -273,6 +290,7 @@ export async function POST(req) {
       "seller.branding": branding,
       "seller.deliveryProfile": deliveryProfile,
       "seller.payoutProfile": payoutProfile,
+      "seller.businessDetails": businessDetails,
       "seller.media": branding,
       "timestamps.updatedAt": new Date(),
     });
@@ -287,6 +305,7 @@ export async function POST(req) {
       branding,
       deliveryProfile,
       payoutProfile,
+      businessDetails,
     });
   } catch (e) {
     console.error("seller/settings/update failed:", e);

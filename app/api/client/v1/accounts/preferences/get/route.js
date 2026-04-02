@@ -28,6 +28,8 @@ function normalizePreferences(raw) {
       support: toBool(topics.support, true),
       promotions: toBool(topics.promotions, false),
       account: toBool(topics.account, true),
+      following: toBool(topics.following, true),
+      favorites: toBool(topics.favorites, true),
     },
   };
 }

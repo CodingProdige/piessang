@@ -1,5 +1,12 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { RegisterSellerButton } from "@/components/seller/register-seller-button";
+
+export const metadata: Metadata = {
+  title: "Sell on Piessang",
+  description:
+    "Register as a seller on Piessang and choose the fulfilment model that suits your operation, from self-managed dispatch to Piessang warehousing.",
+};
 
 const options = [
   {

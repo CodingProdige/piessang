@@ -292,8 +292,7 @@ export async function updateOrderAtomic(tx, body) {
 
   const ignoreSale =
     Boolean(variantSnapshot?.sale?.disabled_by_admin) ||
-    !variantSnapshot?.sale?.is_on_sale ||
-    (variantSnapshot?.sale?.is_on_sale && Number(variantSnapshot?.sale?.qty_available) <= 0);
+    !variantSnapshot?.sale?.is_on_sale;
 
   const { quantity: finalQty, capped, available, reason } = capQuantity(variantSnapshot, desiredQty, {
     ignoreSale,
@@ -335,55 +334,10 @@ export async function updateOrderAtomic(tx, body) {
   ------------------------------------------------------- */
   let generatedKey = null;
   let delta = finalQty - currentQty;
-  const isSaleLine = Boolean(existingItem?.selected_variant_snapshot?.sale?.is_on_sale) || Boolean(variantSnapshot?.sale?.is_on_sale);
-
-  const saleActiveLive = Boolean(variantSnapshot?.sale?.is_on_sale && !variantSnapshot?.sale?.disabled_by_admin);
-  const saleQtyLive = Math.max(0, Number(variantSnapshot?.sale?.qty_available) || 0);
-  const increaseAmount =
-    mode === "increment" || mode === "add"
-      ? Math.max(0, Number(qtyInput) || 0)
-      : mode === "set"
-        ? Math.max(0, desiredQty - currentQty)
-        : 0;
-
-  let salePortion = 0;
-  if (increaseAmount > 0 && saleActiveLive) {
-    salePortion = Math.min(increaseAmount, saleQtyLive);
-  }
-  const regularQtyToAdd = increaseAmount > salePortion ? increaseAmount - salePortion : 0;
-
-  let nextExistingQty = finalQty;
-  if (increaseAmount > 0) {
-    nextExistingQty = currentQty + salePortion;
-    delta = nextExistingQty - currentQty;
-  }
-
-  // For decrements or set lower, keep previous delta and quantity
-  if (mode === "decrement" || (mode === "set" && desiredQty < currentQty)) {
-    nextExistingQty = finalQty;
-    delta = finalQty - currentQty;
-  }
-
-  let deltaSale = 0;
-  if (increaseAmount > 0) {
-    deltaSale = salePortion;
-  } else if (delta < 0 && isSaleLine) {
-    deltaSale = delta;
-  }
+  const nextExistingQty = finalQty;
   const adjustedVariantSnapshot = (() => {
     const v = clone(variantSnapshot);
     if (!v) return v;
-
-    // Update sale availability unless disabled by admin
-    if (v.sale) {
-      const adminDisabled = Boolean(v.sale.disabled_by_admin);
-      if (!adminDisabled) {
-        const startQty = Math.max(0, Number(v.sale.qty_available) || 0);
-        const nextQty = Math.max(0, startQty - deltaSale);
-        v.sale.qty_available = nextQty;
-        v.sale.is_on_sale = nextQty > 0;
-      }
-    }
 
     return v;
   })();
@@ -401,16 +355,6 @@ export async function updateOrderAtomic(tx, body) {
     if (vIdx >= 0) {
       const pv = clone(variantsArr[vIdx]) || {};
 
-      if (pv.sale) {
-        const adminDisabled = Boolean(pv.sale.disabled_by_admin);
-        if (!adminDisabled) {
-          const startSale = Math.max(0, Number(pv.sale.qty_available) || 0);
-          const nextSale = Math.max(0, startSale - deltaSale);
-          pv.sale.qty_available = nextSale;
-          pv.sale.is_on_sale = nextSale > 0;
-        }
-      }
-
       variantsArr[vIdx] = pv;
       updatedVariant = pv;
       updatedProduct.variants = variantsArr;
@@ -426,16 +370,6 @@ export async function updateOrderAtomic(tx, body) {
     const vIdx = variantsArr.findIndex((v) => String(v?.variant_id) === String(resolvedVariantId));
     if (vIdx >= 0) {
       const pv = clone(variantsArr[vIdx]) || {};
-
-      if (pv.sale) {
-        const adminDisabled = Boolean(pv.sale.disabled_by_admin);
-        if (!adminDisabled) {
-          const startSale = Math.max(0, Number(pv.sale.qty_available) || 0);
-          const nextSale = Math.max(0, startSale - deltaSale);
-          pv.sale.qty_available = nextSale;
-          pv.sale.is_on_sale = nextSale > 0;
-        }
-      }
 
       variantsArr[vIdx] = pv;
       updatedVariant = pv;
@@ -463,48 +397,6 @@ export async function updateOrderAtomic(tx, body) {
       items.push(line);
       generatedKey = cartItemKey;
     }
-  }
-
-  // Add overflow as regular-priced line if sale stock was insufficient
-  if (regularQtyToAdd > 0 && (mode === "increment" || mode === "add" || mode === "set")) {
-    const regularVariant = clone(variantSnapshot) || {};
-    if (!regularVariant.sale) regularVariant.sale = {};
-    regularVariant.sale.is_on_sale = false;
-    // Try to merge with an existing non-sale line for this variant
-    const existingRegularIdx = items.findIndex(
-      (it) =>
-        String(it?.selected_variant_snapshot?.variant_id || "") === String(resolvedVariantId) &&
-        it?.selected_variant_snapshot?.sale?.is_on_sale === false
-    );
-
-    if (existingRegularIdx >= 0) {
-      const line = items[existingRegularIdx];
-      const nextQty = (Number(line?.quantity) || 0) + regularQtyToAdd;
-      const mergedLine = {
-        ...line,
-        quantity: nextQty,
-        selected_variant_snapshot: regularVariant,
-        line_totals: computeLineTotals(regularVariant, nextQty)
-      };
-      items[existingRegularIdx] = mergedLine;
-    } else {
-      const newKey = makeCartItemKey(resolvedProductId, resolvedVariantId);
-      const newLine = {
-        quantity: regularQtyToAdd,
-        cart_item_key: newKey,
-        product_snapshot: clone(productSnapshot),
-        selected_variant_snapshot: regularVariant,
-        line_totals: computeLineTotals(regularVariant, regularQtyToAdd)
-      };
-      items.push(newLine);
-      if (!generatedKey) generatedKey = newKey;
-    }
-
-    _ui = buildUiMessage({
-      type: "warning",
-      title: "Sale Depleted",
-      message: `Sale stock unavailable; added ${regularQtyToAdd} at regular price.`
-    });
   }
 
   /* -------------------------------------------------------
