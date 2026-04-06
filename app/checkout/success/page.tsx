@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PageBody } from "@/components/layout/page-body";
 
 export const metadata: Metadata = {
   title: "Order Placed",
@@ -20,7 +21,7 @@ export default async function CheckoutSuccessPage({
   const orderNumber = typeof params.orderNumber === "string" ? params.orderNumber.trim() : "";
 
   return (
-    <main className="mx-auto max-w-[960px] px-4 py-10 sm:py-14">
+    <PageBody className="py-10 sm:py-14">
       <section className="overflow-hidden rounded-[18px] border border-black/5 bg-white shadow-[0_18px_44px_rgba(20,24,27,0.08)]">
         <div className="border-b border-black/5 bg-[linear-gradient(135deg,#fff8d6_0%,#ffffff_45%,#fff4b3_100%)] px-6 py-8 sm:px-10">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#907d4c]">Order placed</p>
@@ -59,6 +60,6 @@ export default async function CheckoutSuccessPage({
           </div>
         </div>
       </section>
-    </main>
+    </PageBody>
   );
 }

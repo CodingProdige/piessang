@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";

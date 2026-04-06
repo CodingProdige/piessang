@@ -1,11 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { PageBody } from "@/components/layout/page-body";
 import { ContactSupportPanel } from "@/components/support/contact-support-panel";
+import { COMPANY_PUBLIC_DETAILS } from "@/lib/company/public-details";
+import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
-export const metadata: Metadata = {
-  title: "Contact Us | Piessang",
-  description: "Get in touch with Piessang for help with orders, delivery, returns, seller support, and marketplace questions.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSeoMetadata("contact", {
+    title: "Contact Us | Piessang",
+    description: "Get in touch with Piessang for help with orders, delivery, returns, seller support, and marketplace questions.",
+  });
+}
 
 function ContactCard({
   eyebrow,
@@ -50,7 +55,7 @@ function FaqItem({
 
 export default function ContactPage() {
   return (
-    <main className="mx-auto w-full max-w-[1120px] px-4 py-10 lg:px-6 lg:py-14">
+    <PageBody className="px-4 py-10 lg:px-6 lg:py-14">
       <section className="rounded-[18px] border border-black/5 bg-white p-6 shadow-[0_10px_30px_rgba(20,24,27,0.06)] lg:p-8">
         <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#907d4c]">Contact us</p>
         <h1 className="mt-3 text-[34px] font-semibold leading-[1.05] tracking-[-0.03em] text-[#202020] lg:text-[44px]">
@@ -98,6 +103,36 @@ export default function ContactPage() {
               <Link href="/support/tickets" className="text-[#0f80c3] hover:text-[#0a6ca8]">
                 Open my tickets
               </Link>
+            </p>
+          </div>
+        </ContactCard>
+
+        <ContactCard
+          eyebrow="Business details"
+          title="Piessang public business information"
+          description="These are the public contact and business details we use across the marketplace."
+        >
+          <div className="space-y-3">
+            <p>
+              <span className="font-semibold">Business name:</span> {COMPANY_PUBLIC_DETAILS.legalName}
+            </p>
+            <p>
+              <span className="font-semibold">Support email:</span>{" "}
+              <a href={`mailto:${COMPANY_PUBLIC_DETAILS.supportEmail}`} className="text-[#0f80c3] hover:text-[#0a6ca8]">
+                {COMPANY_PUBLIC_DETAILS.supportEmail}
+              </a>
+            </p>
+            <p>
+              <span className="font-semibold">Support phone:</span> {COMPANY_PUBLIC_DETAILS.supportPhone}
+            </p>
+            <p>
+              <span className="font-semibold">Address:</span> {COMPANY_PUBLIC_DETAILS.addressLines.join(", ")}
+            </p>
+            <p>
+              <span className="font-semibold">Registration number:</span> {COMPANY_PUBLIC_DETAILS.registrationNumber}
+            </p>
+            <p>
+              <span className="font-semibold">VAT number:</span> {COMPANY_PUBLIC_DETAILS.vatNumber}
             </p>
           </div>
         </ContactCard>
@@ -151,6 +186,6 @@ export default function ContactPage() {
           />
         </div>
       </section>
-    </main>
+    </PageBody>
   );
 }

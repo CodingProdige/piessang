@@ -180,6 +180,12 @@ export const emailMessages = {
       subjectTemplate: "How was <%= vendorName %> on order <%= orderNumber || 'your order' %>?"
     },
 
+    "order-review-request": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-review-request.ejs",
+      subjectTemplate: "Your order <%= orderNumber || 'with Piessang' %> is complete — leave a review"
+    },
+
     "return-request-submitted": {
       wrapper: "corporate-wrapper.ejs",
       template: "return-request-submitted.ejs",

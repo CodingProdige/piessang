@@ -3,6 +3,9 @@
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { DocumentLinkModal } from "@/components/ui/document-link-modal";
+import { DocumentSnackbar } from "@/components/ui/document-snackbar";
+import { formatMoneyExact } from "@/lib/money";
 
 type InvoiceSellerLine = {
   title?: string;
@@ -33,7 +36,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatMoney(value: number) {
-  return `R${Number(value || 0).toFixed(2)}`;
+  return formatMoneyExact(value);
 }
 
 export function CustomerSellerInvoiceDrawer({
@@ -60,8 +63,7 @@ export function CustomerSellerInvoiceDrawer({
   const [savingBusiness, setSavingBusiness] = useState(false);
   const [busySellerKey, setBusySellerKey] = useState("");
   const [modalUrl, setModalUrl] = useState("");
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
-  const [snackbar, setSnackbar] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const [snackbar, setSnackbar] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
   const [portalReady, setPortalReady] = useState(false);
 
   useEffect(() => {
@@ -103,8 +105,7 @@ export function CustomerSellerInvoiceDrawer({
   async function handleOpenSellerInvoice(group: InvoiceSellerGroup) {
     if (!orderId || !group?.key || busySellerKey) return;
     setBusySellerKey(group.key);
-    setSnackbar(null);
-    setCopyState("idle");
+    setSnackbar({ tone: "info", message: `Preparing invoice for ${group.vendorName || "seller"}...` });
     try {
       const response = await fetch("/api/client/v1/orders/documents/seller-invoice", {
         method: "POST",
@@ -131,69 +132,20 @@ export function CustomerSellerInvoiceDrawer({
     }
   }
 
-  async function handleCopyLink() {
-    if (!modalUrl) return;
-    try {
-      await navigator.clipboard.writeText(modalUrl);
-      setCopyState("copied");
-    } catch {
-      setCopyState("error");
-    }
-  }
-
   if (!portalReady) return null;
 
   return createPortal(
     <>
-      {snackbar ? (
-        <div className="fixed inset-x-0 top-24 z-[190] flex justify-center px-4">
-          <div
-            className={`flex w-full max-w-[560px] items-start justify-between gap-4 rounded-[18px] border px-4 py-3 shadow-[0_16px_40px_rgba(20,24,27,0.18)] ${
-              snackbar.tone === "success"
-                ? "border-[#b7f0cf] bg-[#ecfdf5] text-[#166534]"
-                : "border-[#f3b8bf] bg-[#fff7f8] text-[#b91c1c]"
-            }`}
-          >
-            <p className="text-[14px] font-medium">{snackbar.message}</p>
-            <button type="button" onClick={() => setSnackbar(null)} className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current/15 text-[16px]">
-              ×
-            </button>
-          </div>
-        </div>
-      ) : null}
+      <DocumentSnackbar notice={snackbar} onClose={() => setSnackbar(null)} />
 
-      {modalUrl ? (
-        <div className="fixed inset-0 z-[185] flex items-center justify-center bg-black/35 px-4" onClick={() => setModalUrl("")}>
-          <div className="w-full max-w-[560px] rounded-[28px] border border-black/10 bg-white p-6 shadow-[0_24px_80px_rgba(20,24,27,0.24)]" onClick={(event) => event.stopPropagation()}>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[24px] font-semibold tracking-[-0.03em] text-[#202020]">Invoice ready</p>
-                <p className="mt-2 text-[14px] text-[#57636c]">You can open this seller invoice in a new tab or copy the link.</p>
-              </div>
-              <button type="button" onClick={() => setModalUrl("")} className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 text-[18px] text-[#57636c]">
-                ×
-              </button>
-            </div>
-            <div className="mt-5 rounded-[18px] border border-black/8 bg-[#f6f7f8] p-4">
-              <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#8b94a3]">Invoice link</p>
-              <p className="mt-2 break-all text-[13px] text-[#202020]">{modalUrl}</p>
-            </div>
-            <div className="mt-5 flex flex-wrap gap-3">
-              <a href={modalUrl} target="_blank" rel="noreferrer" className="inline-flex h-11 items-center rounded-[14px] bg-[#202020] px-4 text-[14px] font-semibold text-white">
-                Open invoice
-              </a>
-              <button type="button" onClick={() => void handleCopyLink()} className="inline-flex h-11 items-center rounded-[14px] border border-black/10 bg-white px-4 text-[14px] font-semibold text-[#202020]">
-                Copy link
-              </button>
-              <button type="button" onClick={() => setModalUrl("")} className="inline-flex h-11 items-center rounded-[14px] border border-black/10 bg-white px-4 text-[14px] font-semibold text-[#202020]">
-                Close
-              </button>
-            </div>
-            {copyState === "copied" ? <p className="mt-3 text-[13px] font-medium text-[#1f8f55]">Invoice link copied.</p> : null}
-            {copyState === "error" ? <p className="mt-3 text-[13px] font-medium text-[#b91c1c]">Couldn’t copy automatically. You can still open or manually copy the link above.</p> : null}
-          </div>
-        </div>
-      ) : null}
+      <DocumentLinkModal
+        open={Boolean(modalUrl)}
+        title="Invoice ready"
+        description="You can open this seller invoice in a new tab or copy the link."
+        url={modalUrl}
+        onClose={() => setModalUrl("")}
+        openLabel="Open invoice"
+      />
 
       <div className={`fixed inset-0 z-[180] ${open ? "" : "pointer-events-none"}`}>
         <button

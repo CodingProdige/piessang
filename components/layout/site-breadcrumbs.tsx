@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { PageBody } from "@/components/layout/page-body";
 
 type Crumb = {
   href?: string;
@@ -69,7 +70,7 @@ export function SiteBreadcrumbs() {
 
   return (
     <div className="bg-white">
-      <div className="mx-auto w-full max-w-[1180px] px-3 py-3 lg:px-4">
+      <PageBody as="div" className="py-3">
         <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-[12px] text-[#7b8694]">
           {visibleCrumbs.map((crumb, index) => {
             const isLast = index === visibleCrumbs.length - 1;
@@ -87,7 +88,7 @@ export function SiteBreadcrumbs() {
             );
           })}
         </nav>
-      </div>
+      </PageBody>
     </div>
   );
 }

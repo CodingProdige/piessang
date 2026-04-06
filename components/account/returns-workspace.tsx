@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { formatMoneyExact } from "@/lib/money";
 
 type ReturnRecord = {
   docId: string;
@@ -42,7 +43,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatMoney(value: number) {
-  return `R${Number(value || 0).toFixed(2)}`;
+  return formatMoneyExact(value);
 }
 
 function formatDateTime(value?: string) {

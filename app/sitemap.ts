@@ -1,5 +1,7 @@
 import type { MetadataRoute } from "next";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 
 const siteUrl = (process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://piessang.co.za").replace(/\/+$/, "");
 
@@ -28,12 +30,19 @@ function getProductPath(data: any, docId: string) {
 }
 
 function getSellerPath(data: any) {
-  const sellerSlug =
-    toStr(data?.product?.sellerSlug) ||
-    toStr(data?.seller?.sellerSlug) ||
-    toStr(data?.sellerSlug);
-  if (!sellerSlug) return "";
-  return `/vendors/${encodeURIComponent(sellerSlug)}`;
+  const sellerIdentifier = getSellerIdentifier(data);
+  if (!sellerIdentifier) return "";
+  return `/vendors/${encodeURIComponent(sellerIdentifier)}`;
+}
+
+function getSellerIdentifier(data: any) {
+  return toStr(
+    data?.product?.sellerCode ||
+    data?.seller?.sellerCode ||
+    data?.product?.sellerSlug ||
+    data?.seller?.sellerSlug ||
+    data?.sellerSlug,
+  );
 }
 
 function isPublicProduct(data: any) {
@@ -68,10 +77,32 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   const productsSnap = await db.collection("products_v2").get();
   const sellerMap = new Map<string, { lastModified?: Date }>();
+  const sellerIdentifiers = new Set<string>();
 
   for (const doc of productsSnap.docs) {
     const data = doc.data() || {};
     if (!isPublicProduct(data)) continue;
+    const sellerIdentifier = getSellerIdentifier(data);
+    if (sellerIdentifier) sellerIdentifiers.add(sellerIdentifier);
+  }
+
+  const sellerStatusMap = new Map<string, boolean>();
+  await Promise.all(
+    Array.from(sellerIdentifiers).map(async (sellerIdentifier) => {
+      try {
+        const owner = await findSellerOwnerByIdentifier(sellerIdentifier);
+        sellerStatusMap.set(sellerIdentifier, Boolean(owner && isSellerAccountUnavailable(owner.data)));
+      } catch {
+        sellerStatusMap.set(sellerIdentifier, false);
+      }
+    }),
+  );
+
+  for (const doc of productsSnap.docs) {
+    const data = doc.data() || {};
+    if (!isPublicProduct(data)) continue;
+    const sellerIdentifier = getSellerIdentifier(data);
+    if (sellerIdentifier && sellerStatusMap.get(sellerIdentifier) === true) continue;
 
     const lastModified =
       parseDate(data?.timestamps?.updatedAt) ||

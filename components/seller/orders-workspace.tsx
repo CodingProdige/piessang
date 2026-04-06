@@ -3,10 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import { DocumentLinkModal } from "@/components/ui/document-link-modal";
+import { DocumentSnackbar } from "@/components/ui/document-snackbar";
 import { PlatformPopover, PlatformPortalPopover, PopoverHintTrigger } from "@/components/ui/platform-popover";
 import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
 import { getSellerFulfillmentActions, getSellerFulfillmentStatusLabel } from "@/lib/orders/status-lifecycle";
 import { getFrozenLineTotalIncl, getFrozenLineUnitPriceIncl } from "@/lib/orders/frozen-money";
+import { formatMoneyExact } from "@/lib/money";
 
 type SellerOrderSlice = {
   orderId: string;
@@ -197,7 +200,7 @@ function formatRelativeOrderDate(value?: string) {
 }
 
 function formatMoney(value: number) {
-  return `R${Number(value || 0).toFixed(2)}`;
+  return formatMoneyExact(value);
 }
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
@@ -317,6 +320,11 @@ function getNextSellerActions(item: SellerOrderSlice): SellerFulfillmentAction[]
 }
 
 function getDeadlineState(item: SellerOrderSlice, nowTick: number) {
+  const fulfillmentStatus = toStr(item.fulfillmentStatus).toLowerCase();
+  const orderStatus = toStr(item.orderStatus).toLowerCase();
+  if (["delivered", "completed", "cancelled"].includes(fulfillmentStatus) || ["completed", "cancelled"].includes(orderStatus)) {
+    return { label: "Fulfilment complete", tone: "text-[#166534]", overdue: false };
+  }
   const dueAt = toStr(item.fulfilmentDeadline?.dueAt);
   if (!dueAt || item.fulfilmentDeadline?.showDeadline !== true) {
     return { label: "No fulfilment deadline", tone: "text-[#57636c]", overdue: false };
@@ -629,6 +637,8 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const [actionDrafts, setActionDrafts] = useState<Record<string, SellerActionDraft>>({});
   const [documentLoadingOrderId, setDocumentLoadingOrderId] = useState<string | null>(null);
   const [documentLoadingType, setDocumentLoadingType] = useState<"picking_slip" | "delivery_note" | "invoice" | "credit_note" | null>(null);
+  const [documentModal, setDocumentModal] = useState<{ title: string; description: string; url: string; openLabel: string } | null>(null);
+  const [documentSnackbar, setDocumentSnackbar] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [hoveredOrderId, setHoveredOrderId] = useState<string | null>(null);
   const [hoverCard, setHoverCard] = useState<HoverCardState>(null);
@@ -649,6 +659,12 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
     const timer = window.setInterval(() => setNowTick(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!documentSnackbar) return;
+    const timeout = window.setTimeout(() => setDocumentSnackbar(null), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [documentSnackbar]);
 
   useEffect(() => {
     if (!activeOrderId) {
@@ -840,6 +856,10 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
     setDocumentLoadingType(docType);
     setError(null);
     setNotice(null);
+    setDocumentSnackbar({
+      tone: "info",
+      message: `Preparing ${docType === "picking_slip" ? "packing slip" : docType === "delivery_note" ? "delivery note" : "invoice"} for ${item.orderNumber || item.orderId}...`,
+    });
     try {
       const response = await fetch("/api/client/v1/orders/seller/documents/create", {
         method: "POST",
@@ -856,12 +876,25 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       if (!response.ok || payload?.ok === false || !payload?.data?.url) {
         throw new Error(payload?.message || "Unable to generate that document right now.");
       }
-      window.open(String(payload.data.url), "_blank", "noopener,noreferrer");
-      setNotice(
-        `${docType === "picking_slip" ? "Packing slip" : docType === "delivery_note" ? "Delivery note" : "Invoice"} generated for ${item.orderNumber || item.orderId}.`,
-      );
+      setDocumentModal({
+        title: docType === "picking_slip" ? "Packing slip ready" : docType === "delivery_note" ? "Delivery note ready" : "Invoice ready",
+        description:
+          docType === "picking_slip"
+            ? "You can open this packing slip in a new tab or copy the link."
+            : docType === "delivery_note"
+              ? "You can open this delivery note in a new tab or copy the link."
+              : "You can open this invoice in a new tab or copy the link.",
+        url: String(payload.data.url),
+        openLabel: docType === "picking_slip" ? "Open packing slip" : docType === "delivery_note" ? "Open delivery note" : "Open invoice",
+      });
+      setDocumentSnackbar({
+        tone: "success",
+        message: `${docType === "picking_slip" ? "Packing slip" : docType === "delivery_note" ? "Delivery note" : "Invoice"} ready for ${item.orderNumber || item.orderId}.`,
+      });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to generate that document right now.");
+      const message = cause instanceof Error ? cause.message : "Unable to generate that document right now.";
+      setError(message);
+      setDocumentSnackbar({ tone: "error", message });
     } finally {
       setDocumentLoadingOrderId(null);
       setDocumentLoadingType(null);
@@ -873,6 +906,10 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
     setDocumentLoadingType("credit_note");
     setError(null);
     setNotice(null);
+    setDocumentSnackbar({
+      tone: "info",
+      message: `Preparing credit note for ${item.orderNumber || item.orderId}...`,
+    });
     try {
       const response = await fetch("/api/client/v1/orders/documents/seller-credit-note", {
         method: "POST",
@@ -886,10 +923,17 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       if (!response.ok || payload?.ok === false || !payload?.data?.url) {
         throw new Error(payload?.message || "Unable to generate that credit note right now.");
       }
-      window.open(String(payload.data.url), "_blank", "noopener,noreferrer");
-      setNotice(`Credit note opened for ${item.orderNumber || item.orderId}.`);
+      setDocumentModal({
+        title: "Credit note ready",
+        description: "You can open this credit note in a new tab or copy the link.",
+        url: String(payload.data.url),
+        openLabel: "Open credit note",
+      });
+      setDocumentSnackbar({ tone: "success", message: `Credit note ready for ${item.orderNumber || item.orderId}.` });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to generate that credit note right now.");
+      const message = cause instanceof Error ? cause.message : "Unable to generate that credit note right now.";
+      setError(message);
+      setDocumentSnackbar({ tone: "error", message });
     } finally {
       setDocumentLoadingOrderId(null);
       setDocumentLoadingType(null);
@@ -1025,6 +1069,14 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
     const deadlineState = getDeadlineState(activeItem, nowTick);
     return (
       <div className="space-y-5">
+        <DocumentLinkModal
+          open={Boolean(documentModal?.url)}
+          title={documentModal?.title || "Document ready"}
+          description={documentModal?.description || "You can open this document in a new tab or copy the link."}
+          url={documentModal?.url || ""}
+          onClose={() => setDocumentModal(null)}
+          openLabel={documentModal?.openLabel || "Open document"}
+        />
         {notice ? (
           <div className="flex items-start justify-between gap-3 rounded-[14px] border border-[#d1fae5] bg-[#ecfdf5] px-4 py-3 text-[12px] text-[#166534]">
             <p>{notice}</p>
@@ -1432,6 +1484,15 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
 
   return (
     <div className="space-y-5">
+      <DocumentSnackbar notice={documentSnackbar} onClose={() => setDocumentSnackbar(null)} />
+      <DocumentLinkModal
+        open={Boolean(documentModal?.url)}
+        title={documentModal?.title || "Document ready"}
+        description={documentModal?.description || "You can open this document in a new tab or copy the link."}
+        url={documentModal?.url || ""}
+        onClose={() => setDocumentModal(null)}
+        openLabel={documentModal?.openLabel || "Open document"}
+      />
       <section className="rounded-[24px] border border-black/6 bg-white shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
         <div className="border-b border-black/6 px-4 py-4">
           <div ref={periodMenuRef} className="relative inline-block">
@@ -1607,7 +1668,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                     </div>
                     <div className="col-span-2">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b94a3]">Delivery</p>
-                      <p className="mt-1 font-semibold text-[#202020]">{item.deliveryOption?.label || "Delivery pending"}</p>
+                      <p className="mt-1 font-semibold text-[#202020]">{getDeliveryMethodDisplayLabel(item.deliveryOption)}</p>
                     </div>
                   </div>
                 </button>
@@ -1680,7 +1741,9 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                         <StatusWithLatePopover status={item.fulfillmentStatus} deadlineState={deadlineState} />
                       </td>
                       <td className="px-2 py-3 text-[#3f3f46]">{pluralize(item.counts.quantity, "item")}</td>
-                      <td className="px-4 py-3 text-[#3f3f46]">{item.deliveryOption?.label || "Delivery pending"}</td>
+                      <td className="max-w-[220px] px-4 py-3 text-[#3f3f46]">
+                        <span className="block truncate">{getDeliveryMethodDisplayLabel(item.deliveryOption)}</span>
+                      </td>
                     </tr>
                   );
                 })}

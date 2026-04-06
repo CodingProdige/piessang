@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CustomerInvoicesWorkspace } from "@/components/account/invoices-workspace";
+import { PageBody } from "@/components/layout/page-body";
 
 export const metadata: Metadata = {
   title: "Invoices",
@@ -8,8 +9,8 @@ export const metadata: Metadata = {
 
 export default function AccountInvoicesPage() {
   return (
-    <main className="mx-auto max-w-[1320px] px-4 py-8">
+    <PageBody className="px-4 py-8">
       <CustomerInvoicesWorkspace />
-    </main>
+    </PageBody>
   );
 }

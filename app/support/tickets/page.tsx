@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { AccountSupportWorkspace } from "@/components/account/support-workspace";
+import { PageBody } from "@/components/layout/page-body";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 
 export const metadata: Metadata = {
@@ -20,7 +21,7 @@ export default async function SupportTicketsPage() {
   }
 
   return (
-    <main className="mx-auto max-w-[1180px] px-4 py-8 lg:px-6 lg:py-12">
+    <PageBody className="px-4 py-8 lg:px-6 lg:py-12">
       <section className="rounded-[18px] border border-black/5 bg-white p-6 shadow-[0_10px_30px_rgba(20,24,27,0.06)] lg:p-8">
         <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#907d4c]">Support</p>
         <h1 className="mt-3 text-[34px] font-semibold tracking-[-0.03em] text-[#202020]">My tickets</h1>
@@ -32,6 +33,6 @@ export default async function SupportTicketsPage() {
       <section className="mt-6">
         <AccountSupportWorkspace />
       </section>
-    </main>
+    </PageBody>
   );
 }

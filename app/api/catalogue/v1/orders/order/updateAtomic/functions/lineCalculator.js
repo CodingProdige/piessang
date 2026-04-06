@@ -1,5 +1,7 @@
+import { normalizeMoneyAmount } from "@/lib/money";
+
 const VAT_RATE = 0.15;
-const r2 = (v) => Number((Number(v) || 0).toFixed(2));
+const r2 = (v) => normalizeMoneyAmount(Number(v) || 0);
 
 /* Resolve the unit price using sale > standard selling price */
 export function resolveUnitPrice(variant) {

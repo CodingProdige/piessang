@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
@@ -10,6 +11,7 @@ import { normalizeSellerTeamRole } from "@/lib/seller/team";
 import { recordLiveCommerceEvent } from "@/lib/analytics/live-commerce";
 import { ensureOrderInvoice } from "@/lib/orders/invoices";
 import { getFrozenLineTotalIncl } from "@/lib/orders/frozen-money";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 
 /* ───────────────── HELPERS ───────────────── */
@@ -278,7 +280,7 @@ export async function POST(req) {
       currency: payment.currency,
       refund_state: "none",
       refunded_amount_incl: 0,
-      remaining_refundable_amount_incl: Number(paidAmount.toFixed(2)),
+      remaining_refundable_amount_incl: normalizeMoneyAmount(paidAmount),
       status: "charged",
       createdAt: now()
     };
@@ -478,7 +480,7 @@ export async function POST(req) {
           if (!productId || !attributedClick?.campaignId) continue;
 
           const quantity = getLineQty(item);
-          const revenueIncl = Number(getLineRevenueIncl(item).toFixed(2));
+          const revenueIncl = normalizeMoneyAmount(getLineRevenueIncl(item));
 
           await db.collection("campaign_conversions_v1").add({
             campaignId: attributedClick.campaignId,

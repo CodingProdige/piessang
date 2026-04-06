@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
@@ -10,6 +11,7 @@ import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings"
 import { consumeReservedStockLots, consumeStockLotsFifo } from "@/lib/warehouse/stock-lots";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { buildPlatformOrderDocument } from "@/lib/orders/platform-order";
 
 /* ───────────────── HELPERS ───────────────── */
@@ -25,7 +27,7 @@ const err = (status, title, message, extra = {}) =>
 
 const now = () => new Date().toISOString();
 const VAT_RATE = 0.15;
-const r2 = v => Number((Number(v) || 0).toFixed(2));
+const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 
 function buildShopperArea(address = null) {
   if (!address || typeof address !== "object") return null;

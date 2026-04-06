@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 /**
  * NAME: Update Brand (propagate slug changes to products)
  * PATH: /api/brands/update

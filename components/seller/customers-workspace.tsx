@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatMoneyExact } from "@/lib/money";
 
 type SellerCustomer = {
   customer_key?: string;
@@ -89,7 +90,7 @@ export function SellerCustomersWorkspace({ vendorName }: CustomersWorkspaceProps
                     </td>
                     <td className="border-b border-black/5 px-4 py-3 text-[#57636c]">{customer.orders || 0}</td>
                     <td className="border-b border-black/5 px-4 py-3 text-[#57636c]">
-                      R {(Number(customer.total_spent_incl) || 0).toFixed(2)}
+                      {formatMoneyExact(Number(customer.total_spent_incl) || 0)}
                     </td>
                     <td className="border-b border-black/5 px-4 py-3 text-[#57636c]">
                       {customer.last_order_at ? new Date(customer.last_order_at).toLocaleDateString() : "—"}

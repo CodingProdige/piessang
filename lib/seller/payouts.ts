@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 const SETTLEMENT_COLLECTION = "seller_settlements_v1";
 const PAYOUT_BATCH_COLLECTION = "seller_payout_batches_v1";
@@ -17,7 +18,7 @@ function toNum(value, fallback = 0) {
 }
 
 function r2(value) {
-  return Number((Number(value) || 0).toFixed(2));
+  return normalizeMoneyAmount(Number(value) || 0);
 }
 
 function groupBySeller(settlements) {

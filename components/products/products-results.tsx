@@ -11,6 +11,9 @@ import {
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
+import { StorefrontProductCard } from "@/components/products/storefront-product-card";
+import { trackProductEngagement, useProductImpressionTracker } from "@/lib/analytics/product-engagement-client";
 import { formatCurrency, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 
 type ProductVariant = {
@@ -53,7 +56,7 @@ type ProductVariant = {
   total_in_stock_items_available?: number;
 };
 
-type ProductItem = {
+export type ProductItem = {
   id?: string;
   data?: {
     docId?: string;
@@ -65,6 +68,7 @@ type ProductItem = {
       vendorName?: string | null;
       vendorDescription?: string | null;
       sellerCode?: string | null;
+      sellerSlug?: string | null;
       sales?: {
         total_units_sold?: number;
       };
@@ -856,7 +860,7 @@ function getProductHref(item: ProductItem) {
   return uniqueId ? `/products/${slug}?unique_id=${encodeURIComponent(String(uniqueId))}` : "/products";
 }
 
-function ProductCard({
+export function BrowseProductCard({
   item,
   view,
   openInNewTab,
@@ -901,6 +905,9 @@ function ProductCard({
   const [cartBusy, setCartBusy] = useState(false);
   const defaultVariant = pickDisplayVariant(item.data?.variants) ?? undefined;
   const productUniqueId = String(item.id ?? item.data?.docId ?? item.data?.product?.unique_id ?? "").trim();
+  const sellerCode = String(item.data?.product?.sellerCode ?? item.data?.seller?.sellerCode ?? "").trim();
+  const sellerSlug = String(item.data?.seller?.sellerSlug ?? item.data?.product?.sellerSlug ?? item.data?.vendor?.slug ?? "").trim();
+  const vendorName = String(item.data?.vendor?.title ?? item.data?.product?.vendorName ?? item.data?.shopify?.vendorName ?? "").trim();
   const defaultVariantId = String(defaultVariant?.variant_id ?? "").trim();
   const displayPriceValue = getVariantPriceExVat(defaultVariant) ?? undefined;
   const compareAtPriceValue = getCompareAtVariantPriceExVat(defaultVariant) ?? undefined;
@@ -952,6 +959,19 @@ function ProductCard({
 
   const handleImagePointerMove = (event: MouseEvent<HTMLElement>) => {
     if (displayImages.length <= 1) return;
+    trackProductEngagement({
+      action: "hover",
+      productId: productUniqueId,
+      productTitle: titleText,
+      sellerCode,
+      sellerSlug,
+      vendorName,
+      source: item.ad?.placement || "catalogue",
+      pageType: view === "list" ? "product_list" : "product_grid",
+      href,
+      userId: uid || null,
+      dedupeKey: `piessang_product_hover:${productUniqueId}:${view}`,
+    });
     const bounds = event.currentTarget.getBoundingClientRect();
     if (!bounds.width) return;
     const position = Math.max(0, Math.min(event.clientX - bounds.left, bounds.width));
@@ -1042,6 +1062,18 @@ function ProductCard({
     }
   };
   const openProduct = () => {
+    trackProductEngagement({
+      action: "click",
+      productId: productUniqueId,
+      productTitle: titleText,
+      sellerCode,
+      sellerSlug,
+      vendorName,
+      source: item.ad?.placement || "catalogue",
+      pageType: view === "list" ? "product_list" : "product_grid",
+      href,
+      userId: uid || null,
+    });
     if (isSponsored && item.ad?.campaignId && productUniqueId) {
       const payload = JSON.stringify({
         action: "click",
@@ -1156,9 +1188,26 @@ function ProductCard({
     }).catch(() => null);
   }, [isSponsored, item.ad?.campaignId, item.ad?.placement, productUniqueId, uid]);
 
+  const impressionRef = useProductImpressionTracker(
+    {
+      productId: productUniqueId,
+      productTitle: titleText,
+      sellerCode,
+      sellerSlug,
+      vendorName,
+      source: item.ad?.placement || "catalogue",
+      pageType: view === "list" ? "product_list" : "product_grid",
+      href,
+      userId: uid || null,
+      dedupeKey: `piessang_product_impression:${productUniqueId}:${view}:${item.ad?.placement || "catalogue"}`,
+    },
+    { enabled: Boolean(productUniqueId) },
+  );
+
   if (view === "list") {
     return (
       <article
+        ref={impressionRef as any}
         role="link"
         tabIndex={0}
         onClick={openCardIfAllowed}
@@ -1340,135 +1389,46 @@ function ProductCard({
   }
 
   return (
-    <article
-      role="link"
-      tabIndex={0}
-      onClick={openCardIfAllowed}
-      onKeyDown={onCardKeyDown}
-      data-clickable-container="true"
-      className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
-    >
-      <div className="block">
-        <div
-          className="relative aspect-[1/1] overflow-hidden bg-[#fafafa]"
-          onMouseMove={handleImagePointerMove}
-          onMouseLeave={handleImagePointerLeave}
-        >
-          {imageBadges}
-          <BlurhashImage
-            src={image?.imageUrl ?? ""}
-            blurHash={image?.blurHashUrl ?? ""}
-            alt={titleText}
-            sizes="(max-width: 640px) 50vw, 25vw"
+    <div ref={impressionRef as any}>
+      <StorefrontProductCard
+        title={titleText}
+        titleText={titleText}
+        selectedVariantLabel={selectedVariantLabel}
+        brandLabel={brandLabel}
+        brandHref={brandHref}
+        vendorLabel={vendorLabel}
+        vendorHref={vendorHref}
+        currentUrl={currentUrl}
+        linkTarget={linkTarget}
+        linkRel={linkRel}
+        stockLabel={stockState.label}
+        stockTone={stockState.tone as any}
+        variantCount={variantCount}
+        reviewAverage={reviewMeta?.average ?? null}
+        reviewCount={reviewMeta?.count ?? null}
+        deliveryLabel={deliveryPromise?.label ?? null}
+        deliveryCutoffText={deliveryPromise?.cutoffText ?? null}
+        soldCountLabel={soldCountLabel}
+        showHotSales={showHotSales}
+        imageBadges={imageBadges}
+        mediaNode={
+          <div
             className="h-full w-full"
-            imageClassName="object-cover"
-          />
-        </div>
-
-        <div className="space-y-1.5 px-4 py-4 sm:px-4 sm:py-4">
-          <h2
-            title={titleText}
-            style={titleClampStyle}
-            className="text-[14px] font-normal leading-[1.2] text-[#202020] sm:text-[15px]"
+            onMouseMove={handleImagePointerMove}
+            onMouseLeave={handleImagePointerLeave}
           >
-            {titleText}
-          </h2>
-
-          {selectedVariantLabel ? (
-            <p className="text-[11px] font-medium leading-none text-[#8b94a3]">
-              {selectedVariantLabel}
-            </p>
-          ) : null}
-
-          <div className="flex flex-wrap items-center gap-2 text-[11px] font-normal leading-none">
-            {renderBrandLink ? (
-              <Link
-                href={brandHref}
-                target={linkTarget}
-                rel={linkRel}
-                prefetch={false}
-                scroll={false}
-                onClick={(event) => event.stopPropagation()}
-                className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
-              >
-                {brandLabel}
-              </Link>
-            ) : (
-              <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">
-                {brandLabel}
-              </span>
-            )}
-            <span className="text-[#d6d6d6]">•</span>
-            {renderVendorLink ? (
-              <Link
-                href={vendorHref}
-                target={linkTarget}
-                rel={linkRel}
-                prefetch={false}
-                scroll={false}
-                onClick={(event) => event.stopPropagation()}
-                className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
-              >
-                {vendorLabel}
-              </Link>
-            ) : (
-              <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">
-                {vendorLabel}
-              </span>
-            )}
+            <BlurhashImage
+              src={image?.imageUrl ?? ""}
+              blurHash={image?.blurHashUrl ?? ""}
+              alt={titleText}
+              sizes="(max-width: 640px) 50vw, 25vw"
+              className="h-full w-full"
+              imageClassName="object-cover"
+            />
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-[0.08em]">
-            <span
-              className={
-                stockState.tone === "success"
-                  ? "text-[#1a8553]"
-                  : stockState.tone === "danger"
-                    ? "text-[#b91c1c]"
-                    : stockState.tone === "warning"
-                      ? "text-[#b45309]"
-                    : "text-[#57636c]"
-              }
-            >
-              {stockState.label}
-            </span>
-            <span className="text-[#d6d6d6]">•</span>
-            <span>{variantCount} variants</span>
-            {reviewMeta ? (
-              <>
-                <span className="text-[#d6d6d6]">•</span>
-                <span className="inline-flex items-center gap-0.5">
-                  {Array.from({ length: 5 }).map((_, index) => (
-                    <StarIcon key={`${titleText}-grid-star-${index}`} filled={index < reviewStars} />
-                  ))}
-                  <span className="ml-1 text-[#4a4545]">
-                    {reviewMeta.average.toFixed(1)} ({reviewMeta.count})
-                  </span>
-                </span>
-              </>
-            ) : (
-              <span className="text-[#8b94a3]">No reviews yet</span>
-            )}
-          </div>
-
-          {deliveryPromise ? (
-            <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
-              <span className="rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]">
-                {deliveryPromise.label}
-              </span>
-              <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span>
-            </div>
-          ) : null}
-          {soldCountLabel ? (
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
-              <span className={showHotSales ? "inline-flex items-center gap-1 text-[#f97316]" : "text-[#57636c]"}>
-                {showHotSales ? <FlameIcon /> : null}
-                {soldCountLabel}
-              </span>
-            </div>
-          ) : null}
-
-          {salePrice ? (
+        }
+        priceNode={
+          salePrice ? (
             <div className="flex flex-wrap items-end gap-2 pt-0.5">
               <StorefrontPrice valueExVat={displayPriceValue} tone={saleActive ? "sale" : "default"} size="md" />
               {saleActive && compareAtPrice ? (
@@ -1479,37 +1439,38 @@ function ProductCard({
             </div>
           ) : (
             <p className="pt-0.5 text-[12px] text-[#8b94a3]">Price unavailable</p>
-          )}
-
-          <div className="mt-3 flex items-stretch gap-2">
-            <button
-              type="button"
-              data-ignore-card-open="true"
-              onMouseDown={(event) => event.stopPropagation()}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={handleAddDefaultVariantToCart}
-              disabled={cartBusy}
-              className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
-              aria-label="Add default variant to cart"
-            >
-              <CartPlusIcon />
-              <span className="whitespace-nowrap sm:hidden">Add</span>
-              <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
-              {cartCount > 0 ? (
-                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
-                  {cartCount}
-                </span>
-              ) : null}
-              {cartBurstKey ? (
-                <span className="absolute -top-3 right-2 text-[10px] font-semibold text-[#cbb26b] animate-bevgo-pop">
-                  +1
-                </span>
-              ) : null}
-            </button>
-          </div>
-        </div>
-      </div>
-    </article>
+          )
+        }
+        actionNode={
+          <button
+            type="button"
+            data-ignore-card-open="true"
+            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={handleAddDefaultVariantToCart}
+            disabled={cartBusy}
+            className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
+            aria-label="Add default variant to cart"
+          >
+            <CartPlusIcon />
+            <span className="whitespace-nowrap sm:hidden">Add</span>
+            <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
+            {cartCount > 0 ? (
+              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
+                {cartCount}
+              </span>
+            ) : null}
+            {cartBurstKey ? (
+              <span className="absolute -top-3 right-2 animate-bevgo-pop text-[10px] font-semibold text-[#cbb26b]">
+                +1
+              </span>
+            ) : null}
+          </button>
+        }
+        onCardClick={openCardIfAllowed}
+        onCardKeyDown={onCardKeyDown}
+      />
+    </div>
   );
 }
 
@@ -1845,7 +1806,7 @@ export function ProductsResults({
           {currentView === "list" ? (
         <div className="space-y-4">
           {sortedItems.map((item) => (
-              <ProductCard
+          <BrowseProductCard
                 key={item.id ?? item.data?.docId}
                 item={item}
                 view="list"
@@ -1864,7 +1825,7 @@ export function ProductsResults({
         ) : (
         <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-4">
           {sortedItems.map((item) => (
-            <ProductCard
+            <BrowseProductCard
               key={item.id ?? item.data?.docId}
               item={item}
               view="grid"
@@ -1904,13 +1865,7 @@ export function ProductsResults({
         </button>
       ) : null}
 
-      {cartToastVisible ? (
-        <div className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 transition-all duration-200">
-          <div className="rounded-[8px] bg-[#202020] px-4 py-2 text-[12px] font-semibold text-white shadow-[0_10px_24px_rgba(20,24,27,0.2)]">
-            Added to cart
-          </div>
-        </div>
-      ) : null}
+      <AppSnackbar notice={cartToastVisible ? { tone: "success", message: "Added to cart" } : null} />
 
       <CartDrawer open={cartDrawerOpen} cart={cartPreview} onClose={() => setCartDrawerOpen(false)} />
     </div>

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { PageBody } from "@/components/layout/page-body";
 
 type SupportMessage = {
   messageId?: string;
@@ -127,7 +128,7 @@ export function SupportTicketDetailPage({ ticketId }: { ticketId: string }) {
   }
 
   return (
-    <main className="mx-auto max-w-[980px] px-4 py-8 lg:px-6 lg:py-12">
+    <PageBody className="py-8 lg:py-12">
       <div className="rounded-[18px] border border-black/5 bg-white p-6 shadow-[0_10px_30px_rgba(20,24,27,0.06)] lg:p-8">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
@@ -217,6 +218,6 @@ export function SupportTicketDetailPage({ ticketId }: { ticketId: string }) {
           </div>
         ) : null}
       </div>
-    </main>
+    </PageBody>
   );
 }

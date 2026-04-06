@@ -3,6 +3,8 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
+import { formatCurrencyExact } from "@/lib/money";
 
 type SettlementLine = {
   lineId?: string;
@@ -64,6 +66,7 @@ type SettlementRecord = {
     remaining_due_incl: number;
     status: string;
     hold_reason?: string;
+    eligible_at?: string;
     releaseReference: string;
     releasedAt: string;
     releasedBy: string;
@@ -129,12 +132,7 @@ function toNum(value: unknown, fallback = 0) {
 }
 
 function formatMoney(value: number) {
-  return new Intl.NumberFormat("en-ZA", {
-    style: "currency",
-    currency: "ZAR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number.isFinite(value) ? value : 0);
+  return formatCurrencyExact(value, "ZAR");
 }
 
 function formatAdjustmentHint(amount: number) {
@@ -170,16 +168,6 @@ function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "ne
             : "bg-[rgba(148,163,184,0.14)] text-[#475569]";
 
   return <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold ${className}`}>{children}</span>;
-}
-
-function KebabIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      <circle cx="12" cy="5" r="1.5" fill="currentColor" />
-      <circle cx="12" cy="12" r="1.5" fill="currentColor" />
-      <circle cx="12" cy="19" r="1.5" fill="currentColor" />
-    </svg>
-  );
 }
 
 function ChevronDownIcon({ className = "" }: { className?: string }) {
@@ -341,14 +329,11 @@ export function SellerSettlementsWorkspace({
   const { profile, refreshProfile } = useAuth();
   const canUseGlobalScope = isSystemAdmin && allowGlobalScope;
   const [scopeMode, setScopeMode] = useState<ScopeMode>(canUseGlobalScope ? "all" : "seller");
-  const [filter, setFilter] = useState<FilterKey>("all");
-  const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [settlements, setSettlements] = useState<SettlementRecord[]>([]);
-  const [message, setMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ tone?: "info" | "success" | "error"; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
-  const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [claimTarget, setClaimTarget] = useState<SettlementRecord | null>(null);
   const [claimTrackingNumber, setClaimTrackingNumber] = useState("");
   const [claimCourierName, setClaimCourierName] = useState("");
@@ -367,10 +352,9 @@ export function SellerSettlementsWorkspace({
 
   const sellerScopeLabel = scopeMode === "all" ? "All sellers" : vendorName || sellerSlug || "This seller";
 
-  function showSnackbar(nextMessage: string, tone: "success" | "error" = "success") {
-    void tone;
+  function showSnackbar(nextMessage: string, tone: "info" | "success" | "error" = "success") {
     if (snackbarTimeoutRef.current) window.clearTimeout(snackbarTimeoutRef.current);
-    setMessage(nextMessage);
+    setMessage({ tone, message: nextMessage });
     snackbarTimeoutRef.current = window.setTimeout(() => setMessage(null), 2200);
   }
 
@@ -382,7 +366,6 @@ export function SellerSettlementsWorkspace({
       const params = new URLSearchParams({
         uid: profile.uid,
         scope: scopeMode,
-        filter: "all",
       });
       if (scopeMode !== "all" || !canUseGlobalScope) {
         if (sellerCode) params.set("sellerCode", sellerCode);
@@ -425,63 +408,93 @@ export function SellerSettlementsWorkspace({
     };
   }, []);
 
-  const stats = useMemo(() => {
-    return settlements.reduce(
-      (acc, record) => {
-        const status = toStr(record?.status || "").toLowerCase();
-        const payoutStatus = toStr(record?.payout?.status || "").toLowerCase();
-        acc.total += 1;
-        acc.gross += toNum(record?.payout?.gross_incl || 0);
-        acc.net += toNum(record?.payout?.net_due_incl || 0);
-        acc.adjustments += toNum(record?.adjustments?.refunded_incl || 0);
-        acc.ready += status === "ready_for_payout" || payoutStatus === "ready_for_payout" ? 1 : 0;
-        acc.processing += status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus) ? 1 : 0;
-        acc.review += status === "pending_review" || toStr(record?.fulfilment?.reviewStatus || "").toLowerCase() === "pending_review" ? 1 : 0;
-        acc.paid += status === "paid" || payoutStatus === "paid" ? 1 : 0;
-        acc.late += record?.accountability?.late || record?.fulfilment?.late ? 1 : 0;
-        return acc;
-      },
-      { total: 0, gross: 0, net: 0, adjustments: 0, ready: 0, processing: 0, review: 0, paid: 0, late: 0 },
-    );
+  const settlementRows = useMemo(() => {
+    return settlements.map((record) => {
+      const status = toStr(record?.status || "").toLowerCase();
+      const payoutStatus = toStr(record?.payout?.status || "").toLowerCase();
+      let payoutState: "On hold" | "Ready" | "Processing" | "Paid" = "On hold";
+      if (status === "paid" || payoutStatus === "paid") payoutState = "Paid";
+      else if (status === "ready_for_payout" || payoutStatus === "ready_for_payout") payoutState = "Ready";
+      else if (status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus)) payoutState = "Processing";
+
+      const availableDate =
+        payoutState === "Paid"
+          ? toStr(record?.payout?.releasedAt || record?.updatedAt || "")
+          : toStr(record?.payout?.eligible_at || record?.fulfilment?.expectedFulfilmentBy || record?.updatedAt || "");
+
+      return {
+        ...record,
+        payoutState,
+        availableDate,
+      };
+    });
   }, [settlements]);
 
-  const holdSummary = useMemo(
-    () =>
-      settlements.reduce(
-        (acc, record) => {
-          const reason = toStr(record?.payout?.hold_reason || "").toLowerCase();
-          if (reason === "awaiting_delivery") acc.awaitingDelivery += 1;
-          if (reason === "return_window_open") acc.returnWindowOpen += 1;
-          if (reason === "missing_bank_details") acc.missingBankDetails += 1;
-          return acc;
-        },
-        { awaitingDelivery: 0, returnWindowOpen: 0, missingBankDetails: 0 },
-      ),
-    [settlements],
+  const availableSettlements = useMemo(
+    () => settlementRows.filter((record) => record.payoutState === "Ready"),
+    [settlementRows],
   );
 
-  const filteredSettlements = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return settlements.filter((record) => {
-      if (!matchesFilter(record, filter)) return false;
-      if (!needle) return true;
-      const searchStack = [
-        record.vendorName,
-        record.orderNumber,
-        record.merchantTransactionId,
-        record.sellerSlug,
-        record.sellerCode,
-        record.status,
-        record.payout?.status,
-        record.fulfilment?.claimStatus,
-        record.fulfilment?.reviewStatus,
-        ...(Array.isArray(record.lines) ? record.lines.map((line) => `${line.title ?? ""} ${line.sku ?? ""}`) : []),
-      ]
-        .join(" ")
-        .toLowerCase();
-      return searchStack.includes(needle);
-    });
-  }, [filter, query, settlements]);
+  const heldSettlements = useMemo(
+    () => settlementRows.filter((record) => record.payoutState === "On hold"),
+    [settlementRows],
+  );
+
+  const processingSettlements = useMemo(
+    () => settlementRows.filter((record) => record.payoutState === "Processing"),
+    [settlementRows],
+  );
+
+  const paidSettlements = useMemo(
+    () => settlementRows.filter((record) => record.payoutState === "Paid"),
+    [settlementRows],
+  );
+
+  const availableTotal = useMemo(
+    () => availableSettlements.reduce((sum, record) => sum + toNum(record?.payout?.remaining_due_incl || record?.payout?.net_due_incl || 0), 0),
+    [availableSettlements],
+  );
+
+  const heldTotal = useMemo(
+    () => heldSettlements.reduce((sum, record) => sum + toNum(record?.payout?.remaining_due_incl || record?.payout?.net_due_incl || 0), 0),
+    [heldSettlements],
+  );
+
+  const nextPayoutDate = useMemo(() => {
+    const dates = availableSettlements
+      .map((record) => record.availableDate)
+      .filter(Boolean)
+      .map((value) => new Date(value))
+      .filter((value) => !Number.isNaN(value.getTime()))
+      .sort((left, right) => left.getTime() - right.getTime());
+    return dates[0] ? formatTime(dates[0].toISOString()) : "Not scheduled";
+  }, [availableSettlements]);
+
+  const holdReleaseDate = useMemo(() => {
+    const dates = heldSettlements
+      .map((record) => record.availableDate)
+      .filter(Boolean)
+      .map((value) => new Date(value))
+      .filter((value) => !Number.isNaN(value.getTime()))
+      .sort((left, right) => left.getTime() - right.getTime());
+    return dates[0] ? formatTime(dates[0].toISOString()) : "Awaiting update";
+  }, [heldSettlements]);
+
+  const holdReasonSummary = useMemo(() => {
+    const counts = heldSettlements.reduce(
+      (acc, record) => {
+        const reason = toStr(record?.payout?.hold_reason || "").toLowerCase();
+        if (reason === "return_window_open") acc.push("Return window");
+        else if (reason === "awaiting_delivery") acc.push("Processing");
+        else if (reason === "missing_bank_details") acc.push("Payout setup");
+        else if (reason) acc.push(reason.replace(/_/g, " "));
+        return acc;
+      },
+      [] as string[],
+    );
+    if (!counts.length) return processingSettlements.length ? "Payout is being processed" : "No active hold";
+    return Array.from(new Set(counts)).join(" • ");
+  }, [heldSettlements, processingSettlements.length]);
 
   function toggleExpanded(settlementId: string) {
     setExpandedIds((current) =>
@@ -489,10 +502,6 @@ export function SellerSettlementsWorkspace({
         ? current.filter((item) => item !== settlementId)
         : [...current, settlementId],
     );
-  }
-
-  function openMenu(settlementId: string) {
-    setActiveMenu((current) => (current === settlementId ? null : settlementId));
   }
 
   function isClaimable(record: SettlementRecord) {
@@ -625,31 +634,15 @@ export function SellerSettlementsWorkspace({
     }
   }
 
-  const selectedSellerSummary = useMemo(() => {
-    if (scopeMode === "all" && canUseGlobalScope) return "All sellers";
-    return vendorName || sellerSlug || "This seller";
-  }, [canUseGlobalScope, scopeMode, sellerSlug, vendorName]);
-
-  const filterOptions: FilterKey[] = ["all", "review_queue", "ready_for_payout", "processing_payout", "paid", "late", "blocked", "cancelled", "held"];
-
   return (
     <section className="space-y-4">
       <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Settlement dashboard</p>
-            <h2 className="mt-1 text-[22px] font-semibold text-[#202020]">Track money flowing from customer to seller</h2>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Payouts</p>
+            <h2 className="mt-1 text-[22px] font-semibold text-[#202020]">See what money is available and when it will be paid out</h2>
             <p className="mt-1 max-w-[820px] text-[13px] leading-[1.6] text-[#57636c]">
-              Every order settlement shows the success fee, fulfilment fee, handling fee, storage accrual, and the
-              amount Piessang still holds before a payout is released.
-            </p>
-            <p className="mt-2 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
-              <ArrowPathIcon className="h-4 w-4 text-[#907d4c]" />
-              Customer pays Piessang
-              <span className="text-[#cbb26b]">•</span>
-              Piessang takes the success fee
-              <span className="text-[#cbb26b]">•</span>
-              Fulfilment and storage are deducted when applicable
+              Follow your available funds, what is still on hold, and your completed payout history without the internal settlement workflow clutter.
             </p>
           </div>
 
@@ -681,7 +674,7 @@ export function SellerSettlementsWorkspace({
               </div>
             ) : (
               <span className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-[#f6f6f6] px-3 text-[12px] font-semibold text-[#202020]">
-                {selectedSellerSummary}
+                {sellerScopeLabel}
               </span>
             )}
 
@@ -696,132 +689,93 @@ export function SellerSettlementsWorkspace({
         </div>
       </section>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-8">
-        {[
-          { label: "Gross sales", value: formatMoney(stats.gross), tone: "neutral" as const },
-          { label: "Net due", value: formatMoney(stats.net), tone: "success" as const },
-          { label: "Refund adjustments", value: formatMoney(stats.adjustments), tone: "warning" as const },
-          { label: "Pending review", value: String(stats.review), tone: "warning" as const },
-          { label: "Ready to pay", value: String(stats.ready), tone: "info" as const },
-          { label: "Processing payout", value: String(stats.processing), tone: "info" as const },
-          { label: "Paid", value: String(stats.paid), tone: "success" as const },
-          { label: "Late", value: String(stats.late), tone: "danger" as const },
-        ].map((item) => (
-          <div key={item.label} className="rounded-[8px] border border-black/5 bg-white px-4 py-3 shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{item.label}</p>
-            <p
-              className={`mt-2 text-[20px] font-semibold ${
-                item.tone === "success"
-                  ? "text-[#166534]"
-                  : item.tone === "warning"
-                    ? "text-[#8f7531]"
-                    : item.tone === "danger"
-                      ? "text-[#b91c1c]"
-                      : "text-[#202020]"
-              }`}
-            >
-              {item.value}
-            </p>
-            {item.label === "Net due" ? <p className="mt-1 text-[11px] text-[#57636c]">After fees and any issued credit notes.</p> : null}
-            {item.label === "Refund adjustments" ? <p className="mt-1 text-[11px] text-[#57636c]">Seller credit notes reducing payout.</p> : null}
-          </div>
-        ))}
-      </div>
-
-      {holdSummary.awaitingDelivery || holdSummary.returnWindowOpen || holdSummary.missingBankDetails ? (
-        <section className="rounded-[8px] border border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] px-4 py-3 text-[12px] leading-[1.7] text-[#6f5d2d]">
-          <p className="font-semibold text-[#202020]">What is still holding payouts back</p>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-            {holdSummary.awaitingDelivery ? <p>{holdSummary.awaitingDelivery} settlement{holdSummary.awaitingDelivery === 1 ? "" : "s"} still need delivery before payout timing can begin.</p> : null}
-            {holdSummary.returnWindowOpen ? <p>{holdSummary.returnWindowOpen} settlement{holdSummary.returnWindowOpen === 1 ? "" : "s"} are still inside the 7-day return window.</p> : null}
-            {holdSummary.missingBankDetails ? <p>{holdSummary.missingBankDetails} settlement{holdSummary.missingBankDetails === 1 ? "" : "s"} are waiting for payout details or Stripe setup.</p> : null}
-          </div>
-        </section>
-      ) : null}
-
-      <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-1 flex-wrap items-center gap-2">
-            {filterOptions.map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setFilter(item)}
-                className={`inline-flex h-9 items-center rounded-[8px] px-3 text-[12px] font-semibold transition-colors ${
-                  filter === item
-                    ? "bg-[#202020] text-white"
-                    : "border border-black/10 bg-white text-[#202020] hover:bg-[rgba(32,32,32,0.04)]"
-                }`}
-              >
-                {formatFilterLabel(item)}
-              </button>
-            ))}
-          </div>
-
-          <label className="flex items-center rounded-[8px] border border-black/10 bg-white px-3 py-2 shadow-[0_2px_8px_rgba(20,24,27,0.05)]">
-            <span className="text-[12px] text-[#8b94a3]">⌕</span>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search settlements"
-              className="ml-2 w-full min-w-[200px] bg-transparent text-[13px] outline-none placeholder:text-[#8b94a3]"
-            />
-          </label>
-        </div>
-      </section>
-
       {error ? (
         <div className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
           {error}
         </div>
       ) : null}
 
+      <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="grid gap-4 lg:grid-cols-[1.2fr_.9fr_1fr] lg:items-center">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Available to payout</p>
+            <p className="mt-2 text-[36px] font-semibold tracking-[-0.04em] text-[#202020]">{formatMoney(availableTotal)}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Next payout date</p>
+            <p className="mt-2 text-[15px] font-semibold text-[#202020]">{nextPayoutDate}</p>
+          </div>
+          <div className="rounded-[12px] border border-black/8 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Payout method</p>
+            <p className="mt-2 text-[14px] font-semibold text-[#202020]">Automatic via Stripe</p>
+            <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">
+              Eligible funds are paid out automatically on the next Stripe payout run.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-[8px] border border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] p-4 shadow-[0_8px_24px_rgba(20,24,27,0.04)]">
+        <div className="grid gap-4 md:grid-cols-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Total on hold</p>
+            <p className="mt-2 text-[26px] font-semibold text-[#202020]">{formatMoney(heldTotal)}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Reason</p>
+            <p className="mt-2 text-[13px] font-medium text-[#6f5d2d]">{holdReasonSummary}</p>
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Funds release from</p>
+            <p className="mt-2 text-[13px] font-medium text-[#202020]">{holdReleaseDate}</p>
+          </div>
+        </div>
+      </section>
+
       <section className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
-        <div className="border-b border-black/5 px-4 py-3 text-[12px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">
-          {scopeMode === "all" && canUseGlobalScope ? "All seller settlements" : `${selectedSellerSummary} settlements`}
+        <div className="border-b border-black/5 px-4 py-3">
+          <p className="text-[12px] font-semibold text-[#202020]">Settlement list</p>
+          <p className="mt-1 text-[12px] text-[#57636c]">Each order shows how much is due, whether it is on hold, ready, processing, or already paid, and when funds become available.</p>
         </div>
 
         {loading ? (
           <div className="px-4 py-10 text-[13px] text-[#57636c]">Loading settlements...</div>
-        ) : filteredSettlements.length ? (
+        ) : settlementRows.length ? (
           <div className="divide-y divide-black/5">
-            {filteredSettlements.map((record) => {
-              const status = toStr(record.status || "").toLowerCase();
-              const payoutStatus = toStr(record.payout?.status || "").toLowerCase();
-              const reviewPending = toStr(record.fulfilment?.claimStatus || "").toLowerCase() === "pending_review";
+            {settlementRows.map((record) => {
               const expanded = expandedIds.includes(record.settlementId);
-              const canReviewClaim = canReview(record);
-              const canReleasePayout = canRelease(record);
+              const payoutTone =
+                record.payoutState === "Paid"
+                  ? "success"
+                  : record.payoutState === "Ready"
+                    ? "info"
+                    : record.payoutState === "Processing"
+                      ? "warning"
+                      : "neutral";
 
               return (
                 <article key={record.settlementId} className="bg-white">
                   <button
                     type="button"
                     onClick={() => toggleExpanded(record.settlementId)}
-                    className="grid w-full gap-3 px-4 py-4 text-left transition-colors hover:bg-[rgba(32,32,32,0.02)] md:grid-cols-[1.4fr_.9fr_.8fr_.8fr_auto] md:items-center"
+                    className="grid w-full gap-3 px-4 py-4 text-left transition-colors hover:bg-[rgba(32,32,32,0.02)] md:grid-cols-[1.2fr_.9fr_.8fr_.9fr_auto] md:items-center"
                   >
                     <div className="min-w-0">
-                      <p className="truncate text-[14px] font-semibold text-[#202020]">{record.vendorName || "Seller"}</p>
-                      <p className="mt-0.5 truncate text-[12px] text-[#57636c]">
-                        Order {record.orderNumber || record.orderId || "—"} • {record.sellerCode || record.sellerSlug || "seller"}
-                      </p>
+                      <p className="truncate text-[14px] font-semibold text-[#202020]">Order {record.orderNumber || record.orderId || "—"}</p>
+                      <p className="mt-0.5 truncate text-[12px] text-[#57636c]">{record.vendorName || "Seller"}</p>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge tone={getStatusTone(status)}>{getStatusLabel(status)}</Badge>
-                      {reviewPending ? <Badge tone="warning">Claim pending</Badge> : null}
+                    <div className="text-[13px] font-semibold text-[#202020]">
+                      {formatMoney(record.payout?.remaining_due_incl || record.payout?.net_due_incl || 0)}
                     </div>
 
-                    <div className="text-[13px] text-[#202020]">
-                      <span className="block font-semibold">{formatMoney(record.payout?.net_due_incl || 0)}</span>
-                      <span className="block text-[11px] text-[#57636c]">{record.adjustments?.refunded_incl ? formatAdjustmentHint(record.adjustments.refunded_incl) : "Net due"}</span>
+                    <div>
+                      <Badge tone={payoutTone}>{record.payoutState}</Badge>
                     </div>
 
                     <div className="text-[13px] text-[#202020]">
-                      <span className="block font-semibold">{getFulfilmentLabel(record.fulfilment?.mode || "seller")}</span>
-                      <span className="block text-[11px] text-[#57636c]">
-                        {record.fulfilment?.expectedFulfilmentBy ? `By ${formatTime(record.fulfilment.expectedFulfilmentBy)}` : "No lead time"}
-                      </span>
+                      <span className="block font-semibold">{record.availableDate ? formatTime(record.availableDate) : "Awaiting update"}</span>
+                      <span className="block text-[11px] text-[#57636c]">Available date</span>
                     </div>
 
                     <div className="flex items-center justify-between gap-2 md:justify-end">
@@ -830,198 +784,78 @@ export function SellerSettlementsWorkspace({
                     </div>
                   </button>
 
-                  {expanded ? (
-                    <div className="border-t border-black/5 px-4 py-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge tone={status === "paid" ? "success" : payoutStatus === "ready_for_payout" ? "info" : "neutral"}>
-                              Payout {getPayoutLabel(payoutStatus || status)}
-                            </Badge>
-                            {record.accountability?.late ? <Badge tone="danger">Late claim</Badge> : null}
-                            {record.fulfilment?.mode ? <Badge tone="neutral">{getFulfilmentLabel(record.fulfilment.mode)}</Badge> : null}
-                          </div>
-
-                          <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                            {[
-                              ["Gross", record.payout?.gross_incl || 0],
-                              ["Success fee", record.payout?.success_fee_incl || 0],
-                              ["Fulfilment fee", record.payout?.fulfilment_fee_incl || 0],
-                              ["Handling fee", record.payout?.handling_fee_incl || 0],
-                              ["Storage accrued", record.payout?.storage_accrued_incl || 0],
-                              ["Refunded adjustments", record.adjustments?.refunded_incl || 0],
-                              ["Released", record.payout?.released_incl || 0],
-                              ["Remaining due", record.payout?.remaining_due_incl || 0],
-                              ["Lines", record.lineCount || 0],
-                            ].map(([label, value]) => (
-                              <div key={String(label)} className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-2">
-                                <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{label}</p>
-                                <p className="mt-1 text-[13px] font-semibold text-[#202020]">
-                                  {typeof value === "number" && label !== "Lines" ? formatMoney(value) : String(value)}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-
-                          {record.adjustments?.credit_note_count ? (
-                            <div className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Refund adjustments</p>
-                                <p className="text-[12px] text-[#57636c]">
-                                  {record.adjustments.credit_note_count} credit note{record.adjustments.credit_note_count === 1 ? "" : "s"}
-                                </p>
-                              </div>
-                              <div className="mt-2 space-y-2">
-                                {record.adjustments.credit_notes.map((note) => (
-                                  <div key={note.creditNoteId || note.creditNoteNumber} className="flex items-center justify-between rounded-[8px] border border-black/5 bg-white px-3 py-2 text-[12px]">
-                                    <div>
-                                      <p className="font-semibold text-[#202020]">{note.creditNoteNumber || "Credit note"}</p>
-                                      <p className="text-[11px] text-[#57636c]">{formatTime(note.issuedAt)}</p>
-                                    </div>
-                                    <div className="text-right">
-                                      <p className="font-semibold text-[#202020]">{formatMoney(note.amountIncl || 0)}</p>
-                                      <p className="text-[11px] text-[#57636c]">{toStr(note.status || "issued").replace(/_/g, " ")}</p>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ) : null}
-
-                          <div className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Line items</p>
-                              <p className="text-[12px] text-[#57636c]">
-                                {record.lines.length ? `${record.lines.length} line${record.lines.length === 1 ? "" : "s"}` : "No line items"}
-                              </p>
-                            </div>
-                            <div className="mt-2 space-y-2">
-                              {record.lines.length ? (
-                                record.lines.map((line) => (
-                                  <div key={line.lineId || `${record.settlementId}-${line.sku || line.title}`} className="rounded-[8px] border border-black/5 bg-white px-3 py-2 text-[12px]">
-                                    <div className="flex flex-wrap items-start justify-between gap-2">
-                                      <div className="min-w-0">
-                                        <p className="font-semibold text-[#202020]">{line.title || "Item"}</p>
-                                        <p className="text-[11px] text-[#57636c]">{line.sku || "No SKU"} • Qty {line.quantity || 0}</p>
-                                      </div>
-                                      <Badge tone={line.fulfilmentMode === "bevgo" ? "info" : "neutral"}>
-                                        {getFulfilmentLabel(line.fulfilmentMode || "seller")}
-                                      </Badge>
-                                    </div>
-                                    <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                                      {[
-                                        ["Line total", line.lineTotalIncl || 0],
-                                        ["Success fee", line.successFeeIncl || 0],
-                                        ["Fulfilment fee", line.fulfilmentFeeIncl || 0],
-                                        ["Net due", line.payoutDueIncl || 0],
-                                      ].map(([label, value]) => (
-                                        <div key={`${line.lineId}-${label}`} className="rounded-[8px] bg-[rgba(32,32,32,0.02)] px-2 py-1.5">
-                                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{label}</p>
-                                          <p className="text-[12px] font-semibold text-[#202020]">{formatMoney(Number(value || 0))}</p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[12px] text-[#57636c]">
-                                  No line items recorded on this settlement.
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                {expanded ? (
+                  <div className="border-t border-black/5 px-4 py-4">
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        ["Order amount", record.payout?.gross_incl || 0],
+                        ["Payout due", record.payout?.remaining_due_incl || record.payout?.net_due_incl || 0],
+                        ["Marketplace fee", record.payout?.success_fee_incl || 0],
+                        ["Available date", record.availableDate ? formatTime(record.availableDate) : "Awaiting update"],
+                      ].map(([label, value]) => (
+                        <div key={String(label)} className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{label}</p>
+                          <p className="mt-1 text-[13px] font-semibold text-[#202020]">
+                            {typeof value === "number" ? formatMoney(value) : String(value)}
+                          </p>
                         </div>
-
-                        <div className="flex shrink-0 flex-col gap-2 lg:w-[220px]">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openMenu(record.settlementId);
-                            }}
-                            className="inline-flex h-9 items-center justify-between rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
-                          >
-                            Actions
-                            <KebabIcon className="ml-2 h-4 w-4" />
-                          </button>
-                          {activeMenu === record.settlementId ? (
-                            <div className="rounded-[8px] border border-black/10 bg-white p-1 shadow-[0_14px_32px_rgba(20,24,27,0.12)]">
-                              {isClaimable(record) ? (
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setClaimTarget(record);
-                                    setClaimTrackingNumber(record.fulfilment?.trackingNumber || "");
-                                    setClaimCourierName(record.fulfilment?.courierName || "");
-                                    setClaimProofUrl(record.fulfilment?.proofUrl || "");
-                                    setClaimNotes("");
-                                    setActiveMenu(null);
-                                  }}
-                                  className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5]"
-                                >
-                                  Mark as fulfilled
-                                </button>
-                              ) : null}
-                              {canReviewClaim ? (
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setReviewTarget(record);
-                                    setReviewOutcome("approved");
-                                    setReviewFeedback(record.fulfilment?.reviewFeedback || "");
-                                    setActiveMenu(null);
-                                  }}
-                                  className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5]"
-                                >
-                                  Review claim
-                                </button>
-                              ) : null}
-                              {canReleasePayout ? (
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setReleaseTarget(record);
-                                    setReleaseAmount(String(record.payout?.remaining_due_incl || record.payout?.net_due_incl || 0));
-                                    setReleaseReference("");
-                                    setActiveMenu(null);
-                                  }}
-                                  className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5]"
-                                >
-                                  Release payout
-                                </button>
-                              ) : null}
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  toggleExpanded(record.settlementId);
-                                  setActiveMenu(null);
-                                }}
-                                className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5]"
-                              >
-                                {expanded ? "Hide details" : "Show details"}
-                              </button>
-                            </div>
-                          ) : null}
-                          <div className="text-[11px] text-[#7d7d7d]">
-                            <p>Order {record.orderNumber || record.orderId || "—"}</p>
-                            <p>{record.fulfilment?.expectedFulfilmentBy ? `Expected by ${formatTime(record.fulfilment.expectedFulfilmentBy)}` : "No lead time set"}</p>
-                          </div>
-                        </div>
-                      </div>
+                      ))}
                     </div>
-                  ) : null}
+                    <div className="mt-4 rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3 text-[12px] text-[#57636c]">
+                      <p className="font-semibold text-[#202020]">Why this status?</p>
+                      <p className="mt-1">
+                        {record.payoutState === "On hold"
+                          ? holdReasonSummary || "Funds are still in the hold period before payout."
+                          : record.payoutState === "Processing"
+                            ? "This payout is currently being processed."
+                            : record.payoutState === "Paid"
+                              ? `Paid out ${formatTime(record.payout?.releasedAt || record.updatedAt || "") || "recently"}.`
+                              : "These funds are eligible and will be included in the next automatic Stripe payout run."}
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
                 </article>
               );
             })}
           </div>
         ) : (
           <div className="px-4 py-10 text-[13px] text-[#57636c]">
-            No settlements match this view.
+            No settlements recorded yet.
           </div>
+        )}
+      </section>
+
+      <section className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+        <div className="border-b border-black/5 px-4 py-3">
+          <p className="text-[12px] font-semibold text-[#202020]">Payout history</p>
+          <p className="mt-1 text-[12px] text-[#57636c]">Completed payouts are listed here once funds have been released.</p>
+        </div>
+        {paidSettlements.length ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full border-collapse">
+              <thead>
+                <tr className="border-b border-black/5 bg-[rgba(32,32,32,0.02)] text-left text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">
+                  <th className="px-4 py-3">Order</th>
+                  <th className="px-4 py-3">Paid date</th>
+                  <th className="px-4 py-3">Reference</th>
+                  <th className="px-4 py-3">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paidSettlements.map((record) => (
+                  <tr key={`paid-${record.settlementId}`} className="border-b border-black/5 last:border-b-0">
+                    <td className="px-4 py-3 text-[13px] font-semibold text-[#202020]">Order {record.orderNumber || record.orderId || "—"}</td>
+                    <td className="px-4 py-3 text-[13px] text-[#57636c]">{formatTime(record.payout?.releasedAt || record.updatedAt || "") || "Not available"}</td>
+                    <td className="px-4 py-3 text-[13px] text-[#57636c]">{record.payout?.releaseReference || "—"}</td>
+                    <td className="px-4 py-3 text-[13px] font-semibold text-[#202020]">{formatMoney(record.payout?.released_incl || record.payout?.net_due_incl || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="px-4 py-8 text-[13px] text-[#57636c]">No completed payouts yet.</div>
         )}
       </section>
 
@@ -1312,16 +1146,7 @@ export function SellerSettlementsWorkspace({
         </div>
       ) : null}
 
-      {message ? (
-        <div className="pointer-events-none fixed bottom-4 left-1/2 z-[90] -translate-x-1/2 px-4">
-          <div className="inline-flex items-center gap-2 rounded-[8px] border border-black/5 bg-white px-4 py-3 text-[13px] font-medium text-[#202020] shadow-[0_16px_40px_rgba(20,24,27,0.16)]">
-            <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[rgba(57,169,107,0.14)] text-[#166534]">
-              ✓
-            </span>
-            {message}
-          </div>
-        </div>
-      ) : null}
+      <AppSnackbar notice={message} />
     </section>
   );
 }

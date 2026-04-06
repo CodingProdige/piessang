@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { CustomerOrderDetailWorkspace } from "@/components/account/order-detail-workspace";
+import { PageBody } from "@/components/layout/page-body";
 
 export default function AccountOrderDetailPage({ params }: { params: Promise<{ orderId: string }> }) {
   const { uid } = useAuth();
@@ -19,8 +20,8 @@ export default function AccountOrderDetailPage({ params }: { params: Promise<{ o
   }, [params]);
 
   return (
-    <main className="mx-auto max-w-[1320px] px-4 py-8">
+    <PageBody className="px-4 py-8">
       <CustomerOrderDetailWorkspace uid={uid || ""} orderId={resolvedOrderId} />
-    </main>
+    </PageBody>
   );
 }

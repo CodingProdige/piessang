@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { stripeRequest } from "@/lib/payments/stripe";
 import { isSystemAdminUser } from "@/lib/seller/settlement-access";
 import { syncOrderSellerSettlements } from "@/lib/seller/settlements";
@@ -17,7 +19,7 @@ function toStr(value, fallback = "") {
 }
 
 function r2(value) {
-  return Number((Number(value) || 0).toFixed(2));
+  return normalizeMoneyAmount(Number(value) || 0);
 }
 
 function normalizeAmount(value) {

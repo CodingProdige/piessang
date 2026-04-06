@@ -1,7 +1,9 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 const ok = (data = {}, status = 200) => NextResponse.json({ ok: true, data }, { status });
 const err = (status = 500, title = "Server Error", message = "Unknown error") =>
@@ -9,7 +11,7 @@ const err = (status = 500, title = "Server Error", message = "Unknown error") =>
 
 const norm = (value) => String(value ?? "").trim();
 const normLower = (value) => norm(value).toLowerCase();
-const money = (value) => Number(Number(value || 0).toFixed(2));
+const money = (value) => normalizeMoneyAmount(Number(value) || 0);
 
 function getCustomerKey(order) {
   return (

@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { SellerCatalogueEditor } from "@/app/seller/catalogue/new/page";
+import { formatMoneyExact } from "@/lib/money";
 
 type ReviewProduct = {
   id: string;
@@ -78,7 +79,7 @@ function variantInventoryTotal(variant: { inventory?: Array<{ in_stock_qty?: num
 function formatCurrency(value: unknown) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) return "Not set";
-  return `R ${amount.toFixed(2)}`;
+  return formatMoneyExact(amount, { space: true });
 }
 
 function summarizeVariantDetails(data: ReviewProduct["data"] | null | undefined) {

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import type { Metadata } from "next";
+import { PageBody } from "@/components/layout/page-body";
 import { FilterSnackbar } from "@/components/products/filter-snackbar";
 import { ProductsToolbar } from "@/components/products/products-toolbar";
 import { MobileProductFilters } from "@/components/products/mobile-filters";
@@ -9,6 +10,7 @@ import { ProductsResults } from "@/components/products/products-results";
 import { ResultsCount } from "@/components/products/results-count";
 import { SingleProductView } from "@/components/products/single-product-view";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
 export const dynamic = "force-dynamic";
 
@@ -254,7 +256,10 @@ export async function generateMetadata({
 
   const uniqueId = currentParam(resolvedSearchParams, "unique_id") || currentParam(resolvedSearchParams, "id");
   if (!uniqueId) {
-    return {};
+    return buildSeoMetadata("products", {
+      title: "Browse Products | Piessang",
+      description: "Browse the full Piessang catalogue and discover products from trusted marketplace sellers.",
+    });
   }
 
   try {
@@ -1005,6 +1010,7 @@ export async function ProductsPage({
   const currentMinRating = currentNumberParam(resolvedSearchParams, "minRating");
   const currentView = currentParam(resolvedSearchParams, "view") === "list" ? "list" : "grid";
   const currentSort = currentParam(resolvedSearchParams, "sort") ?? "relevance";
+  const currentVariantId = currentParam(resolvedSearchParams, "variant_id");
   const imageSearchActive = currentParam(resolvedSearchParams, "imageSearch") === "true";
   const imageSearchLabel = currentParam(resolvedSearchParams, "imageLabel");
   const currentBrandCount = currentBrand ? brandCounts[currentBrand] ?? 0 : 0;
@@ -1049,7 +1055,7 @@ export async function ProductsPage({
       "This seller is no longer open for business on our marketplace.";
 
     return (
-      <main className="mx-auto max-w-[1180px] px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
+      <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
         <section className="rounded-[8px] bg-white p-6 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller unavailable</p>
           <h1 className="mt-2 text-[28px] font-semibold leading-tight text-[#202020]">
@@ -1066,15 +1072,15 @@ export async function ProductsPage({
             </Link>
           </div>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (singleItem) {
     return (
-      <main className="mx-auto max-w-[1180px] px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
-        <SingleProductView item={singleItem} backHref={singleProductBackHref} />
-      </main>
+      <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
+        <SingleProductView item={singleItem} backHref={singleProductBackHref} selectedVariantId={currentVariantId} />
+      </PageBody>
     );
   }
 
@@ -1094,7 +1100,7 @@ export async function ProductsPage({
   const openInNewTab = currentParam(resolvedSearchParams, "openInNewTab") !== "false";
 
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
+    <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
       <section className="rounded-[8px] bg-white px-5 py-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Browse products</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -1346,7 +1352,7 @@ export async function ProductsPage({
         </section>
       </section>
       <FilterSnackbar />
-    </main>
+    </PageBody>
   );
 }
 

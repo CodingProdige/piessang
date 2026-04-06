@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { reconcilePeachRedirectPayments } from "@/lib/orders/payment-success-reconciliation";

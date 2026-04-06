@@ -6,8 +6,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { clientStorage } from "@/lib/firebase";
 import { CustomerSellerInvoiceDrawer } from "@/components/account/customer-seller-invoice-drawer";
+import { DocumentSnackbar } from "@/components/ui/document-snackbar";
 import { collectCustomerSellerInvoiceGroups, getCustomerBusinessDetails } from "@/lib/orders/customer-seller-invoices";
 import { getFrozenLineTotalIncl, getFrozenOrderPaidIncl, getFrozenOrderPayableIncl, getFrozenOrderProductsIncl } from "@/lib/orders/frozen-money";
+import { formatMoneyExact } from "@/lib/money";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 
 type OrderData = {
@@ -181,7 +183,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatMoney(value: number) {
-  return `R${Number(value || 0).toFixed(2)}`;
+  return formatMoneyExact(value);
 }
 
 function formatDateTime(value?: string) {
@@ -263,7 +265,10 @@ function getSellerGroups(order: OrderData | null) {
     const vendorName = toStr(metaMatch?.vendorName || snapshotVendorName || "Seller");
     const key = toStr(metaMatch?.sellerCode || sellerCode || metaMatch?.sellerSlug || sellerSlug || vendorName);
     const quantity = Math.max(1, Number(item?.quantity || 0));
-    const progressPercent = Math.max(0, Math.min(100, Number(item?.fulfillment_tracking?.progressPercent || 0)));
+    const itemStatus = toStr(item?.fulfillment_tracking?.status).toLowerCase();
+    const progressPercent = itemStatus === "cancelled"
+      ? 100
+      : Math.max(0, Math.min(100, Number(item?.fulfillment_tracking?.progressPercent || 0)));
     const current = groups.get(key) || {
       key,
       vendorName,
@@ -286,6 +291,19 @@ function getSellerGroups(order: OrderData | null) {
   return Array.from(groups.values()).map((group) => ({
     ...group,
     progress: group.totalQty > 0 ? Math.round(group.progressSum / group.totalQty) : 0,
+    latestStatus: (() => {
+      const statuses = group.items.map((item) => toStr(item?.fulfillment_tracking?.status).toLowerCase()).filter(Boolean);
+      if (statuses.length && statuses.every((status) => status === "cancelled")) return "cancelled";
+      const activeStatuses = statuses.filter((status) => status !== "cancelled");
+      if (activeStatuses.length && activeStatuses.every((status) => status === "delivered")) {
+        return statuses.includes("cancelled") ? "delivered" : "delivered";
+      }
+      if (activeStatuses.includes("dispatched")) return "dispatched";
+      if (activeStatuses.includes("processing")) return "processing";
+      if (activeStatuses.includes("confirmed")) return "confirmed";
+      if (statuses.includes("cancelled")) return "cancelled";
+      return group.latestStatus;
+    })(),
   }));
 }
 
@@ -295,7 +313,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [invoiceDrawerOpen, setInvoiceDrawerOpen] = useState(false);
-  const [invoiceSnackbar, setInvoiceSnackbar] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const [invoiceSnackbar, setInvoiceSnackbar] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
   const [customerBusiness, setCustomerBusiness] = useState({
     companyName: "",
     vatNumber: "",
@@ -331,6 +349,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
         const response = await fetch("/api/client/v1/orders/get", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          cache: "no-store",
           body: JSON.stringify({ userId: uid, orderId }),
         });
         const payload = await response.json().catch(() => ({}));
@@ -431,6 +450,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
   }
 
   async function handleViewCreditNote(creditNoteId: string) {
+    setInvoiceSnackbar({ tone: "info", message: "Preparing credit note..." });
     try {
       const response = await fetch("/api/client/v1/orders/documents/seller-credit-note", {
         method: "POST",
@@ -441,6 +461,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
       if (!response.ok || payload?.ok === false || !payload?.data?.url) {
         throw new Error(payload?.message || "Unable to open that credit note right now.");
       }
+      setInvoiceSnackbar({ tone: "success", message: "Credit note ready." });
       window.open(String(payload.data.url), "_blank", "noopener,noreferrer");
     } catch (cause) {
       setInvoiceSnackbar({
@@ -606,7 +627,6 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
     }
   }
 
-  const progress = Math.max(0, Math.min(100, Number(order?.delivery_progress?.percentageProgress || order?.delivery_progress?.percentageDelivered || 0)));
   const productsSubtotal = getFrozenOrderProductsIncl(order || {});
   const deliveryFee = Number(order?.totals?.seller_delivery_fee_incl || 0) + Number(order?.totals?.delivery_fee_incl || 0);
   const totalIncl = getFrozenOrderPayableIncl(order || {});
@@ -631,6 +651,22 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
     resolvedAddress?.country,
   ].filter(Boolean);
   const sellerGroups = useMemo(() => getSellerGroups(order), [order]);
+  const progress = Math.max(0, Math.min(100, Number(order?.delivery_progress?.percentageProgress || order?.delivery_progress?.percentageDelivered || 0)));
+  const cancelledSellerGroups = sellerGroups.filter((group) => group.latestStatus === "cancelled").length;
+  const progressLabel =
+    progress >= 100
+      ? cancelledSellerGroups
+        ? `Complete, with ${cancelledSellerGroups} cancelled seller ${cancelledSellerGroups === 1 ? "delivery" : "deliveries"}`
+        : "Delivered"
+      : `${progress}% complete across all seller fulfilments`;
+  const progressBarTone =
+    progress >= 100
+      ? cancelledSellerGroups
+        ? "bg-[#f59e0b]"
+        : "bg-[#1f8f55]"
+      : progress >= 50
+        ? "bg-[#57a6ff]"
+        : "bg-[#202020]";
   const invoiceSellerGroups = useMemo(() => collectCustomerSellerInvoiceGroups(order || {}), [order]);
   const creditNotesBySeller = useMemo<SellerCreditNoteEntry[]>(() => {
     const notesMap =
@@ -689,27 +725,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
 
       {!loading && !error && order ? (
         <>
-          {invoiceSnackbar ? (
-            <div className="fixed inset-x-0 top-24 z-[170] flex justify-center px-4">
-              <div
-                className={`flex w-full max-w-[560px] items-start justify-between gap-4 rounded-[18px] border px-4 py-3 shadow-[0_16px_40px_rgba(20,24,27,0.18)] ${
-                  invoiceSnackbar.tone === "success"
-                    ? "border-[#b7f0cf] bg-[#ecfdf5] text-[#166534]"
-                    : "border-[#f3b8bf] bg-[#fff7f8] text-[#b91c1c]"
-                }`}
-              >
-                <p className="text-[14px] font-medium">{invoiceSnackbar.message}</p>
-                <button
-                  type="button"
-                  onClick={() => setInvoiceSnackbar(null)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-current/15 text-[16px]"
-                  aria-label="Close invoice notice"
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          ) : null}
+          <DocumentSnackbar notice={invoiceSnackbar} onClose={() => setInvoiceSnackbar(null)} />
 
           <CustomerSellerInvoiceDrawer
             open={invoiceDrawerOpen}
@@ -972,12 +988,12 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <div>
                     <p className="text-[18px] font-semibold text-[#202020]">Order progress</p>
-                    <p className="mt-1 text-[13px] text-[#57636c]">{progress >= 100 ? "Delivered" : `${progress}% complete across all seller fulfilments`}</p>
+                    <p className="mt-1 text-[13px] text-[#57636c]">{progressLabel}</p>
                   </div>
                   <p className="text-[16px] font-semibold text-[#202020]">{progress}%</p>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-[#eceff3]">
-                  <div className={`h-full rounded-full ${progress >= 100 ? "bg-[#1f8f55]" : progress >= 50 ? "bg-[#57a6ff]" : "bg-[#202020]"}`} style={{ width: `${progress}%` }} />
+                  <div className={`h-full rounded-full ${progressBarTone}`} style={{ width: `${progress}%` }} />
                 </div>
               </div>
 
@@ -1019,7 +1035,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
                         </div>
                       </div>
                       <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#eceff3]">
-                        <div className={`h-full rounded-full ${group.progress >= 100 ? "bg-[#1f8f55]" : group.progress >= 50 ? "bg-[#57a6ff]" : "bg-[#202020]"}`} style={{ width: `${group.progress}%` }} />
+                        <div className={`h-full rounded-full ${group.latestStatus === "cancelled" ? "bg-[#ef4444]" : group.progress >= 100 ? "bg-[#1f8f55]" : group.progress >= 50 ? "bg-[#57a6ff]" : "bg-[#202020]"}`} style={{ width: `${group.progress}%` }} />
                       </div>
                       <div className="mt-4 space-y-3">
                         {group.items.map((item, index) => {

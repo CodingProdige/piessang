@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 
 const SETTLEMENT_COLLECTION = "seller_settlements_v1";
@@ -8,7 +9,7 @@ const STRIKE_THRESHOLD = 3;
 const PAYOUT_HOLD_DAYS = Math.max(0, Math.trunc(Number(process.env.SELLER_PAYOUT_HOLD_DAYS || 7)));
 
 const now = () => new Date().toISOString();
-const r2 = (value) => Number((Number(value) || 0).toFixed(2));
+const r2 = (value) => normalizeMoneyAmount(Number(value) || 0);
 
 function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();

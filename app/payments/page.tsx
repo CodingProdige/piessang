@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import { LegalPage } from "@/components/layout/legal-page";
+import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
-export const metadata: Metadata = {
-  title: "Payments Policy | Piessang",
-  description: "Learn how checkout, payment processing, and refunds work on Piessang.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSeoMetadata("payments", {
+    title: "Payments Policy | Piessang",
+    description: "Learn how checkout, payment processing, and refunds work on Piessang.",
+  });
+}
 
 export default function PaymentsPage() {
   return (

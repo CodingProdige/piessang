@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 /**
  * NAME: Soft Delete Brand (auto-ID; supports id or slug)
  * PATH: /api/brands/delete

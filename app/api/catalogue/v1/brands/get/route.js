@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // app/api/brands/get/route.js
 /**
  * NAME: Get Brand(s)

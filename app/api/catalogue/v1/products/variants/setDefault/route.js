@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 /**
  * NAME: Set Default Variant
  * PATH: /api/products_v2/variants/set-default

@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // app/api/catalogue/v1/products/utils/updateInventoryStock/route.js
 import { NextResponse } from "next/server";
 

@@ -1,10 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import { PageBody } from "@/components/layout/page-body";
 import CreateProductPage from "@/app/seller/catalogue/new/page";
 import { SellerCustomersWorkspace } from "@/components/seller/customers-workspace";
+import { SellerHomeWorkspace } from "@/components/seller/home-workspace";
 import { SellerCampaignReviewsWorkspace } from "@/components/seller/campaign-reviews-workspace";
 import { SellerCampaignsWorkspace } from "@/components/seller/campaigns-workspace";
 import { SellerBillingWorkspace } from "@/components/seller/billing-workspace";
@@ -23,6 +26,10 @@ import { SellerProductReviewsWorkspace } from "@/components/seller/product-revie
 import { SellerProductsWorkspace } from "@/components/seller/products-workspace";
 import { SellerReturnsWorkspace } from "@/components/seller/returns-workspace";
 import { SellerSettlementsWorkspace } from "@/components/seller/settlements-workspace";
+import { SellerAnalyticsWorkspace } from "@/components/seller/analytics-workspace";
+import { SellerAdminAnalyticsWorkspace } from "@/components/seller/admin-analytics-workspace";
+import { SellerAdminLandingBuilderWorkspace } from "@/components/seller/admin-landing-builder-workspace";
+import { SellerAdminLandingSeoWorkspace } from "@/components/seller/admin-landing-seo-workspace";
 import { SellerWarehouseWorkspace } from "@/components/seller/warehouse-workspace";
 import { SellerPageIntro } from "@/components/seller/page-intro";
 import { SellerSettingsWorkspace } from "@/components/seller/settings-workspace";
@@ -50,6 +57,8 @@ type SidebarSection =
   | "brand-requests"
   | "admin-analytics"
   | "admin-live-view"
+  | "admin-landing-builder"
+  | "admin-landing-seo"
   | "admin-newsletters"
   | "admin-orders"
   | "admin-platform-delivery"
@@ -152,6 +161,35 @@ function normalizeSellerRole(role?: string | null): SellerAccessRole {
   return "";
 }
 
+function getAdminActionableOrderCount(payload: any) {
+  const items = Array.isArray(payload?.data?.data) ? payload.data.data : [];
+  if (!items.length) {
+    return Number(payload?.data?.totals?.totalNotCompleted || 0);
+  }
+
+  return items.filter((item: any) => {
+    const orderStatus = String(item?.lifecycle?.orderStatus || item?.order?.status?.order || "").trim().toLowerCase();
+    const paymentStatus = String(item?.lifecycle?.paymentStatus || item?.payment?.status || item?.order?.status?.payment || "").trim().toLowerCase();
+    const fulfillmentStatus = String(item?.lifecycle?.fulfillmentStatus || item?.order?.status?.fulfillment || "").trim().toLowerCase();
+    const deliveryPercent = Number(item?.delivery_progress?.percentageDelivered || 0);
+
+    const refunded =
+      paymentStatus === "refunded" ||
+      paymentStatus === "partial_refund";
+    const terminalOrder =
+      orderStatus === "completed" ||
+      orderStatus === "delivered" ||
+      orderStatus === "cancelled";
+    const terminalFulfillment =
+      fulfillmentStatus === "completed" ||
+      fulfillmentStatus === "delivered" ||
+      fulfillmentStatus === "cancelled";
+    const fullyDelivered = Number.isFinite(deliveryPercent) && deliveryPercent >= 100;
+
+    return !refunded && !terminalOrder && !terminalFulfillment && !fullyDelivered;
+  }).length;
+}
+
 const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   home: ["admin", "manager", "catalogue", "orders", "analytics"],
   products: ["admin", "manager", "catalogue"],
@@ -166,6 +204,8 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   "brand-requests": ["admin"],
   "admin-analytics": ["admin"],
   "admin-live-view": ["admin"],
+  "admin-landing-builder": ["admin"],
+  "admin-landing-seo": ["admin"],
   "admin-newsletters": ["admin"],
   "admin-orders": ["admin"],
   "admin-platform-delivery": ["admin"],
@@ -317,6 +357,38 @@ function SidebarIcon({ icon }: { icon: string }) {
           <path d="M3 19h18" />
         </svg>
       );
+    case "globe":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18" />
+          <path d="M12 3c3 3.5 4.5 6.5 4.5 9S15 17.5 12 21c-3-3.5-4.5-6.5-4.5-9S9 6.5 12 3Z" />
+        </svg>
+      );
+    case "pulse":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 12h4l2-4 4 8 2-4h6" />
+        </svg>
+      );
+    case "wand":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m4 20 10-10" />
+          <path d="m14 4 1.5 1.5" />
+          <path d="M16.5 2.5 18 4" />
+          <path d="m19 7 1.5 1.5" />
+          <path d="M17.5 5.5 19 7" />
+          <path d="M3 21l2.5-2.5" />
+        </svg>
+      );
+    case "search":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="11" cy="11" r="6" />
+          <path d="m20 20-4.2-4.2" />
+        </svg>
+      );
     case "notifications":
       return (
         <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
@@ -373,6 +445,7 @@ function SidebarButton({
   locked = false,
   nested = false,
   badgeCount,
+  collapsed = false,
 }: {
   active: boolean;
   label: string;
@@ -381,23 +454,64 @@ function SidebarButton({
   locked?: boolean;
   nested?: boolean;
   badgeCount?: number | null;
+  collapsed?: boolean;
 }) {
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
+
+  function syncTooltipPosition() {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setTooltipPosition({
+      top: rect.top + rect.height / 2,
+      left: rect.right + 10,
+    });
+  }
+
+  useEffect(() => {
+    if (!tooltipOpen) return undefined;
+    const update = () => syncTooltipPosition();
+    update();
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [tooltipOpen]);
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={locked}
-      aria-disabled={locked}
-      className={`group flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left text-[12px] font-medium transition-colors lg:px-3 ${
-        nested ? "lg:pl-10" : ""
-      } ${
-        locked
-          ? "cursor-not-allowed bg-[rgba(32,32,32,0.04)] text-[#8b8b8b]"
-          : active
-            ? "bg-white text-[#202020] shadow-[0_6px_18px_rgba(20,24,27,0.08)]"
-            : "text-[#4a4545] hover:bg-white/70 hover:text-[#202020]"
-      }`}
-    >
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={onClick}
+        onMouseEnter={() => {
+          if (!collapsed) return;
+          syncTooltipPosition();
+          setTooltipOpen(true);
+        }}
+        onMouseLeave={() => setTooltipOpen(false)}
+        onFocus={() => {
+          if (!collapsed) return;
+          syncTooltipPosition();
+          setTooltipOpen(true);
+        }}
+        onBlur={() => setTooltipOpen(false)}
+        disabled={locked}
+        aria-disabled={locked}
+        title={collapsed ? undefined : label}
+        className={`group relative flex w-full items-center gap-2.5 rounded-[8px] px-2 py-1.5 text-left text-[12px] font-medium transition-colors lg:px-3 ${
+          nested ? (collapsed ? "justify-center" : "lg:pl-10") : ""
+        } ${
+          locked
+            ? "cursor-not-allowed bg-[rgba(32,32,32,0.04)] text-[#8b8b8b]"
+            : active
+              ? "bg-white text-[#202020] shadow-[0_6px_18px_rgba(20,24,27,0.08)]"
+              : "text-[#4a4545] hover:bg-white/70 hover:text-[#202020]"
+        }`}
+      >
         <span
           className={`flex h-[26px] w-[26px] items-center justify-center rounded-[8px] transition-colors ${
             locked
@@ -409,13 +523,13 @@ function SidebarButton({
         >
           <SidebarIcon icon={icon} />
         </span>
-      <span className="truncate">{label}</span>
+      {!collapsed ? <span className="truncate">{label}</span> : null}
       {!locked && Number(badgeCount || 0) > 0 ? (
-        <span className="ml-auto inline-flex min-w-[20px] items-center justify-center rounded-full bg-[rgba(203,178,107,0.16)] px-1.5 py-0.5 text-[10px] font-semibold text-[#8f7531]">
+        <span className={`${collapsed ? "absolute right-1 top-1" : "ml-auto"} inline-flex min-w-[20px] items-center justify-center rounded-full bg-[rgba(203,178,107,0.16)] px-1.5 py-0.5 text-[10px] font-semibold text-[#8f7531]`}>
           {Number(badgeCount)}
         </span>
       ) : null}
-      {locked ? (
+      {locked && !collapsed ? (
         <span className="ml-auto inline-flex h-4 w-4 items-center justify-center text-[#a8a8a8]">
           <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M7 11V8a5 5 0 0 1 10 0v3" />
@@ -423,7 +537,48 @@ function SidebarButton({
           </svg>
         </span>
       ) : null}
-    </button>
+      </button>
+      {collapsed && tooltipOpen && typeof document !== "undefined"
+        ? createPortal(
+            <span
+              className="pointer-events-none fixed z-[260] inline-flex -translate-y-1/2 whitespace-nowrap rounded-[10px] bg-[#202020] px-3 py-1.5 text-[11px] font-semibold text-white shadow-[0_10px_24px_rgba(20,24,27,0.16)]"
+              style={{ top: `${tooltipPosition.top}px`, left: `${tooltipPosition.left}px` }}
+            >
+              {label}
+            </span>,
+            document.body
+          )
+        : null}
+    </>
+  );
+}
+
+function SidebarGroup({
+  title,
+  description,
+  icon,
+  collapsed,
+  children,
+}: {
+  title: string;
+  description: string;
+  icon: string;
+  collapsed: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`space-y-1 rounded-[16px] border border-black/6 bg-[#fbfbfb] ${collapsed ? "px-2 py-2" : "px-3 py-3"}`}>
+      <div className={`flex items-center gap-2 ${collapsed ? "justify-center px-0" : "px-2"}`}>
+        <span className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] bg-[#f3efe2] text-[#8a6f25]">
+          <SidebarIcon icon={icon} />
+        </span>
+        <div className={`min-w-0 ${collapsed ? "hidden" : ""}`}>
+          <p className="text-[14px] font-semibold text-[#202020]">{title}</p>
+          <p className="text-[11px] text-[#8b94a3]">{description}</p>
+        </div>
+      </div>
+      <div className={`${collapsed ? "" : "ml-3 border-l border-black/10 pl-3"}`}>{children}</div>
+    </div>
   );
 }
 
@@ -443,8 +598,23 @@ function CloseIcon({ className = "" }: { className?: string }) {
   );
 }
 
+function SidebarCollapseIcon({ collapsed, className = "" }: { collapsed: boolean; className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path
+        d={collapsed ? "M9 6l6 6-6 6" : "M15 6l-6 6 6 6"}
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function SidebarMenu({
   mobile = false,
+  collapsed = false,
   userEmail,
   vendorName,
   activeSection,
@@ -458,6 +628,7 @@ function SidebarMenu({
   onClose,
 }: {
   mobile?: boolean;
+  collapsed?: boolean;
   userEmail: string;
   vendorName: string;
   activeSection: SidebarSection;
@@ -484,7 +655,7 @@ function SidebarMenu({
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -494,24 +665,33 @@ function SidebarMenu({
 
   const headingClass = mobile
     ? "px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#7d7d7d]"
-    : "hidden px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#7d7d7d] lg:block";
+    : `hidden px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#7d7d7d] lg:block ${collapsed ? "lg:hidden" : ""}`;
 
   const titleBlockClass = mobile
     ? "px-1 py-1.5"
     : "px-1 py-1.5";
+  const compactDesktop = !mobile && collapsed;
 
   return (
     <div className="flex h-full flex-col">
       <div className={titleBlockClass}>
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#907d4c]">Piessang seller</p>
-            <div className="mt-1 space-y-0.5 text-[11px] leading-[1.35] text-[#656565]">
-              <p className="truncate">{userEmail || "Signed in"}</p>
-              <p className="truncate">{formatRoleValue(sellerRoleLabel || sellerRole)}</p>
-              <p className="truncate">{vendorName || "seller account"}</p>
+          {!compactDesktop ? (
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#907d4c]">Piessang seller</p>
+              <div className="mt-1 space-y-0.5 text-[11px] leading-[1.35] text-[#656565]">
+                <p className="truncate">{userEmail || "Signed in"}</p>
+                <p className="truncate">{formatRoleValue(sellerRoleLabel || sellerRole)}</p>
+                <p className="truncate">{vendorName || "seller account"}</p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="flex w-full justify-center">
+              <span className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] bg-[rgba(203,178,107,0.14)] text-[12px] font-semibold uppercase tracking-[0.12em] text-[#8f7531]">
+                {(vendorName || "P").slice(0, 1)}
+              </span>
+            </div>
+          )}
           {mobile ? (
             <button
               type="button"
@@ -529,12 +709,13 @@ function SidebarMenu({
         <section className="space-y-1">
           <p className={headingClass}>Main</p>
           <div className="space-y-1">
-            <SidebarButton label="Home" icon="home" active={activeSection === "home"} onClick={() => handleNavigate("home")} />
+            <SidebarButton label="Home" icon="home" active={activeSection === "home"} collapsed={compactDesktop} onClick={() => handleNavigate("home")} />
             <SidebarButton
               label="Orders"
               icon="orders"
               active={["new-orders", "unfulfilled", "fulfilled"].includes(activeSection)}
               badgeCount={sellerBadges?.newOrders || 0}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "new-orders")}
               onClick={() => handleNavigate("new-orders")}
             />
@@ -542,6 +723,7 @@ function SidebarMenu({
               label="Customers"
               icon="customers"
               active={activeSection === "customers"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "customers")}
               onClick={() => handleNavigate("customers")}
             />
@@ -549,6 +731,7 @@ function SidebarMenu({
               label="Returns"
               icon="returns"
               active={activeSection === "returns"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "returns")}
               onClick={() => handleNavigate("returns")}
             />
@@ -556,6 +739,7 @@ function SidebarMenu({
               label="Billing"
               icon="cash"
               active={activeSection === "billing"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "billing")}
               onClick={() => handleNavigate("billing")}
             />
@@ -563,6 +747,7 @@ function SidebarMenu({
               label="Settlements"
               icon="cash"
               active={activeSection === "settlements"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "settlements")}
               onClick={() => handleNavigate("settlements")}
             />
@@ -570,14 +755,16 @@ function SidebarMenu({
               label="Products"
               icon="box"
               active={activeSection === "products" || activeSection === "create-product"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "products")}
               onClick={() => handleNavigate("products")}
             />
-            <div className="ml-3 border-l border-black/10 pl-3">
+            <div className={`${compactDesktop ? "" : "ml-3 border-l border-black/10 pl-3"}`}>
               <SidebarButton
                 label="Create product"
                 icon="plus"
                 active={activeSection === "create-product"}
+                collapsed={compactDesktop}
                 locked={sellerBlocked || !canAccessSellerSection(sellerRole, "create-product")}
                 onClick={() => handleNavigate("create-product")}
                 nested
@@ -588,6 +775,7 @@ function SidebarMenu({
               icon="truck"
               active={activeSection === "warehouse"}
               badgeCount={sellerBadges?.warehouse || 0}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "warehouse")}
               onClick={() => handleNavigate("warehouse")}
             />
@@ -595,6 +783,7 @@ function SidebarMenu({
               label="Analytics"
               icon="analytics"
               active={activeSection === "analytics"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "analytics")}
               onClick={() => handleNavigate("analytics")}
             />
@@ -603,6 +792,7 @@ function SidebarMenu({
               icon="notifications"
               active={activeSection === "notifications"}
               badgeCount={sellerBadges?.notifications || 0}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "notifications")}
               onClick={() => handleNavigate("notifications")}
             />
@@ -610,6 +800,7 @@ function SidebarMenu({
               label="Team"
               icon="team"
               active={activeSection === "team"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "team")}
               onClick={() => handleNavigate("team")}
             />
@@ -623,6 +814,7 @@ function SidebarMenu({
               label="Campaigns"
               icon="marketing"
               active={activeSection === "marketing"}
+              collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "marketing")}
               onClick={() => handleNavigate("marketing")}
             />
@@ -633,11 +825,12 @@ function SidebarMenu({
           <section className="space-y-1">
             <p className={headingClass}>Admin</p>
             <div className="space-y-1">
-              <SidebarButton
+            <SidebarButton
               label="Seller accounts"
               icon="shield"
               active={activeSection === "admin"}
               badgeCount={adminBadges?.sellerReviewCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin")}
             />
             <SidebarButton
@@ -645,28 +838,61 @@ function SidebarMenu({
               icon="box"
               active={activeSection === "brand-requests"}
               badgeCount={adminBadges?.brandRequestCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("brand-requests")}
             />
-            <SidebarButton
-              label="Analytics"
+            <SidebarGroup
+              title="Analytics"
+              description="Global and live marketplace activity"
               icon="analytics"
-              active={activeSection === "admin-analytics" || activeSection === "admin-live-view"}
-              onClick={() => handleNavigate("admin-live-view")}
-            />
-            <div className="ml-3 border-l border-black/10 pl-3">
+              collapsed={compactDesktop}
+            >
+              <SidebarButton
+                label="Global analytics"
+                icon="globe"
+                active={activeSection === "admin-analytics"}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("admin-analytics")}
+                nested
+              />
               <SidebarButton
                 label="Live view"
-                icon="analytics"
+                icon="pulse"
                 active={activeSection === "admin-live-view"}
+                collapsed={compactDesktop}
                 onClick={() => handleNavigate("admin-live-view")}
                 nested
               />
-            </div>
+            </SidebarGroup>
+            <SidebarGroup
+              title="Landing page"
+              description="Homepage builder and search metadata"
+              icon="collections"
+              collapsed={compactDesktop}
+            >
+              <SidebarButton
+                label="Builder"
+                icon="wand"
+                active={activeSection === "admin-landing-builder"}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("admin-landing-builder")}
+                nested
+              />
+              <SidebarButton
+                label="SEO"
+                icon="search"
+                active={activeSection === "admin-landing-seo"}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("admin-landing-seo")}
+                nested
+              />
+            </SidebarGroup>
             <SidebarButton
               label="Newsletters"
               icon="marketing"
               active={activeSection === "admin-newsletters"}
               badgeCount={adminBadges?.newsletterCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-newsletters")}
             />
             <SidebarButton
@@ -674,12 +900,14 @@ function SidebarMenu({
               icon="orders"
               active={activeSection === "admin-orders"}
               badgeCount={adminBadges?.orderCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-orders")}
             />
             <SidebarButton
               label="Platform delivery"
               icon="truck"
               active={activeSection === "admin-platform-delivery"}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-platform-delivery")}
             />
             <SidebarButton
@@ -687,6 +915,7 @@ function SidebarMenu({
               icon="cash"
               active={activeSection === "admin-payouts"}
               badgeCount={adminBadges?.payoutCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-payouts")}
             />
             <SidebarButton
@@ -694,6 +923,7 @@ function SidebarMenu({
               icon="help"
               active={activeSection === "admin-support"}
               badgeCount={adminBadges?.supportCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-support")}
             />
             <SidebarButton
@@ -701,6 +931,7 @@ function SidebarMenu({
               icon="marketing"
               active={activeSection === "admin-campaign-reviews"}
               badgeCount={adminBadges?.campaignReviewCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-campaign-reviews")}
             />
             <SidebarButton
@@ -708,6 +939,7 @@ function SidebarMenu({
               icon="check"
               active={activeSection === "product-reviews"}
               badgeCount={adminBadges?.productReviewCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("product-reviews")}
             />
             <SidebarButton
@@ -715,26 +947,30 @@ function SidebarMenu({
               icon="flag"
               active={activeSection === "product-reports"}
               badgeCount={adminBadges?.productReportCount || 0}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("product-reports")}
             />
             <SidebarButton
               label="Returns"
               icon="returns"
               active={activeSection === "admin-returns"}
+              collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-returns")}
             />
             <SidebarButton
               label="Warehouse calendar"
               icon="truck"
-                active={activeSection === "warehouse-calendar"}
-                onClick={() => handleNavigate("warehouse-calendar")}
-              />
-              <SidebarButton
-                label="Fees"
-                icon="cash"
-                active={activeSection === "fees"}
-                onClick={() => handleNavigate("fees")}
-              />
+              active={activeSection === "warehouse-calendar"}
+              collapsed={compactDesktop}
+              onClick={() => handleNavigate("warehouse-calendar")}
+            />
+            <SidebarButton
+              label="Fees"
+              icon="cash"
+              active={activeSection === "fees"}
+              collapsed={compactDesktop}
+              onClick={() => handleNavigate("fees")}
+            />
             </div>
           </section>
         ) : null}
@@ -745,6 +981,7 @@ function SidebarMenu({
             label="Settings"
             icon="settings"
             active={activeSection === "settings"}
+            collapsed={compactDesktop}
             locked={!canAccessSellerSection(sellerRole, "settings")}
             onClick={() => handleNavigate("settings")}
           />
@@ -761,6 +998,7 @@ function SellerDashboardContent() {
   const { authReady, isAuthenticated, isSeller, sellerStatus, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
   const [activeSection, setActiveSection] = useState<SidebarSection>("home");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [desktopMenuCollapsed, setDesktopMenuCollapsed] = useState(false);
   const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
   const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0, notifications: 0 });
   const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
@@ -810,6 +1048,13 @@ function SellerDashboardContent() {
       case "admin-live-view":
       case "live-view":
         return "admin-live-view";
+      case "admin-landing-builder":
+      case "landing-page":
+      case "landing-builder":
+        return "admin-landing-builder";
+      case "admin-landing-seo":
+      case "landing-seo":
+        return "admin-landing-seo";
       case "admin-newsletters":
       case "newsletters":
         return "admin-newsletters";
@@ -933,7 +1178,7 @@ function SellerDashboardContent() {
         newsletterCount: newsletterResponse.ok && newsletterPayload?.ok !== false ? Number(newsletterPayload?.data?.counts?.active || 0) : 0,
         orderCount:
           ordersResponse.ok && ordersPayload?.ok !== false
-            ? Number(ordersPayload?.data?.totals?.totalNotCompleted || ordersPayload?.data?.totals?.totalOrders || 0)
+            ? getAdminActionableOrderCount(ordersPayload)
             : 0,
         payoutCount:
           payoutResponse.ok && payoutPayload?.ok !== false
@@ -1152,7 +1397,7 @@ function SellerDashboardContent() {
   const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
   const sectionLocked = sellerUnavailable
     ? blockedSections.includes(activeSection)
-      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "admin-newsletters" || activeSection === "admin-orders" || activeSection === "admin-platform-delivery" || activeSection === "admin-payouts" || activeSection === "admin-support" || activeSection === "admin-campaign-reviews" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
+      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "admin-landing-builder" || activeSection === "admin-landing-seo" || activeSection === "admin-newsletters" || activeSection === "admin-orders" || activeSection === "admin-platform-delivery" || activeSection === "admin-payouts" || activeSection === "admin-support" || activeSection === "admin-campaign-reviews" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
         ? !canManageSellerDashboard
         : !canAccessSellerSection(activeSellerRole, activeSection);
   const firstAllowedSection = useMemo(() => {
@@ -1230,7 +1475,7 @@ function SellerDashboardContent() {
   }, [activeSection, pathname, router, searchParams]);
 
   function setSection(nextSection: SidebarSection) {
-    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
+    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-landing-builder" || nextSection === "admin-landing-seo" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
     if (!canAccessSellerSection(activeSellerRole, nextSection)) return;
     setActiveSection(nextSection);
     setMobileMenuOpen(false);
@@ -1297,6 +1542,10 @@ function SellerDashboardContent() {
         return "Analytics";
       case "admin-live-view":
         return "Live view";
+      case "admin-landing-builder":
+        return "Landing page";
+      case "admin-landing-seo":
+        return "Landing page SEO";
       case "admin-newsletters":
         return "Newsletters";
       case "admin-orders":
@@ -1376,6 +1625,10 @@ function SellerDashboardContent() {
         return "View marketplace-wide admin analytics and live commerce insights.";
       case "admin-live-view":
         return "Track live marketplace activity across carts, checkouts, and purchases.";
+      case "admin-landing-builder":
+        return "Build and publish the Piessang landing page using reusable homepage sections.";
+      case "admin-landing-seo":
+        return "Manage public page SEO metadata separately from the landing-page content builder.";
       case "admin-newsletters":
         return "Create and manage the newsletters customers can subscribe to from their account settings.";
       case "admin-orders":
@@ -1427,7 +1680,7 @@ function SellerDashboardContent() {
 
   if (!authReady) {
     return (
-      <main className="mx-auto max-w-[1400px] px-3 py-4 lg:px-4 lg:py-6">
+      <PageBody className="px-3 py-4 lg:px-4 lg:py-6">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller workspace</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Loading seller workspace</h1>
@@ -1435,13 +1688,13 @@ function SellerDashboardContent() {
             We’re checking your account and loading your seller access.
           </p>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (!isAuthenticated) {
     return (
-      <main className="mx-auto max-w-[1400px] px-4 py-10">
+      <PageBody className="px-4 py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">My Account</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Sign in to manage seller tools</h1>
@@ -1456,14 +1709,14 @@ function SellerDashboardContent() {
             Sign in
           </button>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (!isSeller) {
     if (sellerClosed) {
       return (
-        <main className="mx-auto max-w-[1400px] px-4 py-10">
+        <PageBody className="px-4 py-10">
           <section className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller account closed</p>
             <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">
@@ -1474,11 +1727,11 @@ function SellerDashboardContent() {
                 "Your seller account was closed and the catalogue is no longer public. If this was done in error, please contact Piessang support to review the account."}
             </p>
           </section>
-        </main>
+        </PageBody>
       );
     }
     return (
-      <main className="mx-auto max-w-[1400px] px-4 py-10">
+      <PageBody className="px-4 py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller tools</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Register to sell on Piessang</h1>
@@ -1493,12 +1746,12 @@ function SellerDashboardContent() {
             Register as seller
           </button>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   return (
-    <main className="mx-auto max-w-[1400px] px-3 py-4 lg:px-4 lg:py-6">
+    <PageBody className="px-3 py-4 lg:px-4 lg:py-6">
       <div className="mb-3 flex items-center justify-between gap-3 lg:hidden">
         <button
           type="button"
@@ -1511,9 +1764,24 @@ function SellerDashboardContent() {
         <span className="truncate text-[12px] font-medium text-[#57636c]">{currentAccessLabel}</span>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="hidden rounded-[8px] border border-black/5 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(243,243,243,0.98))] p-3 shadow-[0_8px_24px_rgba(20,24,27,0.05)] lg:sticky lg:top-6 lg:block lg:h-[calc(100vh-3rem)] lg:overflow-y-auto lg:[scrollbar-width:none] lg:[-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div className={`grid gap-4 transition-[grid-template-columns] duration-200 ${desktopMenuCollapsed ? "lg:grid-cols-[88px_minmax(0,1fr)]" : "lg:grid-cols-[280px_minmax(0,1fr)]"}`}>
+        <aside className="hidden rounded-[8px] border border-black/5 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(243,243,243,0.98))] p-3 shadow-[0_8px_24px_rgba(20,24,27,0.05)] lg:sticky lg:top-6 lg:block lg:h-[calc(100vh-3rem)] lg:overflow-x-visible lg:overflow-y-auto lg:[scrollbar-width:none] lg:[-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          <div className={`mb-3 flex items-center gap-2 ${desktopMenuCollapsed ? "justify-center" : "justify-between"}`}>
+            {!desktopMenuCollapsed ? (
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#8b94a3]">Navigation</p>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setDesktopMenuCollapsed((current) => !current)}
+              aria-label={desktopMenuCollapsed ? "Expand seller navigation" : "Collapse seller navigation"}
+              title={desktopMenuCollapsed ? "Expand navigation" : "Collapse navigation"}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-black/10 bg-white text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.06)]"
+            >
+              <SidebarCollapseIcon collapsed={desktopMenuCollapsed} className="h-4 w-4" />
+            </button>
+          </div>
               <SidebarMenu
+                collapsed={desktopMenuCollapsed}
                 vendorName={vendorName}
                 userEmail={profile?.email || ""}
                 activeSection={activeSection}
@@ -1610,6 +1878,10 @@ function SellerDashboardContent() {
               <SellerBrandRequestsWorkspace />
             ) : activeSection === "admin-live-view" && canManageSellerDashboard ? (
               <SellerLiveCommerceWorkspace />
+            ) : activeSection === "admin-landing-builder" && canManageSellerDashboard ? (
+              <SellerAdminLandingBuilderWorkspace />
+            ) : activeSection === "admin-landing-seo" && canManageSellerDashboard ? (
+              <SellerAdminLandingSeoWorkspace />
             ) : activeSection === "admin-newsletters" && canManageSellerDashboard ? (
               <SellerNewslettersWorkspace />
             ) : activeSection === "admin-orders" && canManageSellerDashboard ? (
@@ -1638,6 +1910,8 @@ function SellerDashboardContent() {
                 isSystemAdmin={isSystemAdmin}
                 adminCalendarOnly
               />
+            ) : activeSection === "admin-analytics" && canManageSellerDashboard ? (
+              <SellerAdminAnalyticsWorkspace vendorName="Marketplace" />
             ) : activeSection === "warehouse" ? (
               <SellerWarehouseWorkspace
                 vendorName={activeVendorName}
@@ -1691,19 +1965,11 @@ function SellerDashboardContent() {
                 vendorName={activeVendorName}
               />
             ) : activeSection === "analytics" ? (
-              <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
-                <div className="max-w-[460px]">
-                  <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
-                    Coming soon
-                  </p>
-                  <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">
-                    Seller analytics will live here
-                  </h3>
-                  <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
-                    We&apos;ll use this space for seller-specific performance, sales, and product insights.
-                  </p>
-                </div>
-              </div>
+              <SellerAnalyticsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                vendorName={activeVendorName}
+              />
             ) : activeSection === "notifications" ? (
               <SellerNotificationsWorkspace
                 sellerSlug={resolvedSellerSlug}
@@ -1738,19 +2004,12 @@ function SellerDashboardContent() {
                 </Suspense>
               </div>
             ) : activeSection === "home" ? (
-              <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
-                <div className="max-w-[460px]">
-                  <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
-                    Seller home
-                  </p>
-                  <h3 className="mt-2 text-[22px] font-semibold text-[#202020]">
-                    Your seller overview will live here
-                  </h3>
-                  <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
-                    We&apos;ll use this space for seller-specific summaries, tasks, and performance highlights.
-                  </p>
-                </div>
-              </div>
+              <SellerHomeWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                vendorName={activeVendorName}
+                onNavigate={setSection}
+              />
             ) : (
               <div className="flex min-h-[420px] items-center justify-center rounded-[8px] border border-dashed border-black/10 bg-[rgba(32,32,32,0.02)] px-6 py-12 text-center">
                 <div className="max-w-[460px]">
@@ -1891,7 +2150,7 @@ function SellerDashboardContent() {
           />
         </aside>
       </div>
-    </main>
+    </PageBody>
   );
 }
 
@@ -1899,7 +2158,7 @@ export default function SellerDashboardPage() {
   return (
     <Suspense
       fallback={
-        <main className="mx-auto max-w-[1400px] px-3 py-4 lg:px-4 lg:py-6">
+        <PageBody className="px-3 py-4 lg:px-4 lg:py-6">
           <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller home</p>
             <h1 className="mt-2 text-[30px] font-semibold tracking-[-0.03em] text-[#202020]">Loading dashboard</h1>
@@ -1907,7 +2166,7 @@ export default function SellerDashboardPage() {
               We’re preparing your seller workspace.
             </p>
           </section>
-        </main>
+        </PageBody>
       }
     >
       <SellerDashboardContent />

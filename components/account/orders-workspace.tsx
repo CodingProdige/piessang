@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getFrozenOrderPayableIncl } from "@/lib/orders/frozen-money";
+import { formatMoneyExact } from "@/lib/money";
 import { PlatformPortalPopover, PopoverHintTrigger } from "@/components/ui/platform-popover";
 
 type CustomerOrdersPayload = {
@@ -72,7 +73,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatMoney(value: number) {
-  return `R${Number(value || 0).toFixed(2)}`;
+  return formatMoneyExact(value);
 }
 
 function formatRelativeOrderDate(value?: string) {

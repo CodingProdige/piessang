@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // /api/catalogue/v1/AI/voice
 import { NextResponse } from "next/server";
 import OpenAI from "openai";

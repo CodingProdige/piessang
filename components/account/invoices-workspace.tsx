@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { CustomerSellerInvoiceDrawer } from "@/components/account/customer-seller-invoice-drawer";
 import { collectCustomerSellerInvoiceGroups, getCustomerBusinessDetails } from "@/lib/orders/customer-seller-invoices";
+import { formatMoneyExact } from "@/lib/money";
 
 type InvoiceOrder = {
   docId?: string;
@@ -37,7 +38,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatMoney(value: number) {
-  return `R${Number(value || 0).toFixed(2)}`;
+  return formatMoneyExact(value);
 }
 
 function formatDateTime(value?: string) {

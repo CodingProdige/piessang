@@ -1,9 +1,11 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { collection, getDocs } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { formatMoneyExact } from "@/lib/money";
 
 const ok = (p={},s=200)=>NextResponse.json({ok:true,...p},{status:s});
 const err=(s,t,m,x={})=>NextResponse.json({ok:false,title:t,message:m,...x},{status:s});
@@ -330,10 +332,10 @@ function buildProductInput(docId, data, existingVariants = []) {
     const variantInput = {
       ...(existingId ? { id: existingId } : {}),
       optionValues: [{ optionName, name: label }],
-      price: Number(price).toFixed(2),
+      price: formatMoneyExact(price, { currencySymbol: "", space: false }),
       compareAtPrice:
         !forceDraft && saleEligible && baseIncl != null
-          ? Number(baseIncl).toFixed(2)
+          ? formatMoneyExact(baseIncl, { currencySymbol: "", space: false })
           : undefined,
       sku: v.sku || `FIRESTORE-${docId}-${index + 1}`,
       barcode: v.barcode || undefined,

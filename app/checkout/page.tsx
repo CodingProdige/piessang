@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CartCheckout } from "@/components/cart/cart-checkout";
+import { PageBody } from "@/components/layout/page-body";
 
 export const metadata: Metadata = {
   title: "Checkout",
@@ -12,8 +13,8 @@ export const metadata: Metadata = {
 
 export default function CheckoutPage() {
   return (
-    <main className="mx-auto max-w-[1120px] px-4 py-10">
+    <PageBody className="px-4 py-10">
       <CartCheckout />
-    </main>
+    </PageBody>
   );
 }

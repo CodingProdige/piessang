@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // app/api/sub_categories/get/route.js
 /**
  * NAME: Get Sub-Category(ies) (auto-ID; id or slug; list)

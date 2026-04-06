@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 type CartItem = {
   cart_item_key?: string;
@@ -54,7 +55,7 @@ type CartItem = {
 };
 
 const toMoneyNumber = (value?: number) =>
-  typeof value === "number" && Number.isFinite(value) ? Number(value.toFixed(2)) : 0;
+  typeof value === "number" && Number.isFinite(value) ? normalizeMoneyAmount(value) : 0;
 
 const buildProductHref = (title: string, uniqueId: string) => {
   const slug = String(title || "product")

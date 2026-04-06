@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { addDoc, collection, updateDoc, doc } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 /* ───────── HELPERS ───────── */
 
@@ -13,7 +15,7 @@ const err = (status = 500, title = "Server Error", message = "Unknown error") =>
   NextResponse.json({ ok: false, title, message }, { status });
 
 const now = () => new Date().toISOString();
-const r2 = v => Number((Number(v) || 0).toFixed(2));
+const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 const toIsoOrNull = value => {
   if (!value) return null;
   const d = new Date(value);

@@ -7,6 +7,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import { useAuth } from "@/components/auth/auth-provider";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { clientStorage } from "@/lib/firebase";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
@@ -492,7 +493,8 @@ export function SellerSettingsWorkspace({
   const [originPickerOpen, setOriginPickerOpen] = useState(false);
   const canEditSettings = Boolean(isSystemAdmin || ["owner", "admin"].includes(String(sellerRole ?? "").trim().toLowerCase()));
   const canDeleteSeller = Boolean(isSystemAdmin || String(sellerRole ?? "").trim().toLowerCase() === "owner");
-  const publicVendorHref = sellerSlug ? `/vendors/${sellerSlug}` : "/products";
+  const publicVendorIdentifier = sellerCodeValue || profile?.sellerCode || sellerSlug;
+  const publicVendorHref = publicVendorIdentifier ? `/vendors/${encodeURIComponent(publicVendorIdentifier)}` : "/products";
 
   const bannerPosition = useMemo(
     () => parsePlacement(branding.bannerObjectPosition || "50% 50%"),
@@ -1828,29 +1830,7 @@ export function SellerSettingsWorkspace({
         onConfirm={() => void deleteSellerAccount()}
       />
 
-      {snackbar ? (
-        <div className="pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 px-4">
-          <div
-            className={`pointer-events-auto inline-flex items-center gap-2 rounded-[8px] px-4 py-2 text-[12px] font-semibold shadow-[0_10px_24px_rgba(20,24,27,0.2)] ${
-              snackbar.tone === "error" ? "bg-[#b91c1c] text-white" : "bg-[#202020] text-white"
-            }`}
-          >
-            {snackbar.tone === "success" ? (
-              <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
-                <path
-                  d="M5 12.5 10 17 19 7.5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            ) : null}
-            {snackbar.message}
-          </div>
-        </div>
-      ) : null}
+      <AppSnackbar notice={snackbar ? { tone: snackbar.tone || "success", message: snackbar.message } : null} />
     </section>
   );
 }

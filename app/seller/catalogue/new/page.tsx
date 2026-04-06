@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import { PageBody } from "@/components/layout/page-body";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { SellerPageIntro } from "@/components/seller/page-intro";
 import { clientStorage } from "@/lib/firebase";
@@ -3351,19 +3352,19 @@ export function SellerCatalogueEditor({
 
   if (!authReady) {
     return (
-      <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+      <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <div className="h-6 w-44 rounded-[8px] bg-[#f4f4f4]" />
           <div className="mt-4 h-10 w-full rounded-[8px] bg-[#f4f4f4]" />
           <div className="mt-3 h-10 w-full rounded-[8px] bg-[#f4f4f4]" />
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (!isAuthenticated) {
     return (
-      <main className="mx-auto max-w-[960px] px-4 py-10">
+      <PageBody className="py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller catalogue</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Sign in to create products</h1>
@@ -3378,13 +3379,13 @@ export function SellerCatalogueEditor({
             Sign in
           </button>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (!canUseSellerEditor) {
     return (
-      <main className="mx-auto max-w-[960px] px-4 py-10">
+      <PageBody className="py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller catalogue</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Register as a seller first</h1>
@@ -3407,13 +3408,13 @@ export function SellerCatalogueEditor({
             </Link>
           </div>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (sellerBlocked) {
     return (
-      <main className="mx-auto max-w-[960px] px-4 py-10">
+      <PageBody className="py-10">
         <section className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller catalogue</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">This seller account is blocked</h1>
@@ -3438,13 +3439,13 @@ export function SellerCatalogueEditor({
             </Link>
           </div>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (productAccessDenied) {
     return (
-      <main className="mx-auto max-w-[960px] px-4 py-10">
+      <PageBody className="py-10">
         <section className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Product access</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">You do not have access to this product</h1>
@@ -3460,12 +3461,12 @@ export function SellerCatalogueEditor({
             </Link>
           </div>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+    <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
       <section className="rounded-[8px] bg-[#202020] px-4 py-3 text-white shadow-[0_8px_24px_rgba(20,24,27,0.14)]">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
@@ -5106,6 +5107,6 @@ export function SellerCatalogueEditor({
           </div>
         </div>
       ) : null}
-    </main>
+    </PageBody>
   );
 }

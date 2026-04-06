@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import {
@@ -11,6 +12,7 @@ import {
   where
 } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 const ok = (data = {}, status = 200) =>
   NextResponse.json({ ok: true, data }, { status });
@@ -18,7 +20,7 @@ const ok = (data = {}, status = 200) =>
 const err = (status = 500, title = "Server Error", message = "Unknown error") =>
   NextResponse.json({ ok: false, title, message }, { status });
 
-const r2 = v => Number((Number(v) || 0).toFixed(2));
+const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 const VAT_RATE = 0.15;
 
 const isMeaningfulString = value =>

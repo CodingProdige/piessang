@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // app/api/catalogue/v1/products/utils/checkSkuUnique/route.js
 /**
  * Check if an SKU is unique across products_v2 (product.sku + variants[].sku),

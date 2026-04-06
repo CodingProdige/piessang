@@ -12,6 +12,8 @@ import {
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
+import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
 import { clientStorage } from "@/lib/firebase";
 import { formatCurrency as formatDeliveryCurrency, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
@@ -70,6 +72,7 @@ type ProductItem = {
       vendorName?: string | null;
       vendorDescription?: string | null;
       sellerCode?: string | null;
+      sellerSlug?: string | null;
       sales?: {
         total_units_sold?: number;
       };
@@ -332,11 +335,11 @@ function getVendorLabel(item: ProductItem) {
 
 function getVendorSlug(item: ProductItem) {
   return (
+    item.data?.product?.sellerCode ??
+    item.data?.seller?.sellerCode ??
     item.data?.seller?.sellerSlug ??
     item.data?.seller?.activeSellerSlug ??
     item.data?.seller?.groupSellerSlug ??
-    item.data?.product?.sellerCode ??
-    item.data?.seller?.sellerCode ??
     item.data?.vendor?.slug ??
     item.data?.shopify?.vendorName ??
     "piessang"
@@ -521,7 +524,14 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
     : { label: resolved.label, tone: "neutral" as const };
 }
 
-export function SingleProductView({ item }: { item: ProductItem; backHref?: string }) {
+export function SingleProductView({
+  item,
+  selectedVariantId,
+}: {
+  item: ProductItem;
+  backHref?: string;
+  selectedVariantId?: string | null;
+}) {
   const router = useRouter();
   const { profile, isAuthenticated, openAuthModal, favoriteIds, refreshProfile, syncFavoriteState, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
@@ -530,7 +540,12 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
     0,
     variants.findIndex((variant) => variant?.placement?.is_default === true),
   );
-  const initialVariant = pickDisplayVariant(variants) ?? variants[defaultIndex] ?? null;
+  const requestedVariantIndex = Math.max(
+    -1,
+    variants.findIndex((variant) => String(variant?.variant_id || "").trim() === String(selectedVariantId || "").trim()),
+  );
+  const requestedVariant = requestedVariantIndex >= 0 ? variants[requestedVariantIndex] : null;
+  const initialVariant = requestedVariant ?? pickDisplayVariant(variants) ?? variants[defaultIndex] ?? null;
   const initialIndex = initialVariant ? Math.max(0, variants.findIndex((variant) => variant === initialVariant)) : 0;
   const [activeIndex, setActiveIndex] = useState(initialIndex);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
@@ -542,7 +557,7 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
   useEffect(() => {
     setActiveIndex(initialIndex);
     setActiveImageIndex(0);
-  }, [initialIndex, item.id, item.data?.product?.unique_id]);
+  }, [initialIndex, item.id, item.data?.product?.unique_id, selectedVariantId]);
 
   useEffect(() => {
     setActiveImageIndex(0);
@@ -693,12 +708,29 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
     };
 
     void heartbeat();
+    trackProductEngagement({
+      action: "product_view",
+      productId,
+      productTitle: item.data?.product?.title || null,
+      sellerCode: item.data?.product?.sellerCode ?? item.data?.seller?.sellerCode ?? null,
+      sellerSlug: item.data?.seller?.sellerSlug ?? item.data?.product?.sellerSlug ?? null,
+      vendorName:
+        item.data?.seller?.vendorName ??
+        item.data?.product?.vendorName ??
+        item.data?.shopify?.vendorName ??
+        null,
+      source: "product_page",
+      pageType: "product_detail",
+      href: typeof window !== "undefined" ? window.location.href : null,
+      userId: profile?.uid || null,
+      dedupeKey: `piessang_product_view:${productId}`,
+    });
     const interval = window.setInterval(heartbeat, 30000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [productId]);
+  }, [item.data?.product?.sellerCode, item.data?.product?.sellerSlug, item.data?.product?.title, item.data?.product?.vendorName, item.data?.seller?.sellerCode, item.data?.seller?.sellerSlug, item.data?.seller?.vendorName, item.data?.shopify?.vendorName, productId, profile?.uid]);
 
   useEffect(() => {
     if (!snackbarMessage) return undefined;
@@ -1491,10 +1523,18 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
             </div>
             {cartMessage ? <p className="text-[12px] text-[#57636c]">{cartMessage}</p> : null}
             {favoriteMessage ? <p className="text-[12px] text-[#57636c]">{favoriteMessage}</p> : null}
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-[#57636c]">
-              <Link href="/account?section=support" className="transition-colors hover:text-[#202020]">Delivery info</Link>
-              <Link href="/account?section=support" className="transition-colors hover:text-[#202020]">Returns</Link>
-              <Link href="/account?section=support" className="transition-colors hover:text-[#202020]">Need help?</Link>
+            <div className="rounded-[8px] border border-black/6 bg-[#fcfcfc] px-4 py-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Trusted marketplace checkout</p>
+              <p className="mt-2 text-[13px] leading-[1.7] text-[#57636c]">
+                Buy through Piessang with visible delivery, returns, payments, and support information before and after checkout.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-[#57636c]">
+                <Link href="/delivery" className="transition-colors hover:text-[#202020]">Delivery info</Link>
+                <Link href="/returns" className="transition-colors hover:text-[#202020]">Returns</Link>
+                <Link href="/payments" className="transition-colors hover:text-[#202020]">Payments</Link>
+                <Link href="/contact" className="transition-colors hover:text-[#202020]">Need help?</Link>
+                <Link href="/about" className="transition-colors hover:text-[#202020]">About Piessang</Link>
+              </div>
             </div>
             <div className="rounded-[8px] bg-[#fafafa] px-3 py-3">
               <Image
@@ -1989,13 +2029,7 @@ export function SingleProductView({ item }: { item: ProductItem; backHref?: stri
         </div>
       ) : null}
 
-      {snackbarMessage ? (
-        <div className="fixed bottom-5 left-1/2 z-[140] -translate-x-1/2 px-4">
-          <div className="rounded-full bg-[#202020] px-4 py-2 text-[13px] font-medium text-white shadow-[0_12px_30px_rgba(20,24,27,0.28)]">
-            {snackbarMessage}
-          </div>
-        </div>
-      ) : null}
+      <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />
     </div>
   );
 }

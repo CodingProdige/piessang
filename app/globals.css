@@ -21,8 +21,18 @@
   --font-mono: var(--font-geist-mono);
 }
 
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 html {
   background: var(--background);
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  overscroll-behavior-x: none;
 }
 
 body {
@@ -30,6 +40,30 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
   min-height: 100vh;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
+}
+
+body > * {
+  max-width: 100%;
+}
+
+main:not([data-page-body="off"]) {
+  width: 100%;
+  max-width: 1500px;
+  margin-inline: auto;
+  padding-inline: 12px;
+}
+
+img,
+svg,
+canvas,
+video,
+iframe {
+  max-width: 100%;
 }
 
 @keyframes bevgo-pop {
@@ -49,6 +83,22 @@ body {
 
 .animate-bevgo-pop {
   animation: bevgo-pop 700ms ease-out;
+}
+
+@keyframes subtle-float {
+  0% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+  100% {
+    transform: translateY(0px);
+  }
+}
+
+.animate-subtle-float {
+  animation: subtle-float 4.6s ease-in-out infinite;
 }
 
 [data-clickable-container="true"] {

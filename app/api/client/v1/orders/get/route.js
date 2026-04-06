@@ -1,8 +1,11 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { buildOrderDeliveryProgress } from "@/lib/orders/fulfillment-progress";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 /* ───────── HELPERS ───────── */
 
@@ -113,7 +116,7 @@ function buildRefundSummary(order) {
   return {
     has_refund: entries.length > 0 || paymentStatus === "refunded",
     status: paymentStatus === "refunded" ? "refunded" : "none",
-    total_amount_incl: Number(totalAmountIncl.toFixed(2)),
+    total_amount_incl: normalizeMoneyAmount(totalAmountIncl),
     entries
   };
 }
@@ -163,8 +166,8 @@ function withFinalPayableTotal(order) {
       0
   );
   const finalIncl = Number(totals?.final_incl || 0);
-  const finalPayableIncl = Number(
-    Math.max(finalIncl - creditAppliedIncl - collectedReturnsIncl, 0).toFixed(2)
+  const finalPayableIncl = normalizeMoneyAmount(
+    Math.max(finalIncl - creditAppliedIncl - collectedReturnsIncl, 0)
   );
   const effectiveRequiredIncl =
     orderStatus === "cancelled" ||
@@ -635,14 +638,10 @@ export async function POST(req) {
             ? 0
             : Math.max(requiredAmountIncl - paidAmountIncl, 0);
 
-        acc.sumFinalIncl = Number((acc.sumFinalIncl + finalIncl).toFixed(2));
-        acc.sumDeliveryFeeIncl = Number(
-          (acc.sumDeliveryFeeIncl + deliveryFeeIncl).toFixed(2)
-        );
-        acc.sumPaidIncl = Number((acc.sumPaidIncl + paidAmountIncl).toFixed(2));
-        acc.totalOutstandingIncl = Number(
-          (acc.totalOutstandingIncl + outstandingIncl).toFixed(2)
-        );
+        acc.sumFinalIncl = normalizeMoneyAmount(acc.sumFinalIncl + finalIncl);
+        acc.sumDeliveryFeeIncl = normalizeMoneyAmount(acc.sumDeliveryFeeIncl + deliveryFeeIncl);
+        acc.sumPaidIncl = normalizeMoneyAmount(acc.sumPaidIncl + paidAmountIncl);
+        acc.totalOutstandingIncl = normalizeMoneyAmount(acc.totalOutstandingIncl + outstandingIncl);
 
         return acc;
       },

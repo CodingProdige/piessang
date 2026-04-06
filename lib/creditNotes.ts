@@ -13,9 +13,10 @@ import {
   setDoc
 } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 const now = () => new Date().toISOString();
-const r2 = value => Number((Number(value) || 0).toFixed(2));
+const r2 = value => normalizeMoneyAmount(Number(value) || 0);
 
 function asText(value) {
   if (typeof value !== "string") return "";

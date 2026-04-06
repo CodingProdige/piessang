@@ -6,10 +6,11 @@ import {
   MarketplaceSplitOrderResult,
   MarketplaceSubOrder,
 } from "@/lib/marketplace/types";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 const VAT_RATE = 0.15;
 
-const money = (value: number) => Number(Number(value || 0).toFixed(2));
+const money = (value: number) => normalizeMoneyAmount(Number(value || 0));
 
 function resolveDeliveryMethod(
   fulfillmentMode: MarketplaceFulfillmentMode,

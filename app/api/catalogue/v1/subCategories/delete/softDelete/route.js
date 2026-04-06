@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 /**
  * NAME: Soft Delete Sub-Category (auto-ID; supports id or slug)
  * PATH: /api/sub_categories/delete

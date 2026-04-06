@@ -1,10 +1,12 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
 import { canAccessSellerSettlement, isSystemAdminUser } from "@/lib/seller/settlement-access";
+import { formatMoneyExact } from "@/lib/money";
 import { createOrderTimelineEvent, appendOrderTimelineEvent } from "@/lib/orders/timeline";
 
 const ok = (data = {}, status = 200) => NextResponse.json({ ok: true, data }, { status });
@@ -143,7 +145,7 @@ async function createSellerCreditNote({ db, orderRef, order, returnId, returnDoc
   const orderTimelineEvent = createOrderTimelineEvent({
     type: "credit_note_issued",
     title: "Credit note issued",
-    message: `${vendorName} issued credit note ${creditNoteNumber} for ${Number(refundAmount || 0).toFixed(2)}.`,
+    message: `${vendorName} issued credit note ${creditNoteNumber} for ${formatMoneyExact(refundAmount || 0)}.`,
     actorType: "admin",
     actorId: issuedBy,
     actorLabel: "Piessang",

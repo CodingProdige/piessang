@@ -29,6 +29,18 @@ export const smsTemplates = {
       message: "New marketplace order {{orderNumber}} includes your products. Please review it in your seller dashboard."
     },
 
+    "seller-billing-reminder": {
+      message: "Reminder: your Piessang seller bill {{invoiceNumber}} for {{billingMonthLabel}} is due by {{dueDate}}. Amount due: {{amountDue}}."
+    },
+
+    "seller-account-blocked": {
+      message: "Your Piessang seller account has been blocked because billing is overdue. {{reasonMessage}}"
+    },
+
+    "seller-billing-settled": {
+      message: "Your Piessang seller billing has been settled and your selling access has been restored."
+    },
+
     "order-dispatched": {
       message: "Your Piessang order has just been dispatched! 🚚💨 Delivery is on the way."
     },

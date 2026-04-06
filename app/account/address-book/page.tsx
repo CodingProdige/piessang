@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { AccountProfileWorkspace } from "@/components/account/account-sections";
+import { PageBody } from "@/components/layout/page-body";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 
 export default async function AccountAddressBookPage() {
@@ -10,7 +11,7 @@ export default async function AccountAddressBookPage() {
   }
 
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+    <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
       <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">My Account</p>
         <h1 className="mt-2 text-[30px] font-semibold text-[#202020]">Address book</h1>
@@ -27,6 +28,6 @@ export default async function AccountAddressBookPage() {
           showAddressBook={true}
         />
       </section>
-    </main>
+    </PageBody>
   );
 }

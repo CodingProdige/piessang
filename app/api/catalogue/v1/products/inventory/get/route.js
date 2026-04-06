@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // app/api/products_v2/inventory/get/route.js
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";

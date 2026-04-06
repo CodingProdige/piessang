@@ -1,6 +1,8 @@
 import Link from "next/link";
 import Image from "next/image";
+import { PageBody } from "@/components/layout/page-body";
 import { FooterAppActions } from "@/components/pwa/footer-app-actions";
+import { COMPANY_PUBLIC_DETAILS } from "@/lib/company/public-details";
 
 const FOOTER_COLUMNS = [
   {
@@ -21,14 +23,14 @@ const FOOTER_COLUMNS = [
   },
   {
     title: "Company",
-    items: ["About Piessang", "Sell on Piessang", "Terms", "Privacy"],
+    items: ["About Piessang", "Sell on Piessang", "Seller fees and charges", "Terms", "Privacy"],
   },
 ];
 
 export function PiessangFooter() {
   return (
     <footer className="border-t border-black/5 bg-white">
-      <div className="w-full px-3 py-8 lg:px-4 lg:py-10">
+      <PageBody as="div" className="py-8 lg:py-10">
         <div className="grid gap-8 text-center sm:grid-cols-2 sm:text-left lg:grid-cols-[minmax(0,1.35fr)_repeat(4,minmax(0,1fr))]">
           {FOOTER_COLUMNS.map((column) => (
             <div key={column.title} className="min-w-0">
@@ -48,6 +50,18 @@ export function PiessangFooter() {
                     Piessang is a curated marketplace built to help suppliers, brands, and sellers
                     grow with simpler tools, clearer fulfilment, and a premium buying experience.
                   </p>
+                  <div className="space-y-1 text-[12px] leading-[1.6] text-[#57636c]">
+                    <p>{COMPANY_PUBLIC_DETAILS.addressLines[0]}</p>
+                    <p>{COMPANY_PUBLIC_DETAILS.addressLines[1]}</p>
+                    <p>{COMPANY_PUBLIC_DETAILS.addressLines[2]}</p>
+                    <p>{COMPANY_PUBLIC_DETAILS.supportPhone}</p>
+                    <a
+                      href={`mailto:${COMPANY_PUBLIC_DETAILS.supportEmail}`}
+                      className="transition-colors hover:text-[#202020]"
+                    >
+                      {COMPANY_PUBLIC_DETAILS.supportEmail}
+                    </a>
+                  </div>
                 </div>
               ) : (
                 <ul className="mt-4 space-y-2 text-[13px] text-[#57636c]">
@@ -71,6 +85,10 @@ export function PiessangFooter() {
                                       ? "/account"
                                       : item === "Sell on Piessang"
                                         ? "/sell-on-piessang"
+                                      : item === "About Piessang"
+                                        ? "/about"
+                                        : item === "Seller fees and charges"
+                                          ? "/fees"
                                         : item === "Contact us"
                                           ? "/contact"
                                         : item === "Delivery"
@@ -116,7 +134,7 @@ export function PiessangFooter() {
             />
           </div>
         </div>
-      </div>
+      </PageBody>
     </footer>
   );
 }

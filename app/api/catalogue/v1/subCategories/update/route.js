@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 /**
  * NAME: Update Sub-Category (propagate slug changes)
  * PATH: /api/sub_categories/update

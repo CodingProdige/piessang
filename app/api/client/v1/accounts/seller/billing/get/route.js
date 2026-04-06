@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
@@ -12,6 +13,26 @@ const err = (status, title, message, extra = {}) => NextResponse.json({ ok: fals
 
 function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
+}
+
+function resolveSellerRegisteredAt(requester, sellerSlug, sellerCode) {
+  const targetSlug = toStr(sellerSlug).toLowerCase();
+  const targetCode = toStr(sellerCode).toLowerCase();
+  const seller = requester?.seller && typeof requester.seller === "object" ? requester.seller : {};
+  const sellerMatches =
+    (targetSlug && toStr(seller?.sellerSlug).toLowerCase() === targetSlug) ||
+    (targetCode && toStr(seller?.sellerCode).toLowerCase() === targetCode);
+  if (sellerMatches) return toStr(seller?.registeredAt || "");
+
+  const team = Array.isArray(requester?.sellerTeam) ? requester.sellerTeam : [];
+  const teamMatch = team.find((entry) => {
+    const item = entry && typeof entry === "object" ? entry : {};
+    return (
+      (targetSlug && toStr(item?.sellerSlug).toLowerCase() === targetSlug) ||
+      (targetCode && toStr(item?.sellerCode).toLowerCase() === targetCode)
+    );
+  });
+  return toStr(teamMatch?.registeredAt || "");
 }
 
 export async function GET(req) {
@@ -44,6 +65,7 @@ export async function GET(req) {
       sellerCode,
       vendorName,
       months,
+      sellerRegisteredAt: resolveSellerRegisteredAt(requester, sellerSlug, sellerCode),
     });
 
     return ok(overview);
@@ -54,4 +76,3 @@ export async function GET(req) {
     });
   }
 }
-

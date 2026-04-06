@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { formatCurrencyExact } from "@/lib/money";
 
 type PayoutBatch = {
   batchId: string;
@@ -63,12 +64,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatMoney(value: number, currency = "ZAR") {
-  return new Intl.NumberFormat("en-ZA", {
-    style: "currency",
-    currency: currency || "ZAR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number.isFinite(value) ? value : 0);
+  return formatCurrencyExact(Number.isFinite(value) ? value : 0, currency || "ZAR");
 }
 
 function formatDateTime(value?: string | null) {

@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 /**
  * NAME: Delete Product (hard delete)
  * PATH: /api/products_v2/delete

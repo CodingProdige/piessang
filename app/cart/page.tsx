@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CartCheckout } from "@/components/cart/cart-checkout";
 import { LiveCart } from "@/components/cart/live-cart";
+import { PageBody } from "@/components/layout/page-body";
 
 function CheckoutResult({
   orderId,
@@ -80,7 +81,7 @@ function CheckoutResult({
 
   if (state === "loading") {
     return (
-      <main className="mx-auto max-w-[1120px] px-4 py-10">
+      <PageBody className="px-4 py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Confirming payment</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Checking your payment status</h1>
@@ -88,13 +89,13 @@ function CheckoutResult({
             We’re confirming your payment with the gateway now.
           </p>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (state === "failed") {
     return (
-      <main className="mx-auto max-w-[1120px] px-4 py-10">
+      <PageBody className="px-4 py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Payment not completed</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Your payment did not go through</h1>
@@ -110,12 +111,12 @@ function CheckoutResult({
             </Link>
           </div>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   return (
-    <main className="mx-auto max-w-[1120px] px-4 py-10">
+    <PageBody className="px-4 py-10">
       <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Order placed</p>
         <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Payment successful</h1>
@@ -131,7 +132,7 @@ function CheckoutResult({
           </Link>
         </div>
       </section>
-    </main>
+    </PageBody>
   );
 }
 
@@ -176,8 +177,8 @@ export default function CartPage() {
   }
 
   return (
-    <main className="mx-auto max-w-[1120px] px-4 py-10">
+    <PageBody className="px-4 py-10">
       {isCheckout ? <CartCheckout /> : <LiveCart />}
-    </main>
+    </PageBody>
   );
 }

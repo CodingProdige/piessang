@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { PlatformPopover, PlatformPortalPopover, PopoverHintTrigger } from "@/components/ui/platform-popover";
 import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
+import { formatCurrencyExact, formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 
 type AdminOrder = {
   docId?: string;
@@ -96,12 +98,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatMoney(value: number, currency = "ZAR") {
-  return new Intl.NumberFormat("en-ZA", {
-    style: "currency",
-    currency: currency || "ZAR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number.isFinite(value) ? value : 0);
+  return formatCurrencyExact(value, currency || "ZAR");
 }
 
 function formatDateTime(value?: string | null) {
@@ -175,7 +172,7 @@ function refundEligibility(order: AdminOrder) {
   const paymentStatus = toStr(order?.lifecycle?.paymentStatus || order?.order?.status?.payment).toLowerCase();
   const paidAmount = Number(order?.payment?.paid_amount_incl || order?.totals?.final_incl || 0);
   const refundedAmount = Number(order?.payment?.refunded_amount_incl || order?.refund_summary?.total_amount_incl || 0);
-  const remaining = Math.max(Number((paidAmount - refundedAmount).toFixed(2)), 0);
+  const remaining = Math.max(normalizeMoneyAmount(paidAmount - refundedAmount), 0);
 
   return {
     provider,
@@ -500,7 +497,7 @@ export function SellerAdminOrdersWorkspace({ userId }: { userId: string }) {
     }
     const { remaining } = refundEligibility(activeOrder);
     setRefundMode("full");
-    setRefundAmount(remaining > 0 ? remaining.toFixed(2) : "");
+    setRefundAmount(remaining > 0 ? formatMoneyExact(remaining, { currencySymbol: "", space: false }) : "");
     setRefundNote("");
     setRefundError(null);
   }, [activeOrder]);
@@ -700,7 +697,7 @@ export function SellerAdminOrdersWorkspace({ userId }: { userId: string }) {
                 <>
                   <div className="mt-4 flex gap-2 rounded-[12px] bg-[#f6f6f6] p-1">
                     {(["full", "partial"] as const).map((mode) => (
-                      <button key={mode} type="button" onClick={() => { setRefundMode(mode); if (mode === "full") setRefundAmount(refundEligibility(activeOrder).remaining.toFixed(2)); }} className={`flex-1 rounded-[10px] px-3 py-2 text-[12px] font-semibold ${refundMode === mode ? "bg-[#202020] text-white" : "text-[#57636c]"}`}>
+                      <button key={mode} type="button" onClick={() => { setRefundMode(mode); if (mode === "full") setRefundAmount(formatMoneyExact(refundEligibility(activeOrder).remaining, { currencySymbol: "", space: false })); }} className={`flex-1 rounded-[10px] px-3 py-2 text-[12px] font-semibold ${refundMode === mode ? "bg-[#202020] text-white" : "text-[#57636c]"}`}>
                         {mode === "full" ? "Full refund" : "Partial refund"}
                       </button>
                     ))}
@@ -946,7 +943,7 @@ export function SellerAdminOrdersWorkspace({ userId }: { userId: string }) {
         )}
       </section>
 
-      {toast ? <div className="fixed bottom-4 right-4 z-[90] rounded-[12px] bg-[#202020] px-4 py-3 text-[13px] font-medium text-white">{toast}</div> : null}
+      <AppSnackbar notice={toast ? { tone: "info", message: toast } : null} />
     </div>
   );
 }

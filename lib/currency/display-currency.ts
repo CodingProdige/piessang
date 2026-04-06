@@ -1,3 +1,5 @@
+import { normalizeMoneyAmount } from "@/lib/money";
+
 export const BASE_CURRENCY = "ZAR";
 export const DISPLAY_CURRENCY_STORAGE_KEY = "piessang-display-currency";
 
@@ -65,6 +67,5 @@ export function formatDisplayMoney(amountZar: number, currencyCode: string, rate
     currency: code,
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(Number(converted.toFixed(2)));
+  }).format(normalizeMoneyAmount(converted));
 }
-

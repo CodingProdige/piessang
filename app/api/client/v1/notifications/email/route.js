@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 import { NextResponse } from "next/server";
 import sgMail from "@sendgrid/mail";
 import ejs from "ejs";
@@ -93,7 +96,7 @@ export async function POST(req){
     const finalHTML = await ejs.renderFile(wrapperPath, {
       body: contentHTML,
       baseUrl: resolveBaseUrl(),
-      logoUrl: `${resolveBaseUrl()}/logo/Piessang%20Logo.png`,
+      logoUrl: "https://firebasestorage.googleapis.com/v0/b/piessang-ada7b.firebasestorage.app/o/Branding%2FPiessang%20Logo%20White%20Background.jpg?alt=media&token=a6422033-dfbf-4837-adf0-436ad4c97fb3",
     });
 
     // Render subject

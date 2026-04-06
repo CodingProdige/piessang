@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
@@ -231,6 +232,7 @@ export async function POST(req) {
     const sourceItems = Array.isArray(order?.items) ? order.items : [];
     const touchedItems = [];
     const sellerDeliveryEntry = getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug);
+    const previousOrderStatus = toLower(order?.lifecycle?.orderStatus || order?.order?.status?.order || "");
 
     const sellerSourceItems = sourceItems
       .filter((item) => {
@@ -336,7 +338,23 @@ export async function POST(req) {
         cancellationReason: cancellationReason || null,
       },
     });
-    const nextTimelineEvents = appendOrderTimelineEvent(order, timelineEvent);
+    let nextTimelineEvents = appendOrderTimelineEvent(order, timelineEvent);
+    const orderJustCompleted = aggregate.orderStatus === "completed" && previousOrderStatus !== "completed";
+    if (orderJustCompleted) {
+      nextTimelineEvents = appendOrderTimelineEvent(
+        { timeline: { events: nextTimelineEvents } },
+        createOrderTimelineEvent({
+          type: "order_completed",
+          title: "Order completed",
+          message: "All sellers on this order have completed fulfilment. You can now leave a seller or product review.",
+          actorType: "system",
+          actorId: "piessang",
+          actorLabel: "Piessang",
+          createdAt: now,
+          status: "completed",
+        }),
+      );
+    }
 
     await orderRef.set(
       {
@@ -456,6 +474,23 @@ export async function POST(req) {
             vendorName: sellerVendorName || "your seller",
             orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || resolvedOrderId),
             reviewUrl: `${origin}/account/orders/${encodeURIComponent(resolvedOrderId)}${reviewSellerSlug ? `?rateSeller=${encodeURIComponent(reviewSellerSlug)}` : ""}`,
+          },
+        }),
+      }).catch(() => null);
+    }
+
+    if (orderJustCompleted && customerEmail) {
+      await fetch(`${origin}/api/client/v1/notifications/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "order-review-request",
+          to: customerEmail,
+          data: {
+            customerName,
+            orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || resolvedOrderId),
+            orderUrl: `${origin}/account/orders/${encodeURIComponent(resolvedOrderId)}`,
+            reviewsUrl: `${origin}/account/reviews`,
           },
         }),
       }).catch(() => null);

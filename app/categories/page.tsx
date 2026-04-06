@@ -1,6 +1,10 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { PageBody } from "@/components/layout/page-body";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
+import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +25,16 @@ type ProductItem = {
       category?: string | null;
       subCategory?: string | null;
     };
+    seller?: {
+      sellerCode?: string | null;
+      activeSellerCode?: string | null;
+      groupSellerCode?: string | null;
+      sellerSlug?: string | null;
+    };
+    product?: {
+      sellerCode?: string | null;
+      sellerSlug?: string | null;
+    };
   };
 };
 
@@ -30,10 +44,12 @@ type CategoryCard = {
   productCount: number;
 };
 
-export const metadata: Metadata = {
-  title: "Browse Categories | Piessang",
-  description: "Explore Piessang categories and jump straight into the products you want to shop.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSeoMetadata("categories", {
+    title: "Browse Categories | Piessang",
+    description: "Explore Piessang categories and jump straight into the products you want to shop.",
+  });
+}
 
 async function loadCategoryData() {
   const db = getAdminDb();
@@ -54,7 +70,46 @@ async function loadCategoryData() {
     })
     .filter((item) => item.slug && item.title);
 
-  const allProducts = productSnapshot.docs.map((doc) => ({ data: doc.data() || {} })) as ProductItem[];
+  const allProductsRaw = productSnapshot.docs.map((doc) => ({ data: doc.data() || {} })) as ProductItem[];
+  const sellerIdentifiers = new Set<string>();
+  allProductsRaw.forEach((item) => {
+    const data = item?.data || {};
+    const sellerIdentifier = String(
+      data?.seller?.sellerCode ||
+      data?.seller?.activeSellerCode ||
+      data?.seller?.groupSellerCode ||
+      data?.seller?.sellerSlug ||
+      data?.product?.sellerCode ||
+      data?.product?.sellerSlug ||
+      "",
+    ).trim();
+    if (sellerIdentifier) sellerIdentifiers.add(sellerIdentifier);
+  });
+  const sellerStatusMap = new Map<string, boolean>();
+  await Promise.all(
+    Array.from(sellerIdentifiers).map(async (sellerIdentifier) => {
+      try {
+        const owner = await findSellerOwnerByIdentifier(sellerIdentifier);
+        sellerStatusMap.set(sellerIdentifier, Boolean(owner && isSellerAccountUnavailable(owner.data)));
+      } catch {
+        sellerStatusMap.set(sellerIdentifier, false);
+      }
+    }),
+  );
+
+  const allProducts = allProductsRaw.filter((item) => {
+    const data = item?.data || {};
+    const sellerIdentifier = String(
+      data?.seller?.sellerCode ||
+      data?.seller?.activeSellerCode ||
+      data?.seller?.groupSellerCode ||
+      data?.seller?.sellerSlug ||
+      data?.product?.sellerCode ||
+      data?.product?.sellerSlug ||
+      "",
+    ).trim();
+    return sellerIdentifier ? sellerStatusMap.get(sellerIdentifier) !== true : true;
+  });
 
   const cards = await Promise.all(
     categories.map(async (category) => {
@@ -116,7 +171,7 @@ export default async function CategoriesPage() {
   const categories = await loadCategoryData();
 
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+    <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
       <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Browse Categories</p>
         <h1 className="mt-2 text-[30px] font-semibold text-[#202020]">Shop by category</h1>
@@ -159,6 +214,6 @@ export default async function CategoriesPage() {
           </div>
         ))}
       </section>
-    </main>
+    </PageBody>
   );
 }

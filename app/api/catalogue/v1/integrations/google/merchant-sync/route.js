@@ -1,9 +1,12 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { createSign } from "crypto";
-import { db } from "@/lib/firebase";
-import { collection, getDocs } from "firebase/firestore";
+import { db, collection, getDocs } from "@/lib/firebase/admin-firestore";
+import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
+import { resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
+import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 
 const PRODUCTS_COLLECTION = "products_v2";
 const VAT = 0.15;
@@ -24,6 +27,36 @@ const err = (s, t, m, e = {}) =>
   Response.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
 const toNum = (v) => (Number.isFinite(+v) ? +v : 0);
+const slugify = (v) =>
+  String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/['".]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+const hasNumber = (v) => typeof v === "number" && Number.isFinite(v);
+const stripHtml = (v) =>
+  String(v ?? "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+const toTitleCase = (v) =>
+  String(v ?? "")
+    .trim()
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+const prettifyTaxonomyPart = (v) => {
+  const value = String(v ?? "").trim();
+  if (!value) return "";
+  if (/coca[\s-]?cola/i.test(value)) return "Coca-Cola";
+  return toTitleCase(value);
+};
 const escBase64Url = (v) =>
   Buffer.from(v)
     .toString("base64")
@@ -34,7 +67,24 @@ const escBase64Url = (v) =>
 const moneyIncl = (excl) => {
   const n = Number(excl);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return Number((n * (1 + VAT)).toFixed(2));
+  return normalizeMoneyAmount(n * (1 + VAT));
+};
+const explicitMoney = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? normalizeMoneyAmount(n) : null;
+};
+const resolveSellingPriceIncl = (variant) => {
+  if (hasNumber(variant?.pricing?.selling_price_incl)) {
+    return explicitMoney(variant.pricing.selling_price_incl);
+  }
+  return moneyIncl(variant?.pricing?.selling_price_excl);
+};
+const resolveSalePriceIncl = (variant) => {
+  if (!isSaleLive(variant)) return null;
+  if (hasNumber(variant?.sale?.sale_price_incl)) {
+    return explicitMoney(variant.sale.sale_price_incl);
+  }
+  return moneyIncl(variant?.sale?.sale_price_excl);
 };
 
 const sumInventory = (variant) =>
@@ -58,6 +108,9 @@ const isSaleLive = (variant) =>
   variant?.sale?.is_on_sale === true &&
   variant?.sale?.disabled_by_admin !== true &&
   toNum(variant?.sale?.qty_available) > 0;
+
+const hasPublishedModeration = (product) =>
+  String(product?.moderation?.status || "").trim().toLowerCase() === "published";
 
 function availabilityForVariant(variant) {
   const continueSelling = variant?.placement?.continue_selling_out_of_stock === true;
@@ -84,12 +137,14 @@ function buildGoogleCategory(grouping) {
   return "Food, Beverages & Tobacco > Beverages";
 }
 
-function marketplaceLink(uniqueId, title) {
+function marketplaceLink(uniqueId, title, variantId) {
+  const slug = slugify(title) || "product";
   const params = new URLSearchParams();
-  params.set("uniqueId", String(uniqueId || ""));
-  const t = String(title || "").trim();
-  if (t) params.set("title", t);
-  return `https://piessang.com/products?${params.toString()}`;
+  params.set("unique_id", String(uniqueId || ""));
+  if (String(variantId || "").trim()) {
+    params.set("variant_id", String(variantId).trim());
+  }
+  return `https://piessang.com/products/${slug}?${params.toString()}`;
 }
 
 function buildActiveSlugSet(rows, slugReader) {
@@ -102,35 +157,113 @@ function buildActiveSlugSet(rows, slugReader) {
   );
 }
 
+function resolveVariantImage(product, variant) {
+  const variantImage = Array.isArray(variant?.media?.images)
+    ? variant.media.images.find((entry) => Boolean(entry?.imageUrl))?.imageUrl
+    : null;
+  if (variantImage) return String(variantImage).trim();
+  const productImage = Array.isArray(product?.media?.images)
+    ? product.media.images.find((entry) => Boolean(entry?.imageUrl))?.imageUrl
+    : null;
+  return productImage ? String(productImage).trim() : null;
+}
+
+function isEligibleVariantForGoogle(product, variant) {
+  const variantId = String(variant?.variant_id || "").trim();
+  const variantActive = variant?.placement?.isActive !== false;
+  const imageLink = resolveVariantImage(product, variant);
+  const priceIncl = resolveSellingPriceIncl(variant);
+  const hasListableAvailability =
+    sumInventory(variant) + (isSaleLive(variant) ? toNum(variant?.sale?.qty_available) : 0) > 0 ||
+    variant?.placement?.continue_selling_out_of_stock === true;
+  return (
+    Boolean(variantId) &&
+    variantActive &&
+    Boolean(imageLink) &&
+    Boolean(priceIncl) &&
+    hasListableAvailability
+  );
+}
+
+function isEligibleProductForGoogle(product) {
+  return (
+    product?.placement?.isActive === true &&
+    product?.placement?.supplier_out_of_stock !== true &&
+    hasPublishedModeration(product) &&
+    !isSellerAccountUnavailable(product)
+  );
+}
+
+function getProductGoogleSkipReasons(product, activeSets) {
+  const reasons = [];
+  if (product?.placement?.isActive !== true) reasons.push("product_inactive");
+  if (product?.placement?.supplier_out_of_stock === true) reasons.push("supplier_out_of_stock");
+  if (!hasPublishedModeration(product)) reasons.push("product_not_published");
+  if (isSellerAccountUnavailable(product)) reasons.push("seller_unavailable");
+
+  const category = String(product?.grouping?.category || "").trim();
+  const subCategory = String(product?.grouping?.subCategory || "").trim();
+  const brand = String(product?.grouping?.brand || "").trim();
+
+  if (!category) reasons.push("missing_category");
+  if (!subCategory) reasons.push("missing_subcategory");
+  if (!brand) reasons.push("missing_brand");
+  if (category && !activeSets.categorySlugs.has(category)) reasons.push("inactive_category");
+  if (subCategory && !activeSets.subCategorySlugs.has(subCategory)) reasons.push("inactive_subcategory");
+  if (brand && !activeSets.brandSlugs.has(brand)) reasons.push("inactive_brand");
+
+  return reasons;
+}
+
+function getVariantGoogleSkipReasons(product, variant) {
+  const reasons = [];
+  if (!String(variant?.variant_id || "").trim()) reasons.push("missing_variant_id");
+  if (variant?.placement?.isActive === false) reasons.push("variant_inactive");
+  if (!resolveVariantImage(product, variant)) reasons.push("missing_variant_image");
+  if (!resolveSellingPriceIncl(variant)) reasons.push("missing_variant_price");
+  const hasListableAvailability =
+    sumInventory(variant) + (isSaleLive(variant) ? toNum(variant?.sale?.qty_available) : 0) > 0 ||
+    variant?.placement?.continue_selling_out_of_stock === true;
+  if (!hasListableAvailability) reasons.push("variant_out_of_stock");
+  return reasons;
+}
+
 function buildContentApiProduct(product, variant) {
   const uniqueId = String(product?.product?.unique_id || "").trim();
   const variantId = String(variant?.variant_id || "").trim();
   const offerId = `${uniqueId}-${variantId}`;
-  const priceIncl = moneyIncl(variant?.pricing?.selling_price_excl);
+  const priceIncl = resolveSellingPriceIncl(variant);
   if (!offerId || !priceIncl) return null;
 
-  const saleIncl = isSaleLive(variant) ? moneyIncl(variant?.sale?.sale_price_excl) : null;
+  const saleIncl = resolveSalePriceIncl(variant);
 
   const baseTitle = String(product?.product?.title || "").trim();
   const variantLabel = String(variant?.label || "").trim();
   const title = variantLabel ? `${baseTitle} - ${variantLabel}` : baseTitle;
   const description =
-    String(product?.product?.description || "").trim() || `${title} available on Piessang Marketplace`;
-  const imageLink = Array.isArray(product?.media?.images) ? product.media.images[0]?.imageUrl : null;
-  const brand = String(product?.grouping?.brand || "").trim() || "Piessang";
+    stripHtml(product?.product?.description) || `${title} available on Piessang Marketplace`;
+  const imageLink = resolveVariantImage(product, variant);
+  const brand = prettifyTaxonomyPart(product?.grouping?.brand) || "Piessang";
   const productType = [product?.grouping?.category, product?.grouping?.subCategory]
     .filter(Boolean)
+    .map(prettifyTaxonomyPart)
     .join(" > ");
+  const marketplaceSeller = resolveMarketplaceSeller({
+    product: product?.product,
+    seller: product?.seller,
+    vendor: product?.vendor,
+  });
 
   const payload = {
     offerId,
     title,
     description,
-    link: marketplaceLink(uniqueId, baseTitle),
+    link: marketplaceLink(uniqueId, baseTitle, variantId),
     imageLink: imageLink || undefined,
     contentLanguage: GOOGLE_FEED_CONTENT_LANGUAGE,
     targetCountry: GOOGLE_FEED_TARGET_COUNTRY,
     channel: "online",
+    externalSellerId: marketplaceSeller.externalSellerId,
     availability: availabilityForVariant(variant),
     condition: "new",
     brand,
@@ -139,14 +272,14 @@ function buildContentApiProduct(product, variant) {
     googleProductCategory: buildGoogleCategory(product?.grouping),
     productTypes: productType ? [productType] : undefined,
     price: {
-      value: String(priceIncl.toFixed(2)),
+      value: formatMoneyExact(priceIncl, { currencySymbol: "", space: false }),
       currency: GOOGLE_FEED_CURRENCY,
     },
   };
 
   if (saleIncl && saleIncl > 0) {
     payload.salePrice = {
-      value: String(saleIncl.toFixed(2)),
+      value: formatMoneyExact(saleIncl, { currencySymbol: "", space: false }),
       currency: GOOGLE_FEED_CURRENCY,
     };
   }
@@ -281,6 +414,11 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
     brandsSnap.docs.map((d) => d.data() || {}),
     (x) => x?.brand?.slug
   );
+  const activeSets = {
+    categorySlugs: activeCategorySlugs,
+    subCategorySlugs: activeSubCategorySlugs,
+    brandSlugs: activeBrandSlugs,
+  };
 
   const hasActiveParents = (p) => {
     const c = String(p?.grouping?.category || "").trim();
@@ -296,14 +434,22 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
     );
   };
 
-  let products = productsSnap.docs
-    .map((d) => ({ id: d.id, ...(d.data() || {}) }))
-    .filter(
-      (p) =>
-        p?.placement?.isActive === true &&
-        p?.placement?.supplier_out_of_stock !== true &&
-        hasActiveParents(p)
-    );
+  const allProducts = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+  const skippedProducts = [];
+  const skippedVariants = [];
+
+  let products = allProducts.filter((p) => {
+    const reasons = getProductGoogleSkipReasons(p, activeSets);
+    if (reasons.length) {
+      skippedProducts.push({
+        productId: String(p?.product?.unique_id || p?.id || "").trim() || null,
+        title: String(p?.product?.title || "").trim() || "Untitled product",
+        reasons,
+      });
+      return false;
+    }
+    return true;
+  });
 
   if (limit != null) products = products.slice(0, limit);
 
@@ -311,7 +457,23 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
   let batchId = 1;
   for (const p of products) {
     const variants = Array.isArray(p?.variants) ? p.variants : [];
-    for (const v of variants) {
+    const eligibleVariants = [];
+    for (const variant of variants) {
+      const reasons = getVariantGoogleSkipReasons(p, variant);
+      if (reasons.length) {
+        skippedVariants.push({
+          productId: String(p?.product?.unique_id || p?.id || "").trim() || null,
+          title: String(p?.product?.title || "").trim() || "Untitled product",
+          variantId: String(variant?.variant_id || "").trim() || null,
+          variantLabel: String(variant?.label || "").trim() || null,
+          reasons,
+        });
+        continue;
+      }
+      eligibleVariants.push(variant);
+    }
+
+    for (const v of eligibleVariants) {
       const productPayload = buildContentApiProduct(p, v);
       if (!productPayload) continue;
       entries.push({
@@ -329,6 +491,12 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
       merchant_id: GOOGLE_MERCHANT_ID,
       products_scanned: products.length,
       entries_prepared: entries.length,
+      skipped_products: skippedProducts.slice(0, 50),
+      skipped_variants: skippedVariants.slice(0, 100),
+      skipped_summary: {
+        products: skippedProducts.length,
+        variants: skippedVariants.length,
+      },
       preview: entries.slice(0, 5),
     });
   }

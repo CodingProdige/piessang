@@ -8,6 +8,8 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { CartActionStack } from "@/components/cart/cart-actions";
 import { CartItemCard } from "@/components/cart/cart-item-card";
 import { DisplayCurrencySelector, useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import { PageBody } from "@/components/layout/page-body";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
 import {
   readShopperDeliveryArea,
   saveShopperDeliveryArea,
@@ -23,6 +25,7 @@ const PRODUCTS_ENDPOINT = "/api/catalogue/v1/products/product/get";
 const PRODUCTS_PAGE = "/products";
 const MENU_HEIGHT = 430;
 const DELIVERY_PROMPT_DISMISSED_KEY = "piessang-delivery-prompt-dismissed";
+const LANDING_PAGE_ENDPOINT = "/api/client/v1/landing-page/get";
 
 type CatalogueCategory = {
   slug?: string;
@@ -128,6 +131,7 @@ type MenuState = {
   activeSubcategories: SubCategory[];
   brands: Brand[];
   productCountsBySubCategory: Record<string, number>;
+  productCountsByBrand: Record<string, number>;
   setHoveredSlug: (slug: string) => void;
   hoveredSubcategorySlug: string;
   setHoveredSubcategorySlug: (slug: string) => void;
@@ -136,6 +140,20 @@ type MenuState = {
 type ProductAvailabilitySummary = {
   categoryCounts: Record<string, number>;
   subCategoryCounts: Record<string, number>;
+  brandCounts: Record<string, number>;
+};
+
+function normalizeKey(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+type FixedHeroConfig = {
+  locked?: boolean;
+  rotationSeconds?: number;
+  images?: Array<{
+    imageUrl?: string;
+    href?: string;
+  }>;
 };
 
 function formatDeliveryAreaLabel(area: ShopperDeliveryArea | null) {
@@ -391,6 +409,12 @@ async function fetchBrands(categorySlug: string, subCategorySlug?: string): Prom
         const title = item.data?.brand?.title?.trim();
         if (!slug || !title) return null;
         if (item.data?.placement?.isActive === false) return null;
+        const groupedCategory = item.data?.grouping?.category?.trim();
+        const groupedSubCategories = Array.isArray(item.data?.grouping?.subCategories)
+          ? item.data.grouping.subCategories.map((entry) => String(entry || "").trim()).filter(Boolean)
+          : [];
+        if (groupedCategory && groupedCategory !== categorySlug) return null;
+        if (subCategorySlug && groupedSubCategories.length && !groupedSubCategories.includes(subCategorySlug)) return null;
         const imageUrl = item.data?.media?.images?.[0]?.imageUrl?.trim() ?? "";
 
         return {
@@ -425,13 +449,27 @@ async function fetchProductAvailabilitySummary(): Promise<ProductAvailabilitySum
     const response = await fetch(url.toString());
     if (!response.ok) throw new Error("Unable to load product availability");
 
-    const payload = (await response.json()) as { items?: Array<{ data?: { grouping?: { category?: string; subCategory?: string } } }> };
+    const payload = (await response.json()) as {
+      items?: Array<{
+        data?: {
+          grouping?: { category?: string; subCategory?: string; brand?: string };
+          brand?: { slug?: string; title?: string };
+        };
+      }>;
+    };
     const categoryCounts: Record<string, number> = {};
     const subCategoryCounts: Record<string, number> = {};
+    const brandCounts: Record<string, number> = {};
 
     for (const item of payload.items ?? []) {
       const category = item?.data?.grouping?.category?.trim();
       const subCategory = item?.data?.grouping?.subCategory?.trim();
+      const brandKeys = [
+        normalizeKey(item?.data?.brand?.slug),
+        normalizeKey(item?.data?.brand?.title),
+        normalizeKey(item?.data?.grouping?.brand),
+      ].filter(Boolean);
+      const uniqueBrandKeys = [...new Set(brandKeys)];
       if (category) {
         categoryCounts[category] = (categoryCounts[category] ?? 0) + 1;
       }
@@ -439,11 +477,21 @@ async function fetchProductAvailabilitySummary(): Promise<ProductAvailabilitySum
         const key = `${category}::${subCategory}`;
         subCategoryCounts[key] = (subCategoryCounts[key] ?? 0) + 1;
       }
+      if (category && uniqueBrandKeys.length) {
+        for (const brandKey of uniqueBrandKeys) {
+          const categoryBrandKey = `${category}::${brandKey}`;
+          brandCounts[categoryBrandKey] = (brandCounts[categoryBrandKey] ?? 0) + 1;
+          if (subCategory) {
+            const subCategoryBrandKey = `${category}::${subCategory}::${brandKey}`;
+            brandCounts[subCategoryBrandKey] = (brandCounts[subCategoryBrandKey] ?? 0) + 1;
+          }
+        }
+      }
     }
 
-    return { categoryCounts, subCategoryCounts };
+    return { categoryCounts, subCategoryCounts, brandCounts };
   } catch {
-    return { categoryCounts: {}, subCategoryCounts: {} };
+    return { categoryCounts: {}, subCategoryCounts: {}, brandCounts: {} };
   }
 }
 
@@ -456,6 +504,7 @@ function useCatalogueMenu(): MenuState {
   );
   const [brandsByKey, setBrandsByKey] = useState<Record<string, Brand[]>>({});
   const [productCountsBySubCategory, setProductCountsBySubCategory] = useState<Record<string, number>>({});
+  const [productCountsByBrand, setProductCountsByBrand] = useState<Record<string, number>>({});
   const subcategoryRequestId = useRef(0);
   const brandRequestId = useRef(0);
 
@@ -466,6 +515,7 @@ function useCatalogueMenu(): MenuState {
       if (cancelled) return;
       setDepartments(items.filter((item) => (summary.categoryCounts[item.slug] ?? 0) > 0));
       setProductCountsBySubCategory(summary.subCategoryCounts);
+      setProductCountsByBrand(summary.brandCounts);
     });
 
     return () => {
@@ -523,7 +573,15 @@ function useCatalogueMenu(): MenuState {
   }, [displayCategorySlug, displaySubcategorySlug, brandsByKey]);
 
   const activeBrands = displayCategorySlug
-    ? brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? []
+    ? (brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? []).filter((brand) => {
+        const brandKeys = [normalizeKey(brand.slug), normalizeKey(brand.title)].filter(Boolean);
+        return brandKeys.some((brandKey) => {
+          const availabilityKey = displaySubcategorySlug
+            ? `${displayCategorySlug}::${displaySubcategorySlug}::${brandKey}`
+            : `${displayCategorySlug}::${brandKey}`;
+          return (productCountsByBrand[availabilityKey] ?? 0) > 0;
+        });
+      })
     : [];
 
   return {
@@ -532,13 +590,20 @@ function useCatalogueMenu(): MenuState {
     activeSubcategories,
     brands: activeBrands,
     productCountsBySubCategory,
+    productCountsByBrand,
     setHoveredSlug,
     setHoveredSubcategorySlug,
     hoveredSubcategorySlug,
   };
 }
 
-function SearchBar() {
+function SearchBar({
+  mobile = false,
+  onNavigate,
+}: {
+  mobile?: boolean;
+  onNavigate?: () => void;
+}) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -783,6 +848,7 @@ function SearchBar() {
     persistRecentSearch(search);
     void trackSearch(search);
     setOpen(false);
+    onNavigate?.();
     router.push(`/products?search=${encodeURIComponent(search)}`);
   }
 
@@ -824,6 +890,7 @@ function SearchBar() {
       imageSearch: "true",
     });
     if (nextLabel) params.set("imageLabel", nextLabel);
+    onNavigate?.();
     router.push(`/products?${params.toString()}`);
   }
 
@@ -906,7 +973,7 @@ function SearchBar() {
           submitSearch();
         }}
       >
-      <label className="flex min-w-0 flex-1 items-center rounded-l-[4px] bg-white px-4 py-1.5 shadow-[0_4px_14px_rgba(20,24,27,0.08)]">
+      <label className={`flex min-w-0 flex-1 items-center bg-white px-4 py-1.5 shadow-[0_4px_14px_rgba(20,24,27,0.08)] ${mobile ? "rounded-l-[14px]" : "rounded-l-[4px]"}`}>
         <input
           type="search"
           name="search"
@@ -914,6 +981,7 @@ function SearchBar() {
           placeholder="Search for products, brands..."
           className="w-full bg-transparent text-[15px] text-[#4b5563] outline-none placeholder:text-[#8a94a3]"
           autoComplete="off"
+          autoFocus={mobile}
           onChange={(event) => {
             setQuery(event.target.value);
             setOpen(true);
@@ -931,14 +999,14 @@ function SearchBar() {
         className="inline-flex h-[36px] w-[44px] items-center justify-center border-l border-black/8 bg-white text-[#4a4545] shadow-[0_4px_14px_rgba(20,24,27,0.08)]"
         aria-label="Search by image"
       >
-        ◫
+        <ImageSearchIcon />
       </button>
       <button
         type="submit"
-        className="inline-flex h-[36px] w-[46px] items-center justify-center rounded-r-[4px] bg-[#4a4545] text-white shadow-[0_4px_14px_rgba(20,24,27,0.12)]"
+        className={`inline-flex h-[36px] w-[46px] items-center justify-center bg-[#4a4545] text-white shadow-[0_4px_14px_rgba(20,24,27,0.12)] ${mobile ? "rounded-r-[14px]" : "rounded-r-[4px]"}`}
         aria-label="Search"
       >
-        ⌕
+        <SearchIcon />
       </button>
       </form>
 
@@ -1018,12 +1086,13 @@ function SearchBar() {
                 {pageSuggestions.map((page) => (
                   <button
                     key={page.href}
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      setOpen(false);
-                      router.push(page.href);
-                    }}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setOpen(false);
+                        onNavigate?.();
+                        router.push(page.href);
+                      }}
                     className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
                   >
                     <span>
@@ -1054,6 +1123,7 @@ function SearchBar() {
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => {
                     setOpen(false);
+                    onNavigate?.();
                     router.push(item.href);
                   }}
                   className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
@@ -1134,7 +1204,9 @@ function SearchBar() {
                 </div>
               ) : (
                 <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
-                  <div className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-white text-[24px] text-[#4a4545] shadow-[0_8px_24px_rgba(20,24,27,0.08)]">◫</div>
+                  <div className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-white text-[#4a4545] shadow-[0_8px_24px_rgba(20,24,27,0.08)]">
+                    <ImageSearchIcon className="h-7 w-7" />
+                  </div>
                   <p className="mt-5 text-[16px] font-semibold text-[#202020]">Drop an image here or upload one</p>
                   <p className="mt-2 max-w-[420px] text-[13px] leading-[1.5] text-[#57636c]">You can also paste a copied image with `Cmd/Ctrl + V` while this window is open.</p>
                   <button type="button" onClick={() => imageInputRef.current?.click()} className="mt-5 rounded-[14px] bg-[#202020] px-5 py-3 text-[14px] font-semibold text-white">
@@ -1231,6 +1303,7 @@ function SearchBar() {
                           onClick={() => {
                             setOpen(false);
                             resetImageSearchModal();
+                            onNavigate?.();
                             router.push(item.href);
                           }}
                           className="flex items-center gap-3 rounded-[18px] border border-black/8 bg-white p-3 text-left shadow-[0_8px_22px_rgba(20,24,27,0.05)] transition hover:-translate-y-[1px]"
@@ -1294,9 +1367,19 @@ function MenuIcon() {
 
 function SearchIcon() {
   return (
-    <svg viewBox="0 0 24 24" className="h-6 w-6" aria-hidden="true">
+    <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
       <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
       <path d="M16 16l4.5 4.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ImageSearchIcon({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="9" cy="10" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M6.5 16l4.2-4.1 2.9 2.7 2.8-2.3 1.1.9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -1684,11 +1767,7 @@ function CartPreviewDrawer({
           <CartActionStack onNavigate={onClose} compact />
         </div>
 
-        {snackbarMessage ? (
-          <div className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-[#202020] px-4 py-2 text-[12px] font-medium text-white shadow-[0_14px_30px_rgba(20,24,27,0.24)]">
-            {snackbarMessage}
-          </div>
-        ) : null}
+        <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />
       </aside>
     </div>
   );
@@ -1767,38 +1846,84 @@ function HeartButton({
   );
 }
 
-function DesktopHero() {
+function DesktopHero({ hero }: { hero?: FixedHeroConfig | null }) {
+  const images = Array.isArray(hero?.images)
+    ? hero.images
+        .map((entry) => {
+          if (typeof entry === "string") {
+            const imageUrl = String(entry || "").trim();
+            return imageUrl ? { imageUrl, href: "" } : null;
+          }
+          const imageUrl = String(entry?.imageUrl || "").trim();
+          const href = String(entry?.href || "").trim();
+          return imageUrl ? { imageUrl, href } : null;
+        })
+        .filter(Boolean) as Array<{ imageUrl: string; href: string }>
+    : [];
+  const rotationMs = Math.max(2000, Number(hero?.rotationSeconds || 4) * 1000);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [images.length]);
+
+  useEffect(() => {
+    if (images.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setActiveIndex((current) => (current + 1) % images.length);
+    }, rotationMs);
+    return () => window.clearInterval(timer);
+  }, [images.length, rotationMs]);
+
   return (
-    <div className="h-full overflow-hidden bg-[linear-gradient(135deg,#081a4f_0%,#0e2a7a_48%,#1f1146_100%)] p-6 text-white">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="rounded-[8px] bg-[rgba(255,255,255,0.12)] px-4 py-2 text-[12px] font-semibold">
-          Static hero
+    <div className="relative h-full overflow-hidden rounded-[4px] bg-[linear-gradient(135deg,#081a4f_0%,#0e2a7a_48%,#1f1146_100%)]">
+      {images.length ? (
+        <div className="relative h-full w-full">
+          {images.map((image, index) => (
+            <div
+              key={`${image.imageUrl}-${index}`}
+              className={`absolute inset-0 transition-opacity duration-700 ${index === activeIndex ? "opacity-100" : "opacity-0"}`}
+            >
+              {image.href ? (
+                <Link href={image.href} className="block h-full w-full" aria-label={`Open header hero ${index + 1}`}>
+                  <Image
+                    src={image.imageUrl}
+                    alt={`Header hero ${index + 1}`}
+                    fill
+                    sizes="(min-width: 1024px) 50vw, 0vw"
+                    className="object-cover"
+                    priority={index === 0}
+                  />
+                </Link>
+              ) : (
+                <Image
+                  src={image.imageUrl}
+                  alt={`Header hero ${index + 1}`}
+                  fill
+                  sizes="(min-width: 1024px) 50vw, 0vw"
+                  className="object-cover"
+                  priority={index === 0}
+                />
+              )}
+            </div>
+          ))}
+          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(6,18,55,0.18)_0%,rgba(6,18,55,0.05)_45%,rgba(6,18,55,0.24)_100%)]" />
+          {images.length > 1 ? (
+            <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2">
+              {images.map((_, index) => (
+                <span
+                  key={`hero-dot-${index}`}
+                  className={`h-2 w-2 rounded-full transition ${index === activeIndex ? "bg-white" : "bg-white/40"}`}
+                />
+              ))}
+            </div>
+          ) : null}
         </div>
-        <div className="text-right text-[13px] font-semibold text-white/80">Featured brands</div>
-      </div>
-
-      <div className="max-w-[320px]">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#cbb26b]">
-          Piessang marketplace
-        </p>
-        <h2 className="mt-3 text-[34px] font-semibold leading-[0.95]">
-          Clean, fixed hero panel.
-        </h2>
-        <p className="mt-4 text-[14px] leading-[1.7] text-white/84">
-          The hero stays fixed while the category menu opens a side panel with sub categories.
-        </p>
-      </div>
-
-      <div className="mt-6 grid grid-cols-2 gap-3">
-        {["CresHia", "IMOU", "EZVIZ", "SAMSUNG"].map((brand) => (
-          <div
-            key={brand}
-            className="rounded-[4px] bg-white/10 px-3 py-2 text-center text-[12px] font-semibold text-white/90 backdrop-blur-sm"
-          >
-            {brand}
-          </div>
-        ))}
-      </div>
+      ) : (
+        <div className="flex h-full items-center justify-center p-6 text-center text-[14px] font-semibold text-white/82">
+          Add rotating hero images in the landing page builder.
+        </div>
+      )}
     </div>
   );
 }
@@ -2195,9 +2320,11 @@ function MobileDrawer({
 
 export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [cartPreviewOpen, setCartPreviewOpen] = useState(false);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const [fixedHeroConfig, setFixedHeroConfig] = useState<FixedHeroConfig | null>(null);
   const {
     isAuthenticated,
     profile,
@@ -2258,6 +2385,23 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     };
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFixedHero() {
+      try {
+        const response = await fetch(LANDING_PAGE_ENDPOINT, { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) return;
+        if (!cancelled) setFixedHeroConfig(payload?.data?.page?.fixedHero || null);
+      } catch {
+      }
+    }
+    void loadFixedHero();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleClearFavorites = async () => {
     if (!isAuthenticated || !uid) {
       openAuthModal("Sign in to manage your favourites.");
@@ -2280,7 +2424,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
           className="pointer-events-none absolute inset-0 bg-center bg-cover bg-no-repeat opacity-[0.13]"
           style={{ backgroundImage: "url('/backgrounds/piessang-repeat-background.png')" }}
         />
-        <div className="relative flex h-11 w-full items-center justify-end px-3 lg:px-4">
+        <PageBody as="div" className="relative flex h-11 items-center justify-end">
           <div className="flex h-full items-center justify-end gap-4">
             <div className="flex h-full shrink-0 items-center">
               <HeaderDeliveryLocationControl className="h-full border-r-0 px-0 text-[11px]" />
@@ -2289,10 +2433,11 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               <DisplayCurrencySelector className="text-[11px]" />
             </div>
           </div>
-        </div>
+        </PageBody>
       </div>
       <div className="border-b border-black/5 bg-white">
-        <div className="flex w-full items-center justify-between gap-4 px-3 py-4 lg:px-4">
+        <PageBody as="div" className="py-4">
+        <div className="flex w-full items-center justify-between gap-4">
           <div className="flex items-center gap-4 lg:gap-8">
             <div className="hidden lg:flex">
               <PiessangLogo />
@@ -2379,6 +2524,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               />
           </div>
         </div>
+        </PageBody>
 
         <div className="flex w-full items-center justify-between px-3 py-4 lg:hidden lg:px-4">
           <div className="relative flex w-full items-center justify-between">
@@ -2416,7 +2562,12 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                   <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
                 </svg>
               </button>
-              <button type="button" className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]" aria-label="Search">
+              <button
+                type="button"
+                className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
+                aria-label="Search"
+                onClick={() => setMobileSearchOpen(true)}
+              >
                 <SearchIcon />
               </button>
               <button
@@ -2465,15 +2616,49 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         </div>
       </div>
 
+      <div className={`fixed inset-0 z-[90] lg:hidden ${mobileSearchOpen ? "" : "pointer-events-none"}`}>
+        <button
+          type="button"
+          aria-label="Close mobile search backdrop"
+          className={`absolute inset-0 bg-black/35 transition-opacity duration-300 ${mobileSearchOpen ? "opacity-100" : "opacity-0"}`}
+          onClick={() => setMobileSearchOpen(false)}
+        />
+        <aside
+          className={`absolute right-0 top-0 flex h-full w-[92vw] max-w-[420px] flex-col overflow-hidden bg-white shadow-[0_20px_48px_rgba(20,24,27,0.22)] transition-transform duration-300 ease-out ${
+            mobileSearchOpen ? "translate-x-0" : "translate-x-full"
+          }`}
+        >
+          <div className="border-b border-black/5 bg-white px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Search Piessang</p>
+                <p className="mt-1 text-[14px] text-[#57636c]">Search products, brands, or use image search.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileSearchOpen(false)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#f5f5f5] text-[28px] leading-none text-[#4b5563]"
+                aria-label="Close search"
+              >
+                ×
+              </button>
+            </div>
+            <div className="mt-4">
+              <SearchBar mobile onNavigate={() => setMobileSearchOpen(false)} />
+            </div>
+          </div>
+        </aside>
+      </div>
+
       <div className="hidden bg-[linear-gradient(90deg,#fdf070_0%,#e4c62d_34%,#e3c52f_68%,#cba726_100%)] lg:block">
-        <div className="mx-auto w-full max-w-[1180px] px-3 py-2 lg:px-4">
+        <PageBody as="div" className="py-2">
           <SearchBar />
-        </div>
+        </PageBody>
       </div>
 
       {showMegaMenu ? (
-        <div className="hidden border-b border-black/5 bg-white lg:block">
-          <div className="mx-auto w-full max-w-[1180px] px-3 py-4 lg:px-4">
+        <div className="hidden border-b border-black/5 bg-transparent lg:block">
+          <PageBody as="div" className="py-4">
             <div
               className="relative flex gap-4"
               onMouseLeave={() => {
@@ -2484,7 +2669,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
             >
               <div className="relative w-[300px] shrink-0" style={{ height: MENU_HEIGHT }}>
                 <aside className="relative h-full overflow-hidden rounded-[4px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-                  <div className="flex h-[48px] items-center justify-between bg-[linear-gradient(90deg,#e4c62d_0%,#e3c52f_45%,#cba726_100%)] px-5 text-[16px] font-semibold text-[#5a4916]">
+                  <div className="flex h-[48px] items-center justify-between bg-[#4a4545] px-5 text-[16px] font-semibold text-white">
                     <span>Shop by Category</span>
                     <span aria-hidden="true">⌄</span>
                   </div>
@@ -2526,7 +2711,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               </div>
 
               <div className="hidden h-[430px] flex-1 overflow-hidden rounded-[4px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)] lg:block">
-                <DesktopHero />
+                <DesktopHero hero={fixedHeroConfig} />
               </div>
 
               {flyoutOpen ? (
@@ -2539,7 +2724,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                 />
               ) : null}
             </div>
-          </div>
+          </PageBody>
         </div>
       ) : null}
 

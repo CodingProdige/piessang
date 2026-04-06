@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import { LegalPage } from "@/components/layout/legal-page";
+import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
-export const metadata: Metadata = {
-  title: "Delivery Policy | Piessang",
-  description: "Review the detailed delivery, shipping, and collection policy for the Piessang marketplace.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  return buildSeoMetadata("delivery", {
+    title: "Delivery Policy | Piessang",
+    description: "Review the detailed delivery, shipping, and collection policy for the Piessang marketplace.",
+  });
+}
 
 function Clause({
   id,

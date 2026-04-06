@@ -1,5 +1,6 @@
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getSellerLotStorageSummary } from "@/lib/warehouse/stock-lots";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 export const SELLER_BILLING_COLLECTION = "seller_billing_cycles_v1";
 
@@ -13,7 +14,7 @@ function toNum(value: unknown, fallback = 0) {
 }
 
 function r2(value: unknown) {
-  return Number(toNum(value, 0).toFixed(2));
+  return normalizeMoneyAmount(toNum(value, 0));
 }
 
 function startOfMonth(date: Date) {
@@ -39,6 +40,29 @@ function parseIsoDate(value: unknown) {
   if (!raw) return null;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function monthKeyToDate(monthKey: string) {
+  const [year, month] = String(monthKey || "").split("-").map((item) => Number(item));
+  if (!year || !month) return null;
+  return startOfMonth(new Date(year, month - 1, 1));
+}
+
+function cycleHasMeaningfulBilling(cycle: Record<string, any> | null | undefined) {
+  if (!cycle || typeof cycle !== "object") return false;
+  const totals = cycle?.totals && typeof cycle.totals === "object" ? cycle.totals : {};
+  const counts = cycle?.counts && typeof cycle.counts === "object" ? cycle.counts : {};
+  const payments = Array.isArray(cycle?.payments) ? cycle.payments : [];
+  return Boolean(
+    toNum(totals?.amountDueIncl, 0) > 0 ||
+      toNum(totals?.fulfilmentFeeIncl, 0) > 0 ||
+      toNum(totals?.storageFeeIncl, 0) > 0 ||
+      toNum(totals?.successFeeIncl, 0) > 0 ||
+      toNum(totals?.salesIncl, 0) > 0 ||
+      toNum(counts?.settlements, 0) > 0 ||
+      toNum(counts?.agedLots, 0) > 0 ||
+      payments.length > 0
+  );
 }
 
 function matchesSeller(record: Record<string, any>, sellerSlug?: string | null, sellerCode?: string | null) {
@@ -114,7 +138,14 @@ export async function computeSellerBillingCycle({
 
   const amountDueIncl = r2(totals.fulfilmentFeeIncl + totals.storageFeeIncl);
   const now = new Date();
-  const status = amountDueIncl <= 0 ? "settled" : now.toISOString() > dueDate ? "overdue" : "due";
+  const hasMeaningfulBilling =
+    amountDueIncl > 0 ||
+    totals.salesIncl > 0 ||
+    totals.successFeeIncl > 0 ||
+    totals.netSellerPayoutIncl > 0 ||
+    rows.length > 0 ||
+    lotStorageSummary.overThresholdLots.length > 0;
+  const status = !hasMeaningfulBilling ? "no_charge" : amountDueIncl <= 0 ? "settled" : now.toISOString() > dueDate ? "overdue" : "due";
 
   return {
     monthKey,
@@ -163,11 +194,13 @@ export async function getSellerBillingOverview({
   sellerCode,
   vendorName,
   months = 6,
+  sellerRegisteredAt,
 }: {
   sellerSlug?: string | null;
   sellerCode?: string | null;
   vendorName?: string | null;
   months?: number;
+  sellerRegisteredAt?: string | null;
 }) {
   const db = getAdminDb();
   if (!db) throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");
@@ -177,8 +210,16 @@ export async function getSellerBillingOverview({
     .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }))
     .filter((item) => matchesSeller(item, sellerSlug, sellerCode));
 
-  const monthKeys = Array.from({ length: Math.max(1, months) }, (_, index) => getMonthKey(addMonths(new Date(), -index - 1)));
+  const registrationDate = parseIsoDate(sellerRegisteredAt);
+  const registrationMonthStart = registrationDate ? startOfMonth(registrationDate) : null;
+  const monthKeys = Array.from({ length: Math.max(1, months) }, (_, index) => getMonthKey(addMonths(new Date(), -index - 1))).filter((monthKey) => {
+    if (!registrationMonthStart) return true;
+    const monthDate = monthKeyToDate(monthKey);
+    if (!monthDate) return false;
+    return monthDate >= registrationMonthStart;
+  });
   const cycles = [];
+  const latestMonthKey = monthKeys[0] || null;
 
   for (const monthKey of monthKeys) {
     const existing = saved.find((item) => toStr(item.monthKey) === monthKey);
@@ -197,11 +238,20 @@ export async function getSellerBillingOverview({
   }
 
   cycles.sort((left, right) => String(right.monthKey || "").localeCompare(String(left.monthKey || "")));
-  const current = cycles[0] || null;
+  const current = cycles.find((cycle) => toStr(cycle?.monthKey) === latestMonthKey) || cycles[0] || null;
+  const visibleCycles = cycles.filter((cycle) => {
+    const isCurrent = toStr(cycle?.monthKey) === latestMonthKey;
+    if (isCurrent) return true;
+    if (registrationMonthStart) {
+      const cycleDate = monthKeyToDate(toStr(cycle?.monthKey));
+      if (!cycleDate || cycleDate < registrationMonthStart) return false;
+    }
+    return cycleHasMeaningfulBilling(cycle) || Boolean((cycle as Record<string, any>)?.billingId);
+  });
 
   return {
     current,
-    cycles,
+    cycles: visibleCycles,
     guide: {
       successFee:
         "Success fees are calculated from the live category rate whenever an order is created. They are shown in billing for transparency.",

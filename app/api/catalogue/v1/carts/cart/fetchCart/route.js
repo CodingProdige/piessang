@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -7,6 +8,7 @@ import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } fro
 import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
 import { normalizeSellerDeliveryProfile, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
+import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 
 /* ------------------ HELPERS ------------------- */
 
@@ -15,7 +17,7 @@ const err = (s,t,m,e={})=>NextResponse.json({ ok:false,title:t,message:m,...e },
 
 const now = () => new Date().toISOString();
 const VAT = 0.15;
-const r2 = v => Number((+v).toFixed(2));
+const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 const REBATE_TIER_MAX_CAP = 5;
 const CREDIT_NOTE_OPEN_STATUSES = new Set(["open", "partially_used"]);
 const sellerOwnerCache = new Map();
@@ -600,7 +602,7 @@ export async function POST(req){
           credit: {
             available_incl: creditSnapshot.available_incl,
             applied: creditCalc.applied,
-            applied_formatted: r2(creditCalc.applied).toFixed(2),
+            applied_formatted: formatMoneyExact(creditCalc.applied, { currencySymbol: "", space: false }),
             notes_available_incl: creditSnapshot.available_incl,
             notes_applied_incl: creditCalc.notes_applied_incl,
             applied_allocations: creditCalc.applied_allocations,
@@ -619,7 +621,7 @@ export async function POST(req){
         pricing_profile_uid: pricingProfileUid,
         credit: {
           available_incl: creditSnapshot.available_incl,
-          applied_formatted: r2(creditCalc.applied).toFixed(2),
+          applied_formatted: formatMoneyExact(creditCalc.applied, { currencySymbol: "", space: false }),
           notes_available_incl: creditSnapshot.available_incl,
           notes_applied_incl: creditCalc.notes_applied_incl,
           notes_summary: creditSnapshot.notes_summary,
@@ -823,7 +825,7 @@ export async function POST(req){
         credit: {
           available_incl: creditSnapshot.available_incl,
           applied: creditCalc.applied,
-          applied_formatted: r2(creditCalc.applied).toFixed(2),
+          applied_formatted: formatMoneyExact(creditCalc.applied, { currencySymbol: "", space: false }),
           notes_available_incl: creditSnapshot.available_incl,
           notes_applied_incl: creditCalc.notes_applied_incl,
           applied_allocations: creditCalc.applied_allocations,
@@ -849,7 +851,7 @@ export async function POST(req){
       pricing_profile_uid: pricingProfileUid,
       credit: {
         available_incl: creditSnapshot.available_incl,
-        applied_formatted: r2(creditCalc.applied).toFixed(2),
+        applied_formatted: formatMoneyExact(creditCalc.applied, { currencySymbol: "", space: false }),
         notes_available_incl: creditSnapshot.available_incl,
         notes_applied_incl: creditCalc.notes_applied_incl,
         notes_summary: creditSnapshot.notes_summary,

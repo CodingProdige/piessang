@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // app/api/brands/create/route.js
 import { NextResponse } from "next/server";
 import { ensureBrandRecord } from "@/lib/catalogue/brand-upsert";

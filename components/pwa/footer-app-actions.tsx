@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { clientApp } from "@/lib/firebase";
 
@@ -71,6 +72,8 @@ async function ensureWebPushToken(uid: string) {
 
 export function FooterAppActions() {
   const { isAuthenticated, uid } = useAuth();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [showIosHelp, setShowIosHelp] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">("default");
@@ -212,6 +215,9 @@ export function FooterAppActions() {
 
   const canInstall = !standalone;
   const canEnableNotifications = pushSupported && notificationPermission !== "granted";
+  const hideOnSellerBilling = pathname === "/seller/dashboard" && searchParams.get("section") === "billing";
+
+  if (hideOnSellerBilling) return null;
 
   return (
     <>

@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -7,6 +8,7 @@ import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/s
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { NextResponse } from "next/server";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
@@ -37,7 +39,7 @@ function sanitizeLongText(value) {
 function sanitizeMoney(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric < 0) return 0;
-  return Number(numeric.toFixed(2));
+  return normalizeMoneyAmount(numeric);
 }
 
 function sanitizePositiveInt(value, fallback = 0) {

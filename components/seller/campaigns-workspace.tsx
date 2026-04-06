@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { formatCurrencyExact } from "@/lib/money";
 
 type CampaignAnalytics = {
   impressions?: number;
@@ -162,9 +163,7 @@ function toNum(value: unknown, fallback = 0) {
 }
 
 function formatMoney(value?: number) {
-  return `R ${new Intl.NumberFormat("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
-    Number.isFinite(Number(value)) ? Number(value) : 0,
-  )}`;
+  return formatCurrencyExact(Number.isFinite(Number(value)) ? Number(value) : 0, "ZAR");
 }
 
 function formatDate(value?: string | null) {

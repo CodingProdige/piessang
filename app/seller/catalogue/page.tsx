@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useAuth } from "@/components/auth/auth-provider";
+import { PageBody } from "@/components/layout/page-body";
 import { SellerPageIntro } from "@/components/seller/page-intro";
 
 const sellerLinks = [
@@ -36,7 +37,7 @@ export default function SellerCataloguePage() {
         : "Seller access required";
 
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+    <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
       <SellerPageIntro
         title="Seller catalogue"
         description="Use this page to get into product creation and catalogue management."
@@ -105,6 +106,6 @@ export default function SellerCataloguePage() {
           </p>
         </section>
       )}
-    </main>
+    </PageBody>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { PiessangHeader } from "@/components/header/mega-menu";
 import { ClientTitleSync } from "@/components/layout/client-title-sync";
 import { PiessangFooter } from "@/components/footer/site-footer";
@@ -16,15 +16,22 @@ export function AppShell({
   initialAuthBootstrap: AuthBootstrap;
 }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const isHome = pathname === "/";
+  const isLandingPreview = pathname === "/preview/landing-page";
+  const hideFooter =
+    isLandingPreview ||
+    pathname === "/seller/dashboard" &&
+    searchParams.get("section") === "admin-landing-builder";
+  const hideHeader = isLandingPreview;
 
   return (
     <AuthProvider initialAuthBootstrap={initialAuthBootstrap}>
       <DisplayCurrencyProvider>
         <ClientTitleSync />
-        <PiessangHeader showMegaMenu={isHome} />
+        {!hideHeader ? <PiessangHeader showMegaMenu={isHome} /> : null}
         {children}
-        <PiessangFooter />
+        {!hideFooter ? <PiessangFooter /> : null}
       </DisplayCurrencyProvider>
     </AuthProvider>
   );

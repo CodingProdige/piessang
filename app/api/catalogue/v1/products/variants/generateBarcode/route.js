@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // app/api/barcodes/generateUniversal/route.js
 import { NextResponse } from "next/server";
 import { randomUUID } from "crypto";

@@ -1,12 +1,13 @@
 import { doc } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { computeLineTotals, computeCartTotals } from "./lineCalculator";
 import { capQuantity } from "./stock";
 import { ensureCartItemKey } from "./keyManager";
 import { buildUiMessage } from "./uiMessage";
 
 const nowIso = () => new Date().toISOString();
-const r2 = (v) => Number((Number(v) || 0).toFixed(2));
+const r2 = (v) => normalizeMoneyAmount(Number(v) || 0);
 const computeOrderPaymentStatus = (required, paid) => {
   if (required <= 0) return "paid";
   if (paid <= 0) return "pending";

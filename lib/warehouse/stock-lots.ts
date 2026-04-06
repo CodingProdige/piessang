@@ -1,5 +1,6 @@
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { getMarketplaceVolumeBand } from "@/lib/marketplace/fees";
 
@@ -16,7 +17,7 @@ function toNum(value: unknown, fallback = 0) {
 }
 
 function r2(value: unknown) {
-  return Number(toNum(value, 0).toFixed(2));
+  return normalizeMoneyAmount(toNum(value, 0));
 }
 
 function normalizeLotReservations(entries: Array<Record<string, any>> = []) {

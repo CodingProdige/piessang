@@ -2,6 +2,7 @@ import Link from "next/link";
 import { headers } from "next/headers";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { ProductsResults } from "@/components/products/products-results";
 import { VendorFollowControls } from "@/components/vendors/vendor-follow-controls";
@@ -59,6 +60,17 @@ async function fetchVendorProducts(vendorName: string, sellerSlug: string, origi
   return (await response.json()) as VendorPayload;
 }
 
+function resolveRequestOrigin(requestHeaders: Headers) {
+  const directOrigin = requestHeaders.get("origin");
+  if (directOrigin) return directOrigin;
+
+  const protocol = requestHeaders.get("x-forwarded-proto") || "https";
+  const host = requestHeaders.get("x-forwarded-host") || requestHeaders.get("host");
+  if (host) return `${protocol}://${host}`;
+
+  return "http://localhost:3000";
+}
+
 export async function generateMetadata({
   params,
 }: {
@@ -100,13 +112,13 @@ export default async function VendorPage({
   const sellerRatings = await getSellerRatingsSummary({ sellerCode, sellerSlug });
 
   const requestHeaders = await headers();
-  const origin = requestHeaders.get("origin") || "http://localhost:3000";
+  const origin = resolveRequestOrigin(requestHeaders);
   const payload = unavailable ? null : await fetchVendorProducts(vendorName, sellerCode, origin);
   const products = Array.isArray(payload?.items) ? payload.items : [];
   const totalCount = products.length;
 
   return (
-    <main className="mx-auto max-w-[1400px] px-3 py-4 lg:px-4 lg:py-6">
+    <PageBody className="px-3 py-4 lg:px-4 lg:py-6">
       <section className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <div className="relative">
           <div className="relative h-[220px] w-full bg-[#fff]">
@@ -171,7 +183,7 @@ export default async function VendorPage({
                       {totalCount} products
                     </span>
                     <Link
-                      href={`/vendors/${encodeURIComponent(sellerSlug)}/reviews`}
+                      href={`/vendors/${encodeURIComponent(sellerCode)}/reviews`}
                       className="rounded-full bg-[rgba(15,128,195,0.1)] px-3 py-1.5 text-[12px] font-semibold text-[#0f80c3]"
                     >
                       {sellerRatings.average ? `${sellerRatings.average.toFixed(1)}★` : "No ratings"} · {sellerRatings.count} rating{sellerRatings.count === 1 ? "" : "s"}
@@ -219,6 +231,6 @@ export default async function VendorPage({
           />
         </div>
       )}
-    </main>
+    </PageBody>
   );
 }

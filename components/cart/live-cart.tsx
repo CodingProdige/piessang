@@ -6,6 +6,7 @@ import { CartActionStack } from "@/components/cart/cart-actions";
 import { CartItemCard } from "@/components/cart/cart-item-card";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 
 type CartItem = {
@@ -373,11 +374,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
         checkoutHint={checkoutBlockMessage}
       />
 
-      {snackbarMessage ? (
-        <div className="pointer-events-none fixed bottom-5 left-1/2 z-[85] -translate-x-1/2 rounded-full bg-[#202020] px-4 py-2 text-[12px] font-medium text-white shadow-[0_14px_30px_rgba(20,24,27,0.24)]">
-          {snackbarMessage}
-        </div>
-      ) : null}
+      <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />
     </section>
   );
 }

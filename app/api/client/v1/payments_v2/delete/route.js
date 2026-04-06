@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { doc, runTransaction } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 /* ───────── HELPERS ───────── */
 
@@ -13,7 +15,7 @@ const err = (status = 500, title = "Server Error", message = "Unknown error") =>
   NextResponse.json({ ok: false, title, message }, { status });
 
 const now = () => new Date().toISOString();
-const r2 = v => Number((Number(v) || 0).toFixed(2));
+const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 
 function computeOrderPaymentStatus(required, paid) {
   if (required <= 0) return "paid";
@@ -38,9 +40,7 @@ function getOrderRequiredIncl(order) {
   );
   const finalIncl = Number(totals?.final_incl);
   const derivedFinalPayable = Number.isFinite(finalIncl)
-    ? Number(
-        Math.max(finalIncl - creditAppliedIncl - collectedReturnsIncl, 0).toFixed(2)
-      )
+    ? r2(Math.max(finalIncl - creditAppliedIncl - collectedReturnsIncl, 0))
     : null;
   const storedFinalPayable = Number(totals?.final_payable_incl);
   const storedRequired = Number(order?.payment?.required_amount_incl);

@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
@@ -6,6 +7,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
 import { buildOrderDeliveryProgress, enrichOrderItemFulfillment } from "@/lib/orders/fulfillment-progress";
 import { getFrozenLineTotalIncl, getFrozenSellerSliceSubtotalIncl } from "@/lib/orders/frozen-money";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { createOrderTimelineEvent, getOrderTimelineEvents } from "@/lib/orders/timeline";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
@@ -384,7 +386,7 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const fulfilled = orderStatus === "completed" || fulfillmentStatus === "delivered";
   const unfulfilled = !fulfilled && orderStatus !== "cancelled";
   const deliveryAmountIncl = Number(deliveryOption?.amountIncl || 0);
-  const totalIncl = Number((subtotalIncl + deliveryAmountIncl).toFixed(2));
+  const totalIncl = normalizeMoneyAmount(subtotalIncl + deliveryAmountIncl);
 
   return {
     sellerCode: sellerIdentity.sellerCode || "",
@@ -393,6 +395,7 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
     orderId,
     orderNumber: toStr(order?.order?.orderNumber || ""),
     createdAt: toStr(order?.timestamps?.createdAt || ""),
+    channel: toStr(order?.order?.channel || ""),
     customerName: toStr(
       order?.customer_snapshot?.account?.accountName ||
         order?.customer_snapshot?.business?.companyName ||
@@ -404,6 +407,21 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
     fulfillmentStatus,
     deliveryProgress,
     deliveryOption,
+    destination: {
+      label: customerContact?.destination || "",
+      city: toStr(
+        order?.delivery_snapshot?.address?.city ||
+          order?.delivery?.address_snapshot?.city ||
+          "",
+      ),
+      province: toStr(
+        order?.delivery_snapshot?.address?.province ||
+          order?.delivery_snapshot?.address?.stateProvinceRegion ||
+          order?.delivery?.address_snapshot?.province ||
+          order?.delivery?.address_snapshot?.stateProvinceRegion ||
+          "",
+      ),
+    },
     fulfilmentDeadline: {
       dueAt,
       dueAtLabel: toIsoOrEmpty(dueAt),

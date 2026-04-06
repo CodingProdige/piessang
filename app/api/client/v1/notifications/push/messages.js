@@ -57,5 +57,23 @@ export const pushTemplates = {
     title: "Out of stock",
     body: "{{productTitle}} is currently out of stock.",
     link: "{{link}}"
+  },
+
+  "seller-billing-reminder": {
+    title: "Seller bill due soon",
+    body: "{{billingMonthLabel}} billing of {{amountDue}} is due by {{dueDate}}.",
+    link: "{{link}}"
+  },
+
+  "seller-account-blocked": {
+    title: "Seller account blocked",
+    body: "Your seller account has been blocked until the outstanding billing amount is settled.",
+    link: "{{link}}"
+  },
+
+  "seller-billing-settled": {
+    title: "Billing settled",
+    body: "Your seller bill has been paid and your account access has been restored.",
+    link: "{{link}}"
   }
 };

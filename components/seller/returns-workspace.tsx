@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatCurrencyExact } from "@/lib/money";
 
 type ReturnLine = {
   lineKey: string;
@@ -42,7 +43,7 @@ function toStr(value: unknown, fallback = "") {
 }
 
 function formatCurrency(value: number) {
-  return new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" }).format(Number(value || 0));
+  return formatCurrencyExact(Number(value || 0), "ZAR");
 }
 
 function formatDate(value: string) {

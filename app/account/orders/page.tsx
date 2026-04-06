@@ -2,6 +2,7 @@
 
 import { useAuth } from "@/components/auth/auth-provider";
 import { useEffect, useState } from "react";
+import { PageBody } from "@/components/layout/page-body";
 import { CustomerOrdersWorkspace } from "@/components/account/orders-workspace";
 
 export default function AccountOrdersPage() {
@@ -47,18 +48,18 @@ export default function AccountOrdersPage() {
 
   if (!uid) {
     return (
-      <main className="mx-auto max-w-[1120px] px-4 py-10">
+      <PageBody className="px-4 py-10">
         <section className="rounded-[10px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <h1 className="text-[24px] font-semibold text-[#202020]">Your orders</h1>
           <p className="mt-3 text-[14px] leading-7 text-[#57636c]">Sign in to view your order history.</p>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   return (
-    <main className="mx-auto max-w-[1320px] px-4 py-8">
+    <PageBody className="px-4 py-8">
       <CustomerOrdersWorkspace uid={uid} payload={payload} loading={loading} error={error} />
-    </main>
+    </PageBody>
   );
 }

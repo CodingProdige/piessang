@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_MARKETPLACE_FEE_CONFIG } from "@/lib/marketplace/fees";
+import { formatMoneyExact } from "@/lib/money";
 
 type FeeRule = {
   kind?: string;
@@ -101,7 +102,7 @@ function normalizeUrl(value: string | URL | null | undefined) {
 }
 
 function formatMoney(value: unknown) {
-  return `R${toNum(value, 0).toFixed(2)}`;
+  return formatMoneyExact(toNum(value, 0));
 }
 
 function formatVolumeRange(band: { minVolumeCm3?: number | null; maxVolumeCm3?: number | null }) {

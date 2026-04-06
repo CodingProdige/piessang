@@ -1,8 +1,11 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
-import { db } from "@/lib/firebase";
-import { collection, getDocs } from "firebase/firestore";
+import { db, collection, getDocs } from "@/lib/firebase/admin-firestore";
+import { formatMoneyExact } from "@/lib/money";
+import { resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
+import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 
 const VAT = 0.15;
 const FEED_TITLE = "Piessang Product Feed";
@@ -19,17 +22,55 @@ const esc = (v) =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+const stripHtml = (v) =>
+  String(v ?? "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+const toTitleCase = (v) =>
+  String(v ?? "")
+    .trim()
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+const prettifyTaxonomyPart = (v) => {
+  const value = String(v ?? "").trim();
+  if (!value) return "";
+  if (/coca[\s-]?cola/i.test(value)) return "Coca-Cola";
+  return toTitleCase(value);
+};
+const hasNumber = (v) => typeof v === "number" && Number.isFinite(v);
+const slugify = (v) =>
+  String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/['".]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
 const moneyIncl = (excl) => {
   const n = Number(excl);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return (n * (1 + VAT)).toFixed(2);
+  return formatMoneyExact(n * (1 + VAT), { currencySymbol: "", space: false });
+};
+const explicitMoney = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0
+    ? formatMoneyExact(n, { currencySymbol: "", space: false })
+    : null;
 };
 
 const toNum = (v) => (Number.isFinite(+v) ? +v : 0);
 const isEligibleProduct = (p) =>
   p?.placement?.isActive === true &&
-  p?.placement?.supplier_out_of_stock !== true;
+  p?.placement?.supplier_out_of_stock !== true &&
+  String(p?.moderation?.status || "").trim().toLowerCase() === "published" &&
+  !isSellerAccountUnavailable(p);
 
 function buildActiveSlugSet(rows, slugReader) {
   return new Set(
@@ -88,16 +129,26 @@ function buildGoogleCategory(grouping) {
   return "Food, Beverages & Tobacco > Beverages";
 }
 
-function productLink(uniqueId) {
-  return `https://piessang.com/products?uniqueId=${encodeURIComponent(String(uniqueId || ""))}`;
+function productLink(uniqueId, title, variantId) {
+  const slug = slugify(title) || "product";
+  const params = new URLSearchParams();
+  params.set("unique_id", String(uniqueId || ""));
+  if (String(variantId || "").trim()) {
+    params.set("variant_id", String(variantId).trim());
+  }
+  return `https://piessang.com/products/${slug}?${params.toString()}`;
 }
 
 function variantPriceFields(variant) {
-  const baseIncl = moneyIncl(variant?.pricing?.selling_price_excl);
+  const baseIncl = hasNumber(variant?.pricing?.selling_price_incl)
+    ? explicitMoney(variant.pricing.selling_price_incl)
+    : moneyIncl(variant?.pricing?.selling_price_excl);
   if (!baseIncl) return null;
 
   if (isSaleLive(variant)) {
-    const saleIncl = moneyIncl(variant?.sale?.sale_price_excl);
+    const saleIncl = hasNumber(variant?.sale?.sale_price_incl)
+      ? explicitMoney(variant.sale.sale_price_incl)
+      : moneyIncl(variant?.sale?.sale_price_excl);
     if (saleIncl) {
       return {
         price: `${baseIncl} ZAR`,
@@ -110,6 +161,33 @@ function variantPriceFields(variant) {
     price: `${baseIncl} ZAR`,
     salePrice: null,
   };
+}
+
+function resolveVariantImage(product, variant) {
+  const variantImage = Array.isArray(variant?.media?.images)
+    ? variant.media.images.find((entry) => Boolean(entry?.imageUrl))?.imageUrl
+    : null;
+  if (variantImage) return String(variantImage).trim();
+  const productImage = Array.isArray(product?.media?.images)
+    ? product.media.images.find((entry) => Boolean(entry?.imageUrl))?.imageUrl
+    : null;
+  return productImage ? String(productImage).trim() : null;
+}
+
+function isEligibleVariantForGoogle(product, variant) {
+  const variantId = String(variant?.variant_id || "").trim();
+  const variantActive = variant?.placement?.isActive !== false;
+  const image = resolveVariantImage(product, variant);
+  const hasListableAvailability =
+    sumInventory(variant) + (isSaleLive(variant) ? toNum(variant?.sale?.qty_available) : 0) > 0 ||
+    variant?.placement?.continue_selling_out_of_stock === true;
+  return (
+    Boolean(variantId) &&
+    variantActive &&
+    Boolean(image) &&
+    Boolean(variantPriceFields(variant)) &&
+    hasListableAvailability
+  );
 }
 
 export async function GET(req) {
@@ -174,28 +252,32 @@ export async function GET(req) {
       if (!uniqueId || !title) continue;
 
       const desc =
-        String(p?.product?.description || "").trim() ||
-        `${title} available on Piessang Marketplace`;
-      const image = Array.isArray(p?.media?.images) ? p.media.images[0]?.imageUrl : null;
-      const brand = String(p?.grouping?.brand || "").trim() || "Piessang";
-      const category = String(p?.grouping?.category || "").trim();
-      const subCategory = String(p?.grouping?.subCategory || "").trim();
+        stripHtml(p?.product?.description) || `${title} available on Piessang Marketplace`;
+      const brand = prettifyTaxonomyPart(p?.grouping?.brand) || "Piessang";
+      const category = prettifyTaxonomyPart(p?.grouping?.category);
+      const subCategory = prettifyTaxonomyPart(p?.grouping?.subCategory);
       const googleCategory = buildGoogleCategory(p?.grouping);
-      const link = productLink(uniqueId);
+      const marketplaceSeller = resolveMarketplaceSeller({
+        product: p?.product,
+        seller: p?.seller,
+        vendor: p?.vendor,
+      });
 
-      const variants = Array.isArray(p?.variants) ? p.variants : [];
+      const variants = Array.isArray(p?.variants) ? p.variants.filter((variant) => isEligibleVariantForGoogle(p, variant)) : [];
       for (const v of variants) {
         const variantId = String(v?.variant_id || "").trim();
         if (!variantId) continue;
 
         const priceFields = variantPriceFields(v);
         if (!priceFields) continue;
+        const image = resolveVariantImage(p, v);
 
         const vLabel = String(v?.label || "").trim();
         const itemTitle = vLabel ? `${title} - ${vLabel}` : title;
         const sku = String(v?.sku || "").trim();
         const gtin = String(v?.barcode || "").trim();
         const availability = availabilityForVariant(v);
+        const link = productLink(uniqueId, title, variantId);
 
         const xml = [
           "<item>",
@@ -206,6 +288,7 @@ export async function GET(req) {
           `<link>${esc(link)}</link>`,
           image ? `<g:image_link>${esc(image)}</g:image_link>` : "",
           `<g:brand>${esc(brand)}</g:brand>`,
+          `<g:external_seller_id>${esc(marketplaceSeller.externalSellerId)}</g:external_seller_id>`,
           `<g:condition>new</g:condition>`,
           `<g:availability>${esc(availability)}</g:availability>`,
           `<g:price>${esc(priceFields.price)}</g:price>`,

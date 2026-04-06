@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { upsertAutoReturnsExcessCreditNote } from "@/lib/creditNotes";
+import { normalizeMoneyAmount } from "@/lib/money";
 import { syncOrderSellerSettlements } from "@/lib/seller/settlements";
 import { canTransitionOrderLifecycle } from "@/lib/orders/status-lifecycle";
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
@@ -16,7 +18,7 @@ const err = (status = 500, title = "Server Error", message = "Unknown error") =>
   NextResponse.json({ ok: false, title, message }, { status });
 
 const now = () => new Date().toISOString();
-const r2 = value => Number((Number(value) || 0).toFixed(2));
+const r2 = value => normalizeMoneyAmount(Number(value) || 0);
 
 const allowedOrderStatuses = [
   "payment_pending",

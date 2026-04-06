@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import {
@@ -11,6 +12,7 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
 import { PNG } from "pngjs";
+import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 
 const ok = (data = {}, status = 200) =>
   NextResponse.json({ ok: true, data }, { status });
@@ -81,7 +83,7 @@ async function resolveOrderId(orderNumber) {
 }
 
 function formatMoney(value) {
-  return Number(value || 0).toFixed(2);
+  return formatMoneyExact(value, { currencySymbol: "", space: false });
 }
 
 function formatOrderDate(value) {
@@ -222,11 +224,11 @@ function buildReceiptText(order, width) {
   const collectedReturnsIncl = Number(
     order?.returns?.totals?.incl || totals?.collected_returns_incl || 0
   );
-  const fallbackDueIncl = Number(
+  const fallbackDueIncl = normalizeMoneyAmount(
     Math.max(
       Number(totals?.final_incl || 0) - creditAppliedIncl - collectedReturnsIncl,
       0
-    ).toFixed(2)
+    )
   );
   const totalDueIncl = Number(
     order?.payment?.required_amount_incl ??

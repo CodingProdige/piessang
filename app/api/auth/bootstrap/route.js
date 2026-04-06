@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 import { NextResponse } from "next/server";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 

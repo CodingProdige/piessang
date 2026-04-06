@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
+import { formatMoneyExact } from "@/lib/money";
 
 type OrderRecord = {
   docId?: string;
@@ -123,13 +124,8 @@ type ConfirmState = {
   onConfirm: () => Promise<void> | void;
 };
 
-function r2(value: unknown) {
-  const num = Number(value || 0);
-  return Number.isFinite(num) ? num.toFixed(2) : "0.00";
-}
-
 function formatCurrency(value: unknown) {
-  return `R ${r2(value)}`;
+  return formatMoneyExact(value, { space: true });
 }
 
 function formatDate(value?: string) {

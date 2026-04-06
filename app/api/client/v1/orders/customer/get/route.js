@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { buildOrderDeliveryProgress } from "@/lib/orders/fulfillment-progress";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 /* ───────── HELPERS ───────── */
 
@@ -147,7 +149,7 @@ function getOutstandingIncl(order) {
 
   const required = getFinalPayableIncl(order);
   const paid = toNum(order?.payment?.paid_amount_incl);
-  return Number(Math.max(required - paid, 0).toFixed(2));
+  return normalizeMoneyAmount(Math.max(required - paid, 0));
 }
 
 function getCollectedReturnsIncl(order) {
@@ -169,8 +171,8 @@ function getFinalPayableIncl(order) {
       0
   );
   const collectedReturnsIncl = getCollectedReturnsIncl(order);
-  const derived = Number(
-    Math.max(finalIncl - creditAppliedIncl - collectedReturnsIncl, 0).toFixed(2)
+  const derived = normalizeMoneyAmount(
+    Math.max(finalIncl - creditAppliedIncl - collectedReturnsIncl, 0)
   );
   if (Number.isFinite(derived)) return derived;
   const existing = Number(order?.totals?.final_payable_incl);
@@ -336,17 +338,11 @@ function buildTotals(orders) {
         paymentStatus === "refunded" ? paidAmountIncl : 0;
       const outstandingIncl = getOutstandingIncl(o);
 
-      acc.sumFinalIncl = Number((acc.sumFinalIncl + finalIncl).toFixed(2));
-      acc.sumDeliveryFeeIncl = Number(
-        (acc.sumDeliveryFeeIncl + deliveryFeeIncl).toFixed(2)
-      );
-      acc.sumPaidIncl = Number((acc.sumPaidIncl + paidAmountIncl).toFixed(2));
-      acc.totalOutstandingIncl = Number(
-        (acc.totalOutstandingIncl + outstandingIncl).toFixed(2)
-      );
-      acc.sumRefundedIncl = Number(
-        (acc.sumRefundedIncl + (refundAmountIncl || refundFallbackIncl)).toFixed(2)
-      );
+      acc.sumFinalIncl = normalizeMoneyAmount(acc.sumFinalIncl + finalIncl);
+      acc.sumDeliveryFeeIncl = normalizeMoneyAmount(acc.sumDeliveryFeeIncl + deliveryFeeIncl);
+      acc.sumPaidIncl = normalizeMoneyAmount(acc.sumPaidIncl + paidAmountIncl);
+      acc.totalOutstandingIncl = normalizeMoneyAmount(acc.totalOutstandingIncl + outstandingIncl);
+      acc.sumRefundedIncl = normalizeMoneyAmount(acc.sumRefundedIncl + (refundAmountIncl || refundFallbackIncl));
 
       return acc;
     },
@@ -412,15 +408,9 @@ function buildMonthlySeries(orders, months = 12, offsetMonths = 0) {
     const refundIncl = getRefundIncl(order);
 
     series[idx].orderCount += 1;
-    series[idx].sumFinalIncl = Number(
-      (series[idx].sumFinalIncl + finalIncl).toFixed(2)
-    );
-    series[idx].sumPaidIncl = Number(
-      (series[idx].sumPaidIncl + paidIncl).toFixed(2)
-    );
-    series[idx].sumRefundedIncl = Number(
-      (series[idx].sumRefundedIncl + refundIncl).toFixed(2)
-    );
+    series[idx].sumFinalIncl = normalizeMoneyAmount(series[idx].sumFinalIncl + finalIncl);
+    series[idx].sumPaidIncl = normalizeMoneyAmount(series[idx].sumPaidIncl + paidIncl);
+    series[idx].sumRefundedIncl = normalizeMoneyAmount(series[idx].sumRefundedIncl + refundIncl);
   }
 
   return series;
@@ -461,15 +451,9 @@ function buildDailySeries(orders, startDate) {
     const refundIncl = getRefundIncl(order);
 
     series[idx].orderCount += 1;
-    series[idx].sumFinalIncl = Number(
-      (series[idx].sumFinalIncl + finalIncl).toFixed(2)
-    );
-    series[idx].sumPaidIncl = Number(
-      (series[idx].sumPaidIncl + paidIncl).toFixed(2)
-    );
-    series[idx].sumRefundedIncl = Number(
-      (series[idx].sumRefundedIncl + refundIncl).toFixed(2)
-    );
+    series[idx].sumFinalIncl = normalizeMoneyAmount(series[idx].sumFinalIncl + finalIncl);
+    series[idx].sumPaidIncl = normalizeMoneyAmount(series[idx].sumPaidIncl + paidIncl);
+    series[idx].sumRefundedIncl = normalizeMoneyAmount(series[idx].sumRefundedIncl + refundIncl);
   }
 
   return series;
@@ -659,62 +643,30 @@ export async function POST(req) {
 
         if (createdAt >= startOfMonth) {
           spend.currentMonth.orderCount += 1;
-          spend.currentMonth.sumFinalIncl = Number(
-            (spend.currentMonth.sumFinalIncl + finalIncl).toFixed(2)
-          );
-          spend.currentMonth.sumPaidIncl = Number(
-            (spend.currentMonth.sumPaidIncl + paidIncl).toFixed(2)
-          );
-          spend.currentMonth.sumRefundedIncl = Number(
-            ((spend.currentMonth.sumRefundedIncl || 0) + refundIncl).toFixed(2)
-          );
-          spend.currentMonth.sumOutstandingIncl = Number(
-            ((spend.currentMonth.sumOutstandingIncl || 0) + outstandingIncl).toFixed(2)
-          );
+          spend.currentMonth.sumFinalIncl = normalizeMoneyAmount(spend.currentMonth.sumFinalIncl + finalIncl);
+          spend.currentMonth.sumPaidIncl = normalizeMoneyAmount(spend.currentMonth.sumPaidIncl + paidIncl);
+          spend.currentMonth.sumRefundedIncl = normalizeMoneyAmount((spend.currentMonth.sumRefundedIncl || 0) + refundIncl);
+          spend.currentMonth.sumOutstandingIncl = normalizeMoneyAmount((spend.currentMonth.sumOutstandingIncl || 0) + outstandingIncl);
         } else if (createdAt >= startOfPrevMonth && createdAt < startOfMonth) {
           spend.previousMonth.orderCount += 1;
-          spend.previousMonth.sumFinalIncl = Number(
-            (spend.previousMonth.sumFinalIncl + finalIncl).toFixed(2)
-          );
-          spend.previousMonth.sumPaidIncl = Number(
-            (spend.previousMonth.sumPaidIncl + paidIncl).toFixed(2)
-          );
-          spend.previousMonth.sumRefundedIncl = Number(
-            ((spend.previousMonth.sumRefundedIncl || 0) + refundIncl).toFixed(2)
-          );
-          spend.previousMonth.sumOutstandingIncl = Number(
-            ((spend.previousMonth.sumOutstandingIncl || 0) + outstandingIncl).toFixed(2)
-          );
+          spend.previousMonth.sumFinalIncl = normalizeMoneyAmount(spend.previousMonth.sumFinalIncl + finalIncl);
+          spend.previousMonth.sumPaidIncl = normalizeMoneyAmount(spend.previousMonth.sumPaidIncl + paidIncl);
+          spend.previousMonth.sumRefundedIncl = normalizeMoneyAmount((spend.previousMonth.sumRefundedIncl || 0) + refundIncl);
+          spend.previousMonth.sumOutstandingIncl = normalizeMoneyAmount((spend.previousMonth.sumOutstandingIncl || 0) + outstandingIncl);
         }
 
         if (createdAt >= startOfYear) {
           spend.last12Months.orderCount += 1;
-          spend.last12Months.sumFinalIncl = Number(
-            (spend.last12Months.sumFinalIncl + finalIncl).toFixed(2)
-          );
-          spend.last12Months.sumPaidIncl = Number(
-            (spend.last12Months.sumPaidIncl + paidIncl).toFixed(2)
-          );
-          spend.last12Months.sumRefundedIncl = Number(
-            ((spend.last12Months.sumRefundedIncl || 0) + refundIncl).toFixed(2)
-          );
-          spend.last12Months.sumOutstandingIncl = Number(
-            ((spend.last12Months.sumOutstandingIncl || 0) + outstandingIncl).toFixed(2)
-          );
+          spend.last12Months.sumFinalIncl = normalizeMoneyAmount(spend.last12Months.sumFinalIncl + finalIncl);
+          spend.last12Months.sumPaidIncl = normalizeMoneyAmount(spend.last12Months.sumPaidIncl + paidIncl);
+          spend.last12Months.sumRefundedIncl = normalizeMoneyAmount((spend.last12Months.sumRefundedIncl || 0) + refundIncl);
+          spend.last12Months.sumOutstandingIncl = normalizeMoneyAmount((spend.last12Months.sumOutstandingIncl || 0) + outstandingIncl);
         } else if (createdAt >= startOfPrevYear && createdAt < startOfYear) {
           spend.previous12Months.orderCount += 1;
-          spend.previous12Months.sumFinalIncl = Number(
-            (spend.previous12Months.sumFinalIncl + finalIncl).toFixed(2)
-          );
-          spend.previous12Months.sumPaidIncl = Number(
-            (spend.previous12Months.sumPaidIncl + paidIncl).toFixed(2)
-          );
-          spend.previous12Months.sumRefundedIncl = Number(
-            ((spend.previous12Months.sumRefundedIncl || 0) + refundIncl).toFixed(2)
-          );
-          spend.previous12Months.sumOutstandingIncl = Number(
-            ((spend.previous12Months.sumOutstandingIncl || 0) + outstandingIncl).toFixed(2)
-          );
+          spend.previous12Months.sumFinalIncl = normalizeMoneyAmount(spend.previous12Months.sumFinalIncl + finalIncl);
+          spend.previous12Months.sumPaidIncl = normalizeMoneyAmount(spend.previous12Months.sumPaidIncl + paidIncl);
+          spend.previous12Months.sumRefundedIncl = normalizeMoneyAmount((spend.previous12Months.sumRefundedIncl || 0) + refundIncl);
+          spend.previous12Months.sumOutstandingIncl = normalizeMoneyAmount((spend.previous12Months.sumOutstandingIncl || 0) + outstandingIncl);
         }
       }
     }
@@ -723,7 +675,7 @@ export async function POST(req) {
       totals,
       averageOrderValue:
         totals.totalOrders > 0
-          ? Number((totals.sumFinalIncl / totals.totalOrders).toFixed(2))
+          ? normalizeMoneyAmount(totals.sumFinalIncl / totals.totalOrders)
           : 0,
       firstOrderAt: firstOrderAt ? firstOrderAt.toISOString() : null,
       lastOrderAt: lastOrderAt ? lastOrderAt.toISOString() : null,

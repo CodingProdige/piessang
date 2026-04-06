@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
@@ -15,6 +16,7 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { formatMoneyExact } from "@/lib/money";
 
 /* HELPERS */
 
@@ -577,10 +579,10 @@ async function syncProducts({ full }) {
 
         return {
           option1: v.label || `Variant ${index + 1}`,
-          price: Number(price).toFixed(2),
+          price: formatMoneyExact(price, { currencySymbol: "", space: false }),
           compare_at_price:
             !forceDraft && salePrice && basePrice
-              ? Number(basePrice).toFixed(2)
+              ? formatMoneyExact(basePrice, { currencySymbol: "", space: false })
               : undefined,
           sku: v.sku || `FIRESTORE-${docSnap.id}-${index + 1}`,
           barcode: v.barcode || undefined,

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AccountReturnsWorkspace } from "@/components/account/returns-workspace";
+import { PageBody } from "@/components/layout/page-body";
 
 export const metadata: Metadata = {
   title: "Returns",
@@ -12,8 +13,8 @@ export const metadata: Metadata = {
 
 export default function AccountReturnsPage() {
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+    <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
       <AccountReturnsWorkspace />
-    </main>
+    </PageBody>
   );
 }

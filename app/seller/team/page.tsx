@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import { PageBody } from "@/components/layout/page-body";
 import { SellerPageIntro } from "@/components/seller/page-intro";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 
@@ -443,7 +444,7 @@ export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps
 
   if (!authReady) {
     return (
-      <main className="mx-auto max-w-[960px] px-4 py-10">
+      <PageBody className="py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller team</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Loading team access</h1>
@@ -451,13 +452,13 @@ export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps
             We’re checking your seller access and loading your vendor group.
           </p>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (!isAuthenticated) {
     return (
-      <main className="mx-auto max-w-[960px] px-4 py-10">
+      <PageBody className="py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller team</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Sign in to manage your team</h1>
@@ -472,13 +473,13 @@ export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps
             Sign in
           </button>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   if (!isSeller) {
     return (
-      <main className="mx-auto max-w-[960px] px-4 py-10">
+      <PageBody className="py-10">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller team</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Register as a seller first</h1>
@@ -493,12 +494,12 @@ export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps
             Register as seller
           </button>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+    <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
       {showIntro ? (
         <SellerPageIntro
           title="Team"
@@ -882,6 +883,6 @@ export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps
         </div>
       ) : null}
 
-    </main>
+    </PageBody>
   );
 }

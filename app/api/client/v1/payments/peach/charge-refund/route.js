@@ -1,10 +1,12 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import https from "https";
 import querystring from "querystring";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { syncOrderSellerSettlements } from "@/lib/seller/settlements";
+import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 
 /* ───────── HELPERS ───────── */
 
@@ -20,9 +22,10 @@ function normalizeAmount(value) {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   if (Number.isNaN(n)) return null;
+  const exact = normalizeMoneyAmount(n);
   return {
-    number: n,
-    formatted: n.toFixed(2)
+    number: exact,
+    formatted: formatMoneyExact(exact, { currencySymbol: "", space: false })
   };
 }
 
@@ -189,8 +192,8 @@ export async function POST(req) {
     const existingRefundedAttempts = existingAttempts
       .filter(a => a?.type === "refund")
       .reduce((sum, a) => sum + Number(a?.amount_incl || 0), 0);
-    const existingRefunded = Number(
-      Math.max(existingRefundedField, existingRefundedAttempts).toFixed(2)
+    const existingRefunded = normalizeMoneyAmount(
+      Math.max(existingRefundedField, existingRefundedAttempts)
     );
     const refundAmountInput = isBlank(amount) ? paidAmount : amount;
     const refundAmountNormalized = normalizeAmount(refundAmountInput);
@@ -287,11 +290,11 @@ export async function POST(req) {
 
       const chargedAmountIncl = Number(a?.amount_incl || 0);
       const previousRefundedAmount = Number(a?.refunded_amount_incl || 0);
-      const nextRefundedAmount = Number(
-        Math.min(chargedAmountIncl, previousRefundedAmount + refundAmount).toFixed(2)
+      const nextRefundedAmount = normalizeMoneyAmount(
+        Math.min(chargedAmountIncl, previousRefundedAmount + refundAmount)
       );
-      const nextRemainingRefundable = Number(
-        Math.max(chargedAmountIncl - nextRefundedAmount, 0).toFixed(2)
+      const nextRemainingRefundable = normalizeMoneyAmount(
+        Math.max(chargedAmountIncl - nextRefundedAmount, 0)
       );
       const nextRefundState =
         nextRefundedAmount <= 0
@@ -308,14 +311,9 @@ export async function POST(req) {
       };
     });
 
-    const remainingPaid = Math.max(
-      0,
-      Number((paidAmount - refundAmount).toFixed(2))
-    );
+    const remainingPaid = normalizeMoneyAmount(Math.max(0, paidAmount - refundAmount));
     const isFullyRefunded = remainingPaid === 0;
-    const nextRefundedTotal = Number(
-      (existingRefunded + refundAmount).toFixed(2)
-    );
+    const nextRefundedTotal = normalizeMoneyAmount(existingRefunded + refundAmount);
 
     const updatePayload = {
       "payment.status": isFullyRefunded ? "refunded" : "partial_refund",

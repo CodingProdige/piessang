@@ -1,10 +1,12 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import https from "https";
 import querystring from "querystring";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { applyOrderPaymentSuccess } from "@/lib/payments/applyOrderPaymentSuccess";
+import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 
 /* ───────── HELPERS ───────── */
 
@@ -88,7 +90,7 @@ export async function POST(req) {
       );
     }
 
-    const formattedAmount = Number(amount).toFixed(2);
+    const formattedAmount = formatMoneyExact(amount, { currencySymbol: "", space: false });
 
     /* ───── RESOLVE ORDER ───── */
 
@@ -119,7 +121,10 @@ export async function POST(req) {
       return err(409, "Already Paid", "This order has already been paid.");
     }
 
-    const expectedAmount = Number(order?.payment?.required_amount_incl || 0).toFixed(2);
+    const expectedAmount = formatMoneyExact(order?.payment?.required_amount_incl || 0, {
+      currencySymbol: "",
+      space: false,
+    });
     const expectedCurrency = String(order?.payment?.currency || currency || "").trim();
     if (formattedAmount !== expectedAmount) {
       return err(400, "Amount Mismatch", "The payment amount no longer matches the order total.", {
@@ -196,7 +201,7 @@ export async function POST(req) {
       chargeType: "token",
       merchantTransactionId,
       peachTransactionId: peachRes.id,
-      amount_incl: Number(formattedAmount),
+      amount_incl: normalizeMoneyAmount(formattedAmount),
       currency,
       token: {
         registrationId: card.token.registrationId,

@@ -1,8 +1,10 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { collection, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/lib/firebaseConfig";
+import { normalizeMoneyAmount } from "@/lib/money";
 
 /* ───────── HELPERS ───────── */
 
@@ -97,8 +99,8 @@ export async function POST(req) {
       payments: pagePayments,
       totals: {
         totalPayments: totals.totalPayments,
-        totalAmountIncl: Number(totals.totalAmountIncl.toFixed(2)),
-        totalRemainingIncl: Number(totals.totalRemainingIncl.toFixed(2))
+        totalAmountIncl: normalizeMoneyAmount(totals.totalAmountIncl),
+        totalRemainingIncl: normalizeMoneyAmount(totals.totalRemainingIncl)
       },
       pagination: {
         page: safePage,

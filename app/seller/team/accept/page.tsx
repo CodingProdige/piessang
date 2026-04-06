@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import { PageBody } from "@/components/layout/page-body";
 
 function SellerTeamAcceptContent() {
   const searchParams = useSearchParams();
@@ -41,7 +42,7 @@ function SellerTeamAcceptContent() {
   }, [isAuthenticated, profile?.uid, refreshProfile, token]);
 
   return (
-    <main className="mx-auto max-w-[960px] px-4 py-10">
+    <PageBody className="py-10">
       <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Seller team</p>
         <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Accept invite</h1>
@@ -79,13 +80,13 @@ function SellerTeamAcceptContent() {
           </div>
         )}
       </section>
-    </main>
+    </PageBody>
   );
 }
 
 export default function SellerTeamAcceptPage() {
   return (
-    <Suspense fallback={<main className="mx-auto max-w-[960px] px-4 py-10" />}>
+    <Suspense fallback={<PageBody className="py-10"><div /></PageBody>}>
       <SellerTeamAcceptContent />
     </Suspense>
   );

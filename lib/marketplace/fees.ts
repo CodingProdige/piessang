@@ -1,3 +1,4 @@
+import { normalizeMoneyAmount } from "@/lib/money";
 import { getFulfillmentFee, type FulfillmentFeeTable } from "@/lib/marketplace/fulfillment-fees";
 
 export type MarketplaceFeeRule =
@@ -871,7 +872,7 @@ export function estimateMarketplaceSuccessFeeAmount(
 ) {
   const price = Number(priceIncl || 0);
   const percent = estimateMarketplaceSuccessFeePercent(rule, price);
-  return Number.isFinite(price) && price > 0 ? Number((price * (percent / 100)).toFixed(2)) : 0;
+  return Number.isFinite(price) && price > 0 ? normalizeMoneyAmount(price * (percent / 100)) : 0;
 }
 
 export function getMarketplaceWeightBand(weightKg: number) {
@@ -940,7 +941,7 @@ export function estimateMarketplaceFulfilmentFee({
   });
 
   const weightBand = feeResult.ok ? feeResult.data.weightTier : getMarketplaceWeightBand(weightKg);
-  const fulfilmentFeeIncl = feeResult.ok ? Number(feeResult.data.fee.toFixed(2)) : 0;
+  const fulfilmentFeeIncl = feeResult.ok ? normalizeMoneyAmount(feeResult.data.fee) : 0;
   const sizeBandLabel = feeResult.ok ? feeResult.data.sizeTier : null;
 
   return {
@@ -977,10 +978,10 @@ export function estimateMarketplaceStorageFee({
   }
 
   const thresholdDays = Number(config?.stockCoverThresholdDays ?? DEFAULT_MARKETPLACE_FEE_CONFIG.stockCoverThresholdDays);
-  const stockCoverDays = Number(((stock / sales30d) * 30).toFixed(2));
+  const stockCoverDays = normalizeMoneyAmount((stock / sales30d) * 30);
   const overstocked = stockCoverDays > thresholdDays;
   return {
-    storageFeeIncl: overstocked ? Number(Number(band.overstockedFeeIncl || 0).toFixed(2)) : 0,
+    storageFeeIncl: overstocked ? normalizeMoneyAmount(Number(band.overstockedFeeIncl || 0)) : 0,
     stockCoverDays,
     sizeBand: band.label,
     overstocked,
@@ -1000,7 +1001,7 @@ export function deriveMarketplaceVolumeCm3({
   const width = Number(widthCm || 0);
   const height = Number(heightCm || 0);
   if (!(length > 0) || !(width > 0) || !(height > 0)) return 0;
-  return Number((length * width * height).toFixed(2));
+  return normalizeMoneyAmount(length * width * height);
 }
 
 export function buildMarketplaceFeeSnapshot({
@@ -1038,7 +1039,7 @@ export function buildMarketplaceFeeSnapshot({
   const fulfilmentFeeIncl = requiresFulfilmentFees ? fulfilment.fulfilmentFeeIncl : 0;
   const handlingFeeIncl = 0;
   const storageFeeIncl = requiresFulfilmentFees ? storage.storageFeeIncl : 0;
-  const totalFeesIncl = Number((successFeeIncl + fulfilmentFeeIncl + storageFeeIncl).toFixed(2));
+  const totalFeesIncl = normalizeMoneyAmount(successFeeIncl + fulfilmentFeeIncl + storageFeeIncl);
   return {
     successFeePercent,
     successFeeIncl,
@@ -1050,7 +1051,7 @@ export function buildMarketplaceFeeSnapshot({
     storageFeeExclVat: storageFeeIncl,
     totalFeesIncl,
     totalMarketplaceFees: totalFeesIncl,
-    totalWarehouseFeesExclVat: Number((fulfilmentFeeIncl + storageFeeIncl).toFixed(2)),
+    totalWarehouseFeesExclVat: normalizeMoneyAmount(fulfilmentFeeIncl + storageFeeIncl),
     volumeCm3,
     sizeBand: fulfilment.sizeBand,
     weightBand: fulfilment.weightBand,
@@ -1074,10 +1075,10 @@ export function normalizeMarketplaceVariantLogistics(input: Partial<MarketplaceV
   const warehouseId = source.warehouseId ?? source.warehouse_id ?? null;
 
   return {
-    weightKg: Number.isFinite(weightKg) ? Number(weightKg.toFixed(2)) : 0,
-    lengthCm: Number.isFinite(lengthCm) ? Number(lengthCm.toFixed(2)) : 0,
-    widthCm: Number.isFinite(widthCm) ? Number(widthCm.toFixed(2)) : 0,
-    heightCm: Number.isFinite(heightCm) ? Number(heightCm.toFixed(2)) : 0,
+    weightKg: Number.isFinite(weightKg) ? normalizeMoneyAmount(weightKg) : 0,
+    lengthCm: Number.isFinite(lengthCm) ? normalizeMoneyAmount(lengthCm) : 0,
+    widthCm: Number.isFinite(widthCm) ? normalizeMoneyAmount(widthCm) : 0,
+    heightCm: Number.isFinite(heightCm) ? normalizeMoneyAmount(heightCm) : 0,
     monthlySales30d: Number.isFinite(monthlySales30d) ? Math.max(0, Math.trunc(monthlySales30d)) : 0,
     stockQty: Number.isFinite(stockQty) ? Math.max(0, Math.trunc(stockQty)) : 0,
     warehouseId: warehouseId == null ? null : String(warehouseId).trim() || null,

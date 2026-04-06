@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 // /app/api/sub_categories/purge/route.js
 import { NextResponse } from "next/server";
 import { db } from "@/lib/firebase";

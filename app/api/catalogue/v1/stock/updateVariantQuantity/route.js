@@ -1,3 +1,6 @@
+export const runtime = "nodejs";
+export const preferredRegion = "fra1";
+
 import { NextResponse } from "next/server";
 
 const ok  = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });

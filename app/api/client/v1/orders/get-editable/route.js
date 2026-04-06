@@ -1,4 +1,5 @@
 export const runtime = "nodejs";
+export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";

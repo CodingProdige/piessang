@@ -18,17 +18,12 @@ import { clientAuth } from "@/lib/firebase";
 import { clientDb } from "@/lib/firebase";
 import { EMPTY_AUTH_BOOTSTRAP, type AuthBootstrap } from "@/lib/auth/bootstrap";
 import {
-  SELLER_CATALOGUE_CATEGORIES,
-  getSellerCatalogueSubCategories,
-} from "@/lib/seller/catalogue-categories";
-import {
   canCreateSellerAccount,
   getActiveSellerManagedAccount,
   hasSellerTeamMemberships,
   ownsSellerAccount,
 } from "@/lib/seller/access";
 import { SUPPORTED_PAYOUT_COUNTRIES } from "@/lib/seller/payout-config";
-import { SELLER_SERVICE_AREAS } from "@/lib/seller/service-areas";
 import { getSellerReviewRequest } from "@/lib/seller/account-status";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 
@@ -155,16 +150,11 @@ type SellerRegistrationState = {
   countryCode: string;
   contactPhone: string;
   sellerCountry: string;
-  baseLocation: string;
-  category: string;
-  subCategory: string;
 };
 
 type SellerSuccessState = {
   vendorName: string;
-  baseLocation: string;
-  categoryTitle: string;
-  subCategory: string;
+  sellerCountry: string;
 };
 
 type SellerNameCheckState = {
@@ -243,9 +233,6 @@ function buildSellerRegistrationDefaults(profile: AuthProfile | null): SellerReg
     countryCode: "27",
     contactPhone: "",
     sellerCountry: "ZA",
-    baseLocation: SELLER_SERVICE_AREAS[0],
-    category: "",
-    subCategory: "",
   };
 }
 
@@ -621,9 +608,6 @@ export function AuthProvider({
       status: "form",
       vendorName: profile?.sellerVendorName ?? profile?.accountName ?? profile?.displayName ?? current.vendorName,
       contactEmail: profile?.email ?? current.contactEmail,
-      baseLocation: current.baseLocation || SELLER_SERVICE_AREAS[0],
-      category: current.category || "",
-      subCategory: current.subCategory,
       message: blockedState.allowed
         ? current.message || DEFAULT_SELLER_MESSAGE
         : blockedState.reason,
@@ -665,9 +649,6 @@ export function AuthProvider({
       countryCode: "27",
       contactPhone: "",
       sellerCountry: "ZA",
-      baseLocation: SELLER_SERVICE_AREAS[0],
-      category: "",
-      subCategory: "",
     });
     setSellerMessage(null);
     setSellerSuccess(null);
@@ -766,19 +747,12 @@ export function AuthProvider({
     }
   }, [closeAuthModal, displayName, email, mode, password, refreshProfile]);
 
-  const sellerSubCategories = useMemo(
-    () => getSellerCatalogueSubCategories(sellerModal.category),
-    [sellerModal.category],
-  );
-
   const sellerFormIsValid = useMemo(() => {
     const vendorName = sanitizeVendorNameInput(sellerModal.vendorName);
     const contactEmail = sanitizeEmail(sellerModal.contactEmail);
     const countryCode = sanitizeDigits(sellerModal.countryCode);
     const contactPhone = sanitizeDigits(sellerModal.contactPhone);
     const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
-    const baseLocation = sanitizeText(sellerModal.baseLocation);
-    const subCategory = sanitizeText(sellerModal.subCategory);
 
     const hasBasicFields =
       vendorName &&
@@ -786,14 +760,10 @@ export function AuthProvider({
       contactEmail.includes("@") &&
       countryCode &&
       contactPhone.length >= 6 &&
-      sellerCountry &&
-      baseLocation;
+      sellerCountry;
 
-    const subCategoryValid =
-      !sellerModal.category || !subCategory || sellerSubCategories.some((item) => item.slug === subCategory);
-
-    return Boolean(hasBasicFields && subCategoryValid && sellerNameCheck.unique === true && !sellerNameCheck.checking);
-  }, [sellerModal, sellerNameCheck.checking, sellerNameCheck.unique, sellerSubCategories]);
+    return Boolean(hasBasicFields && sellerNameCheck.unique === true && !sellerNameCheck.checking);
+  }, [sellerModal, sellerNameCheck.checking, sellerNameCheck.unique]);
 
   const vendorNameState = useMemo(() => {
     if (sellerNameCheck.checking) return "checking";
@@ -864,9 +834,9 @@ export function AuthProvider({
       const countryCode = sanitizeDigits(sellerModal.countryCode) || "27";
       const contactPhone = sanitizeDigits(sellerModal.contactPhone);
       const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
-      const baseLocation = sanitizeText(sellerModal.baseLocation);
-      const category = sanitizeText(sellerModal.category);
-      const subCategory = sanitizeText(sellerModal.subCategory);
+      const baseLocation = sanitizeText(
+        SUPPORTED_PAYOUT_COUNTRIES.find((country) => country.code === sellerCountry)?.label || sellerCountry,
+      );
 
       const blockedState = canCreateSellerAccount(profile);
       if (!blockedState.allowed) {
@@ -878,10 +848,6 @@ export function AuthProvider({
       if (!countryCode) throw new Error("Country code is required.");
       if (contactPhone.length < 6) throw new Error("Please enter a valid contact phone number.");
       if (!sellerCountry) throw new Error("Please choose the country you plan on selling from.");
-      if (!baseLocation) throw new Error("Base location is required.");
-      if (category && subCategory && !sellerSubCategories.some((item) => item.slug === subCategory)) {
-        throw new Error("Please choose a valid sub category.");
-      }
 
       const vendorNameCheckResponse = await fetch("/api/client/v1/accounts/seller/check-vendor-name", {
         method: "POST",
@@ -925,8 +891,8 @@ export function AuthProvider({
               phoneNumber: contactPhone,
               sellerCountry,
               baseLocation,
-              category: category || "",
-              subCategory: category ? subCategory || "" : "",
+              category: "",
+              subCategory: "",
             },
           },
         }),
@@ -940,11 +906,7 @@ export function AuthProvider({
       await refreshProfile();
       setSellerSuccess({
         vendorName,
-        baseLocation,
-        categoryTitle: payload?.seller?.categoryTitle || sellerModal.category || "",
-        subCategory:
-          payload?.seller?.subCategory ||
-          (category && subCategory ? sellerSubCategories.find((item) => item.slug === subCategory)?.title || subCategory : ""),
+        sellerCountry: baseLocation,
       });
       setSellerModal((current) => ({ ...current, status: "success" }));
       setSellerMessage("Your seller account is now active.");
@@ -953,7 +915,7 @@ export function AuthProvider({
     } finally {
       setSellerSubmitting(false);
     }
-  }, [profile, refreshProfile, sellerModal, sellerSubCategories, user]);
+  }, [profile, refreshProfile, sellerModal, user]);
 
   const leaveSellerTeam = useCallback(
     async (sellerSlug?: string) => {
@@ -1393,23 +1355,13 @@ export function AuthProvider({
                       Registration successful
                     </p>
                     <p className="mt-2 text-[13px] leading-[1.6] text-[#202020]">
-                    {sellerSuccess.vendorName} is now registered as a seller on Piessang.
+                      {sellerSuccess.vendorName} is now registered as a seller on Piessang.
                     </p>
                     <dl className="mt-3 grid gap-2 text-[12px] text-[#57636c]">
                       <div className="flex items-center justify-between gap-4">
-                        <dt className="font-semibold text-[#202020]">Base location</dt>
-                        <dd>{sellerSuccess.baseLocation}</dd>
+                        <dt className="font-semibold text-[#202020]">Selling country</dt>
+                        <dd>{sellerSuccess.sellerCountry}</dd>
                       </div>
-                      <div className="flex items-center justify-between gap-4">
-                        <dt className="font-semibold text-[#202020]">Category</dt>
-                        <dd>{sellerSuccess.categoryTitle}</dd>
-                      </div>
-                      {sellerSuccess.subCategory ? (
-                        <div className="flex items-center justify-between gap-4">
-                          <dt className="font-semibold text-[#202020]">Sub category</dt>
-                          <dd>{sellerSuccess.subCategory}</dd>
-                        </div>
-                      ) : null}
                     </dl>
                   </div>
 
@@ -1498,7 +1450,7 @@ export function AuthProvider({
                   <div className="mt-5 rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-3">
                     <p className="text-[12px] font-semibold text-[#202020]">Only your seller details are required.</p>
                     <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
-                      Email addresses are saved without spaces. Choose the country you plan on selling from so Piessang can match you to supported payout countries. Category and sub category are optional.
+                      Email addresses are saved without spaces. Choose the country you plan on selling from so Piessang can match you to supported payout countries.
                     </p>
                   </div>
 
@@ -1663,71 +1615,6 @@ export function AuthProvider({
                       <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
                         You can only register seller countries supported by our automated payout system.
                       </p>
-                    </label>
-
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                        Base location <span className="text-[#d11c1c]">*</span>
-                      </span>
-                      <select
-                        required
-                        value={sellerModal.baseLocation}
-                        onChange={(event) =>
-                          setSellerModal((current) => ({ ...current, baseLocation: event.target.value }))
-                        }
-                        className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
-                      >
-                        {SELLER_SERVICE_AREAS.map((area) => (
-                          <option key={area} value={area}>
-                            {area}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                        Primary product category
-                      </span>
-                      <select
-                        value={sellerModal.category}
-                        onChange={(event) =>
-                          setSellerModal((current) => ({
-                            ...current,
-                            category: event.target.value,
-                            subCategory: "",
-                          }))
-                        }
-                        className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
-                      >
-                        <option value="">Select a category</option>
-                        {SELLER_CATALOGUE_CATEGORIES.map((category) => (
-                          <option key={category.slug} value={category.slug}>
-                            {category.title}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                        Optional sub category
-                      </span>
-                      <select
-                        value={sellerModal.subCategory}
-                        onChange={(event) =>
-                          setSellerModal((current) => ({ ...current, subCategory: event.target.value }))
-                        }
-                        disabled={!sellerModal.category}
-                        className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
-                      >
-                        <option value="">No sub category</option>
-                        {sellerSubCategories.map((subCategory) => (
-                          <option key={subCategory.slug} value={subCategory.slug}>
-                            {subCategory.title}
-                          </option>
-                        ))}
-                      </select>
                     </label>
 
                     {sellerMessage ? (

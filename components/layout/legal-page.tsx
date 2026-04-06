@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { PageBody } from "@/components/layout/page-body";
 
 export function LegalPage({
   eyebrow,
@@ -19,7 +20,7 @@ export function LegalPage({
   updatedLabel: string;
 }) {
   return (
-    <main className="mx-auto w-full max-w-[980px] px-4 py-10 lg:px-6 lg:py-14">
+    <PageBody size="reading" className="px-4 py-10 lg:px-6 lg:py-14">
       <div className="mb-8 rounded-[18px] border border-black/5 bg-white p-6 shadow-[0_10px_30px_rgba(20,24,27,0.06)] lg:p-8">
         <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[#907d4c]">{eyebrow}</p>
         <h1 className="mt-3 text-[34px] font-semibold leading-[1.05] tracking-[-0.03em] text-[#202020] lg:text-[44px]">
@@ -46,6 +47,6 @@ export function LegalPage({
           </div>
         )}
       </section>
-    </main>
+    </PageBody>
   );
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
+import { PageBody } from "@/components/layout/page-body";
 import {
   AccountListsWorkspace,
   AccountOrdersWorkspace,
@@ -184,7 +185,7 @@ export function AccountHub() {
 
   if (!isAuthenticated) {
     return (
-      <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+      <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
         <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">My Account</p>
           <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Sign in to manage your account</h1>
@@ -242,12 +243,12 @@ export function AccountHub() {
             Register as seller
           </button>
         </section>
-      </main>
+      </PageBody>
     );
   }
 
   return (
-    <main className="mx-auto max-w-[1180px] px-3 py-6 lg:px-4 lg:py-8">
+    <PageBody className="px-3 py-6 lg:px-4 lg:py-8">
       <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">My Account</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -428,6 +429,6 @@ export function AccountHub() {
           ) : null}
         </section>
       ) : null}
-    </main>
+    </PageBody>
   );
 }

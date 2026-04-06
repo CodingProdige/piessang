@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { PageBody } from "@/components/layout/page-body";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { listSellerRatings } from "@/lib/social/seller-ratings";
 
@@ -35,9 +36,9 @@ export default async function VendorReviewsPage({ params }: { params: Promise<{ 
   const safeReviews = reviews as SellerReview[];
 
   return (
-    <main className="mx-auto max-w-[1160px] px-3 py-4 lg:px-4 lg:py-6">
+    <PageBody className="px-3 py-4 lg:px-4 lg:py-6">
       <div className="flex flex-wrap items-center gap-2 text-[13px] text-[#57636c]">
-        <Link href={`/vendors/${encodeURIComponent(sellerSlug)}`} className="font-semibold text-[#0f80c3]">Seller profile</Link>
+        <Link href={`/vendors/${encodeURIComponent(sellerCode)}`} className="font-semibold text-[#0f80c3]">Seller profile</Link>
         <span>/</span>
         <span className="text-[#202020]">Seller ratings</span>
       </div>
@@ -106,6 +107,6 @@ export default async function VendorReviewsPage({ params }: { params: Promise<{ 
           )}
         </div>
       </section>
-    </main>
+    </PageBody>
   );
 }
