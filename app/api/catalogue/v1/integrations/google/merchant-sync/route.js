@@ -5,8 +5,10 @@ export const dynamic = "force-dynamic";
 import { createSign } from "crypto";
 import { db, collection, getDocs } from "@/lib/firebase/admin-firestore";
 import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
-import { resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
+import { resolveGoogleTargetCountries, resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
+import { loadGoogleMerchantSettings } from "@/lib/platform/google-merchant-settings";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
+import { sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 
 const PRODUCTS_COLLECTION = "products_v2";
 const VAT = 0.15;
@@ -194,7 +196,7 @@ function isEligibleProductForGoogle(product) {
   );
 }
 
-function getProductGoogleSkipReasons(product, activeSets) {
+async function getProductGoogleSkipReasons(product, activeSets, merchantCountryCodes) {
   const reasons = [];
   if (product?.placement?.isActive !== true) reasons.push("product_inactive");
   if (product?.placement?.supplier_out_of_stock === true) reasons.push("supplier_out_of_stock");
@@ -211,6 +213,17 @@ function getProductGoogleSkipReasons(product, activeSets) {
   if (category && !activeSets.categorySlugs.has(category)) reasons.push("inactive_category");
   if (subCategory && !activeSets.subCategorySlugs.has(subCategory)) reasons.push("inactive_subcategory");
   if (brand && !activeSets.brandSlugs.has(brand)) reasons.push("inactive_brand");
+  if (!sellerDeliverySettingsReady(product?.seller?.deliveryProfile || {})) {
+    reasons.push("missing_delivery_settings");
+  }
+  if (!(await resolveGoogleTargetCountries({
+    seller: product?.seller,
+    sellerCountry: product?.seller?.sellerCountry,
+    deliveryProfile: product?.seller?.deliveryProfile,
+    merchantCountryCodes,
+  })).length) {
+    reasons.push("no_supported_google_target_countries");
+  }
 
   return reasons;
 }
@@ -228,10 +241,11 @@ function getVariantGoogleSkipReasons(product, variant) {
   return reasons;
 }
 
-function buildContentApiProduct(product, variant) {
+function buildContentApiProduct(product, variant, targetCountry = GOOGLE_FEED_TARGET_COUNTRY) {
   const uniqueId = String(product?.product?.unique_id || "").trim();
   const variantId = String(variant?.variant_id || "").trim();
-  const offerId = `${uniqueId}-${variantId}`;
+  const normalizedTargetCountry = String(targetCountry || GOOGLE_FEED_TARGET_COUNTRY).trim().toUpperCase();
+  const offerId = `${uniqueId}-${variantId}-${normalizedTargetCountry}`;
   const priceIncl = resolveSellingPriceIncl(variant);
   if (!offerId || !priceIncl) return null;
 
@@ -261,8 +275,9 @@ function buildContentApiProduct(product, variant) {
     link: marketplaceLink(uniqueId, baseTitle, variantId),
     imageLink: imageLink || undefined,
     contentLanguage: GOOGLE_FEED_CONTENT_LANGUAGE,
-    targetCountry: GOOGLE_FEED_TARGET_COUNTRY,
+    targetCountry: normalizedTargetCountry,
     channel: "online",
+    targetCountries: [normalizedTargetCountry],
     externalSellerId: marketplaceSeller.externalSellerId,
     availability: availabilityForVariant(variant),
     condition: "new",
@@ -395,12 +410,14 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
     return err(400, "Missing Merchant ID", "Set GOOGLE_MERCHANT_ID.");
   }
 
-  const [productsSnap, categoriesSnap, subCategoriesSnap, brandsSnap] = await Promise.all([
+  const [productsSnap, categoriesSnap, subCategoriesSnap, brandsSnap, merchantSettings] = await Promise.all([
     getDocs(collection(db, PRODUCTS_COLLECTION)),
     getDocs(collection(db, "categories")),
     getDocs(collection(db, "sub_categories")),
     getDocs(collection(db, "brands")),
+    loadGoogleMerchantSettings(),
   ]);
+  const merchantCountryCodes = merchantSettings.countryCodes || [];
 
   const activeCategorySlugs = buildActiveSlugSet(
     categoriesSnap.docs.map((d) => d.data() || {}),
@@ -438,18 +455,19 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
   const skippedProducts = [];
   const skippedVariants = [];
 
-  let products = allProducts.filter((p) => {
-    const reasons = getProductGoogleSkipReasons(p, activeSets);
+  let products = [];
+  for (const product of allProducts) {
+    const reasons = await getProductGoogleSkipReasons(product, activeSets, merchantCountryCodes);
     if (reasons.length) {
       skippedProducts.push({
-        productId: String(p?.product?.unique_id || p?.id || "").trim() || null,
-        title: String(p?.product?.title || "").trim() || "Untitled product",
+        productId: String(product?.product?.unique_id || product?.id || "").trim() || null,
+        title: String(product?.product?.title || "").trim() || "Untitled product",
         reasons,
       });
-      return false;
+      continue;
     }
-    return true;
-  });
+    products.push(product);
+  }
 
   if (limit != null) products = products.slice(0, limit);
 
@@ -473,15 +491,24 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
       eligibleVariants.push(variant);
     }
 
+    const targetCountries = await resolveGoogleTargetCountries({
+      seller: p?.seller,
+      sellerCountry: p?.seller?.sellerCountry,
+      deliveryProfile: p?.seller?.deliveryProfile,
+      merchantCountryCodes,
+    });
+
     for (const v of eligibleVariants) {
-      const productPayload = buildContentApiProduct(p, v);
-      if (!productPayload) continue;
-      entries.push({
-        batchId: batchId++,
-        merchantId: GOOGLE_MERCHANT_ID,
-        method: "insert",
-        product: productPayload,
-      });
+      for (const targetCountry of targetCountries) {
+        const productPayload = buildContentApiProduct(p, v, targetCountry);
+        if (!productPayload) continue;
+        entries.push({
+          batchId: batchId++,
+          merchantId: GOOGLE_MERCHANT_ID,
+          method: "insert",
+          product: productPayload,
+        });
+      }
     }
   }
 
@@ -497,7 +524,14 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
         products: skippedProducts.length,
         variants: skippedVariants.length,
       },
-      preview: entries.slice(0, 5),
+      preview: entries.slice(0, 5).map((entry) => ({
+        ...entry,
+        target_countries: Array.isArray(entry?.product?.targetCountries)
+          ? entry.product.targetCountries
+          : entry?.product?.targetCountry
+            ? [entry.product.targetCountry]
+            : [],
+      })),
     });
   }
 

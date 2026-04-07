@@ -23,7 +23,7 @@ import {
   hasSellerTeamMemberships,
   ownsSellerAccount,
 } from "@/lib/seller/access";
-import { SUPPORTED_PAYOUT_COUNTRIES } from "@/lib/seller/payout-config";
+import { SUPPORTED_SELLER_PAYOUT_COUNTRIES } from "@/lib/seller/payout-config";
 import { getSellerReviewRequest } from "@/lib/seller/account-status";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 
@@ -835,7 +835,7 @@ export function AuthProvider({
       const contactPhone = sanitizeDigits(sellerModal.contactPhone);
       const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
       const baseLocation = sanitizeText(
-        SUPPORTED_PAYOUT_COUNTRIES.find((country) => country.code === sellerCountry)?.label || sellerCountry,
+        SUPPORTED_SELLER_PAYOUT_COUNTRIES.find((country) => country.code === sellerCountry)?.label || sellerCountry,
       );
 
       const blockedState = canCreateSellerAccount(profile);
@@ -1606,7 +1606,7 @@ export function AuthProvider({
                         }
                         className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
                       >
-                        {SUPPORTED_PAYOUT_COUNTRIES.map((country) => (
+                        {SUPPORTED_SELLER_PAYOUT_COUNTRIES.map((country) => (
                           <option key={country.code} value={country.code}>
                             {country.label}
                           </option>

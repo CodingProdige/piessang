@@ -12,6 +12,7 @@ import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { clientStorage } from "@/lib/firebase";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
+import { SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES } from "@/lib/marketplace/country-config";
 
 type SellerBranding = {
   bannerImageUrl: string;
@@ -76,6 +77,7 @@ type SellerDeliveryProfile = {
 };
 
 type SellerPayoutProfile = {
+  provider: string;
   payoutMethod: string;
   accountHolderName: string;
   bankName: string;
@@ -102,6 +104,13 @@ type SellerPayoutProfile = {
   stripeRecipientEntityType: string;
   stripeRecipientCountry: string;
   stripeLastAccountLinkCreatedAt: string;
+  wiseProfileId: string;
+  wiseRecipientId: string;
+  wiseRecipientStatus: string;
+  onboardingStatus: string;
+  payoutMethodEnabled: boolean;
+  lastCollectionLinkSentAt: string;
+  recipientEmail: string;
   lastVerifiedAt: string;
 };
 
@@ -159,7 +168,8 @@ const EMPTY_DELIVERY_PROFILE: SellerDeliveryProfile = {
 };
 
 const EMPTY_PAYOUT_PROFILE: SellerPayoutProfile = {
-  payoutMethod: "same_country_bank",
+  provider: "wise",
+  payoutMethod: "other_country_bank",
   accountHolderName: "",
   bankName: "",
   bankCountry: "ZA",
@@ -185,6 +195,13 @@ const EMPTY_PAYOUT_PROFILE: SellerPayoutProfile = {
   stripeRecipientEntityType: "",
   stripeRecipientCountry: "",
   stripeLastAccountLinkCreatedAt: "",
+  wiseProfileId: "",
+  wiseRecipientId: "",
+  wiseRecipientStatus: "",
+  onboardingStatus: "created",
+  payoutMethodEnabled: false,
+  lastCollectionLinkSentAt: "",
+  recipientEmail: "",
   lastVerifiedAt: "",
 };
 
@@ -196,6 +213,27 @@ const EMPTY_BUSINESS_DETAILS: SellerBusinessDetails = {
   phoneNumber: "",
   addressText: "",
 };
+
+function normalizePayoutMethodValue(value: unknown) {
+  const candidate = toStr(value || "same_country_bank").toLowerCase();
+  if (candidate === "other_country_bank" || candidate === "international_bank") return "other_country_bank";
+  return "same_country_bank";
+}
+
+function resolvePayoutMethodForCountry(value: unknown, country: unknown) {
+  const payoutCountry = toStr(country || "ZA").toUpperCase();
+  if (payoutCountry) return "other_country_bank";
+  return normalizePayoutMethodValue(value);
+}
+
+function sanitizeLegacyPayoutNotice(value: unknown) {
+  const note = toStr(value);
+  if (!note) return "";
+  if (note.toLowerCase().includes("stripe")) {
+    return "Save your payout details and connect your payout destination to start receiving seller payouts.";
+  }
+  return note;
+}
 
 function makePricingRule(seed = Date.now()) {
   return {
@@ -621,7 +659,8 @@ export function SellerSettingsWorkspace({
           setVendorDescriptionValue(nextVendorDescription);
           setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
           setPayoutProfile({
-            payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+            provider: toStr(nextPayoutProfile?.provider || sellerRecord?.payoutProvider || "wise"),
+            payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
             accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
             bankName: toStr(nextPayoutProfile?.bankName),
             bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
@@ -647,6 +686,13 @@ export function SellerSettingsWorkspace({
             stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
             stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
             stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
+            wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
+            wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
+            wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+            onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
+            payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
+            lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
+            recipientEmail: toStr(nextPayoutProfile?.recipientEmail || nextBusinessDetails?.email || profile?.email || ""),
             lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
           });
           setBusinessDetails({
@@ -679,7 +725,8 @@ export function SellerSettingsWorkspace({
               },
               deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
               payoutProfile: {
-                payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+                provider: toStr(nextPayoutProfile?.provider || sellerRecord?.payoutProvider || "wise"),
+                payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
                 accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
                 bankName: toStr(nextPayoutProfile?.bankName),
                 bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
@@ -705,6 +752,13 @@ export function SellerSettingsWorkspace({
                 stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
                 stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
                 stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
+                wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
+                wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
+                wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+                onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
+                payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
+                lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
+                recipientEmail: toStr(nextPayoutProfile?.recipientEmail || nextBusinessDetails?.email || profile?.email || ""),
                 lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
               },
               businessDetails: {
@@ -753,29 +807,40 @@ export function SellerSettingsWorkspace({
     };
   }, []);
 
-  const payoutRecipientReady = Boolean(payoutProfile.stripeRecipientAccountId || stripeStatus?.connected);
+  const payoutProvider = toStr(payoutProfile.provider || "wise").toLowerCase();
+  const recipientId = payoutProvider === "wise" ? payoutProfile.wiseRecipientId : payoutProfile.stripeRecipientAccountId;
+  const payoutRecipientReady = Boolean(stripeStatus?.connected || recipientId);
   const payoutSummaryBank = stripeStatus?.bankName
     ? `${stripeStatus.bankName}${stripeStatus.accountLast4 ? ` •••• ${stripeStatus.accountLast4}` : ""}`
-    : payoutProfile.stripeRecipientAccountId || stripeStatus?.connected
-      ? "Bank account connected in Stripe"
-      : "Complete Stripe payout setup";
-  const payoutSummaryStatus = stripeStatus?.payoutsEnabled ||
-    payoutProfile.verificationStatus === "verified" ||
-    (payoutProfile.stripeRecipientAccountId && payoutSummaryBank !== "Complete Stripe payout setup")
-    ? "ready for payouts"
-    : toStr(stripeStatus?.status || payoutProfile.verificationStatus || (payoutRecipientReady ? "connected" : "not_started"));
+    : stripeStatus?.accountSummary
+      ? stripeStatus.accountSummary
+    : stripeStatus?.hasBankDestination
+      ? "Bank account connected in Wise"
+      : "Save payout details to create a Wise recipient";
+  const payoutMethodLabel = toStr(stripeStatus?.enabledPayoutMethod || stripeStatus?.requestedPayoutMethod || payoutProfile.payoutMethod)
+    .replace(/_/g, " ")
+    .replace(/\bwire\b/i, "Wire")
+    .replace(/\blocal\b/i, "Local")
+    .replace(/\bother country bank\b/i, "Wire")
+    .replace(/\bsame country bank\b/i, "Local");
+  const payoutSummaryStatus =
+    stripeStatus?.payoutsEnabled && stripeStatus?.hasBankDestination
+      ? "ready for payouts"
+      : stripeStatus
+        ? toStr(stripeStatus?.onboardingStatus || stripeStatus?.status || "created")
+        : toStr(payoutProfile.verificationStatus || (payoutRecipientReady ? "pending" : "not_started"));
   const payoutSummarySyncedAt = toStr(payoutProfile.lastVerifiedAt || payoutProfile.stripeLastAccountLinkCreatedAt);
-  const stripeOnboardingComplete = payoutSummaryStatus === "ready for payouts" ||
-    payoutSummaryStatus === "connected" ||
-    stripeStatus?.payoutsEnabled === true ||
-    payoutProfile.verificationStatus === "verified";
+  const payoutNoticeText = sanitizeLegacyPayoutNotice(payoutProfile.verificationNotes);
+  const stripeOnboardingComplete =
+    payoutSummaryStatus === "ready for payouts" ||
+    (stripeStatus?.connected === true && stripeStatus?.hasBankDestination === true);
 
   async function loadStripePayoutStatus() {
     if (!profile?.uid || !sellerSlug) return;
     setStripeStatusLoading(true);
     try {
       const response = await fetch(
-        `/api/client/v1/accounts/seller/payouts/stripe/status?uid=${encodeURIComponent(profile.uid)}&sellerSlug=${encodeURIComponent(sellerSlug)}`,
+        `/api/payouts/recipient/status?uid=${encodeURIComponent(profile.uid)}&sellerId=${encodeURIComponent(sellerSlug)}`,
         { cache: "no-store" },
       );
       const payload = await response.json().catch(() => ({}));
@@ -791,31 +856,37 @@ export function SellerSettingsWorkspace({
     }
   }
 
-  async function openStripePayoutOnboarding() {
+  async function openPayoutSetup() {
     if (!profile?.uid || !sellerSlug) return;
+    if (hasUnsavedChanges) {
+      const saved = await saveSettings({ showSuccessMessage: false });
+      if (!saved) return;
+    }
     setStripeOnboardingBusy(true);
     setError(null);
     try {
-      const response = await fetch("/api/client/v1/accounts/seller/payouts/stripe/onboarding-link", {
+      const response = await fetch("/api/payouts/recipient/start-onboarding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           uid: profile.uid,
-          sellerSlug,
+          sellerId: sellerSlug,
         }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "Unable to start Stripe payout setup.");
+        throw new Error(payload?.message || "Unable to start payout setup.");
       }
       const nextUrl = toStr(payload?.data?.url);
       if (!nextUrl) {
-        throw new Error("Stripe did not return an onboarding URL.");
+        void loadStripePayoutStatus();
+        showSnackbar(payload?.data?.message || "Payout details saved and payout setup prepared.", "success");
+        return;
       }
       window.location.href = nextUrl;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to start Stripe payout setup.");
-      showSnackbar(cause instanceof Error ? cause.message : "Unable to start Stripe payout setup.", "error");
+      setError(cause instanceof Error ? cause.message : "Unable to start payout setup.");
+      showSnackbar(cause instanceof Error ? cause.message : "Unable to start payout setup.", "error");
     } finally {
       setStripeOnboardingBusy(false);
     }
@@ -911,23 +982,24 @@ export function SellerSettingsWorkspace({
     }
   }
 
-  async function saveSettings() {
+  async function saveSettings(options: { showSuccessMessage?: boolean } = {}) {
+    const { showSuccessMessage = true } = options;
     if (!canEditSettings) {
       setError("You do not have permission to change seller settings.");
-      return;
+      return false;
     }
     const nextVendorName = sanitizeVendorName(vendorNameValue || vendorName);
     if (!nextVendorName) {
       setError("Vendor name is required.");
-      return;
+      return false;
     }
     if (sellerNameCheck.checking) {
       setError("Wait for the vendor name check to finish.");
-      return;
+      return false;
     }
     if (sellerNameCheck.unique === false) {
       setError("Choose a unique vendor name before saving.");
-      return;
+      return false;
     }
     setSaving(true);
     setError(null);
@@ -971,7 +1043,8 @@ export function SellerSettingsWorkspace({
       const nextDeliveryProfile = normalizeSellerDeliveryProfile(payload?.deliveryProfile || {});
       setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
       setPayoutProfile({
-        payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+        provider: toStr(nextPayoutProfile?.provider || payload?.payoutProvider || payoutProvider || "wise"),
+        payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
         accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
         bankName: toStr(nextPayoutProfile?.bankName),
         bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
@@ -997,6 +1070,13 @@ export function SellerSettingsWorkspace({
         stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
         stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
         stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
+        wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
+        wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
+        wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+        onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
+        payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
+        lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
+        recipientEmail: toStr(nextPayoutProfile?.recipientEmail || nextBusinessDetails?.email || profile?.email || ""),
         lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
       });
       setBusinessDetails({
@@ -1024,7 +1104,8 @@ export function SellerSettingsWorkspace({
           },
           deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
           payoutProfile: {
-            payoutMethod: toStr(nextPayoutProfile?.payoutMethod || "local_bank"),
+            provider: toStr(nextPayoutProfile?.provider || payload?.payoutProvider || payoutProvider || "wise"),
+            payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
             accountHolderName: toStr(nextPayoutProfile?.accountHolderName),
             bankName: toStr(nextPayoutProfile?.bankName),
             bankCountry: toStr(nextPayoutProfile?.bankCountry || "ZA"),
@@ -1050,6 +1131,13 @@ export function SellerSettingsWorkspace({
             stripeRecipientEntityType: toStr(nextPayoutProfile?.stripeRecipientEntityType),
             stripeRecipientCountry: toStr(nextPayoutProfile?.stripeRecipientCountry),
             stripeLastAccountLinkCreatedAt: toStr(nextPayoutProfile?.stripeLastAccountLinkCreatedAt),
+            wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
+            wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
+            wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+            onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
+            payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
+            lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
+            recipientEmail: toStr(nextPayoutProfile?.recipientEmail || nextBusinessDetails?.email || profile?.email || ""),
             lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
           },
           businessDetails: {
@@ -1064,10 +1152,15 @@ export function SellerSettingsWorkspace({
           vendorDescriptionValue: toStr(nextSeller?.vendorDescription || vendorDescriptionValue).slice(0, 500),
         }),
       );
-      setMessage("Seller settings saved.");
+      if (showSuccessMessage) {
+        setMessage("Seller settings saved.");
+      }
       await refreshProfile();
+      void loadStripePayoutStatus();
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to save seller settings.");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -1530,7 +1623,7 @@ export function SellerSettingsWorkspace({
                     <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Scope</span><select value={zone.scopeType} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, scopeType: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"><option value="country">Country</option><option value="region">Region / state</option><option value="city">City</option><option value="postal">Postal code</option></select></label>
                     <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span><input value={zone.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="2" /></label>
                     <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Order cutoff time</span><input type="time" value={zone.cutoffTime} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, cutoffTime: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" /><p className="mt-1 text-[11px] text-[#7d7d7d]">Leave this blank to use the default cutoff of 10:00.</p></label>
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Country</span><input value={zone.country} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, country: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="South Africa" /></label>
+                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Country</span><select value={zone.country} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, country: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"><option value="">Select supported checkout country</option>{SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES.map((country) => (<option key={country.code} value={country.label}>{country.label}</option>))}</select><p className="mt-1 text-[11px] text-[#7d7d7d]">Only countries supported by Piessang checkout can be targeted in shipping zones.</p></label>
                     <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Region / state</span><input value={zone.region} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, region: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Western Cape" /></label>
                     <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">City</span><input value={zone.city} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, city: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Paarl" /></label>
                     <label className="block md:col-span-3"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Postal codes</span><input value={zone.postalCodes} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, postalCodes: event.target.value.slice(0, 160) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="7646, 7647" /></label>
@@ -1675,73 +1768,143 @@ export function SellerSettingsWorkspace({
       <SettingsSection
         eyebrow="Payout settings"
         title="Where Piessang should pay you"
-        description="Complete Stripe payout setup so Piessang can release automated seller payouts after delivery, the hold window, and payout checks are complete."
+        description="Add the bank details where Piessang should send your seller payouts."
         expanded={sectionOpen.payouts}
         onToggle={() => setSectionOpen((current) => ({ ...current, payouts: !current.payouts }))}
       >
         <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="font-semibold text-[#202020]">Stripe payout onboarding</p>
-              <p className="mt-1">
-                Complete Stripe payout setup so Piessang can release automated seller payouts after delivery, the hold window, and payout checks are complete.
-              </p>
+              <p className="font-semibold text-[#202020]">How this works</p>
+              <p className="mt-1">Fill in your bank details, then click <span className="font-semibold text-[#202020]">Save and connect payouts</span>. Piessang will save your details and connect your payout destination automatically.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => void loadStripePayoutStatus()}
-                disabled={stripeStatusLoading}
-                className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void openPayoutSetup()}
+                disabled={!canEditSettings || stripeOnboardingBusy}
+                className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {stripeStatusLoading ? "Refreshing..." : "Refresh status"}
+                {stripeOnboardingBusy
+                  ? "Preparing..."
+                  : recipientId
+                    ? "Save and update payouts"
+                    : "Save and connect payouts"}
               </button>
-              {!stripeOnboardingComplete ? (
-                <button
-                  type="button"
-                  onClick={() => void openStripePayoutOnboarding()}
-                  disabled={!canEditSettings || stripeOnboardingBusy}
-                  className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {stripeOnboardingBusy ? "Opening..." : "Start Stripe setup"}
-                </button>
-              ) : null}
             </div>
+          </div>
+          <p className="mt-2 text-[12px] text-[#57636c]">
+            {recipientId
+              ? "If you change your bank details later, use the same button again and Piessang will refresh your payout destination."
+              : "You only need to do this once unless your payout details change later."}
+          </p>
+        </div>
+
+        <div className="mt-3 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account holder name</span>
+              <input value={payoutProfile.accountHolderName} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, accountHolderName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="La Vie De Luc (Pty) Ltd" />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Recipient email</span>
+              <input value={payoutProfile.recipientEmail} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, recipientEmail: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="finance@yourbusiness.com" />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Currency</span>
+              <select value={payoutProfile.currency} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, currency: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+                {SUPPORTED_PAYOUT_CURRENCIES.map((entry) => (
+                  <option key={entry.code} value={entry.code}>{entry.code}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank country</span>
+              <select value={payoutProfile.bankCountry} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, bankCountry: event.target.value, country: event.target.value, beneficiaryCountry: current.beneficiaryCountry || event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+                {SUPPORTED_PAYOUT_COUNTRIES.map((entry) => (
+                  <option key={entry.code} value={entry.code}>{entry.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">IBAN</span>
+              <input value={payoutProfile.iban} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, iban: event.target.value.toUpperCase().slice(0, 34) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Optional if using IBAN payouts" />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">SWIFT / BIC</span>
+              <input value={payoutProfile.swiftBic} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, swiftBic: event.target.value.toUpperCase().slice(0, 11) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Optional if using SWIFT payouts" />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank name</span>
+              <input value={payoutProfile.bankName} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, bankName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="First National Bank" />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account number</span>
+              <input value={payoutProfile.accountNumber} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, accountNumber: event.target.value.replace(/[^\d]/g, "").slice(0, 20) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="12345678901" />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Branch code</span>
+              <input value={payoutProfile.branchCode} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, branchCode: event.target.value.replace(/[^\d]/g, "").slice(0, 10) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="250655" />
+            </label>
           </div>
         </div>
 
-        <div className="mt-3 rounded-[8px] border border-black/5 bg-white">
-          <div className="border-b border-black/5 px-4 py-3">
-            <p className="text-[12px] font-semibold text-[#202020]">Payout recipient summary</p>
-            <p className="mt-1 text-[12px] text-[#57636c]">Stripe becomes the automated payout source of truth once onboarding is completed.</p>
-          </div>
-          <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Status</p>
-              <p className="mt-1 font-semibold text-[#202020]">
-                {(toStr(payoutSummaryStatus).replace(/_/g, " ")) || "not started"}
-              </p>
-            </div>
-            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Recipient id</p>
-              <p className="mt-1 break-all font-semibold text-[#202020]">{payoutProfile.stripeRecipientAccountId || "Not connected yet"}</p>
-            </div>
-            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Bank</p>
-              <p className="mt-1 font-semibold text-[#202020]">{payoutSummaryBank}</p>
-            </div>
-            <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{stripeStatusLoading ? "Stripe status" : "Last Stripe sync"}</p>
-              <p className="mt-1 font-semibold text-[#202020]">{stripeStatusLoading ? "Checking..." : payoutSummarySyncedAt ? formatDateTime(payoutSummarySyncedAt) : "Not yet"}</p>
-            </div>
-          </div>
+        <div
+          className={`mt-3 rounded-[8px] border px-4 py-3 text-[13px] leading-[1.7] ${
+            payoutRecipientReady
+              ? "border-[#cfe8d8] bg-[rgba(57,169,107,0.08)] text-[#166534]"
+              : "border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] text-[#6f5d2d]"
+          }`}
+        >
+          <p className={`font-semibold ${payoutRecipientReady ? "text-[#166534]" : "text-[#5f4f25]"}`}>
+            {payoutRecipientReady ? "Payouts connected" : "Payout setup still needs attention"}
+          </p>
+          <p className="mt-1">
+            {payoutRecipientReady
+              ? `Your payout destination is connected and ready. ${payoutSummarySyncedAt ? `Last checked ${formatDateTime(payoutSummarySyncedAt)}.` : ""}`
+              : payoutNoticeText || "Save your payout details and connect your payout destination to start receiving seller payouts."}
+          </p>
         </div>
 
-        {payoutProfile.verificationNotes ? (
-          <div className="mt-3 rounded-[8px] border border-[rgba(144,125,76,0.18)] bg-[rgba(144,125,76,0.08)] px-3 py-2 text-[12px] text-[#6f5d2d]">
-            {payoutProfile.verificationNotes}
+        <div className="mt-3 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+          <p className="text-[13px] font-semibold text-[#202020]">Payout FAQ</p>
+          <div className="mt-3 overflow-hidden rounded-[8px] border border-black/10 bg-white">
+            {[
+              {
+                question: "When do payouts happen?",
+                answer:
+                  "Piessang releases seller payouts after the order is delivered, the hold window has passed, and payout checks are complete.",
+              },
+              {
+                question: "What do I need to do now?",
+                answer:
+                  "Add the bank details you want Piessang to pay, then use Save and connect payouts. We will save and validate them automatically.",
+              },
+              {
+                question: "Will I need to do this again?",
+                answer:
+                  "Usually no. You only need to update this section again if your bank details or payout destination changes later.",
+              },
+              {
+                question: "How will I know it is ready?",
+                answer:
+                  "This section checks your payout setup automatically and will show a green notice when your payout destination is connected and ready.",
+              },
+            ].map((item) => (
+              <details key={item.question} className="group border-b border-black/10 last:border-b-0">
+                <summary className="cursor-pointer list-none px-4 py-3 text-[12px] font-semibold text-[#202020] marker:hidden">
+                  <span className="flex items-center justify-between gap-3">
+                    <span>{item.question}</span>
+                    <span className="text-[#907d4c] transition-transform group-open:rotate-45">+</span>
+                  </span>
+                </summary>
+                <div className="px-4 pb-3">
+                  <p className="text-[12px] leading-[1.7] text-[#57636c]">{item.answer}</p>
+                </div>
+              </details>
+            ))}
           </div>
-        ) : null}
+        </div>
       </SettingsSection>
 
       <GooglePlacePickerModal

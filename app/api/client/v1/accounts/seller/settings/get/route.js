@@ -14,6 +14,15 @@ function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
 }
 
+function sanitizeLegacyPayoutNote(value) {
+  const note = toStr(value);
+  if (!note) return "";
+  if (note.toLowerCase().includes("stripe")) {
+    return "Save your payout details and connect your payout destination to start receiving seller payouts.";
+  }
+  return note;
+}
+
 function normalizePlacement(value) {
   const candidate = toStr(value, "center center").toLowerCase();
   const percentageMatch = candidate.match(/^(\d{1,3}(?:\.\d+)?)%\s+(\d{1,3}(?:\.\d+)?)%$/);
@@ -28,11 +37,20 @@ function normalizePlacement(value) {
 
 function normalizePayoutProfile(profile) {
   const source = profile && typeof profile === "object" ? profile : {};
+  const sellerCountry = toStr(source.sellerCountry || source.seller_country || "ZA").toUpperCase();
+  const normalizedPayoutMethod = (() => {
+    const payoutCountry = toStr(source.bankCountry || source.beneficiaryCountry || source.country || sellerCountry || "ZA").toUpperCase();
+    const candidate = toStr(source.payoutMethod || "same_country_bank").toLowerCase();
+    if (candidate === "other_country_bank" || candidate === "international_bank") return "other_country_bank";
+    if (payoutCountry) return "other_country_bank";
+    return "same_country_bank";
+  })();
   return {
-    payoutMethod: toStr(source.payoutMethod || "local_bank"),
+    provider: "wise",
+    payoutMethod: normalizedPayoutMethod,
     accountHolderName: toStr(source.accountHolderName || source.account_name),
     bankName: toStr(source.bankName || source.bank_name),
-    bankCountry: toStr(source.bankCountry || source.bank_country || source.country || "ZA"),
+    bankCountry: toStr(source.bankCountry || source.bank_country || source.country || sellerCountry || "ZA"),
     bankAddress: toStr(source.bankAddress || source.bank_address),
     branchCode: toStr(source.branchCode || source.branch_code),
     accountNumber: toStr(source.accountNumber || source.account_number),
@@ -40,7 +58,7 @@ function normalizePayoutProfile(profile) {
     swiftBic: toStr(source.swiftBic || source.swift_bic),
     routingNumber: toStr(source.routingNumber || source.routing_number),
     accountType: toStr(source.accountType || source.account_type || "business_cheque"),
-    country: toStr(source.country || "ZA"),
+    country: toStr(source.country || sellerCountry || "ZA"),
     currency: toStr(source.currency || "ZAR"),
     beneficiaryReference: toStr(source.beneficiaryReference || source.reference),
     beneficiaryAddressLine1: toStr(source.beneficiaryAddressLine1 || source.beneficiary_address_line_1),
@@ -48,13 +66,20 @@ function normalizePayoutProfile(profile) {
     beneficiaryCity: toStr(source.beneficiaryCity || source.beneficiary_city),
     beneficiaryRegion: toStr(source.beneficiaryRegion || source.beneficiary_region),
     beneficiaryPostalCode: toStr(source.beneficiaryPostalCode || source.beneficiary_postal_code),
-    beneficiaryCountry: toStr(source.beneficiaryCountry || source.beneficiary_country || source.country || "ZA"),
+    beneficiaryCountry: toStr(source.beneficiaryCountry || source.beneficiary_country || source.country || sellerCountry || "ZA"),
     verificationStatus: toStr(source.verificationStatus || "not_submitted"),
-    verificationNotes: toStr(source.verificationNotes || ""),
+    verificationNotes: sanitizeLegacyPayoutNote(source.verificationNotes || ""),
     stripeRecipientAccountId: toStr(source.stripeRecipientAccountId || ""),
     stripeRecipientEntityType: toStr(source.stripeRecipientEntityType || ""),
     stripeRecipientCountry: toStr(source.stripeRecipientCountry || ""),
     stripeLastAccountLinkCreatedAt: toStr(source.stripeLastAccountLinkCreatedAt || ""),
+    wiseProfileId: toStr(source.wiseProfileId || ""),
+    wiseRecipientId: toStr(source.wiseRecipientId || ""),
+    wiseRecipientStatus: toStr(source.wiseRecipientStatus || ""),
+    onboardingStatus: toStr(source.onboardingStatus || "created"),
+    payoutMethodEnabled: source.payoutMethodEnabled === true,
+    lastCollectionLinkSentAt: toStr(source.lastCollectionLinkSentAt || ""),
+    recipientEmail: toStr(source.recipientEmail || source.email || ""),
     lastVerifiedAt: toStr(source.lastVerifiedAt || ""),
   };
 }
@@ -92,17 +117,21 @@ export async function GET(req) {
         : {};
 
     const deliveryProfile = normalizeSellerDeliveryProfile(seller?.deliveryProfile || {});
-    const payoutProfile = normalizePayoutProfile(seller?.payoutProfile || {});
+    const payoutProfile = normalizePayoutProfile({
+      ...(seller?.payoutProfile || {}),
+      sellerCountry: seller?.sellerCountry || "",
+    });
     const businessDetails = normalizeBusinessDetails(seller?.businessDetails || {}, seller, owner.data || {});
 
     return ok({
       seller: {
         uid: owner.id,
         sellerSlug: toStr(seller?.sellerSlug || seller?.groupSellerSlug || sellerSlug),
-        sellerCode: toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode || ""),
-        vendorName: toStr(seller?.vendorName || seller?.groupVendorName || ""),
-        vendorDescription: toStr(seller?.vendorDescription || seller?.description || "").slice(0, 500),
-      },
+      sellerCode: toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode || ""),
+      vendorName: toStr(seller?.vendorName || seller?.groupVendorName || ""),
+      vendorDescription: toStr(seller?.vendorDescription || seller?.description || "").slice(0, 500),
+      payoutProvider: "wise",
+    },
       deliveryProfile,
       payoutProfile,
       businessDetails,

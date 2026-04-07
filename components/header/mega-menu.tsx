@@ -1423,6 +1423,10 @@ function PiessangLogo() {
   );
 }
 
+function HeaderTextPlaceholder({ widthClass }: { widthClass: string }) {
+  return <span className={`inline-block h-3.5 animate-pulse rounded-full bg-[#ece6d9] ${widthClass}`} aria-hidden="true" />;
+}
+
 function NotificationsButton({
   isAuthenticated,
   unreadCount,
@@ -2018,6 +2022,7 @@ function MobileDrawer({
   onClose,
   departments,
   productCountsBySubCategory,
+  authReady,
   isAuthenticated,
   isSeller,
   favoriteCount,
@@ -2031,6 +2036,7 @@ function MobileDrawer({
   onClose: () => void;
   departments: Department[];
   productCountsBySubCategory: Record<string, number>;
+  authReady: boolean;
   isAuthenticated: boolean;
   isSeller: boolean;
   favoriteCount: number;
@@ -2081,7 +2087,7 @@ function MobileDrawer({
     { title: "Shop by Category", href: PRODUCTS_PAGE, chevron: true, active: true, onClick: () => setView("categories") },
     { title: "Deals", href: "/products?onSale=true" },
     { title: "Orders", href: "/account?section=orders" },
-    ...(isAuthenticated ? [{ title: "My Account", href: "/account" }] : [{ title: "Login", href: "/" }, { title: "Register", href: "/" }]),
+    ...(isAuthenticated ? [{ title: "My Account", href: "/account" }] : authReady ? [{ title: "Login", href: "/" }, { title: "Register", href: "/" }] : []),
     ...(isSeller ? [{ title: "Seller dashboard", href: "/seller/dashboard" }] : []),
     { title: "Help Centre", href: "/account?section=support" },
   ] as const;
@@ -2156,6 +2162,19 @@ function MobileDrawer({
                 </Link>
               ))
             : null}
+          {view === "root" && !authReady ? (
+            <>
+              {["auth-loading-1", "auth-loading-2"].map((key) => (
+                <div
+                  key={key}
+                  className="mx-3 mb-2 flex min-h-[58px] items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+                >
+                  <HeaderTextPlaceholder widthClass="w-20" />
+                  <HeaderTextPlaceholder widthClass="w-4" />
+                </div>
+              ))}
+            </>
+          ) : null}
 
           {view === "categories" ? (
             <>
@@ -2266,7 +2285,7 @@ function MobileDrawer({
                 </span>
                 <span className="text-[14px] text-[#8b94a3]">{favoriteCount} Items</span>
               </Link>
-            ) : (
+            ) : authReady ? (
               <button
                 type="button"
                 onClick={() => {
@@ -2285,6 +2304,11 @@ function MobileDrawer({
                 </span>
                 <span className="text-[14px] text-[#8b94a3]">0 Items</span>
               </button>
+            ) : (
+              <div className="flex items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-3 shadow-[0_6px_18px_rgba(20,24,27,0.04)]">
+                <HeaderTextPlaceholder widthClass="w-14" />
+                <HeaderTextPlaceholder widthClass="w-12" />
+              </div>
             )}
           </div>
 
@@ -2293,7 +2317,7 @@ function MobileDrawer({
               <button type="button" onClick={onSignOut} className="text-[15px] font-semibold text-[#0f80c3]">
                 Logout
               </button>
-            ) : (
+            ) : authReady ? (
               <>
                 <button
                   type="button"
@@ -2309,6 +2333,11 @@ function MobileDrawer({
                 >
                   Register
                 </button>
+              </>
+            ) : (
+              <>
+                <HeaderTextPlaceholder widthClass="w-12" />
+                <HeaderTextPlaceholder widthClass="w-16" />
               </>
             )}
           </div>
@@ -2326,6 +2355,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [fixedHeroConfig, setFixedHeroConfig] = useState<FixedHeroConfig | null>(null);
   const {
+    authReady,
     isAuthenticated,
     profile,
     uid,
@@ -2337,6 +2367,9 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     syncCartState,
     signOut,
   } = useAuth();
+  const authSettled = authReady || isAuthenticated;
+  const showAuthenticatedActions = isAuthenticated;
+  const showGuestActions = authReady && !isAuthenticated;
   const {
     departments,
     hoveredSlug,
@@ -2352,19 +2385,19 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     [hoveredSlug, departments],
   );
   const favoritesHref = useMemo(() => {
-    if (!isAuthenticated || !uid) return "/products";
+    if (!showAuthenticatedActions || !uid) return "/products";
     const params = new URLSearchParams({
       favoritesOnly: "true",
       userId: uid,
     });
     return `/products?${params.toString()}`;
-  }, [isAuthenticated, uid]);
+  }, [showAuthenticatedActions, uid]);
   const notificationsHref = "/account/notifications";
 
   useEffect(() => {
     let cancelled = false;
     async function loadNotificationCount() {
-      if (!isAuthenticated) {
+      if (!showAuthenticatedActions) {
         if (!cancelled) setNotificationUnreadCount(0);
         return;
       }
@@ -2383,7 +2416,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated]);
+  }, [showAuthenticatedActions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2403,7 +2436,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   }, []);
 
   const handleClearFavorites = async () => {
-    if (!isAuthenticated || !uid) {
+    if (!showAuthenticatedActions || !uid) {
       openAuthModal("Sign in to manage your favourites.");
       return;
     }
@@ -2461,7 +2494,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
           </div>
 
           <div className="hidden items-center gap-0 lg:flex">
-            {isAuthenticated ? (
+            {showAuthenticatedActions ? (
               <>
                 <Link
                   href="/account"
@@ -2485,7 +2518,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                   Logout
                 </button>
               </>
-            ) : (
+            ) : showGuestActions ? (
               <>
                 <button
                   type="button"
@@ -2502,22 +2535,31 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                   Register
                 </button>
               </>
+            ) : (
+              <>
+                <span className="border-r border-black/10 px-5 last:border-r-0">
+                  <HeaderTextPlaceholder widthClass="w-12" />
+                </span>
+                <span className="border-r border-black/10 px-5 last:border-r-0">
+                  <HeaderTextPlaceholder widthClass="w-14" />
+                </span>
+              </>
             )}
             <NotificationsButton
-              isAuthenticated={isAuthenticated}
+              isAuthenticated={showAuthenticatedActions}
               unreadCount={notificationUnreadCount}
               notificationsHref={notificationsHref}
               onRequireAuth={() => openAuthModal("Sign in to view your notifications.")}
             />
             <HeartButton
-              isAuthenticated={isAuthenticated}
+              isAuthenticated={showAuthenticatedActions}
               favoriteCount={favoriteCount}
               favoritesHref={favoritesHref}
               onRequireAuth={() => openAuthModal("Sign in to save favourites.")}
               onClearFavorites={() => void handleClearFavorites()}
             />
               <CartButton
-                isAuthenticated={isAuthenticated}
+                isAuthenticated={showAuthenticatedActions}
                 cartItemCount={cartItemCount}
                 onRequireAuth={() => openAuthModal("Sign in to manage your cart.")}
                 onOpenCartPreview={() => setCartPreviewOpen(true)}
@@ -2573,7 +2615,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               <button
                 type="button"
                 onClick={
-                  isAuthenticated
+                  showAuthenticatedActions
                     ? () => {
                         window.location.assign(notificationsHref);
                       }
@@ -2583,7 +2625,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                 aria-label="Notifications"
               >
                 <BellIcon />
-                {isAuthenticated && notificationUnreadCount > 0 ? (
+                {showAuthenticatedActions && notificationUnreadCount > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
                     {notificationUnreadCount}
                   </span>
@@ -2592,7 +2634,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               <button
                 type="button"
                 onClick={
-                  isAuthenticated
+                  showAuthenticatedActions
                     ? () => setCartPreviewOpen(true)
                     : () => openAuthModal("Sign in to manage your cart.")
                 }
@@ -2600,7 +2642,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                 aria-label="Cart"
               >
                 <CartIcon />
-                {isAuthenticated && cartItemCount > 0 ? (
+                {showAuthenticatedActions && cartItemCount > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
                     {cartItemCount}
                   </span>
@@ -2740,7 +2782,8 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         onClose={() => setMobileOpen(false)}
         departments={departments}
         productCountsBySubCategory={productCountsBySubCategory}
-        isAuthenticated={isAuthenticated}
+        authReady={authSettled}
+        isAuthenticated={showAuthenticatedActions}
         isSeller={isSeller}
         favoriteCount={favoriteCount}
         cartItemCount={cartItemCount}

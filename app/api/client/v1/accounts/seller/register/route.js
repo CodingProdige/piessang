@@ -7,9 +7,10 @@ import { NextResponse } from "next/server";
 import { getSellerCatalogueCategory, getSellerCatalogueSubCategories } from "@/lib/seller/catalogue-categories";
 import { canCreateSellerAccount } from "@/lib/seller/access";
 import {
-  SUPPORTED_PAYOUT_COUNTRIES,
+  SUPPORTED_SELLER_PAYOUT_COUNTRIES,
   SUPPORTED_PAYOUT_CURRENCIES,
 } from "@/lib/seller/payout-config";
+import { getDefaultPayoutCurrency } from "@/lib/marketplace/country-config";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { cleanVendorName, generateVendorNameSuggestions, normalizeVendorName, toSellerSlug, trimVendorNameToLength, titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { jsonError, rateLimit, requireSessionUser } from "@/lib/api/security";
@@ -114,20 +115,10 @@ export async function POST(req) {
     const subCategorySlug = normalizeSlug(seller?.subCategory || "");
     const category = categorySlug ? getSellerCatalogueCategory(categorySlug) : null;
     const subCategories = category ? getSellerCatalogueSubCategories(categorySlug) : [];
-    const supportedCountry = SUPPORTED_PAYOUT_COUNTRIES.find((entry) => entry.code === sellerCountry) || null;
-    const defaultCurrencyByCountry = {
-      ZA: "ZAR",
-      KE: "KES",
-      MU: "MUR",
-      GB: "GBP",
-      US: "USD",
-      AE: "AED",
-      DE: "EUR",
-      NL: "EUR",
-    };
+    const supportedCountry = SUPPORTED_SELLER_PAYOUT_COUNTRIES.find((entry) => entry.code === sellerCountry) || null;
     const payoutCurrency = SUPPORTED_PAYOUT_CURRENCIES.find(
-      (entry) => entry.code === (defaultCurrencyByCountry[sellerCountry] || "ZAR"),
-    )?.code || "ZAR";
+      (entry) => entry.code === getDefaultPayoutCurrency(sellerCountry, "USD"),
+    )?.code || "USD";
     const hasValidSubCategory =
       !subCategorySlug || !category || subCategories.some((item) => item.slug === subCategorySlug);
 
@@ -179,6 +170,7 @@ export async function POST(req) {
     }
 
     const now = new Date().toISOString();
+    const payoutProvider = "wise";
     const sellerCode = ensureSellerCode(current?.seller?.sellerCode, uid);
     const activeSellerCode = ensureSellerCode(current?.seller?.activeSellerCode, uid);
     const nextSeller = {
@@ -197,14 +189,21 @@ export async function POST(req) {
       sellerCountry,
       baseLocation,
       serviceArea: baseLocation,
-      payoutProvider: "stripe_global_payouts",
+      payoutProvider,
       payoutProfile: current?.seller?.payoutProfile || {
-        payoutMethod: "same_country_bank",
+        provider: payoutProvider,
+        payoutMethod: "other_country_bank",
         country: sellerCountry,
         bankCountry: sellerCountry,
         beneficiaryCountry: sellerCountry,
         currency: payoutCurrency,
         verificationStatus: "not_submitted",
+        onboardingStatus: "created",
+        payoutMethodEnabled: false,
+        recipientEmail: contactEmail,
+        wiseProfileId: "",
+        wiseRecipientId: "",
+        wiseRecipientStatus: "",
       },
       category: category?.slug || null,
       categoryTitle: category?.title || null,

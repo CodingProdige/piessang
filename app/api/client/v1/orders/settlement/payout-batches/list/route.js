@@ -46,18 +46,15 @@ function matchesStatus(record, status) {
 
 function buildBlockingReason(data, bankProfile) {
   const status = toStr(data?.status).toLowerCase();
-  const provider = toStr(data?.provider || "stripe_global_payouts");
+  const provider = toStr(data?.provider || "wise");
   const providerMessage = toStr(data?.providerResponse?.message || "");
   const providerReason = toStr(data?.providerResponse?.reason || "");
   const verificationStatus = toStr(bankProfile?.verificationStatus).toLowerCase();
-  const stripeRecipientAccountId = toStr(bankProfile?.stripeRecipientAccountId || "");
+  const wiseRecipientId = toStr(bankProfile?.wiseRecipientId || "");
 
   if (status === "awaiting_provider_config") {
-    if (providerReason === "missing_stripe_financial_account") {
-      return "Stripe financial account is not configured on Piessang yet.";
-    }
-    if (providerReason === "missing_stripe_recipient" || !stripeRecipientAccountId) {
-      return "Stripe recipient is not connected for this seller yet.";
+    if (providerReason === "missing_wise_recipient" || !wiseRecipientId) {
+      return "Wise recipient is not connected for this seller yet.";
     }
     return providerMessage || "This payout batch is missing provider setup before it can be submitted.";
   }
@@ -67,8 +64,8 @@ function buildBlockingReason(data, bankProfile) {
   }
 
   if (status === "pending_submission") {
-    if (!stripeRecipientAccountId && provider === "stripe_global_payouts") {
-      return "Stripe recipient is not connected for this seller yet.";
+    if (!wiseRecipientId && provider === "wise") {
+      return "Wise recipient is not connected for this seller yet.";
     }
     if (verificationStatus && verificationStatus !== "verified") {
       return `Seller payout verification is ${verificationStatus.replace(/_/g, " ")}.`;
@@ -85,7 +82,7 @@ function normalizeBatch(docSnap) {
 
   return {
     batchId: toStr(data.batchId || docSnap.id),
-    provider: toStr(data.provider || ""),
+    provider: toStr(data.provider || "wise"),
     status: toStr(data.status || "pending_submission").toLowerCase(),
     currency: toStr(data.currency || "ZAR"),
     grossIncl: toNum(data.grossIncl || 0),
@@ -114,7 +111,7 @@ function normalizeBatch(docSnap) {
       currency: toStr(bankProfile.currency || data.currency || "ZAR"),
       accountLast4: toStr(bankProfile.accountLast4 || ""),
       ibanLast4: toStr(bankProfile.ibanLast4 || ""),
-      stripeRecipientAccountId: toStr(bankProfile.stripeRecipientAccountId || data?.bankProfile?.stripeRecipientAccountId || ""),
+      wiseRecipientId: toStr(bankProfile.wiseRecipientId || data?.bankProfile?.wiseRecipientId || ""),
     },
   };
 }

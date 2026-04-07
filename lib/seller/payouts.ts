@@ -53,7 +53,7 @@ function groupBySeller(settlements) {
   return Array.from(groups.values());
 }
 
-export async function createPendingSellerPayoutBatches({ createdBy = "system", provider = "stripe_global_payouts" } = {}) {
+export async function createPendingSellerPayoutBatches({ createdBy = "system", provider = "wise" } = {}) {
   const db = getAdminDb();
   if (!db) {
     throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");

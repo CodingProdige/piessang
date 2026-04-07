@@ -709,7 +709,7 @@ export function SellerSettlementsWorkspace({
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Payout method</p>
             <p className="mt-2 text-[14px] font-semibold text-[#202020]">Automatic via Stripe</p>
             <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">
-              Eligible funds are paid out automatically on the next Stripe payout run.
+              Eligible funds are paid out automatically on the next Wise payout run.
             </p>
           </div>
         </div>
@@ -810,7 +810,7 @@ export function SellerSettlementsWorkspace({
                             ? "This payout is currently being processed."
                             : record.payoutState === "Paid"
                               ? `Paid out ${formatTime(record.payout?.releasedAt || record.updatedAt || "") || "recently"}.`
-                              : "These funds are eligible and will be included in the next automatic Stripe payout run."}
+                              : "These funds are eligible and will be included in the next automatic Wise payout run."}
                       </p>
                     </div>
                   </div>

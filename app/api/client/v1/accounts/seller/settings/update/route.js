@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
+import { SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES, normalizeCountryLabel } from "@/lib/marketplace/country-config";
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
@@ -93,6 +94,10 @@ function sanitizeEnum(value, allowed, fallback) {
   return allowed.includes(normalized) ? normalized : fallback;
 }
 
+function normalizeSupportedCountryLabel(value, fallback = "") {
+  return normalizeCountryLabel(value, SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES, fallback);
+}
+
 function sanitizeBankAccountNumber(value) {
   return toStr(value).replace(/[^\d]/g, "").slice(0, 20);
 }
@@ -107,14 +112,18 @@ function sanitizeAlphaNumeric(value, max = 34) {
 
 function parsePayoutProfile(payload) {
   const source = payload && typeof payload === "object" ? payload : {};
-  const payoutMethod = sanitizeEnum(source.payoutMethod, ["same_country_bank", "other_country_bank"], "same_country_bank");
   const supportedCountryCodes = SUPPORTED_PAYOUT_COUNTRIES.map((entry) => entry.code);
   const supportedCurrencyCodes = SUPPORTED_PAYOUT_CURRENCIES.map((entry) => entry.code);
+  const country = sanitizeEnum(source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase();
+  const bankCountry = sanitizeEnum(source.bankCountry || source.bank_country || source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase();
+  const rawPayoutMethod = sanitizeEnum(source.payoutMethod, ["same_country_bank", "other_country_bank"], "same_country_bank");
+  const payoutMethod = country || bankCountry ? "other_country_bank" : rawPayoutMethod;
   return {
+    provider: "wise",
     payoutMethod,
     accountHolderName: sanitizeText(source.accountHolderName || source.account_name || "").slice(0, 120),
     bankName: sanitizeText(source.bankName || source.bank_name || "").slice(0, 120),
-    bankCountry: sanitizeEnum(source.bankCountry || source.bank_country || source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase(),
+    bankCountry,
     bankAddress: sanitizeLongText(source.bankAddress || source.bank_address || "").slice(0, 200),
     branchCode: sanitizeBranchCode(source.branchCode || source.branch_code || ""),
     accountNumber: sanitizeBankAccountNumber(source.accountNumber || source.account_number || ""),
@@ -122,7 +131,7 @@ function parsePayoutProfile(payload) {
     swiftBic: sanitizeAlphaNumeric(source.swiftBic || source.swift_bic || "", 11),
     routingNumber: sanitizeAlphaNumeric(source.routingNumber || source.routing_number || "", 20),
     accountType: sanitizeEnum(source.accountType || source.account_type, ["business_cheque", "business_savings", "cheque", "savings"], "business_cheque"),
-    country: sanitizeEnum(source.country || "ZA", supportedCountryCodes.map((code) => code.toLowerCase()), "za").toUpperCase(),
+    country,
     currency: sanitizeEnum(source.currency || "ZAR", supportedCurrencyCodes.map((code) => code.toLowerCase()), "zar").toUpperCase(),
     beneficiaryReference: sanitizeText(source.beneficiaryReference || source.reference || "").slice(0, 120),
     beneficiaryAddressLine1: sanitizeText(source.beneficiaryAddressLine1 || source.beneficiary_address_line_1 || "").slice(0, 120),
@@ -137,6 +146,13 @@ function parsePayoutProfile(payload) {
     stripeRecipientEntityType: sanitizeText(source.stripeRecipientEntityType || "").slice(0, 40),
     stripeRecipientCountry: sanitizeText(source.stripeRecipientCountry || "").slice(0, 2).toUpperCase(),
     stripeLastAccountLinkCreatedAt: toStr(source.stripeLastAccountLinkCreatedAt || ""),
+    wiseProfileId: sanitizeText(source.wiseProfileId || "").slice(0, 120),
+    wiseRecipientId: sanitizeText(source.wiseRecipientId || "").slice(0, 120),
+    wiseRecipientStatus: sanitizeText(source.wiseRecipientStatus || "").slice(0, 60),
+    onboardingStatus: sanitizeEnum(source.onboardingStatus, ["created", "information_needed", "collecting", "pending_review", "ready", "failed"], "created"),
+    payoutMethodEnabled: source.payoutMethodEnabled === true,
+    lastCollectionLinkSentAt: toStr(source.lastCollectionLinkSentAt || ""),
+    recipientEmail: sanitizeText(source.recipientEmail || source.email || "").slice(0, 120),
     lastVerifiedAt: toStr(source.lastVerifiedAt || ""),
   };
 }
@@ -172,7 +188,7 @@ function parseDeliveryProfile(payload) {
   const normalized = normalizeSellerDeliveryProfile(payload && typeof payload === "object" ? payload : {});
   return {
     origin: {
-      country: sanitizeText(normalized.origin?.country),
+      country: normalizeSupportedCountryLabel(normalized.origin?.country, ""),
       region: sanitizeText(normalized.origin?.region),
       city: sanitizeText(normalized.origin?.city),
       suburb: sanitizeText(normalized.origin?.suburb),
@@ -206,7 +222,7 @@ function parseDeliveryProfile(payload) {
           id: toStr(zone.id),
           label: sanitizeText(zone.label),
           scopeType: sanitizeText(zone.scopeType || "country"),
-          country: sanitizeText(zone.country),
+          country: normalizeSupportedCountryLabel(zone.country, ""),
           region: sanitizeText(zone.region),
           city: sanitizeText(zone.city),
           postalCodes: Array.isArray(zone.postalCodes) ? zone.postalCodes.map((code) => sanitizeText(code)).filter(Boolean) : [],
@@ -248,6 +264,7 @@ export async function POST(req) {
     const branding = parseBranding(data?.branding || data);
     const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
     const payoutProfile = parsePayoutProfile(data?.payoutProfile || data?.payout || {});
+    const payoutProvider = "wise";
     const vendorName = titleCaseVendorName(data?.vendorName || data?.seller?.vendorName || "");
     const vendorDescription = normalizeSellerDescription(
       data?.vendorDescription || data?.description || data?.seller?.vendorDescription || data?.seller?.description,
@@ -292,6 +309,7 @@ export async function POST(req) {
       "seller.branding": branding,
       "seller.deliveryProfile": deliveryProfile,
       "seller.payoutProfile": payoutProfile,
+      "seller.payoutProvider": payoutProvider,
       "seller.businessDetails": businessDetails,
       "seller.media": branding,
       "timestamps.updatedAt": new Date(),
@@ -307,6 +325,7 @@ export async function POST(req) {
       branding,
       deliveryProfile,
       payoutProfile,
+      payoutProvider,
       businessDetails,
     });
   } catch (e) {

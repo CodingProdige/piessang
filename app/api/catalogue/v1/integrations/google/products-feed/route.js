@@ -4,8 +4,10 @@ export const dynamic = "force-dynamic";
 
 import { db, collection, getDocs } from "@/lib/firebase/admin-firestore";
 import { formatMoneyExact } from "@/lib/money";
-import { resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
+import { resolveGoogleTargetCountries, resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
+import { loadGoogleMerchantSettings } from "@/lib/platform/google-merchant-settings";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
+import { sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 
 const VAT = 0.15;
 const FEED_TITLE = "Piessang Product Feed";
@@ -66,11 +68,18 @@ const explicitMoney = (value) => {
 };
 
 const toNum = (v) => (Number.isFinite(+v) ? +v : 0);
-const isEligibleProduct = (p) =>
+const isEligibleProduct = async (p, merchantCountryCodes) =>
   p?.placement?.isActive === true &&
   p?.placement?.supplier_out_of_stock !== true &&
   String(p?.moderation?.status || "").trim().toLowerCase() === "published" &&
-  !isSellerAccountUnavailable(p);
+  !isSellerAccountUnavailable(p) &&
+  sellerDeliverySettingsReady(p?.seller?.deliveryProfile || {}) &&
+  (await resolveGoogleTargetCountries({
+    seller: p?.seller,
+    sellerCountry: p?.seller?.sellerCountry,
+    deliveryProfile: p?.seller?.deliveryProfile,
+    merchantCountryCodes,
+  })).length > 0;
 
 function buildActiveSlugSet(rows, slugReader) {
   return new Set(
@@ -204,12 +213,14 @@ export async function GET(req) {
     const rawLimit = Number.parseInt(String(searchParams.get("limit") || "").trim(), 10);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : null;
 
-    const [productsSnap, categoriesSnap, subCategoriesSnap, brandsSnap] = await Promise.all([
+    const [productsSnap, categoriesSnap, subCategoriesSnap, brandsSnap, merchantSettings] = await Promise.all([
       getDocs(collection(db, PRODUCTS_COLLECTION)),
       getDocs(collection(db, "categories")),
       getDocs(collection(db, "sub_categories")),
       getDocs(collection(db, "brands")),
+      loadGoogleMerchantSettings(),
     ]);
+    const merchantCountryCodes = merchantSettings.countryCodes || [];
 
     const activeCategorySlugs = buildActiveSlugSet(
       categoriesSnap.docs.map((d) => d.data() || {}),
@@ -238,9 +249,13 @@ export async function GET(req) {
       );
     };
 
-    let products = productsSnap.docs
-      .map((d) => ({ id: d.id, ...(d.data() || {}) }))
-      .filter((p) => isEligibleProduct(p) && hasActiveParents(p));
+    const productRows = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+    let products = [];
+    for (const product of productRows) {
+      if (!hasActiveParents(product)) continue;
+      if (!(await isEligibleProduct(product, merchantCountryCodes))) continue;
+      products.push(product);
+    }
     if (limit != null) products = products.slice(0, limit);
 
     const now = new Date().toUTCString();
@@ -277,32 +292,42 @@ export async function GET(req) {
         const sku = String(v?.sku || "").trim();
         const gtin = String(v?.barcode || "").trim();
         const availability = availabilityForVariant(v);
-        const link = productLink(uniqueId, title, variantId);
+        const targetCountries = await resolveGoogleTargetCountries({
+          seller: p?.seller,
+          sellerCountry: p?.seller?.sellerCountry,
+          deliveryProfile: p?.seller?.deliveryProfile,
+          merchantCountryCodes,
+        });
 
-        const xml = [
-          "<item>",
-          `<g:id>${esc(`${uniqueId}-${variantId}`)}</g:id>`,
-          `<g:item_group_id>${esc(uniqueId)}</g:item_group_id>`,
-          `<title>${esc(itemTitle)}</title>`,
-          `<description>${esc(desc)}</description>`,
-          `<link>${esc(link)}</link>`,
-          image ? `<g:image_link>${esc(image)}</g:image_link>` : "",
-          `<g:brand>${esc(brand)}</g:brand>`,
-          `<g:external_seller_id>${esc(marketplaceSeller.externalSellerId)}</g:external_seller_id>`,
-          `<g:condition>new</g:condition>`,
-          `<g:availability>${esc(availability)}</g:availability>`,
-          `<g:price>${esc(priceFields.price)}</g:price>`,
-          priceFields.salePrice ? `<g:sale_price>${esc(priceFields.salePrice)}</g:sale_price>` : "",
-          gtin ? `<g:gtin>${esc(gtin)}</g:gtin>` : "",
-          sku ? `<g:mpn>${esc(sku)}</g:mpn>` : "",
-          `<g:google_product_category>${esc(googleCategory)}</g:google_product_category>`,
-          `<g:product_type>${esc([category, subCategory].filter(Boolean).join(" > "))}</g:product_type>`,
-          "</item>",
-        ]
-          .filter(Boolean)
-          .join("");
+        for (const targetCountry of targetCountries) {
+          const link = productLink(uniqueId, title, variantId);
+          const normalizedTargetCountry = String(targetCountry || "ZA").trim().toUpperCase();
+          const xml = [
+            "<item>",
+            `<g:id>${esc(`${uniqueId}-${variantId}-${normalizedTargetCountry}`)}</g:id>`,
+            `<g:item_group_id>${esc(uniqueId)}</g:item_group_id>`,
+            `<title>${esc(itemTitle)}</title>`,
+            `<description>${esc(desc)}</description>`,
+            `<link>${esc(link)}</link>`,
+            image ? `<g:image_link>${esc(image)}</g:image_link>` : "",
+            `<g:brand>${esc(brand)}</g:brand>`,
+            `<g:external_seller_id>${esc(marketplaceSeller.externalSellerId)}</g:external_seller_id>`,
+            `<g:condition>new</g:condition>`,
+            `<g:availability>${esc(availability)}</g:availability>`,
+            `<g:price>${esc(priceFields.price)}</g:price>`,
+            priceFields.salePrice ? `<g:sale_price>${esc(priceFields.salePrice)}</g:sale_price>` : "",
+            gtin ? `<g:gtin>${esc(gtin)}</g:gtin>` : "",
+            sku ? `<g:mpn>${esc(sku)}</g:mpn>` : "",
+            `<g:google_product_category>${esc(googleCategory)}</g:google_product_category>`,
+            `<g:product_type>${esc([category, subCategory].filter(Boolean).join(" > "))}</g:product_type>`,
+            `<g:target_country>${esc(normalizedTargetCountry)}</g:target_country>`,
+            "</item>",
+          ]
+            .filter(Boolean)
+            .join("");
 
-        items.push(xml);
+          items.push(xml);
+        }
       }
     }
 

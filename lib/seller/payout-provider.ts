@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { getAdminDb } from "@/lib/firebase/admin";
-import { createStripeOutboundPayment, getStripeOutboundPayment } from "@/lib/seller/stripe-global-payouts";
+import { createWisePayoutForBatch, getWisePayoutStatusForBatch } from "@/lib/seller/wise-payouts";
 
 const PAYOUT_BATCH_COLLECTION = "seller_payout_batches_v1";
 const SETTLEMENT_COLLECTION = "seller_settlements_v1";
@@ -9,15 +9,6 @@ const nowIso = () => new Date().toISOString();
 
 function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
-}
-
-function toNum(value, fallback = 0) {
-  const next = Number(value);
-  return Number.isFinite(next) ? next : fallback;
-}
-
-function getStripeFinancialAccountId() {
-  return toStr(process.env.STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT_ID || "");
 }
 
 function mapSettlementStateFromBatch(batchStatus) {
@@ -57,24 +48,13 @@ async function updateLinkedSettlements(db, settlementIds, nextPayout, batchStatu
   }
 }
 
-function mapStripeProviderStatus(value) {
-  const normalized = toStr(value).toLowerCase();
-  if (["posted", "paid", "completed", "succeeded"].includes(normalized)) {
-    return "paid";
-  }
-  if (["failed", "returned", "canceled", "rejected"].includes(normalized)) {
-    return "submission_failed";
-  }
-  return "submitted";
-}
-
 async function markBatchAwaitingConfig(db, batchRef, batch, reason, message) {
   const updatedAt = nowIso();
   await batchRef.set(
     {
       status: "awaiting_provider_config",
       updatedAt,
-      provider: "stripe_global_payouts",
+      provider: "wise",
       providerResponse: {
         ok: false,
         reason,
@@ -96,63 +76,29 @@ async function markBatchAwaitingConfig(db, batchRef, batch, reason, message) {
 }
 
 async function submitSinglePendingBatch(db, batchRef, batch) {
-  const financialAccountId = getStripeFinancialAccountId();
-  if (!financialAccountId) {
+  const wiseRecipientId = toStr(batch?.bankProfile?.wiseRecipientId);
+  if (!wiseRecipientId) {
     return markBatchAwaitingConfig(
       db,
       batchRef,
       batch,
-      "missing_stripe_financial_account",
-      "STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT_ID is not configured.",
-    );
-  }
-
-  const stripeRecipientAccountId = toStr(batch?.bankProfile?.stripeRecipientAccountId);
-  if (!stripeRecipientAccountId) {
-    return markBatchAwaitingConfig(
-      db,
-      batchRef,
-      batch,
-      "missing_stripe_recipient",
-      "Seller payout profile has not completed Stripe payout onboarding yet.",
-    );
-  }
-
-  const amountMinor = Math.round(toNum(batch?.netDueIncl, 0) * 100);
-  if (amountMinor <= 0) {
-    return markBatchAwaitingConfig(
-      db,
-      batchRef,
-      batch,
-      "invalid_batch_amount",
-      "Stripe payout amount must be greater than zero.",
+      "missing_wise_recipient",
+      "Seller payout profile has not completed Wise recipient setup yet.",
     );
   }
 
   try {
-    const payload = await createStripeOutboundPayment({
-      financialAccountId,
-      recipientAccountId: stripeRecipientAccountId,
-      amountMinor,
-      currency: toStr(batch?.currency || "ZAR"),
-      description: `Piessang seller payout ${toStr(batch?.batchId)}`,
-      metadata: {
-        batch_id: toStr(batch?.batchId),
-        seller_slug: toStr(batch?.seller?.sellerSlug),
-        seller_code: toStr(batch?.seller?.sellerCode),
-      },
-    });
-
-    const providerPayoutId = toStr(payload?.id || "");
-    const providerStatus = toStr(payload?.status || "submitted");
-    const batchStatus = mapStripeProviderStatus(providerStatus);
+    const payload = await createWisePayoutForBatch(batch);
+    const providerPayoutId = toStr(payload?.transferId || "");
+    const providerStatus = toStr(payload?.providerStatus || "submitted");
+    const batchStatus = toStr(payload?.batchStatus || "submitted");
     const updatedAt = nowIso();
 
     await batchRef.set(
       {
         status: batchStatus,
         updatedAt,
-        provider: "stripe_global_payouts",
+        provider: "wise",
         providerBatchReference: providerPayoutId,
         providerPayoutId,
         providerStatus,
@@ -173,7 +119,7 @@ async function submitSinglePendingBatch(db, batchRef, batch) {
         batchStatus,
         providerPayoutId,
         providerStatus,
-        stripeRecipientAccountId,
+        wiseRecipientId,
       },
       batchStatus,
     );
@@ -181,15 +127,18 @@ async function submitSinglePendingBatch(db, batchRef, batch) {
     return { batchId: batch.batchId, status: batchStatus, providerPayoutId, providerStatus };
   } catch (error) {
     const updatedAt = nowIso();
+    const reason = toStr(error?.reason || "");
+    const status = reason ? "awaiting_provider_config" : "submission_failed";
     await batchRef.set(
       {
-        status: "submission_failed",
+        status,
         updatedAt,
-        provider: "stripe_global_payouts",
+        provider: "wise",
         providerResponse: {
           ok: false,
+          reason,
           payload: error?.payload || null,
-          message: error?.message || "Unable to submit Stripe payout batch.",
+          message: error?.message || "Unable to submit Wise payout batch.",
         },
       },
       { merge: true },
@@ -199,11 +148,11 @@ async function submitSinglePendingBatch(db, batchRef, batch) {
       batch?.settlementIds || [],
       {
         batchId: batch.batchId,
-        batchStatus: "submission_failed",
+        batchStatus: status,
       },
       "submission_failed",
     );
-    return { batchId: batch.batchId, status: "submission_failed", error: error?.message || "Unable to submit Stripe payout." };
+    return { batchId: batch.batchId, status, error: error?.message || "Unable to submit Wise payout." };
   }
 }
 
@@ -214,21 +163,21 @@ async function reconcileSubmittedBatch(db, batchRef, batch) {
   }
 
   try {
-    const payload = await getStripeOutboundPayment(providerPayoutId);
-    const providerStatus = toStr(payload?.status || batch?.providerStatus || "submitted");
-    const batchStatus = mapStripeProviderStatus(providerStatus);
+    const payload = await getWisePayoutStatusForBatch(providerPayoutId);
+    const providerStatus = toStr(payload?.providerStatus || batch?.providerStatus || "submitted");
+    const batchStatus = toStr(payload?.batchStatus || "submitted");
     const updatedAt = nowIso();
 
     await batchRef.set(
       {
         status: batchStatus,
         updatedAt,
-        provider: "stripe_global_payouts",
+        provider: "wise",
         providerStatus,
         paidAt: batchStatus === "paid" ? updatedAt : batch?.paidAt || null,
         providerResponse: {
           ok: true,
-          payload,
+          payload: payload?.payload || null,
         },
       },
       { merge: true },
@@ -242,7 +191,7 @@ async function reconcileSubmittedBatch(db, batchRef, batch) {
         batchStatus,
         providerPayoutId,
         providerStatus,
-        stripeRecipientAccountId: toStr(batch?.bankProfile?.stripeRecipientAccountId),
+        wiseRecipientId: toStr(batch?.bankProfile?.wiseRecipientId),
       },
       batchStatus,
     );
@@ -252,21 +201,21 @@ async function reconcileSubmittedBatch(db, batchRef, batch) {
     return {
       batchId: batch.batchId,
       status: toStr(batch?.status || "submitted"),
-      error: error?.message || "Unable to reconcile Stripe payout batch.",
+      error: error?.message || "Unable to reconcile Wise payout batch.",
     };
   }
 }
 
-export async function submitPendingStripePayoutBatches() {
+export async function submitPendingWisePayoutBatches() {
   const db = getAdminDb();
   if (!db) throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");
 
   const snap = await db.collection(PAYOUT_BATCH_COLLECTION).get();
   const rows = snap.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
   const actionable = rows.filter((row) => {
-    const provider = toStr(row?.provider || "");
+    const provider = toStr(row?.provider || "wise");
     const status = toStr(row?.status).toLowerCase();
-    return provider === "stripe_global_payouts" && (status === "pending_submission" || status === "submitted");
+    return provider === "wise" && (status === "pending_submission" || status === "submitted");
   });
 
   const results = [];

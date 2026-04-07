@@ -138,7 +138,7 @@ function buildAssistantReply(input: string) {
     return "Ask me about payouts, delivery rules, product publishing, orders, or returns and I’ll point you to the right Piessang workflow.";
   }
   if (query.includes("payout") || query.includes("stripe") || query.includes("bank")) {
-    return "Piessang pays sellers out through the Stripe payout setup in your seller settings. Connect your payout profile first, then your settlements move from gross sales to fees, refund adjustments, and finally net due.";
+    return "Piessang pays sellers out through Wise payout setup in your seller settings. Connect your payout profile first, then your settlements move from gross sales to fees, refund adjustments, and finally net due.";
   }
   if (query.includes("delivery") || query.includes("shipping") || query.includes("courier") || query.includes("pickup")) {
     return "Your delivery rules tell Piessang whether an order should go out by direct delivery, shipping, or collection. Set those up in Seller settings so orders can calculate the right delivery method and lead time automatically.";
@@ -172,7 +172,7 @@ const FAQ_ITEMS = [
   {
     question: "How do payouts and settlements work?",
     answer:
-      "Settlements show your gross sales, platform fees, refund adjustments, and net due. Payouts depend on your Stripe payout setup being connected and verified.",
+      "Settlements show your gross sales, platform fees, refund adjustments, and net due. Payouts depend on your Wise payout setup being connected and verified.",
   },
   {
     question: "What happens when a customer requests a return?",
@@ -235,9 +235,9 @@ export function SellerHomeWorkspace({
 
       try {
         const settingsPromise = fetch(`/api/client/v1/accounts/seller/settings/get?sellerSlug=${encodeURIComponent(sellerSlug)}`, { cache: "no-store" });
-        const stripePromise = uid
+        const payoutStatusPromise = uid
           ? fetch(
-              `/api/client/v1/accounts/seller/payouts/stripe/status?uid=${encodeURIComponent(uid)}&sellerSlug=${encodeURIComponent(sellerSlug)}`,
+              `/api/payouts/recipient/status?uid=${encodeURIComponent(uid)}&sellerId=${encodeURIComponent(sellerSlug)}`,
               { cache: "no-store" },
             )
           : Promise.resolve(null);
@@ -258,9 +258,9 @@ export function SellerHomeWorkspace({
           { cache: "no-store" },
         );
 
-        const [settingsResponse, stripeResponse, productsResponse, ordersResponse, followersResponse, notificationsResponse] = await Promise.all([
+        const [settingsResponse, payoutStatusResponse, productsResponse, ordersResponse, followersResponse, notificationsResponse] = await Promise.all([
           settingsPromise,
-          stripePromise,
+          payoutStatusPromise,
           productsPromise,
           ordersPromise,
           followersPromise,
@@ -268,7 +268,7 @@ export function SellerHomeWorkspace({
         ]);
 
         const settingsPayload = await settingsResponse.json().catch(() => ({}));
-        const stripePayload = stripeResponse ? await stripeResponse.json().catch(() => ({})) : {};
+        const payoutStatusPayload = payoutStatusResponse ? await payoutStatusResponse.json().catch(() => ({})) : {};
         const productsPayload = await productsResponse.json().catch(() => ({}));
         const ordersPayload = await ordersResponse.json().catch(() => ({}));
         const followersPayload = await followersResponse.json().catch(() => ({}));
@@ -280,7 +280,7 @@ export function SellerHomeWorkspace({
 
         if (!cancelled) {
           setSettingsData(settingsPayload);
-          setStripeStatus(stripeResponse && stripeResponse.ok && stripePayload?.ok !== false ? stripePayload?.data || null : null);
+          setStripeStatus(payoutStatusResponse && payoutStatusResponse.ok && payoutStatusPayload?.ok !== false ? payoutStatusPayload?.data || null : null);
           setProducts(Array.isArray(productsPayload?.items) ? productsPayload.items : []);
           setOrders(Array.isArray(ordersPayload?.items) ? ordersPayload.items : []);
           setFollowerCount(Number(followersPayload?.followerCount || 0));
@@ -305,10 +305,8 @@ export function SellerHomeWorkspace({
   const branding = settingsData?.branding || {};
   const businessDetails = settingsData?.businessDetails || {};
   const payoutReady = Boolean(
-    stripeStatus?.payoutsEnabled ||
-      stripeStatus?.connected ||
-      toStr(settingsData?.payoutProfile?.stripeRecipientAccountId) ||
-      toStr(settingsData?.payoutProfile?.verificationStatus).toLowerCase() === "verified",
+    stripeStatus?.payoutsEnabled === true &&
+      stripeStatus?.hasBankDestination === true,
   );
   const businessReady = Boolean(
     toStr(businessDetails?.companyName) &&

@@ -36,6 +36,7 @@ type PayoutBatch = {
     accountLast4: string;
     ibanLast4: string;
     stripeRecipientAccountId: string;
+    wiseRecipientId: string;
   };
 };
 
@@ -417,7 +418,7 @@ export function SellerPayoutBatchesWorkspace() {
                 <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_.8fr]">
                   <div className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
                     <p><span className="font-semibold text-[#202020]">Seller code:</span> {batch.seller.sellerCode || "Not available"}</p>
-                    <p><span className="font-semibold text-[#202020]">Stripe recipient:</span> {batch.bankProfile.stripeRecipientAccountId || "Setup not completed yet"}</p>
+                    <p><span className="font-semibold text-[#202020]">Wise recipient:</span> {batch.bankProfile.wiseRecipientId || "Setup not completed yet"}</p>
                     <p><span className="font-semibold text-[#202020]">Verification:</span> {statusLabel(batch.bankProfile.verificationStatus || "not_submitted")}</p>
                     <p><span className="font-semibold text-[#202020]">Provider reference:</span> {batch.providerBatchReference || "Not submitted yet"}</p>
                   </div>

@@ -1,27 +1,27 @@
-export const SUPPORTED_PAYOUT_COUNTRIES = [
-  { code: "US", label: "United States" },
-  { code: "ZA", label: "South Africa" },
-  { code: "KE", label: "Kenya" },
-  { code: "MU", label: "Mauritius" },
-  { code: "GB", label: "United Kingdom" },
-  { code: "AE", label: "United Arab Emirates" },
-  { code: "DE", label: "Germany" },
-  { code: "NL", label: "Netherlands" },
-] as const;
+import {
+  SUPPORTED_PAYOUT_COUNTRIES,
+  SUPPORTED_PAYOUT_CURRENCIES,
+  SUPPORTED_SELLER_PAYOUT_COUNTRIES,
+  COUNTRY_CODE_BY_LABEL,
+  normalizeCountryCode,
+  normalizeCountryLabel,
+  getDefaultPayoutCurrency,
+} from "@/lib/marketplace/country-config";
 
-export const SUPPORTED_PAYOUT_CURRENCIES = [
-  { code: "ZAR", label: "South African rand" },
-  { code: "KES", label: "Kenyan shilling" },
-  { code: "MUR", label: "Mauritian rupee" },
-  { code: "USD", label: "US dollar" },
-  { code: "GBP", label: "British pound" },
-  { code: "EUR", label: "Euro" },
-  { code: "AED", label: "UAE dirham" },
-] as const;
+export {
+  SUPPORTED_PAYOUT_COUNTRIES,
+  SUPPORTED_PAYOUT_CURRENCIES,
+  SUPPORTED_SELLER_PAYOUT_COUNTRIES,
+  COUNTRY_CODE_BY_LABEL,
+  normalizeCountryCode,
+  normalizeCountryLabel,
+  getDefaultPayoutCurrency,
+};
 
 export const STRIPE_GLOBAL_PAYOUT_COUNTRIES = new Set(
-  SUPPORTED_PAYOUT_COUNTRIES.map((entry) => entry.code),
+  SUPPORTED_SELLER_PAYOUT_COUNTRIES.map((entry) => entry.code),
 );
+
 export const STRIPE_GLOBAL_PAYOUT_CURRENCIES = new Set(
   SUPPORTED_PAYOUT_CURRENCIES.map((entry) => entry.code),
 );

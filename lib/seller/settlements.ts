@@ -20,6 +20,14 @@ function toNum(value, fallback = 0) {
   return Number.isFinite(next) ? next : fallback;
 }
 
+function normalizeStoredPayoutMethod(source = {}) {
+  const payoutCountry = toStr(source.bankCountry || source.beneficiaryCountry || source.country).toUpperCase();
+  const candidate = toStr(source.payoutMethod || "same_country_bank").toLowerCase();
+  if (candidate === "other_country_bank" || candidate === "international_bank") return "other_country_bank";
+  if (payoutCountry) return "other_country_bank";
+  return "same_country_bank";
+}
+
 function addDays(iso, days) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return null;
@@ -146,8 +154,8 @@ function getExpectedFulfilmentBy(item, orderCreatedAt) {
 
 function isPayoutProfileReady(profile) {
   const source = profile && typeof profile === "object" ? profile : {};
-  const payoutMethod = toStr(source.payoutMethod || "local_bank").toLowerCase();
-  if (payoutMethod === "international_bank") {
+  const payoutMethod = normalizeStoredPayoutMethod(source);
+  if (payoutMethod === "other_country_bank") {
     return Boolean(
       toStr(source.accountHolderName) &&
         toStr(source.bankName) &&
@@ -169,9 +177,10 @@ function isPayoutProfileReady(profile) {
 function getPayoutProfileSummary(profile) {
   const source = profile && typeof profile === "object" ? profile : {};
   const accountNumber = toStr(source.accountNumber);
+  const payoutMethod = normalizeStoredPayoutMethod(source);
   return {
     ready: isPayoutProfileReady(source),
-    payoutMethod: toStr(source.payoutMethod || "local_bank") || "local_bank",
+    payoutMethod,
     verificationStatus: toStr(source.verificationStatus || "not_submitted").toLowerCase() || "not_submitted",
     bankName: toStr(source.bankName || null) || null,
     bankCountry: toStr(source.bankCountry || source.country || null) || null,
