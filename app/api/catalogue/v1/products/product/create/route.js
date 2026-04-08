@@ -12,6 +12,8 @@ import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
+import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
+import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
 import {
   buildMarketplaceFeeSnapshot,
   deriveMarketplaceVolumeCm3,
@@ -258,8 +260,8 @@ export async function POST(req){
       if (fulfillmentMode === "bevgo" && !marketplaceVariantLogisticsComplete(logistics)) {
         return err(400, "Missing Logistics", "Each Piessang-fulfilled variant requires weight, dimensions, monthly sales and stock metadata.");
       }
-      if (fulfillmentMode === "bevgo" && !barcode) {
-        return err(400, "Missing Barcode", "A barcode is required for each Piessang-fulfilled variant. Seller-fulfilled variants may leave it blank.");
+      if (!barcode) {
+        return err(400, "Missing Barcode", "A barcode is required for every variant.");
       }
       const trackInventory = fulfillmentMode === "bevgo" || Boolean(variant?.placement?.track_inventory) || inventoryRows.length > 0;
 
@@ -358,7 +360,13 @@ export async function POST(req){
       timestamps: {
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
-      }
+      },
+      marketplace: {
+        ...buildOfferGroupMetadata({
+          sellerCode,
+          variants: normalizedVariants,
+        }),
+      },
     };
 
     await ref.set(body);
@@ -386,6 +394,13 @@ export async function POST(req){
     const createdSnap = await ref.get();
     const createdData = normalizeTimestamps(createdSnap.data() || {});
     const product = { id: createdSnap.id, ...createdData };
+    if (String(createdData?.moderation?.status || "").trim().toLowerCase() === "published") {
+      await enqueueGoogleSyncProducts({
+        productIds: [uniqueId],
+        reason: "product_published",
+        metadata: { source: "product_create" },
+      });
+    }
 
     return ok({
       unique_id: uniqueId,

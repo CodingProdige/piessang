@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { decryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
 import { NextResponse } from "next/server";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
@@ -76,6 +77,9 @@ function normalizePayoutProfile(profile) {
     wiseProfileId: toStr(source.wiseProfileId || ""),
     wiseRecipientId: toStr(source.wiseRecipientId || ""),
     wiseRecipientStatus: toStr(source.wiseRecipientStatus || ""),
+    wiseRequirementType: toStr(source.wiseRequirementType || source.wise_requirement_type || ""),
+    wiseRequirements: Array.isArray(source.wiseRequirements) ? source.wiseRequirements : [],
+    wiseDetails: source.wiseDetails && typeof source.wiseDetails === "object" ? source.wiseDetails : {},
     onboardingStatus: toStr(source.onboardingStatus || "created"),
     payoutMethodEnabled: source.payoutMethodEnabled === true,
     lastCollectionLinkSentAt: toStr(source.lastCollectionLinkSentAt || ""),
@@ -118,7 +122,7 @@ export async function GET(req) {
 
     const deliveryProfile = normalizeSellerDeliveryProfile(seller?.deliveryProfile || {});
     const payoutProfile = normalizePayoutProfile({
-      ...(seller?.payoutProfile || {}),
+      ...decryptPayoutProfile(seller?.payoutProfile || {}),
       sellerCountry: seller?.sellerCountry || "",
     });
     const businessDetails = normalizeBusinessDetails(seller?.businessDetails || {}, seller, owner.data || {});

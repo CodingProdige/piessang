@@ -7,6 +7,7 @@ import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage
 import { useAuth } from "@/components/auth/auth-provider";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
+import { PhoneInput, combinePhoneNumber, sanitizePhoneLocalNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { clientStorage } from "@/lib/firebase";
@@ -107,6 +108,15 @@ type SellerPayoutProfile = {
   wiseProfileId: string;
   wiseRecipientId: string;
   wiseRecipientStatus: string;
+  wiseRequirementType: string;
+  wiseRequirements: Array<{
+    key: string;
+    label: string;
+    required: boolean;
+    refreshRequirementsOnChange?: boolean;
+    values?: Array<{ value: string; label: string }>;
+  }>;
+  wiseDetails: Record<string, string>;
   onboardingStatus: string;
   payoutMethodEnabled: boolean;
   lastCollectionLinkSentAt: string;
@@ -198,6 +208,9 @@ const EMPTY_PAYOUT_PROFILE: SellerPayoutProfile = {
   wiseProfileId: "",
   wiseRecipientId: "",
   wiseRecipientStatus: "",
+  wiseRequirementType: "",
+  wiseRequirements: [],
+  wiseDetails: {},
   onboardingStatus: "created",
   payoutMethodEnabled: false,
   lastCollectionLinkSentAt: "",
@@ -233,6 +246,113 @@ function sanitizeLegacyPayoutNotice(value: unknown) {
     return "Save your payout details and connect your payout destination to start receiving seller payouts.";
   }
   return note;
+}
+
+function normalizeWiseFieldKey(value: unknown) {
+  return toStr(value).replace(/\//g, ".").trim();
+}
+
+function getWiseDetailFallback(payoutProfile: SellerPayoutProfile, key: string) {
+  const normalized = normalizeWiseFieldKey(key);
+  const direct = toStr(payoutProfile.wiseDetails?.[normalized]);
+  if (direct) return direct;
+  switch (normalized) {
+    case "details.accountNumber":
+      return toStr(payoutProfile.accountNumber);
+    case "details.iban":
+      return toStr(payoutProfile.iban);
+    case "details.swiftCode":
+      return toStr(payoutProfile.swiftBic);
+    case "details.routingNumber":
+      return toStr(payoutProfile.routingNumber);
+    case "details.bankCode":
+    case "details.branchCode":
+      return toStr(payoutProfile.branchCode);
+    case "address.country":
+      return toStr(payoutProfile.beneficiaryCountry || payoutProfile.bankCountry || payoutProfile.country);
+    case "address.firstLine":
+      return toStr(payoutProfile.beneficiaryAddressLine1);
+    case "address.secondLine":
+      return toStr(payoutProfile.beneficiaryAddressLine2);
+    case "address.city":
+      return toStr(payoutProfile.beneficiaryCity);
+    case "address.state":
+      return toStr(payoutProfile.beneficiaryRegion);
+    case "address.postCode":
+      return toStr(payoutProfile.beneficiaryPostalCode);
+    case "accountHolderName":
+      return toStr(payoutProfile.accountHolderName);
+    case "email":
+      return toStr(payoutProfile.recipientEmail);
+    case "currency":
+      return toStr(payoutProfile.currency);
+    case "zarIdentificationNumber":
+    case "details.zarIdentificationNumber":
+      return toStr(payoutProfile.wiseDetails?.zarIdentificationNumber || payoutProfile.wiseDetails?.["details.zarIdentificationNumber"]);
+    default:
+      return "";
+  }
+}
+
+function guessWiseFieldInputMode(field: { key?: string; values?: Array<{ value: string; label: string }> }) {
+  const key = normalizeWiseFieldKey(field?.key);
+  if (Array.isArray(field?.values) && field.values.length) return "select";
+  if (key.includes("email")) return "email";
+  if (key.includes("dateofbirth") || key.endsWith(".dob") || key.includes("birthdate") || key.includes("date")) return "date";
+  if (key.includes("iban")) return "iban";
+  if (key.includes("swift")) return "swift";
+  if (key.includes("postcode") || key.includes("accountnumber") || key.includes("routingnumber") || key.includes("bankcode") || key.includes("branchcode")) return "text";
+  return "text";
+}
+
+function getFriendlyWiseFieldLabel(field: { key?: string; label?: string }) {
+  const key = normalizeWiseFieldKey(field?.key);
+  const fallback = toStr(field?.label || key);
+  const labelMap: Record<string, string> = {
+    zarIdentificationNumber: "South African ID or registration number",
+    "details.zarIdentificationNumber": "South African ID or registration number",
+    "address.firstLine": "Street address",
+    "address.secondLine": "Address line 2",
+    "address.city": "City",
+    "address.state": "Province / State",
+    "address.postCode": "Postal code",
+    "details.accountNumber": "Account number",
+    "details.dateOfBirth": "Date of birth",
+    "details.iban": "IBAN",
+    "details.swiftCode": "SWIFT / BIC",
+    "details.routingNumber": "Routing number",
+    "details.bankCode": "Branch code",
+    "details.ifscCode": "IFSC code",
+    "details.abartn": "Routing number",
+    "details.clabe": "CLABE",
+    "details.email": "Recipient email",
+    accountHolderName: "Account holder name",
+    email: "Recipient email",
+    currency: "Payout currency",
+  };
+  if (labelMap[key]) return labelMap[key];
+
+  if (fallback.toLowerCase() === "firstline") return "Street address";
+  if (fallback.toLowerCase() === "secondline") return "Address line 2";
+  if (fallback.toLowerCase() === "postcode") return "Postal code";
+  if (fallback.toLowerCase() === "swiftcode") return "SWIFT / BIC";
+  if (fallback.toLowerCase() === "bankcode") return "Branch code";
+  if (fallback.toLowerCase() === "accountnumber") return "Account number";
+  if (fallback.toLowerCase() === "dateofbirth") return "Date of birth";
+
+  return fallback
+    .replace(/\//g, " ")
+    .replace(/\./g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getWiseFieldGroupTitle(fieldKey: unknown) {
+  const key = normalizeWiseFieldKey(fieldKey);
+  if (key.startsWith("address.")) return "Address details";
+  if (key.startsWith("details.")) return "Bank details";
+  return "Additional details";
 }
 
 function makePricingRule(seed = Date.now()) {
@@ -505,9 +625,14 @@ export function SellerSettingsWorkspace({
   const [bannerDragging, setBannerDragging] = useState(false);
   const [sellerCodeCopied, setSellerCodeCopied] = useState(false);
   const [snackbar, setSnackbar] = useState<{ message: string; tone?: "success" | "error" } | null>(null);
-  const [stripeOnboardingBusy, setStripeOnboardingBusy] = useState(false);
-  const [stripeStatusLoading, setStripeStatusLoading] = useState(false);
-  const [stripeStatus, setStripeStatus] = useState<any | null>(null);
+  const [payoutConnectBusy, setPayoutConnectBusy] = useState(false);
+  const [payoutStatusLoading, setPayoutStatusLoading] = useState(false);
+  const [payoutStatus, setPayoutStatus] = useState<any | null>(null);
+  const [wiseRequirementOptions, setWiseRequirementOptions] = useState<Array<{ type: string; title: string; fields: SellerPayoutProfile["wiseRequirements"] }>>([]);
+  const [wiseRequirementsLoading, setWiseRequirementsLoading] = useState(false);
+  const [wiseRequirementsError, setWiseRequirementsError] = useState<string | null>(null);
+  const [businessPhoneCountryCode, setBusinessPhoneCountryCode] = useState("27");
+  const [businessPhoneLocalNumber, setBusinessPhoneLocalNumber] = useState("");
   const [sectionOpen, setSectionOpen] = useState({
     branding: true,
     shipping: true,
@@ -533,6 +658,59 @@ export function SellerSettingsWorkspace({
   const canDeleteSeller = Boolean(isSystemAdmin || String(sellerRole ?? "").trim().toLowerCase() === "owner");
   const publicVendorIdentifier = sellerCodeValue || profile?.sellerCode || sellerSlug;
   const publicVendorHref = publicVendorIdentifier ? `/vendors/${encodeURIComponent(publicVendorIdentifier)}` : "/products";
+
+  const renderLoadingSkeleton = () => (
+    <section className="space-y-4">
+      <div className="flex justify-end">
+        <div className="h-4 w-28 animate-pulse rounded-[8px] bg-black/5" />
+      </div>
+
+      <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="animate-pulse space-y-4">
+          <div className="space-y-2">
+            <div className="h-4 w-28 rounded-[8px] bg-black/5" />
+            <div className="h-7 w-56 max-w-full rounded-[8px] bg-black/5" />
+            <div className="h-4 w-80 max-w-full rounded-[8px] bg-black/5" />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="h-24 rounded-[8px] bg-black/5" />
+            <div className="h-24 rounded-[8px] bg-black/5" />
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="animate-pulse space-y-4">
+          <div className="space-y-2">
+            <div className="h-4 w-24 rounded-[8px] bg-black/5" />
+            <div className="h-7 w-52 max-w-full rounded-[8px] bg-black/5" />
+            <div className="h-4 w-72 max-w-full rounded-[8px] bg-black/5" />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="h-20 rounded-[8px] bg-black/5" />
+            <div className="h-20 rounded-[8px] bg-black/5" />
+            <div className="h-20 rounded-[8px] bg-black/5 md:col-span-2" />
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="animate-pulse space-y-4">
+          <div className="space-y-2">
+            <div className="h-4 w-24 rounded-[8px] bg-black/5" />
+            <div className="h-7 w-60 max-w-full rounded-[8px] bg-black/5" />
+            <div className="h-4 w-80 max-w-full rounded-[8px] bg-black/5" />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="h-24 rounded-[8px] bg-black/5" />
+            <div className="h-24 rounded-[8px] bg-black/5" />
+            <div className="h-24 rounded-[8px] bg-black/5" />
+            <div className="h-24 rounded-[8px] bg-black/5" />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 
   const bannerPosition = useMemo(
     () => parsePlacement(branding.bannerObjectPosition || "50% 50%"),
@@ -564,6 +742,10 @@ export function SellerSettingsWorkspace({
       setSellerCodeValue(fallbackSellerCode);
     }
   }, [profile?.sellerCode, sellerCodeValue]);
+
+  if (loading) {
+    return renderLoadingSkeleton();
+  }
 
   useEffect(() => {
     if (!canEditSettings) return;
@@ -612,6 +794,12 @@ export function SellerSettingsWorkspace({
       window.clearTimeout(timeout);
     };
   }, [canEditSettings, profile?.uid, sellerSlug, vendorName, vendorNameValue]);
+
+  useEffect(() => {
+    const parsed = splitPhoneNumber(businessDetails.phoneNumber || "", "27");
+    setBusinessPhoneCountryCode(parsed.countryCode || "27");
+    setBusinessPhoneLocalNumber(parsed.localNumber || "");
+  }, [businessDetails.phoneNumber]);
 
   useEffect(() => {
     let cancelled = false;
@@ -689,6 +877,9 @@ export function SellerSettingsWorkspace({
             wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
             wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
             wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+            wiseRequirementType: toStr(nextPayoutProfile?.wiseRequirementType),
+            wiseRequirements: Array.isArray(nextPayoutProfile?.wiseRequirements) ? nextPayoutProfile.wiseRequirements : [],
+            wiseDetails: nextPayoutProfile?.wiseDetails && typeof nextPayoutProfile.wiseDetails === "object" ? nextPayoutProfile.wiseDetails : {},
             onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
             payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
             lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
@@ -755,6 +946,9 @@ export function SellerSettingsWorkspace({
                 wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
                 wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
                 wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+                wiseRequirementType: toStr(nextPayoutProfile?.wiseRequirementType),
+                wiseRequirements: Array.isArray(nextPayoutProfile?.wiseRequirements) ? nextPayoutProfile.wiseRequirements : [],
+                wiseDetails: nextPayoutProfile?.wiseDetails && typeof nextPayoutProfile?.wiseDetails === "object" ? nextPayoutProfile.wiseDetails : {},
                 onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
                 payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
                 lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
@@ -809,35 +1003,68 @@ export function SellerSettingsWorkspace({
 
   const payoutProvider = toStr(payoutProfile.provider || "wise").toLowerCase();
   const recipientId = payoutProvider === "wise" ? payoutProfile.wiseRecipientId : payoutProfile.stripeRecipientAccountId;
-  const payoutRecipientReady = Boolean(stripeStatus?.connected || recipientId);
-  const payoutSummaryBank = stripeStatus?.bankName
-    ? `${stripeStatus.bankName}${stripeStatus.accountLast4 ? ` •••• ${stripeStatus.accountLast4}` : ""}`
-    : stripeStatus?.accountSummary
-      ? stripeStatus.accountSummary
-    : stripeStatus?.hasBankDestination
+  const payoutRecipientReady = Boolean(payoutStatus?.connected || recipientId);
+  const payoutSummaryBank = payoutStatus?.bankName
+    ? `${payoutStatus.bankName}${payoutStatus.accountLast4 ? ` •••• ${payoutStatus.accountLast4}` : ""}`
+    : payoutStatus?.accountSummary
+      ? payoutStatus.accountSummary
+    : payoutStatus?.hasBankDestination
       ? "Bank account connected in Wise"
       : "Save payout details to create a Wise recipient";
-  const payoutMethodLabel = toStr(stripeStatus?.enabledPayoutMethod || stripeStatus?.requestedPayoutMethod || payoutProfile.payoutMethod)
+  const payoutMethodLabel = toStr(payoutStatus?.enabledPayoutMethod || payoutStatus?.requestedPayoutMethod || payoutProfile.payoutMethod)
     .replace(/_/g, " ")
     .replace(/\bwire\b/i, "Wire")
     .replace(/\blocal\b/i, "Local")
     .replace(/\bother country bank\b/i, "Wire")
     .replace(/\bsame country bank\b/i, "Local");
   const payoutSummaryStatus =
-    stripeStatus?.payoutsEnabled && stripeStatus?.hasBankDestination
+    payoutStatus?.payoutsEnabled && payoutStatus?.hasBankDestination
       ? "ready for payouts"
-      : stripeStatus
-        ? toStr(stripeStatus?.onboardingStatus || stripeStatus?.status || "created")
+      : payoutStatus
+        ? toStr(payoutStatus?.status || payoutStatus?.onboardingStatus || "created")
         : toStr(payoutProfile.verificationStatus || (payoutRecipientReady ? "pending" : "not_started"));
   const payoutSummarySyncedAt = toStr(payoutProfile.lastVerifiedAt || payoutProfile.stripeLastAccountLinkCreatedAt);
   const payoutNoticeText = sanitizeLegacyPayoutNotice(payoutProfile.verificationNotes);
-  const stripeOnboardingComplete =
+  const payoutSetupComplete =
     payoutSummaryStatus === "ready for payouts" ||
-    (stripeStatus?.connected === true && stripeStatus?.hasBankDestination === true);
+    (payoutStatus?.connected === true && payoutStatus?.hasBankDestination === true);
+  const payoutConnectedSummary =
+    payoutSummaryBank && payoutSummaryBank !== "Save payout details to create a Wise recipient" ? payoutSummaryBank : "";
+  const activeWiseRequirementType =
+    toStr(payoutProfile.wiseRequirementType) ||
+    toStr(wiseRequirementOptions[0]?.type);
+  const activeWiseRequirementFields =
+    (wiseRequirementOptions.find((option) => option.type === activeWiseRequirementType)?.fields || payoutProfile.wiseRequirements || []).filter(Boolean);
+  const visibleWiseRequirementFields = activeWiseRequirementFields.filter(
+    (field) =>
+      ![
+        "accountHolderName",
+        "email",
+        "currency",
+        "address.country",
+        "legalType",
+        "details.legalType",
+        "recipientType",
+        "details.recipientType",
+      ].includes(normalizeWiseFieldKey(field.key)),
+  );
+  const groupedWiseRequirementFields = visibleWiseRequirementFields.reduce(
+    (groups, field) => {
+      const title = getWiseFieldGroupTitle(field.key);
+      const existing = groups.find((group) => group.title === title);
+      if (existing) {
+        existing.fields.push(field);
+      } else {
+        groups.push({ title, fields: [field] });
+      }
+      return groups;
+    },
+    [] as Array<{ title: string; fields: typeof visibleWiseRequirementFields }>,
+  );
 
-  async function loadStripePayoutStatus() {
+  async function loadPayoutStatus() {
     if (!profile?.uid || !sellerSlug) return;
-    setStripeStatusLoading(true);
+    setPayoutStatusLoading(true);
     try {
       const response = await fetch(
         `/api/payouts/recipient/status?uid=${encodeURIComponent(profile.uid)}&sellerId=${encodeURIComponent(sellerSlug)}`,
@@ -847,25 +1074,58 @@ export function SellerSettingsWorkspace({
       if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.message || "Unable to load payout status.");
       }
-      setStripeStatus(payload?.data || null);
+      setPayoutStatus(payload?.data || null);
     } catch (cause) {
-      setStripeStatus(null);
+      setPayoutStatus(null);
       showSnackbar(cause instanceof Error ? cause.message : "Unable to load payout status.", "error");
     } finally {
-      setStripeStatusLoading(false);
+      setPayoutStatusLoading(false);
     }
   }
 
-  async function openPayoutSetup() {
+  async function loadWiseRequirements(nextProfile?: SellerPayoutProfile) {
+    const profileToUse = nextProfile || payoutProfile;
+    setWiseRequirementsLoading(true);
+    setWiseRequirementsError(null);
+    try {
+      const response = await fetch("/api/payouts/recipient/requirements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payoutProfile: profileToUse,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to load payout requirements.");
+      }
+      const options = Array.isArray(payload?.data?.options) ? payload.data.options : [];
+      const selectedType = toStr(payload?.data?.selectedType || profileToUse.wiseRequirementType || options[0]?.type);
+      setWiseRequirementOptions(options);
+      setPayoutProfile((current) => ({
+        ...current,
+        provider: payoutProvider,
+        wiseRequirementType: selectedType,
+        wiseRequirements: (options.find((option: any) => option.type === selectedType)?.fields || []),
+      }));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Unable to load payout requirements.";
+      setWiseRequirementsError(message);
+    } finally {
+      setWiseRequirementsLoading(false);
+    }
+  }
+
+  async function createPayoutRecipient() {
     if (!profile?.uid || !sellerSlug) return;
     if (hasUnsavedChanges) {
       const saved = await saveSettings({ showSuccessMessage: false });
       if (!saved) return;
     }
-    setStripeOnboardingBusy(true);
+    setPayoutConnectBusy(true);
     setError(null);
     try {
-      const response = await fetch("/api/payouts/recipient/start-onboarding", {
+      const response = await fetch("/api/payouts/recipient/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -875,36 +1135,41 @@ export function SellerSettingsWorkspace({
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "Unable to start payout setup.");
+        throw new Error(payload?.message || "Unable to create the payout recipient.");
       }
       const nextUrl = toStr(payload?.data?.url);
       if (!nextUrl) {
-        void loadStripePayoutStatus();
-        showSnackbar(payload?.data?.message || "Payout details saved and payout setup prepared.", "success");
+        void loadPayoutStatus();
+        showSnackbar(payload?.data?.message || "Payout recipient saved successfully.", "success");
         return;
       }
       window.location.href = nextUrl;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to start payout setup.");
-      showSnackbar(cause instanceof Error ? cause.message : "Unable to start payout setup.", "error");
+      setError(cause instanceof Error ? cause.message : "Unable to create the payout recipient.");
+      showSnackbar(cause instanceof Error ? cause.message : "Unable to create the payout recipient.", "error");
     } finally {
-      setStripeOnboardingBusy(false);
+      setPayoutConnectBusy(false);
     }
   }
 
   useEffect(() => {
     if (!profile?.uid || !sellerSlug) return;
-    void loadStripePayoutStatus();
+    void loadPayoutStatus();
   }, [profile?.uid, sellerSlug]);
+
+  useEffect(() => {
+    if (!sectionOpen.payouts) return;
+    void loadWiseRequirements();
+  }, [sectionOpen.payouts, payoutProfile.currency, payoutProfile.bankCountry]);
 
   useEffect(() => {
     if (!profile?.uid || !sellerSlug) return undefined;
     const handleFocus = () => {
-      void loadStripePayoutStatus();
+      void loadPayoutStatus();
     };
     const handleVisibility = () => {
       if (document.visibilityState === "visible") {
-        void loadStripePayoutStatus();
+        void loadPayoutStatus();
       }
     };
     window.addEventListener("focus", handleFocus);
@@ -1073,6 +1338,9 @@ export function SellerSettingsWorkspace({
         wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
         wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
         wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+        wiseRequirementType: toStr(nextPayoutProfile?.wiseRequirementType),
+        wiseRequirements: Array.isArray(nextPayoutProfile?.wiseRequirements) ? nextPayoutProfile.wiseRequirements : [],
+        wiseDetails: nextPayoutProfile?.wiseDetails && typeof nextPayoutProfile.wiseDetails === "object" ? nextPayoutProfile.wiseDetails : {},
         onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
         payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
         lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
@@ -1134,6 +1402,9 @@ export function SellerSettingsWorkspace({
             wiseProfileId: toStr(nextPayoutProfile?.wiseProfileId),
             wiseRecipientId: toStr(nextPayoutProfile?.wiseRecipientId),
             wiseRecipientStatus: toStr(nextPayoutProfile?.wiseRecipientStatus),
+            wiseRequirementType: toStr(nextPayoutProfile?.wiseRequirementType),
+            wiseRequirements: Array.isArray(nextPayoutProfile?.wiseRequirements) ? nextPayoutProfile.wiseRequirements : [],
+            wiseDetails: nextPayoutProfile?.wiseDetails && typeof nextPayoutProfile?.wiseDetails === "object" ? nextPayoutProfile.wiseDetails : {},
             onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
             payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
             lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
@@ -1156,7 +1427,7 @@ export function SellerSettingsWorkspace({
         setMessage("Seller settings saved.");
       }
       await refreshProfile();
-      void loadStripePayoutStatus();
+      void loadPayoutStatus();
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to save seller settings.");
@@ -1741,16 +2012,33 @@ export function SellerSettingsWorkspace({
               className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
             />
           </label>
-          <label className="block">
-            <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Business phone</span>
-            <input
-              value={businessDetails.phoneNumber}
-              onChange={(event) => setBusinessDetails((current) => ({ ...current, phoneNumber: event.target.value.slice(0, 40) }))}
-              placeholder="+27 21 555 0000"
+          <div className="block">
+            <PhoneInput
+              label="Business phone"
+              countryCode={businessPhoneCountryCode}
+              localNumber={businessPhoneLocalNumber}
+              onCountryCodeChange={(value) => {
+                const nextCode = String(value || "27");
+                const nextLocal = sanitizePhoneLocalNumber(nextCode, businessPhoneLocalNumber);
+                setBusinessPhoneCountryCode(nextCode);
+                setBusinessPhoneLocalNumber(nextLocal);
+                setBusinessDetails((current) => ({
+                  ...current,
+                  phoneNumber: combinePhoneNumber(nextCode, nextLocal),
+                }));
+              }}
+              onLocalNumberChange={(value) => {
+                const nextLocal = sanitizePhoneLocalNumber(businessPhoneCountryCode, value);
+                setBusinessPhoneLocalNumber(nextLocal);
+                setBusinessDetails((current) => ({
+                  ...current,
+                  phoneNumber: combinePhoneNumber(businessPhoneCountryCode, nextLocal),
+                }));
+              }}
               disabled={!canEditSettings}
-              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+              hint="This will be saved with the full international dialing code."
             />
-          </label>
+          </div>
           <label className="block md:col-span-2">
             <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Registered business address</span>
             <textarea
@@ -1781,11 +2069,11 @@ export function SellerSettingsWorkspace({
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => void openPayoutSetup()}
-                disabled={!canEditSettings || stripeOnboardingBusy}
+                onClick={() => void createPayoutRecipient()}
+                disabled={!canEditSettings || payoutConnectBusy}
                 className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {stripeOnboardingBusy
+                {payoutConnectBusy
                   ? "Preparing..."
                   : recipientId
                     ? "Save and update payouts"
@@ -1826,26 +2114,85 @@ export function SellerSettingsWorkspace({
                 ))}
               </select>
             </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">IBAN</span>
-              <input value={payoutProfile.iban} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, iban: event.target.value.toUpperCase().slice(0, 34) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Optional if using IBAN payouts" />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">SWIFT / BIC</span>
-              <input value={payoutProfile.swiftBic} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, swiftBic: event.target.value.toUpperCase().slice(0, 11) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Optional if using SWIFT payouts" />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank name</span>
-              <input value={payoutProfile.bankName} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, bankName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="First National Bank" />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account number</span>
-              <input value={payoutProfile.accountNumber} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, accountNumber: event.target.value.replace(/[^\d]/g, "").slice(0, 20) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="12345678901" />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Branch code</span>
-              <input value={payoutProfile.branchCode} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, branchCode: event.target.value.replace(/[^\d]/g, "").slice(0, 10) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="250655" />
-            </label>
+            {wiseRequirementsLoading ? (
+              <div className="rounded-[8px] border border-black/10 bg-white px-3 py-3 text-[12px] text-[#57636c] md:col-span-2 xl:col-span-3">
+                Loading Wise payout fields...
+              </div>
+            ) : null}
+            {wiseRequirementsError ? (
+              <div className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[12px] text-[#b91c1c] md:col-span-2 xl:col-span-3">
+                {wiseRequirementsError}
+              </div>
+            ) : null}
+            {groupedWiseRequirementFields.map((group) => (
+              <div key={group.title} className="rounded-[8px] border border-black/10 bg-white p-4 md:col-span-2 xl:col-span-3">
+                <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#907d4c]">{group.title}</p>
+                <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {group.fields.map((field) => {
+                    const key = normalizeWiseFieldKey(field.key);
+                    const inputMode = guessWiseFieldInputMode(field);
+                    const value = getWiseDetailFallback(payoutProfile, key);
+                    return (
+                      <label key={key} className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                          {getFriendlyWiseFieldLabel(field)}
+                          {field.required !== false ? " *" : ""}
+                        </span>
+                        {inputMode === "select" ? (
+                          <select
+                            value={value}
+                            onChange={(event) =>
+                              setPayoutProfile((current) => ({
+                                ...current,
+                                provider: payoutProvider,
+                                wiseDetails: {
+                                  ...current.wiseDetails,
+                                  [key]: event.target.value,
+                                },
+                              }))
+                            }
+                            disabled={!canEditSettings}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                          >
+                            <option value="">Select</option>
+                            {(field.values || []).map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type={inputMode === "email" ? "email" : inputMode === "date" ? "date" : "text"}
+                            value={value}
+                            onChange={(event) =>
+                              setPayoutProfile((current) => ({
+                                ...current,
+                                provider: payoutProvider,
+                                wiseDetails: {
+                                  ...current.wiseDetails,
+                                  [key]:
+                                    inputMode === "iban"
+                                      ? event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 34)
+                                      : inputMode === "swift"
+                                        ? event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 11)
+                                        : inputMode === "date"
+                                          ? event.target.value
+                                        : event.target.value.slice(0, 240),
+                                },
+                              }))
+                            }
+                            disabled={!canEditSettings}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                            placeholder={getFriendlyWiseFieldLabel(field)}
+                          />
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -1864,6 +2211,9 @@ export function SellerSettingsWorkspace({
               ? `Your payout destination is connected and ready. ${payoutSummarySyncedAt ? `Last checked ${formatDateTime(payoutSummarySyncedAt)}.` : ""}`
               : payoutNoticeText || "Save your payout details and connect your payout destination to start receiving seller payouts."}
           </p>
+          {payoutRecipientReady && payoutConnectedSummary ? (
+            <p className="mt-2 text-[12px] font-medium text-[#166534]">Connected account: {payoutConnectedSummary}</p>
+          ) : null}
         </div>
 
         <div className="mt-3 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
@@ -1878,7 +2228,7 @@ export function SellerSettingsWorkspace({
               {
                 question: "What do I need to do now?",
                 answer:
-                  "Add the bank details you want Piessang to pay, then use Save and connect payouts. We will save and validate them automatically.",
+                  "Choose your payout country and currency, complete the payout fields Piessang shows you, then use Save and connect payouts. Piessang validates your payout recipient details automatically.",
               },
               {
                 question: "Will I need to do this again?",
@@ -1973,12 +2323,6 @@ export function SellerSettingsWorkspace({
       {error ? (
         <div className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-4 py-3 text-[13px] text-[#b91c1c]">
           {error}
-        </div>
-      ) : null}
-
-      {loading ? (
-        <div className="rounded-[8px] border border-black/5 bg-white p-5 text-[13px] text-[#57636c] shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
-          Loading seller settings...
         </div>
       ) : null}
 

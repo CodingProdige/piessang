@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { getAdminDb } from "@/lib/firebase/admin";
 import crypto from "node:crypto";
+import { decryptPayoutProfile, encryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
 
 const WISE_API_BASE = toStr(process.env.WISE_API_BASE || process.env.NEXT_PUBLIC_WISE_API_BASE || "https://api.transferwise.com");
 
@@ -39,7 +40,23 @@ async function wiseRequest(path, options = {}) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = toStr(payload?.error || payload?.message || payload?.error?.message || "Wise request failed.");
+    const message = (() => {
+      const topLevel = toStr(payload?.error || payload?.message || payload?.error?.message);
+      if (topLevel) return topLevel;
+      if (Array.isArray(payload?.errors) && payload.errors.length) {
+        return payload.errors
+          .map((entry) => toStr(entry?.message || entry?.code || entry?.path))
+          .filter(Boolean)
+          .join(" | ");
+      }
+      if (Array.isArray(payload?.fieldErrors) && payload.fieldErrors.length) {
+        return payload.fieldErrors
+          .map((entry) => `${toStr(entry?.field || "field")}: ${toStr(entry?.message || entry?.code)}`)
+          .filter(Boolean)
+          .join(" | ");
+      }
+      return "Wise request failed.";
+    })();
     const error = new Error(message);
     error.status = response.status;
     error.payload = payload;
@@ -91,9 +108,151 @@ export async function getWiseProfileId() {
 }
 
 function mapWiseRecipientType(profile = {}) {
-  if (toStr(profile?.iban)) return "iban";
-  if (toStr(profile?.swiftBic)) return "swift_code";
-  return "";
+  return toStr(profile?.wiseRequirementType || profile?.wise_requirement_type || "");
+}
+
+function normalizeWiseFieldPath(value) {
+  return toStr(value).replace(/\//g, ".").trim();
+}
+
+function buildLegacyWiseDetails(profile = {}) {
+  return {
+    "details.accountNumber": toStr(profile?.accountNumber),
+    "details.iban": toStr(profile?.iban),
+    "details.swiftCode": toStr(profile?.swiftBic),
+    "details.routingNumber": toStr(profile?.routingNumber),
+    "details.bankCode": toStr(profile?.branchCode),
+    zarIdentificationNumber: toStr(profile?.wiseDetails?.zarIdentificationNumber || profile?.wiseDetails?.["details.zarIdentificationNumber"] || profile?.zarIdentificationNumber),
+    "details.zarIdentificationNumber": toStr(profile?.wiseDetails?.["details.zarIdentificationNumber"] || profile?.wiseDetails?.zarIdentificationNumber || profile?.zarIdentificationNumber),
+    "address.country": toStr(profile?.beneficiaryCountry || profile?.bankCountry || profile?.country),
+    "address.firstLine": toStr(profile?.beneficiaryAddressLine1),
+    "address.secondLine": toStr(profile?.beneficiaryAddressLine2),
+    "address.city": toStr(profile?.beneficiaryCity),
+    "address.state": toStr(profile?.beneficiaryRegion),
+    "address.postCode": toStr(profile?.beneficiaryPostalCode),
+    accountHolderName: toStr(profile?.accountHolderName),
+    email: toStr(profile?.recipientEmail),
+    currency: toStr(profile?.currency),
+  };
+}
+
+function getStoredWiseDetails(profile = {}) {
+  const raw = profile?.wiseDetails && typeof profile.wiseDetails === "object" ? profile.wiseDetails : {};
+  return {
+    ...buildLegacyWiseDetails(profile),
+    ...Object.fromEntries(Object.entries(raw).map(([key, value]) => [normalizeWiseFieldPath(key), toStr(value)])),
+  };
+}
+
+function setNested(target, path, value) {
+  const parts = normalizeWiseFieldPath(path).split(".").filter(Boolean);
+  if (!parts.length) return;
+  let cursor = target;
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    const key = parts[index];
+    if (!cursor[key] || typeof cursor[key] !== "object") cursor[key] = {};
+    cursor = cursor[key];
+  }
+  cursor[parts[parts.length - 1]] = value;
+}
+
+function normalizeRequirementField(field = {}, groupField = {}) {
+  const key = normalizeWiseFieldPath(groupField?.key || field?.key || field?.name || field?.path);
+  return {
+    key,
+    label: toStr(groupField?.name || groupField?.label || field?.name || field?.label || key),
+    required: groupField?.required !== false && field?.required !== false,
+    refreshRequirementsOnChange: groupField?.refreshRequirementsOnChange === true || field?.refreshRequirementsOnChange === true,
+    values: Array.isArray(groupField?.values || field?.values)
+      ? (groupField?.values || field?.values).map((entry) =>
+          typeof entry === "object"
+            ? { value: toStr(entry?.key || entry?.value), label: toStr(entry?.name || entry?.label || entry?.key || entry?.value) }
+            : { value: toStr(entry), label: toStr(entry) },
+        )
+      : [],
+  };
+}
+
+function normalizeRequirementOption(option = {}) {
+  const fields = Array.isArray(option?.fields)
+    ? option.fields.flatMap((field) => {
+        if (Array.isArray(field?.group) && field.group.length) {
+          return field.group.map((groupField) => normalizeRequirementField(field, groupField));
+        }
+        return [normalizeRequirementField(field, field)];
+      })
+    : [];
+  const type = toStr(option?.type || option?.name || option?.id);
+  const normalizedFields = fields.filter((field) => field.key).map((field) => {
+    const key = normalizeWiseFieldPath(field.key);
+    if (type === "southafrica" && ["zarIdentificationNumber", "details.zarIdentificationNumber"].includes(key)) {
+      return {
+        ...field,
+        required: true,
+      };
+    }
+    return field;
+  });
+
+  return {
+    type,
+    title: toStr(option?.title || option?.name || option?.type),
+    fields: normalizedFields,
+  };
+}
+
+function redactWisePayload(value) {
+  const sensitiveKeys = new Set([
+    "accountNumber",
+    "iban",
+    "swiftCode",
+    "routingNumber",
+    "bankCode",
+    "zarIdentificationNumber",
+    "ifscCode",
+    "clabe",
+    "abartn",
+  ]);
+  if (Array.isArray(value)) return value.map(redactWisePayload);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entryValue]) => {
+      if (sensitiveKeys.has(key)) {
+        const stringValue = toStr(entryValue);
+        const last4 = stringValue.slice(-4);
+        return [key, last4 ? `***${last4}` : "***"];
+      }
+      return [key, redactWisePayload(entryValue)];
+    }),
+  );
+}
+
+export async function getWiseRecipientRequirements({ payoutProfile = {}, sourceCurrency = "", targetCurrency = "" } = {}) {
+  const target = toStr(targetCurrency || payoutProfile?.currency || "USD").toUpperCase();
+  const source = toStr(sourceCurrency || process.env.WISE_SOURCE_CURRENCY || target).toUpperCase();
+  const sourceAmount = Number(toStr(process.env.WISE_REQUIREMENTS_SOURCE_AMOUNT || "1000")) || 1000;
+  const query = new URLSearchParams({
+    source,
+    target,
+    sourceAmount: String(sourceAmount),
+  });
+  const payload = await wiseRequest(`/v1/account-requirements?${query.toString()}`, {
+    method: "GET",
+    headers: {
+      "Accept-Minor-Version": "1",
+    },
+  });
+  const options = Array.isArray(payload) ? payload.map(normalizeRequirementOption).filter((item) => item.type) : [];
+  const selectedType =
+    options.find((item) => item.type === toStr(payoutProfile?.wiseRequirementType))?.type ||
+    options[0]?.type ||
+    "";
+  return {
+    sourceCurrency: source,
+    targetCurrency: target,
+    selectedType,
+    options,
+  };
 }
 
 function buildWiseRecipientPayload({ payoutProfile = {}, businessDetails = {}, seller = {}, profileId }) {
@@ -101,7 +260,7 @@ function buildWiseRecipientPayload({ payoutProfile = {}, businessDetails = {}, s
   if (!recipientType) {
     return {
       valid: false,
-      message: "Save an IBAN or SWIFT/BIC payout destination before setting up Wise payouts.",
+      message: "Select a payout country and currency so Piessang can load the right payout fields.",
     };
   }
 
@@ -117,45 +276,82 @@ function buildWiseRecipientPayload({ payoutProfile = {}, businessDetails = {}, s
   }
 
   const currency = toStr(payoutProfile?.currency || "USD").toUpperCase();
-  const legalType = "BUSINESS";
+  const detailsMap = getStoredWiseDetails(payoutProfile);
+  const payload = {
+    profile: profileId,
+    accountHolderName,
+    currency,
+    type: recipientType,
+    ownedByCustomer: false,
+  };
 
-  const details =
-    recipientType === "iban"
-      ? {
-          legalType,
-          iban: toStr(payoutProfile?.iban),
-        }
-      : {
-          legalType,
-          swiftCode: toStr(payoutProfile?.swiftBic),
-          accountNumber: toStr(payoutProfile?.accountNumber),
-          bankName: toStr(payoutProfile?.bankName),
-          address: {
-            country: toStr(payoutProfile?.beneficiaryCountry || payoutProfile?.country || seller?.sellerCountry || "ZA").toUpperCase(),
-            city: toStr(payoutProfile?.beneficiaryCity),
-            firstLine: toStr(payoutProfile?.beneficiaryAddressLine1),
-            postCode: toStr(payoutProfile?.beneficiaryPostalCode),
-            state: toStr(payoutProfile?.beneficiaryRegion),
-          },
-        };
+  const requirements = Array.isArray(payoutProfile?.wiseRequirements) ? payoutProfile.wiseRequirements : [];
+  const requiredFields = requirements.filter((field) => field?.required !== false);
+  const missingLabels = [];
+  const southAfricaIdValue = toStr(
+    payoutProfile?.wiseDetails?.zarIdentificationNumber ||
+      payoutProfile?.wiseDetails?.["details.zarIdentificationNumber"] ||
+      businessDetails?.registrationNumber,
+  );
+  for (const field of requiredFields) {
+    const key = normalizeWiseFieldPath(field?.key);
+    if (!key || ["profile", "type", "ownedByCustomer"].includes(key)) continue;
+    let value =
+      detailsMap[key] ||
+      ((key === "zarIdentificationNumber" || key === "details.zarIdentificationNumber")
+        ? toStr(payoutProfile?.wiseDetails?.zarIdentificationNumber || payoutProfile?.wiseDetails?.["details.zarIdentificationNumber"] || businessDetails?.registrationNumber)
+        : "") ||
+      (key === "legalType" ? "BUSINESS" : "") ||
+      (key === "address.country" ? toStr(payoutProfile?.beneficiaryCountry || payoutProfile?.bankCountry || payoutProfile?.country || seller?.sellerCountry || "ZA").toUpperCase() : "") ||
+      (key === "email" ? toStr(payoutProfile?.recipientEmail || seller?.contactEmail || businessDetails?.email) : "") ||
+      (key === "accountHolderName" ? accountHolderName : "") ||
+      (key === "currency" ? currency : "");
+    if (!toStr(value) && field?.required !== false) {
+      missingLabels.push(toStr(field?.label || key));
+      continue;
+    }
+    if (!toStr(value)) continue;
+    if (key === "email" || key === "accountHolderName" || key === "currency") {
+      payload[key] = value;
+      continue;
+    }
+    if (["zarIdentificationNumber", "details.zarIdentificationNumber"].includes(key)) {
+      payload.zarIdentificationNumber = value;
+      setNested(payload, "details.zarIdentificationNumber", value);
+      continue;
+    }
+    if (key === "legalType") {
+      setNested(payload, "details.legalType", value);
+      continue;
+    }
+    if (key.startsWith("address.") || key.startsWith("details.")) {
+      setNested(payload, key, value);
+      continue;
+    }
+    if (["country", "city", "state", "postCode", "firstLine", "secondLine"].includes(key)) {
+      setNested(payload, `address.${key}`, value);
+      continue;
+    }
+    setNested(payload, `details.${key}`, value);
+  }
 
-  if (recipientType === "swift_code" && !details.swiftCode) {
+  if (recipientType === "southafrica" && !southAfricaIdValue) {
     return {
       valid: false,
-      message: "Save a SWIFT/BIC code before setting up Wise payouts.",
+      message: "Add the South African ID or company registration number before connecting payouts.",
+    };
+  }
+
+  if (missingLabels.length) {
+    return {
+      valid: false,
+      message: `Complete these payout fields first: ${missingLabels.join(", ")}.`,
     };
   }
 
   return {
     valid: true,
-    payload: {
-      profile: profileId,
-      accountHolderName,
-      currency,
-      type: recipientType,
-      ownedByCustomer: false,
-      details,
-    },
+    payload,
     recipientType,
     accountHolderName,
     currency,
@@ -164,14 +360,15 @@ function buildWiseRecipientPayload({ payoutProfile = {}, businessDetails = {}, s
 
 async function saveSellerPayoutProfile(sellerRef, payoutProfile, updates = {}) {
   const now = new Date().toISOString();
+  const nextProfile = encryptPayoutProfile({
+    ...payoutProfile,
+    ...updates,
+    lastVerifiedAt: updates.lastVerifiedAt || now,
+  });
   await sellerRef.set(
     {
       seller: {
-        payoutProfile: {
-          ...payoutProfile,
-          ...updates,
-          lastVerifiedAt: updates.lastVerifiedAt || now,
-        },
+        payoutProfile: nextProfile,
         payoutProvider: updates.payoutProvider || "wise",
       },
       timestamps: {
@@ -281,7 +478,11 @@ export async function createOrRefreshWiseRecipientSetup({ sellerUid, sellerSlug 
 
   const sellerData = sellerSnap.data() || {};
   const seller = sellerData?.seller && typeof sellerData.seller === "object" ? sellerData.seller : {};
-  const payoutProfile = seller?.payoutProfile && typeof seller.payoutProfile === "object" ? seller.payoutProfile : {};
+  const payoutProfile = seller?.payoutProfile && typeof seller.payoutProfile === "object" ? decryptPayoutProfile(seller.payoutProfile) : {};
+  const requirements = await getWiseRecipientRequirements({ payoutProfile }).catch(() => ({ selectedType: "", options: [] }));
+  payoutProfile.wiseRequirementType = toStr(payoutProfile?.wiseRequirementType || requirements?.selectedType || "");
+  payoutProfile.wiseRequirements =
+    requirements?.options?.find((option) => option.type === payoutProfile.wiseRequirementType)?.fields || [];
   const businessDetails = seller?.businessDetails && typeof seller.businessDetails === "object" ? seller.businessDetails : {};
 
   const existingRecipientId = Number(payoutProfile?.wiseRecipientId || 0);
@@ -326,10 +527,21 @@ export async function createOrRefreshWiseRecipientSetup({ sellerUid, sellerSlug 
     };
   }
 
-  const created = await wiseRequest("/v1/accounts", {
-    method: "POST",
-    body: JSON.stringify(built.payload),
-  });
+  let created;
+  try {
+    created = await wiseRequest("/v1/accounts", {
+      method: "POST",
+      body: JSON.stringify(built.payload),
+    });
+  } catch (error) {
+    error.payload = {
+      wiseError: error?.payload || null,
+      requestPayload: redactWisePayload(built.payload),
+      selectedRequirementType: built.recipientType,
+      selectedRequirementFields: payoutProfile?.wiseRequirements || [],
+    };
+    throw error;
+  }
   const recipientId = Number(created?.id || 0);
   const onboardingStatus = created?.active === false ? "information_needed" : "ready";
 
@@ -349,7 +561,7 @@ export async function createOrRefreshWiseRecipientSetup({ sellerUid, sellerSlug 
           ? "Wise created the recipient, but the payout details still need attention."
           : "",
     }),
-    recipientEmail: toStr(payoutProfile?.recipientEmail || seller?.contactEmail || sellerData?.email),
+      recipientEmail: toStr(payoutProfile?.recipientEmail || seller?.contactEmail || sellerData?.email),
   });
 
   return {
@@ -377,7 +589,7 @@ export async function syncWiseRecipientStateForSeller({ sellerUid = "", sellerRe
     payoutProfile && typeof payoutProfile === "object"
       ? payoutProfile
       : seller?.payoutProfile && typeof seller.payoutProfile === "object"
-        ? seller.payoutProfile
+        ? decryptPayoutProfile(seller.payoutProfile)
         : {};
 
   const recipientId = Number(currentPayoutProfile?.wiseRecipientId || 0);

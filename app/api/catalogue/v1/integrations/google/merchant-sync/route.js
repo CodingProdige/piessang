@@ -8,7 +8,14 @@ import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 import { resolveGoogleTargetCountries, resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
 import { loadGoogleMerchantSettings } from "@/lib/platform/google-merchant-settings";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
-import { sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { getCanonicalOfferBarcode } from "@/lib/catalogue/offer-group";
+import {
+  claimPendingGoogleSyncJobs,
+  completeGoogleSyncJobs,
+  failGoogleSyncJobs,
+} from "@/lib/integrations/google-sync-queue";
 
 const PRODUCTS_COLLECTION = "products_v2";
 const VAT = 0.15;
@@ -23,6 +30,7 @@ const GOOGLE_MERCHANT_SYNC_SECRET = process.env.GOOGLE_MERCHANT_SYNC_SECRET || "
 const GOOGLE_FEED_CURRENCY = (process.env.GOOGLE_FEED_CURRENCY || "ZAR").toUpperCase();
 const GOOGLE_FEED_TARGET_COUNTRY = (process.env.GOOGLE_FEED_TARGET_COUNTRY || "ZA").toUpperCase();
 const GOOGLE_FEED_CONTENT_LANGUAGE = (process.env.GOOGLE_FEED_CONTENT_LANGUAGE || "en").toLowerCase();
+const sellerOwnerCache = new Map();
 
 const ok = (p = {}, s = 200) => Response.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) =>
@@ -53,6 +61,7 @@ const toTitleCase = (v) =>
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(" ");
+const toStr = (value, fallback = "") => (value == null ? fallback : String(value).trim());
 const prettifyTaxonomyPart = (v) => {
   const value = String(v ?? "").trim();
   if (!value) return "";
@@ -170,6 +179,95 @@ function resolveVariantImage(product, variant) {
   return productImage ? String(productImage).trim() : null;
 }
 
+function getSellerIdentifier(product = {}) {
+  return toStr(
+    product?.seller?.sellerCode ||
+      product?.seller?.activeSellerCode ||
+      product?.seller?.groupSellerCode ||
+      product?.seller?.sellerSlug ||
+      product?.product?.sellerCode ||
+      product?.product?.sellerSlug ||
+      product?.product?.vendorSlug
+  );
+}
+
+async function hydrateProductSeller(product = {}) {
+  const embeddedSeller =
+    product?.seller && typeof product.seller === "object" ? product.seller : {};
+  const hasEmbeddedDeliveryProfile =
+    embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object";
+  const hasEmbeddedSellerIdentity =
+    Boolean(
+      embeddedSeller?.sellerCode ||
+        embeddedSeller?.activeSellerCode ||
+        embeddedSeller?.groupSellerCode ||
+        embeddedSeller?.sellerSlug ||
+        product?.product?.sellerCode ||
+        product?.product?.sellerSlug
+    );
+
+  if (hasEmbeddedDeliveryProfile && hasEmbeddedSellerIdentity) {
+    return product;
+  }
+
+  const sellerIdentifier = getSellerIdentifier(product);
+  if (!sellerIdentifier) return product;
+
+  if (!sellerOwnerCache.has(sellerIdentifier)) {
+    sellerOwnerCache.set(sellerIdentifier, await findSellerOwnerByIdentifier(sellerIdentifier));
+  }
+
+  const sellerOwner = sellerOwnerCache.get(sellerIdentifier);
+  const sellerNode =
+    sellerOwner?.data?.seller && typeof sellerOwner.data.seller === "object"
+      ? sellerOwner.data.seller
+      : null;
+  if (!sellerNode) return product;
+
+  return {
+    ...product,
+    seller: {
+      ...embeddedSeller,
+      sellerCode:
+        toStr(
+          sellerNode?.sellerCode ||
+            sellerNode?.activeSellerCode ||
+            sellerNode?.groupSellerCode ||
+            embeddedSeller?.sellerCode ||
+            product?.product?.sellerCode
+        ) || null,
+      sellerSlug:
+        toStr(
+          sellerNode?.sellerSlug ||
+            sellerNode?.activeSellerSlug ||
+            sellerNode?.groupSellerSlug ||
+            embeddedSeller?.sellerSlug ||
+            product?.product?.sellerSlug
+        ) || null,
+      activeSellerSlug:
+        toStr(sellerNode?.activeSellerSlug || sellerNode?.sellerSlug || embeddedSeller?.activeSellerSlug) || null,
+      groupSellerSlug:
+        toStr(sellerNode?.groupSellerSlug || sellerNode?.sellerSlug || embeddedSeller?.groupSellerSlug) || null,
+      sellerCountry:
+        toStr(
+          sellerNode?.sellerCountry ||
+            sellerNode?.businessDetails?.country ||
+            embeddedSeller?.sellerCountry
+        ) || null,
+      vendorName:
+        toStr(sellerNode?.vendorName || sellerNode?.groupVendorName || embeddedSeller?.vendorName || product?.product?.vendorName) ||
+        null,
+      deliveryProfile: normalizeSellerDeliveryProfile(
+        sellerNode?.deliveryProfile && typeof sellerNode.deliveryProfile === "object"
+          ? sellerNode.deliveryProfile
+          : embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object"
+            ? embeddedSeller.deliveryProfile
+            : {}
+      ),
+    },
+  };
+}
+
 function isEligibleVariantForGoogle(product, variant) {
   const variantId = String(variant?.variant_id || "").trim();
   const variantActive = variant?.placement?.isActive !== false;
@@ -245,7 +343,7 @@ function buildContentApiProduct(product, variant, targetCountry = GOOGLE_FEED_TA
   const uniqueId = String(product?.product?.unique_id || "").trim();
   const variantId = String(variant?.variant_id || "").trim();
   const normalizedTargetCountry = String(targetCountry || GOOGLE_FEED_TARGET_COUNTRY).trim().toUpperCase();
-  const offerId = `${uniqueId}-${variantId}-${normalizedTargetCountry}`;
+  const offerId = `${uniqueId}-${variantId}`;
   const priceIncl = resolveSellingPriceIncl(variant);
   if (!offerId || !priceIncl) return null;
 
@@ -277,7 +375,6 @@ function buildContentApiProduct(product, variant, targetCountry = GOOGLE_FEED_TA
     contentLanguage: GOOGLE_FEED_CONTENT_LANGUAGE,
     targetCountry: normalizedTargetCountry,
     channel: "online",
-    targetCountries: [normalizedTargetCountry],
     externalSellerId: marketplaceSeller.externalSellerId,
     availability: availabilityForVariant(variant),
     condition: "new",
@@ -300,6 +397,55 @@ function buildContentApiProduct(product, variant, targetCountry = GOOGLE_FEED_TA
   }
 
   return payload;
+}
+
+function getGoogleCandidatePrice(variant) {
+  const saleIncl = resolveSalePriceIncl(variant);
+  if (saleIncl && saleIncl > 0) return saleIncl;
+  return resolveSellingPriceIncl(variant);
+}
+
+function pickCheapestGroupedEntries(entries = []) {
+  const grouped = new Map();
+
+  for (const entry of entries) {
+    const barcode = String(
+      entry?.product?.gtin ||
+        entry?.source?.canonicalBarcode ||
+        ""
+    )
+      .trim()
+      .toUpperCase();
+    const targetCountry = String(entry?.product?.targetCountry || "").trim().toUpperCase();
+    const groupKey = barcode && targetCountry ? `${barcode}::${targetCountry}` : null;
+    if (!groupKey) {
+      grouped.set(`__ungrouped__${grouped.size}`, entry);
+      continue;
+    }
+
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, entry);
+      continue;
+    }
+
+    const current = grouped.get(groupKey);
+    const currentPrice = Number(current?.source?.priceIncl ?? Number.POSITIVE_INFINITY);
+    const nextPrice = Number(entry?.source?.priceIncl ?? Number.POSITIVE_INFINITY);
+    if (nextPrice < currentPrice) {
+      grouped.set(groupKey, entry);
+      continue;
+    }
+
+    if (nextPrice === currentPrice) {
+      const currentOfferId = String(current?.product?.offerId || "");
+      const nextOfferId = String(entry?.product?.offerId || "");
+      if (nextOfferId.localeCompare(currentOfferId) < 0) {
+        grouped.set(groupKey, entry);
+      }
+    }
+  }
+
+  return Array.from(grouped.values());
 }
 
 function buildJwtAssertion() {
@@ -401,7 +547,7 @@ function chunk(arr, size) {
   return out;
 }
 
-async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
+export async function runSync({ secret = "", dryRun = false, limit = null, productIds = null } = {}) {
   if (GOOGLE_MERCHANT_SYNC_SECRET && String(secret) !== GOOGLE_MERCHANT_SYNC_SECRET) {
     return err(401, "Unauthorized", "Invalid sync secret.");
   }
@@ -451,12 +597,17 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
     );
   };
 
-  const allProducts = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+  const rawProducts = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+  const allProducts = await Promise.all(rawProducts.map((product) => hydrateProductSeller(product)));
   const skippedProducts = [];
   const skippedVariants = [];
 
   let products = [];
   for (const product of allProducts) {
+    if (Array.isArray(productIds) && productIds.length) {
+      const productId = String(product?.product?.unique_id || product?.id || "").trim();
+      if (!productIds.includes(productId)) continue;
+    }
     const reasons = await getProductGoogleSkipReasons(product, activeSets, merchantCountryCodes);
     if (reasons.length) {
       skippedProducts.push({
@@ -471,8 +622,7 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
 
   if (limit != null) products = products.slice(0, limit);
 
-  const entries = [];
-  let batchId = 1;
+  const candidateEntries = [];
   for (const p of products) {
     const variants = Array.isArray(p?.variants) ? p.variants : [];
     const eligibleVariants = [];
@@ -491,6 +641,15 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
       eligibleVariants.push(variant);
     }
 
+    const canonicalBarcode =
+      String(
+        p?.marketplace?.canonical_offer_barcode ||
+          getCanonicalOfferBarcode(eligibleVariants) ||
+          ""
+      )
+        .trim()
+        .toUpperCase() || null;
+
     const targetCountries = await resolveGoogleTargetCountries({
       seller: p?.seller,
       sellerCountry: p?.seller?.sellerCountry,
@@ -502,15 +661,26 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
       for (const targetCountry of targetCountries) {
         const productPayload = buildContentApiProduct(p, v, targetCountry);
         if (!productPayload) continue;
-        entries.push({
-          batchId: batchId++,
+        candidateEntries.push({
           merchantId: GOOGLE_MERCHANT_ID,
           method: "insert",
           product: productPayload,
+          source: {
+            canonicalBarcode,
+            priceIncl: getGoogleCandidatePrice(v),
+          },
         });
       }
     }
   }
+
+  const selectedEntries = pickCheapestGroupedEntries(candidateEntries);
+  const entries = selectedEntries.map((entry, index) => ({
+    batchId: index + 1,
+    merchantId: entry.merchantId,
+    method: entry.method,
+    product: entry.product,
+  }));
 
   if (dryRun) {
     return ok({
@@ -526,9 +696,7 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
       },
       preview: entries.slice(0, 5).map((entry) => ({
         ...entry,
-        target_countries: Array.isArray(entry?.product?.targetCountries)
-          ? entry.product.targetCountries
-          : entry?.product?.targetCountry
+        target_countries: entry?.product?.targetCountry
             ? [entry.product.targetCountry]
             : [],
       })),
@@ -551,6 +719,35 @@ async function runSync({ secret = "", dryRun = false, limit = null } = {}) {
     entries_pushed: entries.length,
     batches: results.length,
   });
+}
+
+export async function runQueuedSync({ secret = "", limit = 100, dryRun = false } = {}) {
+  const jobs = await claimPendingGoogleSyncJobs({ limit, worker: "google-merchant-cron" });
+  if (!jobs.length) {
+    return ok({
+      mode: dryRun ? "queue_dry_run" : "queue_push",
+      merchant_id: GOOGLE_MERCHANT_ID,
+      queued_jobs_claimed: 0,
+      products_scanned: 0,
+      entries_pushed: 0,
+      batches: 0,
+    });
+  }
+
+  const productIds = jobs.map((job) => String(job?.productId || "").trim()).filter(Boolean);
+
+  try {
+    const response = await runSync({ secret, dryRun, limit: null, productIds });
+    if (response?.ok) {
+      await completeGoogleSyncJobs(productIds);
+    } else {
+      await failGoogleSyncJobs(productIds, response?.message || response?.title || "Google sync failed");
+    }
+    return response;
+  } catch (error) {
+    await failGoogleSyncJobs(productIds, String(error?.message || error || "").slice(0, 1000));
+    throw error;
+  }
 }
 
 export async function GET(req) {

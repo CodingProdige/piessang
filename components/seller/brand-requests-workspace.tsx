@@ -108,12 +108,43 @@ export function SellerBrandRequestsWorkspace() {
       }
       setMessage(payload?.message || "Brand request updated.");
       await loadRows();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("piessang:refresh-admin-badges"));
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to update brand request.");
     } finally {
       setWorkingId(null);
     }
   }
+
+  const renderLoadingSkeleton = () => (
+    <section className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+      <div className="divide-y divide-black/5">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <div key={index} className="px-4 py-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="h-5 w-44 animate-pulse rounded-[8px] bg-black/5" />
+                <div className="h-4 w-28 animate-pulse rounded-[8px] bg-black/5" />
+                <div className="h-4 w-72 max-w-full animate-pulse rounded-[8px] bg-black/5" />
+                <div className="h-4 w-36 animate-pulse rounded-[8px] bg-black/5" />
+              </div>
+              <div className="w-full rounded-[10px] border border-black/5 bg-[rgba(32,32,32,0.02)] p-3 lg:w-[360px]">
+                <div className="space-y-3">
+                  <div className="h-10 animate-pulse rounded-[8px] bg-black/5" />
+                  <div className="flex flex-wrap gap-2">
+                    <div className="h-10 w-24 animate-pulse rounded-[8px] bg-black/5" />
+                    <div className="h-10 w-24 animate-pulse rounded-[8px] bg-black/5" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 
   return (
     <div className="space-y-4">
@@ -154,11 +185,10 @@ export function SellerBrandRequestsWorkspace() {
         </div>
       </section>
 
+      {loading ? renderLoadingSkeleton() : (
       <section className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
         <div className="divide-y divide-black/5">
-          {loading ? (
-            <div className="px-4 py-8 text-[13px] text-[#57636c]">Loading brand requests...</div>
-          ) : visibleRows.length ? (
+          {visibleRows.length ? (
             visibleRows.map((row) => {
               const resolved = toStr(row.status) !== "pending";
               return (
@@ -226,6 +256,7 @@ export function SellerBrandRequestsWorkspace() {
           )}
         </div>
       </section>
+      )}
     </div>
   );
 }

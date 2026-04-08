@@ -1,0 +1,19 @@
+<h2>Product submitted for review</h2>
+
+<p>
+  <strong><%= productTitle %></strong> from <strong><%= vendorName %></strong> has been submitted to the product review queue.
+</p>
+
+<p style="margin:16px 0 0;">
+  Seller: <strong><%= vendorName %></strong><br />
+  Fulfilment: <strong><%= fulfillmentLabel %></strong><br />
+  Product code: <strong><%= productCode || 'Not supplied' %></strong>
+</p>
+
+<p style="margin:16px 0 0;">
+  Please review this product in the admin product review queue.
+</p>
+
+<p style="margin:16px 0 0;">
+  <a href="<%= reviewUrl %>" style="color:#0f80c3;text-decoration:underline;">Open product review queue</a>
+</p>

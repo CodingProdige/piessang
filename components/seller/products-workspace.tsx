@@ -51,6 +51,8 @@ type ProductItem = {
       notes?: string | null;
       reviewedAt?: string | null;
     };
+    seller_offer_count?: number;
+    canonical_offer_barcode?: string | null;
     variants?: Array<{
       variant_id?: string;
       label?: string;
@@ -184,6 +186,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [rejectionModalItem, setRejectionModalItem] = useState<ProductItem | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<{
     total: number;
     completed: number;
@@ -472,6 +475,47 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
     deleteAbortRef.current?.abort();
   }
 
+  const renderLoadingSkeleton = () => (
+    <div className="space-y-4">
+      <section className="flex flex-col gap-3 rounded-[8px] border border-black/5 bg-white px-4 py-4 shadow-[0_8px_24px_rgba(20,24,27,0.05)] lg:flex-row lg:items-center lg:justify-between">
+        <div className="h-4 w-36 animate-pulse rounded-[8px] bg-black/5" />
+        <div className="h-9 w-28 animate-pulse rounded-[8px] bg-black/5" />
+      </section>
+
+      <section className="rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+        <div className="flex flex-col gap-3 border-b border-black/5 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap gap-2">
+            {Array.from({ length: 7 }).map((_, index) => (
+              <div key={index} className="h-8 w-20 animate-pulse rounded-full bg-black/5" />
+            ))}
+          </div>
+          <div className="h-9 w-[220px] animate-pulse rounded-[8px] bg-black/5" />
+        </div>
+
+        <div className="hidden divide-y divide-black/5 md:block">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <div key={index} className="grid min-w-full grid-cols-[90px_minmax(0,2.2fr)_160px_140px_150px_120px_90px] gap-3 px-3 py-3">
+              {Array.from({ length: 7 }).map((__, cellIndex) => (
+                <div key={cellIndex} className="h-10 animate-pulse rounded-[8px] bg-black/5" />
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-3 p-4 md:hidden">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="space-y-3 rounded-[8px] border border-black/5 p-4">
+              <div className="h-5 w-40 animate-pulse rounded-[8px] bg-black/5" />
+              <div className="h-4 w-24 animate-pulse rounded-[8px] bg-black/5" />
+              <div className="h-4 w-full animate-pulse rounded-[8px] bg-black/5" />
+              <div className="h-9 w-28 animate-pulse rounded-[8px] bg-black/5" />
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       <section className="flex flex-col gap-3 rounded-[8px] border border-black/5 bg-white px-4 py-4 shadow-[0_8px_24px_rgba(20,24,27,0.05)] lg:flex-row lg:items-center lg:justify-between">
@@ -601,6 +645,20 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
         onConfirm={() => void deleteSelectedProducts()}
       />
 
+      <ConfirmModal
+        open={Boolean(rejectionModalItem)}
+        eyebrow="Review feedback"
+        title={String(rejectionModalItem?.data?.product?.title || "Rejected product")}
+        description={
+          String(rejectionModalItem?.data?.moderation?.reason || rejectionModalItem?.data?.moderation?.notes || "").trim() ||
+          "Piessang rejected this product and left feedback that needs to be fixed before resubmitting."
+        }
+        cancelLabel="Dismiss"
+        confirmLabel="Close"
+        onClose={() => setRejectionModalItem(null)}
+        onConfirm={() => setRejectionModalItem(null)}
+      />
+
       <section className="rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
         <div className="flex flex-col gap-3 border-b border-black/5 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-2">
@@ -649,9 +707,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
         </div>
 
         <div className="overflow-hidden">
-          {loading ? (
-            <div className="px-4 py-10 text-center text-[13px] text-[#57636c]">Loading products...</div>
-          ) : rows.length === 0 ? (
+          {loading ? renderLoadingSkeleton() : rows.length === 0 ? (
             <div className="px-4 py-12 text-center">
               <p className="text-[14px] font-semibold text-[#202020]">No products found</p>
               <p className="mt-2 text-[13px] text-[#57636c]">
@@ -693,6 +749,8 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                       const totalVariants = variants.length;
                       const inStockVariants = variants.filter((variant) => Number(variant?.total_in_stock_items_available ?? 0) > 0).length;
                       const expanded = expandedIds.includes(item.id);
+                      const sellerOfferCount = Math.max(Number(item.data?.seller_offer_count || 1), 1);
+                      const canonicalBarcode = String(item.data?.canonical_offer_barcode || "").trim();
 
                     return (
                       <Fragment key={item.id}>
@@ -755,18 +813,35 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                   <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">
                                     {product.brandTitle || grouping.brand || "Brand not set"} • {product.vendorName || "Piessang"}
                                   </p>
+                                  {sellerOfferCount > 1 || canonicalBarcode ? (
+                                    <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-medium text-[#8f7531]">
+                                      {sellerOfferCount > 1 ? (
+                                        <span className="inline-flex rounded-full bg-[rgba(203,178,107,0.14)] px-2 py-0.5">
+                                          Same product sold by {sellerOfferCount} sellers
+                                        </span>
+                                      ) : null}
+                                      {canonicalBarcode ? <span>Barcode {canonicalBarcode}</span> : null}
+                                    </p>
+                                  ) : null}
                                 </div>
                               </div>
                             </td>
                             <td className="border-b border-black/5 px-3 py-2.5 align-middle">
-                            <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)}`}>
-                                {statusLabel(status)}
-                              </span>
-                              {item.data?.moderation?.reason ? (
-                                <p className="mt-1 max-w-[220px] text-[11px] leading-[1.4] text-[#7d7d7d]">
-                                  {item.data.moderation.reason}
-                                </p>
-                              ) : null}
+                              {status === "rejected" ? (
+                                <button
+                                  type="button"
+                                  data-ignore-row-edit="true"
+                                  onClick={() => setRejectionModalItem(item)}
+                                  className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)} transition-opacity hover:opacity-80`}
+                                  title="View rejection feedback"
+                                >
+                                  {statusLabel(status)}
+                                </button>
+                              ) : (
+                                <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)}`}>
+                                  {statusLabel(status)}
+                                </span>
+                              )}
                             </td>
                             <td className="border-b border-black/5 px-3 py-2.5 align-middle text-[12px] text-[#57636c]">
                               {item.data?.placement?.supplier_out_of_stock ? (
@@ -874,6 +949,8 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                   const variants = Array.isArray(item.data?.variants) ? item.data.variants : [];
                   const totalVariants = variants.length;
                   const expanded = expandedIds.includes(item.id);
+                  const sellerOfferCount = Math.max(Number(item.data?.seller_offer_count || 1), 1);
+                  const canonicalBarcode = String(item.data?.canonical_offer_barcode || "").trim();
 
                   return (
                     <article
@@ -934,6 +1011,16 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                               <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">
                                 {product.brandTitle || grouping.brand || "Brand not set"}
                               </p>
+                              {sellerOfferCount > 1 || canonicalBarcode ? (
+                                <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-medium text-[#8f7531]">
+                                  {sellerOfferCount > 1 ? (
+                                    <span className="inline-flex rounded-full bg-[rgba(203,178,107,0.14)] px-2 py-0.5">
+                                      {sellerOfferCount} sellers on this barcode
+                                    </span>
+                                  ) : null}
+                                  {canonicalBarcode ? <span>Barcode {canonicalBarcode}</span> : null}
+                                </p>
+                              ) : null}
                             </div>
                             <Link
                               href={`/products/${toSlug(product.title || product.unique_id || "product")}?id=${product.unique_id || item.id}`}
@@ -946,9 +1033,20 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                             </Link>
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)}`}>
-                              {statusLabel(status)}
-                            </span>
+                            {status === "rejected" ? (
+                              <button
+                                type="button"
+                                data-ignore-row-edit="true"
+                                onClick={() => setRejectionModalItem(item)}
+                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)} transition-opacity hover:opacity-80`}
+                              >
+                                {statusLabel(status)}
+                              </button>
+                            ) : (
+                              <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)}`}>
+                                {statusLabel(status)}
+                              </span>
+                            )}
                             <span className="text-[11px] text-[#57636c]">{totalVariants} variants</span>
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-2">

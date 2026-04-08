@@ -27,6 +27,8 @@ type ReviewProduct = {
       notes?: string | null;
       reason?: string | null;
     };
+    seller_offer_count?: number;
+    canonical_offer_barcode?: string | null;
     live_snapshot?: ReviewProduct["data"] | null;
     media?: {
       images?: Array<{ imageUrl?: string | null }>;
@@ -224,9 +226,10 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
   const [rejectFeedback, setRejectFeedback] = useState("");
   const [reviewModalProductId, setReviewModalProductId] = useState<string | null>(null);
 
-  async function loadItems() {
-    setLoading(true);
-    setError(null);
+  async function loadItems(options?: { silent?: boolean }) {
+    const silent = Boolean(options?.silent);
+    if (!silent) setLoading(true);
+    if (!silent) setError(null);
     try {
       await fetch("/api/client/v1/admin/products/review-sync", {
         method: "POST",
@@ -249,15 +252,44 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
         rows.filter((item: ReviewProduct) => toStr(item?.data?.moderation?.status).toLowerCase() === "in_review"),
       );
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to load product review queue.");
+      if (!silent) {
+        setError(cause instanceof Error ? cause.message : "Unable to load product review queue.");
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
   useEffect(() => {
     void loadItems();
   }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !busyId) {
+        void loadItems({ silent: true });
+      }
+    }, 15000);
+
+    function handleWindowFocus() {
+      if (!busyId) void loadItems({ silent: true });
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible" && !busyId) {
+        void loadItems({ silent: true });
+      }
+    }
+
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [busyId]);
 
   const pendingCount = items.length;
 
@@ -326,6 +358,7 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
       }
       await loadItems();
       onQueueChanged?.();
+      window.dispatchEvent(new CustomEvent("piessang:refresh-admin-badges"));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to update review outcome.");
     } finally {
@@ -351,6 +384,36 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
     [reviewModalProduct],
   );
 
+  function renderLoadingSkeleton() {
+    return (
+      <div className="space-y-4">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <div
+            key={`review-skeleton-${index}`}
+            className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
+          >
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="flex min-w-0 gap-4">
+                <div className="h-20 w-20 rounded-[8px] bg-[#f1f1f1] shimmer" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="h-5 w-56 rounded bg-[#f1f1f1] shimmer" />
+                  <div className="h-4 w-40 rounded bg-[#f1f1f1] shimmer" />
+                  <div className="h-4 w-64 rounded bg-[#f1f1f1] shimmer" />
+                  <div className="h-4 w-32 rounded bg-[#f1f1f1] shimmer" />
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <div className="h-10 w-24 rounded-[8px] bg-[#f1f1f1] shimmer" />
+                <div className="h-10 w-32 rounded-[8px] bg-[#f1f1f1] shimmer" />
+                <div className="h-10 w-24 rounded-[8px] bg-[#f1f1f1] shimmer" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-3 text-[13px] text-[#57636c]">
@@ -370,9 +433,7 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
       ) : null}
 
       {loading ? (
-        <div className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)] text-[13px] text-[#57636c]">
-          Loading product review queue...
-        </div>
+        renderLoadingSkeleton()
       ) : cards.length ? (
         <div className="space-y-4">
           {cards.map((item) => {
@@ -388,6 +449,8 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
             const variantCount = Array.isArray(item?.data?.variants) ? item.data.variants.length : 0;
             const isBusy = busyId === item.id;
             const isLiveUpdate = Boolean(item?.data?.live_snapshot);
+            const sellerOfferCount = Math.max(Number(item?.data?.seller_offer_count || 1), 1);
+            const canonicalBarcode = toStr(item?.data?.canonical_offer_barcode || "");
 
             return (
               <section key={item.id} className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -410,6 +473,16 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
                       <p className="mt-1 text-[13px] text-[#57636c]">
                         {[brand, vendor].filter(Boolean).join(" • ") || "No brand or vendor"}
                       </p>
+                      {sellerOfferCount > 1 || canonicalBarcode ? (
+                        <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-medium text-[#8f7531]">
+                          {sellerOfferCount > 1 ? (
+                            <span className="inline-flex rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8f7531]">
+                              {sellerOfferCount} seller offers on this barcode
+                            </span>
+                          ) : null}
+                          {canonicalBarcode ? <span>Barcode {canonicalBarcode}</span> : null}
+                        </p>
+                      ) : null}
                       {isLiveUpdate ? (
                         <p className="mt-2 inline-flex rounded-full bg-[rgba(57,169,107,0.10)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#166534]">
                           Live update under review

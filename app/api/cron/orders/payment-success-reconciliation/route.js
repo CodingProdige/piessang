@@ -3,6 +3,7 @@ export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { reconcilePeachRedirectPayments } from "@/lib/orders/payment-success-reconciliation";
+import { isAuthorizedCronRequest } from "@/lib/server/cron-auth";
 
 const ok = (data = {}, status = 200) =>
   NextResponse.json({ ok: true, ...data }, { status });
@@ -10,16 +11,9 @@ const ok = (data = {}, status = 200) =>
 const err = (status, title, message) =>
   NextResponse.json({ ok: false, title, message }, { status });
 
-function isAuthorized(req) {
-  const secret = String(process.env.CRON_SECRET || "").trim();
-  if (!secret) return true;
-  const header = String(req.headers.get("authorization") || "").trim();
-  return header === `Bearer ${secret}`;
-}
-
 export async function GET(req) {
   try {
-    if (!isAuthorized(req)) {
+    if (!isAuthorizedCronRequest(req)) {
       return err(401, "Unauthorized", "Missing or invalid cron secret.");
     }
 

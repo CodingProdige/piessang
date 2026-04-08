@@ -12,15 +12,24 @@ const err = (s, t, m, e={}) => NextResponse.json({ ok: false, title: t, message:
 const norm = (v) => String(v ?? "").trim().toUpperCase();
 
 /** Scan all product variants and collect used barcodes */
+function getProductSellerCode(data) {
+  return String(
+    data?.product?.sellerCode ??
+    data?.seller?.sellerCode ??
+    ""
+  ).trim();
+}
+
 async function collectBarcodes(db) {
   const snap = await db.collection("products_v2").get();
   const seen = new Set();
   for (const d of snap.docs) {
     const data = d.data() || {};
+    const sellerCode = getProductSellerCode(data).toUpperCase();
     const vars = Array.isArray(data?.variants) ? data.variants : [];
     for (const v of vars) {
       const bc = norm(v?.barcode);
-      if (bc) seen.add(bc);
+      if (bc && sellerCode) seen.add(`${sellerCode}::${bc}`);
     }
   }
   return seen;
@@ -37,16 +46,18 @@ export async function GET(req) {
     const { searchParams } = new URL(req.url);
     const raw = searchParams.get("barcode");
     const exclude = searchParams.get("exclude_barcode");
+    const sellerCode = norm(searchParams.get("seller_code"));
 
     const b = norm(raw);
     const ex = norm(exclude);
 
     if (!b) return err(400, "Missing Barcode", "Provide 'barcode' as a query parameter.");
+    if (!sellerCode) return err(400, "Missing Seller", "Provide 'seller_code' as a query parameter.");
 
     const seen = await collectBarcodes(db);
-    if (ex) seen.delete(ex); // exclude current variant’s barcode when editing
+    if (ex) seen.delete(`${sellerCode}::${ex}`); // exclude current variant’s barcode when editing
 
-    const unique = !seen.has(b);
+    const unique = !seen.has(`${sellerCode}::${b}`);
     return ok({ barcode: raw ?? "", unique });
   } catch (e) {
     console.error("checkBarcodeUnique GET failed:", e);
@@ -62,16 +73,18 @@ export async function POST(req) {
       return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     }
 
-    const { barcode, exclude_barcode } = await req.json();
+    const { barcode, exclude_barcode, seller_code } = await req.json();
     const b = norm(barcode);
     const ex = norm(exclude_barcode);
+    const sellerCode = norm(seller_code);
 
     if (!b) return err(400, "Missing Barcode", "Provide 'barcode' in the JSON body.");
+    if (!sellerCode) return err(400, "Missing Seller", "Provide 'seller_code' in the JSON body.");
 
     const seen = await collectBarcodes(db);
-    if (ex) seen.delete(ex);
+    if (ex) seen.delete(`${sellerCode}::${ex}`);
 
-    const unique = !seen.has(b);
+    const unique = !seen.has(`${sellerCode}::${b}`);
     return ok({ barcode: barcode ?? "", unique });
   } catch (e) {
     console.error("checkBarcodeUnique POST failed:", e);

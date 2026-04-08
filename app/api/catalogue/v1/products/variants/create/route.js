@@ -11,6 +11,8 @@ import {
   normalizeMarketplaceVariantLogistics,
 } from "@/lib/marketplace/fees";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
+import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
+import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
 
 const ok  =(p={},s=200)=>NextResponse.json({ok:true,...p},{status:s});
 const err =(s,t,m,e={})=>NextResponse.json({ok:false,title:t,message:m,...e},{status:s});
@@ -93,12 +95,21 @@ function parseImages(value){
   return arr;
 }
 
+function getProductSellerCode(data) {
+  return String(
+    data?.product?.sellerCode ??
+    data?.seller?.sellerCode ??
+    ""
+  ).trim();
+}
+
 async function collectAllCodesAndBarcodes(db) {
   const snap = await db.collection("products_v2").get();
   const ids = new Set();
   const barcodes = new Set();
   for (const d of snap.docs) {
     const data = d.data() || {};
+    const sellerCode = getProductSellerCode(data).toUpperCase();
     const pCode = String(data?.product?.unique_id ?? "").trim();
     if (is8(pCode)) ids.add(pCode);
     const vars = Array.isArray(data?.variants) ? data.variants : [];
@@ -106,7 +117,7 @@ async function collectAllCodesAndBarcodes(db) {
       const vid = String(v?.variant_id ?? "").trim();
       const bc  = String(v?.barcode ?? "").trim();
       if (is8(vid)) ids.add(vid);
-      if (bc) barcodes.add(bc.toUpperCase());
+      if (bc && sellerCode) barcodes.add(`${sellerCode}::${bc.toUpperCase()}`);
     }
   }
   return { ids, barcodes };
@@ -148,13 +159,13 @@ export async function POST(req){
     const { ids, barcodes } = await collectAllCodesAndBarcodes(db);
     if (ids.has(vId)) return err(409,"Duplicate Code",`variant_id ${vId} already in use.`);
     const barcode = toStr(data?.barcode);
-    if (barcode && barcodes.has(barcode.toUpperCase()))
-      return err(409,"Duplicate Barcode",`Barcode '${barcode}' already assigned to another variant.`);
-
     const current = psnap.data()||{};
+    const sellerCode = getProductSellerCode(current).toUpperCase();
+    if (barcode && sellerCode && barcodes.has(`${sellerCode}::${barcode.toUpperCase()}`))
+      return err(409,"Duplicate Barcode",`Barcode '${barcode}' is already assigned to another variant in your catalogue.`);
     const productFulfillmentMode = toStr(current?.fulfillment?.mode, "seller") === "bevgo" ? "bevgo" : "seller";
-    if (productFulfillmentMode === "bevgo" && !barcode) {
-      return err(400, "Missing Barcode", "A barcode is required for Piessang fulfilment variants. Seller-fulfilled variants may leave it blank.");
+    if (!barcode) {
+      return err(400, "Missing Barcode", "A barcode is required for every variant.");
     }
     const variants = Array.isArray(current.variants)?[...current.variants]:[];
     const nextPos=(variants.length
@@ -278,6 +289,13 @@ export async function POST(req){
 
     const updatePayload = {
       variants,
+      marketplace: {
+        ...(current?.marketplace && typeof current.marketplace === "object" ? current.marketplace : {}),
+        ...buildOfferGroupMetadata({
+          sellerCode: getProductSellerCode(current),
+          variants,
+        }),
+      },
       moderation: {
         ...(current?.moderation || {}),
         status: preserveLiveVersionDuringReview ? "in_review" : "draft",
@@ -298,6 +316,13 @@ export async function POST(req){
       updatePayload.live_snapshot = current;
     }
     await pref.update(updatePayload);
+    if (preserveLiveVersionDuringReview) {
+      await enqueueGoogleSyncProducts({
+        productIds: [pid],
+        reason: "variant_created",
+        metadata: { source: "variant_create", variantId: vId },
+      });
+    }
 
     const sellerSlug = toStr(
       current?.seller?.sellerSlug ||

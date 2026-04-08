@@ -12,6 +12,17 @@ function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
 }
 
+function getCanonicalOfferBarcode(source) {
+  const stored = toStr(source?.marketplace?.canonical_offer_barcode).toUpperCase();
+  if (stored) return stored;
+  const variants = Array.isArray(source?.variants) ? source.variants : [];
+  for (const variant of variants) {
+    const barcode = toStr(variant?.barcode).toUpperCase();
+    if (barcode) return barcode;
+  }
+  return "";
+}
+
 async function findProductDoc(db, productId) {
   const byDoc = await db.collection("products_v2").doc(productId).get();
   if (byDoc.exists) return byDoc;
@@ -32,6 +43,7 @@ export async function GET(req) {
     if (!sourceDoc) return err(404, "Not Found", "We could not find that product.");
     const source = sourceDoc.data() || {};
     const sourceUniqueId = toStr(source?.product?.unique_id || productId);
+    const sourceBarcode = getCanonicalOfferBarcode(source);
     const sourceCategory = toStr(source?.grouping?.category);
     const sourceSubCategory = toStr(source?.grouping?.subCategory);
     const sourceBrand = toStr(source?.brand?.slug || source?.grouping?.brand);
@@ -49,7 +61,13 @@ export async function GET(req) {
         id: docSnap.id,
         data: docSnap.data() || {},
       }))
-      .filter((item) => toStr(item?.data?.product?.unique_id || item?.id) !== sourceUniqueId)
+      .filter((item) => {
+        const candidateUniqueId = toStr(item?.data?.product?.unique_id || item?.id);
+        if (candidateUniqueId === sourceUniqueId) return false;
+        const candidateBarcode = getCanonicalOfferBarcode(item?.data);
+        if (sourceBarcode && candidateBarcode && candidateBarcode === sourceBarcode) return false;
+        return true;
+      })
       .map((item) => {
         let score = 0;
         if (sourceSubCategory && toStr(item?.data?.grouping?.subCategory) === sourceSubCategory) score += 4;

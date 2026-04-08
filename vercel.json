@@ -29,6 +29,14 @@
     {
       "path": "/api/cron/support-ticket-lifecycle",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/google-merchant-sync",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/google-merchant-reconcile",
+      "schedule": "15 3 * * *"
     }
   ]
 }

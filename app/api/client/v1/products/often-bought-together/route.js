@@ -12,6 +12,17 @@ function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
 }
 
+function getCanonicalOfferBarcode(source) {
+  const stored = toStr(source?.marketplace?.canonical_offer_barcode).toUpperCase();
+  if (stored) return stored;
+  const variants = Array.isArray(source?.variants) ? source.variants : [];
+  for (const variant of variants) {
+    const barcode = toStr(variant?.barcode).toUpperCase();
+    if (barcode) return barcode;
+  }
+  return "";
+}
+
 function tokenize(value) {
   return toStr(value)
     .toLowerCase()
@@ -69,6 +80,9 @@ function scoreFallbackCandidate(source, candidate, sourceKeywords, pairingTerms)
   const candidateUniqueId = toStr(candidate?.product?.unique_id);
   const sourceUniqueId = toStr(source?.product?.unique_id);
   if (!candidateUniqueId || candidateUniqueId === sourceUniqueId) return -Infinity;
+  const sourceBarcode = getCanonicalOfferBarcode(source);
+  const candidateBarcode = getCanonicalOfferBarcode(candidate);
+  if (sourceBarcode && candidateBarcode && sourceBarcode === candidateBarcode) return -Infinity;
   if (candidate?.placement?.isActive !== true) return -Infinity;
 
   const category = toStr(candidate?.grouping?.category).toLowerCase();
@@ -116,6 +130,7 @@ export async function GET(req) {
     if (!sourceDoc) return err(404, "Not Found", "We could not find that product.");
     const source = sourceDoc.data() || {};
     const sourceUniqueId = toStr(source?.product?.unique_id || productId);
+    const sourceBarcode = getCanonicalOfferBarcode(source);
 
     const coCounts = new Map();
     const ordersSnap = await db.collection("orders_v2").get();
@@ -138,6 +153,8 @@ export async function GET(req) {
       if (!relatedDoc) continue;
       const data = relatedDoc.data() || {};
       if (data?.placement?.isActive !== true) continue;
+      const candidateBarcode = getCanonicalOfferBarcode(data);
+      if (sourceBarcode && candidateBarcode && candidateBarcode === sourceBarcode) continue;
       items.push({
         id: relatedDoc.id,
         data,

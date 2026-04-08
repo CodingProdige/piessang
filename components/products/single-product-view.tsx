@@ -11,6 +11,7 @@ import {
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
+import { BrowseProductCard } from "@/components/products/browse-product-card";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
@@ -128,6 +129,21 @@ type ProductItem = {
     shopify?: {
       vendorName?: string | null;
     };
+    seller_offer_count?: number;
+    alternate_offers?: Array<{
+      productId?: string | null;
+      title?: string | null;
+      titleSlug?: string | null;
+      sellerCode?: string | null;
+      sellerSlug?: string | null;
+      vendorName?: string | null;
+      variantId?: string | null;
+      variantLabel?: string | null;
+      barcode?: string | null;
+      priceIncl?: number | null;
+      hasInStockVariants?: boolean;
+      imageUrl?: string | null;
+    }>;
     fulfillment?: {
       mode?: string | null;
       lead_time_days?: number | null;
@@ -308,10 +324,10 @@ function getCompareAtVariantPriceInclVat(variant?: ProductVariant) {
 function pickDisplayVariant(variants?: ProductVariant[]) {
   if (!variants?.length) return null;
   return (
-    [...variants]
-      .map((variant) => ({ variant, price: getVariantPriceInclVat(variant) }))
-      .filter((entry): entry is { variant: ProductVariant; price: number } => typeof entry.price === "number")
-      .sort((a, b) => b.price - a.price)[0]?.variant ?? variants[0]
+    variants.find((variant) => variant?.placement?.is_default === true) ||
+    variants.find((variant) => String(variant?.variant_id || "").trim()) ||
+    variants[0] ||
+    null
   );
 }
 
@@ -346,6 +362,29 @@ function getVendorSlug(item: ProductItem) {
   );
 }
 
+function normalizeProductSlug(value?: string | null) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function getAlternateOfferHref(offer: {
+  productId?: string | null;
+  title?: string | null;
+  titleSlug?: string | null;
+  variantId?: string | null;
+}) {
+  const uniqueId = String(offer?.productId ?? "").trim();
+  if (!uniqueId) return "/products";
+  const slug = normalizeProductSlug(offer?.titleSlug || offer?.title) || "product";
+  const params = new URLSearchParams({ unique_id: uniqueId });
+  if (offer?.variantId) params.set("variant_id", String(offer.variantId).trim());
+  return `/products/${slug}?${params.toString()}`;
+}
+
 function getVariantLabel(variant?: ProductVariant | null) {
   return variant?.label?.trim() || "Default variant";
 }
@@ -368,7 +407,7 @@ function getStockLabel(variant?: ProductVariant | null, item?: ProductItem) {
     return { label: "Supplier out of stock", tone: "neutral" as const, hideQty: true };
   }
   if (variant?.placement?.continue_selling_out_of_stock) {
-    return { label: "Continue selling out of stock", tone: "success" as const, hideQty: true };
+    return { label: "In stock", tone: "success" as const, hideQty: true };
   }
   if (typeof variant?.total_in_stock_items_available === "number") {
     if (variant.total_in_stock_items_available <= 0) {
@@ -418,6 +457,47 @@ function FlameIcon() {
     </svg>
   );
 }
+
+function CartPlusIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4.5 w-4.5">
+      <path
+        fill="currentColor"
+        d="M7.5 6h13l-1.4 6.9c-.2 1.1-1.1 1.9-2.2 1.9H9.2c-1.1 0-2-.8-2.2-1.8L5.2 3.5H2V2h4.7L7.5 6Zm0 0 .8 3.8h11.3L20.6 7H8.1Zm4.2 11.5a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4Zm7 0a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4Zm-3.9-6V9.8h-1.4v1.7h-1.7v1.4h1.7v1.7h1.4v-1.7h1.7v-1.4h-1.7Z"
+      />
+    </svg>
+  );
+}
+
+function getRecommendationCardImageCount(item: ProductItem | null | undefined) {
+  const productImages = Array.isArray(item?.data?.media?.images)
+    ? item.data.media.images.filter((entry) => Boolean(entry?.imageUrl)).length
+    : 0;
+  const variantImages = Array.isArray(item?.data?.variants)
+    ? item.data.variants.reduce(
+        (sum, variant) =>
+          sum +
+          (Array.isArray(variant?.media?.images)
+            ? variant.media.images.filter((entry) => Boolean(entry?.imageUrl)).length
+            : 0),
+        0,
+      )
+    : 0;
+  return Math.max(productImages, variantImages);
+}
+
+function CameraIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-3.5 w-3.5 text-[#4a4545]">
+      <path
+        fill="currentColor"
+        d="M9 4.5 7.8 6H5.5A2.5 2.5 0 0 0 3 8.5v8A2.5 2.5 0 0 0 5.5 19h13a2.5 2.5 0 0 0 2.5-2.5v-8A2.5 2.5 0 0 0 18.5 6h-2.3L15 4.5H9Zm3 12A4.5 4.5 0 1 1 12 7a4.5 4.5 0 0 1 0 9Zm0-2A2.5 2.5 0 1 0 12 9a2.5 2.5 0 0 0 0 5Z"
+      />
+    </svg>
+  );
+}
+
+function noopCartPreviewHandler() {}
 
 function parseCutoffMinutes(cutoff?: string | null) {
   if (!cutoff) return null;
@@ -524,6 +604,13 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
     : { label: resolved.label, tone: "neutral" as const };
 }
 
+function getProductHrefFromItem(item: ProductItem | null | undefined) {
+  const uniqueId = String(item?.data?.product?.unique_id || item?.id || "").trim();
+  if (!uniqueId) return "/products";
+  const slug = normalizeProductSlug(item?.data?.product?.title) || "product";
+  return `/products/${slug}?unique_id=${encodeURIComponent(uniqueId)}`;
+}
+
 export function SingleProductView({
   item,
   selectedVariantId,
@@ -589,6 +676,17 @@ export function SingleProductView({
   const brandLabel = getBrandLabel(item);
   const vendorLabel = getVendorLabel(item);
   const productId = String(item.data?.product?.unique_id ?? item.id ?? "").trim();
+  const alternateOffers = (Array.isArray(item.data?.alternate_offers) ? item.data.alternate_offers : [])
+    .filter((offer) => String(offer?.productId ?? "").trim() && String(offer?.productId ?? "").trim() !== productId)
+    .sort((a, b) => {
+      const aReady = a?.hasInStockVariants === true ? 1 : 0;
+      const bReady = b?.hasInStockVariants === true ? 1 : 0;
+      if (bReady !== aReady) return bReady - aReady;
+      const aPrice = typeof a?.priceIncl === "number" ? a.priceIncl : Number.POSITIVE_INFINITY;
+      const bPrice = typeof b?.priceIncl === "number" ? b.priceIncl : Number.POSITIVE_INFINITY;
+      if (aPrice !== bPrice) return aPrice - bPrice;
+      return String(a?.vendorName || "").localeCompare(String(b?.vendorName || ""), "en", { sensitivity: "base" });
+    });
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportReason, setReportReason] = useState("wrong_listing");
@@ -667,6 +765,7 @@ export function SingleProductView({
 
   const categoryLabel = item.data?.grouping?.category ? String(item.data.grouping.category).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Products";
   const subCategoryLabel = item.data?.grouping?.subCategory ? String(item.data.grouping.subCategory).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "";
+  const hasThumbnailRail = activeImages.length > 1;
 
   useEffect(() => {
     setShopperArea(readShopperDeliveryArea());
@@ -952,6 +1051,26 @@ export function SingleProductView({
     }
   }
 
+  function handleRecommendationCartSuccess() {
+    setSnackbarMessage("Added to cart.");
+  }
+
+  function renderRecommendationCard(related: ProductItem) {
+    const relatedId = String(related?.id ?? related?.data?.product?.unique_id ?? Math.random());
+    return (
+      <div key={relatedId} className="min-w-[220px] max-w-[220px]">
+        <BrowseProductCard
+          item={related as any}
+          view="grid"
+          openInNewTab={false}
+          shopperArea={shopperArea}
+          onAddToCartSuccess={handleRecommendationCartSuccess as any}
+          cartBurstKey={0}
+        />
+      </div>
+    );
+  }
+
   async function toggleFavorite() {
     if (!isAuthenticated || !profile?.uid) {
       openAuthModal("Sign in to save favourites.");
@@ -1108,8 +1227,8 @@ export function SingleProductView({
       <section className="grid gap-4 lg:items-start lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
         <div className="space-y-4 self-start">
           <div className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-            <div className="grid gap-3 md:grid-cols-[88px_minmax(0,1fr)]">
-              {activeImages.length > 1 ? (
+            <div className={hasThumbnailRail ? "grid gap-3 md:grid-cols-[88px_minmax(0,1fr)]" : "grid gap-3"}>
+              {hasThumbnailRail ? (
                 <div className="order-2 flex gap-2 overflow-x-auto md:order-1 md:max-h-[620px] md:flex-col md:overflow-y-auto md:overflow-x-hidden md:pr-1">
                   {activeImages.map((image, index) => {
                     const selected = index === activeImageIndex;
@@ -1230,44 +1349,7 @@ export function SingleProductView({
                 <p className="mt-4 text-[13px] text-[#57636c]">Loading recommendations...</p>
               ) : oftenBought.length > 0 ? (
                 <div className="mt-4 flex gap-4 overflow-x-auto pb-2 [scrollbar-width:thin]">
-                  {oftenBought.map((related) => {
-                    const href = `/products/${String(related?.data?.product?.title || "product").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}?unique_id=${encodeURIComponent(String(related?.data?.product?.unique_id || related?.id || ""))}`;
-                    const image = related?.data?.media?.images?.[0]?.imageUrl || related?.data?.variants?.[0]?.media?.images?.[0]?.imageUrl || "";
-                    const relatedVariant = getDefaultVariant(related);
-                    const relatedPrice = getVariantPriceInclVat(relatedVariant ?? undefined);
-                    const relatedKey = String(related?.data?.product?.unique_id || related?.id || "");
-                    const isSubmitting = pairingCartSubmitting[relatedKey] === true;
-                    return (
-                      <div key={String(related?.id)} className="min-w-[248px] rounded-[10px] border border-black/10 bg-[linear-gradient(180deg,#fff_0%,#f8f7f3_100%)] p-3 shadow-[0_8px_18px_rgba(20,24,27,0.04)]">
-                        <Link href={href} className="block transition-transform duration-200 hover:-translate-y-0.5">
-                          <div className="aspect-square overflow-hidden rounded-[8px] bg-white">
-                            {image ? <img src={image} alt={String(related?.data?.product?.title || "Product")} className="h-full w-full object-cover" /> : null}
-                          </div>
-                          <p className="mt-3 line-clamp-2 text-[14px] font-semibold text-[#202020]">{String(related?.data?.product?.title || "Product")}</p>
-                        </Link>
-                        <div className="mt-3 flex items-end justify-between gap-3">
-                          <div>
-                            <p className="text-[15px] font-semibold text-[#202020]">
-                              {typeof relatedPrice === "number" ? formatMoney(relatedPrice) : "View product"}
-                            </p>
-                            {oftenBoughtSource === "co_purchase" && Number(related?.coPurchaseCount || 0) > 0 ? (
-                              <p className="text-[11px] text-[#57636c]">Bought together {Number(related.coPurchaseCount)} times</p>
-                            ) : oftenBoughtSource === "catalog_pairing" ? (
-                              <p className="text-[11px] text-[#57636c]">Suggested match</p>
-                            ) : null}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void addRelatedToCart(related)}
-                            disabled={isSubmitting || !relatedVariant?.variant_id}
-                            className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {isSubmitting ? "Adding..." : "Add to cart"}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                  {oftenBought.map((related) => renderRecommendationCard(related))}
                 </div>
               ) : (
                 <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-4 py-5">
@@ -1339,6 +1421,41 @@ export function SingleProductView({
               </p>
             </div>
           </div>
+
+          {alternateOffers.length ? (
+            <div className="rounded-[8px] border border-black/8 bg-[#faf9f5] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Other sellers</p>
+                  <p className="mt-1 text-[12px] text-[#57636c]">Compare other Piessang sellers offering this same product.</p>
+                </div>
+                <p className="text-[12px] font-semibold text-[#202020]">{alternateOffers.length} more option{alternateOffers.length === 1 ? "" : "s"}</p>
+              </div>
+              <div className="mt-3 space-y-2">
+                {alternateOffers.slice(0, 4).map((offer) => (
+                  <Link
+                    key={`${offer.productId}:${offer.variantId || "default"}`}
+                    href={getAlternateOfferHref(offer)}
+                    scroll={false}
+                    className="flex items-center justify-between gap-3 rounded-[8px] border border-black/6 bg-white px-3 py-2 transition hover:border-[#cbb26b]/40 hover:bg-[#fffdfa]"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-[13px] font-semibold text-[#202020]">{offer.vendorName || "Piessang seller"}</p>
+                      <p className="truncate text-[11px] text-[#57636c]">
+                        {offer.variantLabel || "Default option"}
+                        {offer.hasInStockVariants === true ? " • In stock" : " • Check availability"}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-[13px] font-semibold text-[#202020]">
+                        {typeof offer.priceIncl === "number" ? formatMoney(offer.priceIncl) : "View option"}
+                      </p>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {deliveryPromise ? (
             <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#1a8553]">
@@ -1767,18 +1884,7 @@ export function SingleProductView({
             <p className="mt-4 text-[13px] text-[#57636c]">Loading recommendations...</p>
           ) : oftenBought.length > 0 ? (
             <div className="mt-4 flex gap-4 overflow-x-auto pb-2 [scrollbar-width:thin]">
-              {oftenBought.map((related) => {
-                const href = `/products/${String(related?.data?.product?.title || "product").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}?unique_id=${encodeURIComponent(String(related?.data?.product?.unique_id || related?.id || ""))}`;
-                const image = related?.data?.media?.images?.[0]?.imageUrl || related?.data?.variants?.[0]?.media?.images?.[0]?.imageUrl || "";
-                return (
-                  <Link key={String(related?.id)} href={href} className="min-w-[220px] rounded-[8px] border border-black/10 bg-[#fafafa] p-3 transition-colors hover:border-[#cbb26b]">
-                    <div className="aspect-square overflow-hidden rounded-[8px] bg-white">
-                      {image ? <img src={image} alt={String(related?.data?.product?.title || "Product")} className="h-full w-full object-cover" /> : null}
-                    </div>
-                    <p className="mt-3 line-clamp-2 text-[14px] font-semibold text-[#202020]">{String(related?.data?.product?.title || "Product")}</p>
-                  </Link>
-                );
-              })}
+              {oftenBought.map((related) => renderRecommendationCard(related))}
             </div>
           ) : (
             <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-4 py-5">
@@ -1801,18 +1907,7 @@ export function SingleProductView({
             <p className="mt-4 text-[13px] text-[#57636c]">Loading similar products...</p>
           ) : (
           <div className="mt-4 flex gap-4 overflow-x-auto pb-2 [scrollbar-width:thin]">
-            {similarProducts.map((related) => {
-              const href = `/products/${String(related?.data?.product?.title || "product").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}?unique_id=${encodeURIComponent(String(related?.data?.product?.unique_id || related?.id || ""))}`;
-              const image = related?.data?.media?.images?.[0]?.imageUrl || related?.data?.variants?.[0]?.media?.images?.[0]?.imageUrl || "";
-              return (
-                <Link key={String(related?.id)} href={href} className="min-w-[220px] rounded-[8px] border border-black/10 bg-[#fafafa] p-3 transition-colors hover:border-[#cbb26b]">
-                  <div className="aspect-square overflow-hidden rounded-[8px] bg-white">
-                    {image ? <img src={image} alt={String(related?.data?.product?.title || "Product")} className="h-full w-full object-cover" /> : null}
-                  </div>
-                  <p className="mt-3 line-clamp-2 text-[14px] font-semibold text-[#202020]">{String(related?.data?.product?.title || "Product")}</p>
-                </Link>
-              );
-            })}
+            {similarProducts.map((related) => renderRecommendationCard(related))}
           </div>
           )}
         </section>

@@ -1,7 +1,7 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
+import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import { normalizeMoneyAmount } from "@/lib/money";
 
@@ -33,7 +33,7 @@ type CartItem = {
       mode?: string | null;
     };
     media?: {
-      images?: Array<{ imageUrl?: string | null }>;
+      images?: Array<{ imageUrl?: string | null; blurHashUrl?: string | null }>;
     };
   };
   selected_variant_snapshot?: {
@@ -91,6 +91,7 @@ export function CartItemCard({
   const saleQty = Math.max(0, item.sale_qty ?? 0);
   const regularQty = Math.max(0, item.regular_qty ?? Math.max(qty - saleQty, 0));
   const imageUrl = snapshot?.media?.images?.[0]?.imageUrl ?? "";
+  const imageBlurHash = snapshot?.media?.images?.[0]?.blurHashUrl ?? "";
   const baseIncl =
     toMoneyNumber(variant?.pricing?.selling_price_incl) ||
     toMoneyNumber(variant?.pricing?.selling_price_excl ? variant.pricing.selling_price_excl * 1.15 : 0);
@@ -124,7 +125,14 @@ export function CartItemCard({
   return (
     <div className={`flex gap-3 rounded-[8px] border border-black/5 bg-white shadow-[0_6px_18px_rgba(20,24,27,0.05)] ${compact ? "p-2.5" : "p-3"}`}>
       <div className={`relative shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa] ${compact ? "h-14 w-14" : "h-16 w-16"}`}>
-        {imageUrl ? <Image src={imageUrl} alt={title} fill sizes="64px" className="object-cover" /> : null}
+        <BlurhashImage
+          src={imageUrl || null}
+          blurHash={imageBlurHash || null}
+          alt={title}
+          sizes="64px"
+          className="h-full w-full"
+          imageClassName="object-cover"
+        />
       </div>
 
       <div className="min-w-0 flex-1">

@@ -32,6 +32,7 @@ export function BlurhashImage({
 }: BlurhashImageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const showLoadingFallback = Boolean(src) && !loaded;
 
   useEffect(() => {
     setLoaded(false);
@@ -72,6 +73,14 @@ export function BlurhashImage({
 
   return (
     <div className={`relative overflow-hidden bg-white ${className}`}>
+      {showLoadingFallback && !blurHash ? (
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 overflow-hidden rounded-inherit bg-[#f5f1e8]"
+        >
+          <div className="absolute inset-y-0 left-[-40%] w-[40%] animate-[piessang-image-shimmer_1.25s_ease-in-out_infinite] bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.82),transparent)]" />
+        </div>
+      ) : null}
       {blurHash ? (
         <canvas
           ref={canvasRef}

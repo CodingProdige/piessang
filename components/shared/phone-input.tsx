@@ -1,26 +1,91 @@
 "use client";
 
-const COUNTRY_OPTIONS = [
-  { code: "27", label: "ZA", prefix: "+27" },
-  { code: "1", label: "US", prefix: "+1" },
-  { code: "44", label: "UK", prefix: "+44" },
-  { code: "61", label: "AU", prefix: "+61" },
-  { code: "49", label: "DE", prefix: "+49" },
-];
+const PHONE_REGION_DIAL_CODES = [
+  ["AF", "93"], ["AL", "355"], ["DZ", "213"], ["AS", "1684"], ["AD", "376"], ["AO", "244"], ["AI", "1264"],
+  ["AG", "1268"], ["AR", "54"], ["AM", "374"], ["AW", "297"], ["AU", "61"], ["AT", "43"], ["AZ", "994"],
+  ["BS", "1242"], ["BH", "973"], ["BD", "880"], ["BB", "1246"], ["BY", "375"], ["BE", "32"], ["BZ", "501"],
+  ["BJ", "229"], ["BM", "1441"], ["BT", "975"], ["BO", "591"], ["BA", "387"], ["BW", "267"], ["BR", "55"],
+  ["IO", "246"], ["VG", "1284"], ["BN", "673"], ["BG", "359"], ["BF", "226"], ["BI", "257"], ["KH", "855"],
+  ["CM", "237"], ["CA", "1"], ["CV", "238"], ["KY", "1345"], ["CF", "236"], ["TD", "235"], ["CL", "56"],
+  ["CN", "86"], ["CX", "61"], ["CC", "61"], ["CO", "57"], ["KM", "269"], ["CG", "242"], ["CD", "243"],
+  ["CK", "682"], ["CR", "506"], ["CI", "225"], ["HR", "385"], ["CU", "53"], ["CW", "599"], ["CY", "357"],
+  ["CZ", "420"], ["DK", "45"], ["DJ", "253"], ["DM", "1767"], ["DO", "1"], ["EC", "593"], ["EG", "20"],
+  ["SV", "503"], ["GQ", "240"], ["ER", "291"], ["EE", "372"], ["SZ", "268"], ["ET", "251"], ["FK", "500"],
+  ["FO", "298"], ["FJ", "679"], ["FI", "358"], ["FR", "33"], ["GF", "594"], ["PF", "689"], ["GA", "241"],
+  ["GM", "220"], ["GE", "995"], ["DE", "49"], ["GH", "233"], ["GI", "350"], ["GR", "30"], ["GL", "299"],
+  ["GD", "1473"], ["GP", "590"], ["GU", "1671"], ["GT", "502"], ["GG", "44"], ["GN", "224"], ["GW", "245"],
+  ["GY", "592"], ["HT", "509"], ["HN", "504"], ["HK", "852"], ["HU", "36"], ["IS", "354"], ["IN", "91"],
+  ["ID", "62"], ["IR", "98"], ["IQ", "964"], ["IE", "353"], ["IM", "44"], ["IL", "972"], ["IT", "39"],
+  ["JM", "1876"], ["JP", "81"], ["JE", "44"], ["JO", "962"], ["KZ", "7"], ["KE", "254"], ["KI", "686"],
+  ["XK", "383"], ["KW", "965"], ["KG", "996"], ["LA", "856"], ["LV", "371"], ["LB", "961"], ["LS", "266"],
+  ["LR", "231"], ["LY", "218"], ["LI", "423"], ["LT", "370"], ["LU", "352"], ["MO", "853"], ["MG", "261"],
+  ["MW", "265"], ["MY", "60"], ["MV", "960"], ["ML", "223"], ["MT", "356"], ["MH", "692"], ["MQ", "596"],
+  ["MR", "222"], ["MU", "230"], ["YT", "262"], ["MX", "52"], ["FM", "691"], ["MD", "373"], ["MC", "377"],
+  ["MN", "976"], ["ME", "382"], ["MS", "1664"], ["MA", "212"], ["MZ", "258"], ["MM", "95"], ["NA", "264"],
+  ["NR", "674"], ["NP", "977"], ["NL", "31"], ["NC", "687"], ["NZ", "64"], ["NI", "505"], ["NE", "227"],
+  ["NG", "234"], ["NU", "683"], ["NF", "672"], ["KP", "850"], ["MK", "389"], ["MP", "1670"], ["NO", "47"],
+  ["OM", "968"], ["PK", "92"], ["PW", "680"], ["PS", "970"], ["PA", "507"], ["PG", "675"], ["PY", "595"],
+  ["PE", "51"], ["PH", "63"], ["PL", "48"], ["PT", "351"], ["PR", "1"], ["QA", "974"], ["RE", "262"],
+  ["RO", "40"], ["RU", "7"], ["RW", "250"], ["BL", "590"], ["SH", "290"], ["KN", "1869"], ["LC", "1758"],
+  ["MF", "590"], ["PM", "508"], ["VC", "1784"], ["WS", "685"], ["SM", "378"], ["ST", "239"], ["SA", "966"],
+  ["SN", "221"], ["RS", "381"], ["SC", "248"], ["SL", "232"], ["SG", "65"], ["SX", "1721"], ["SK", "421"],
+  ["SI", "386"], ["SB", "677"], ["SO", "252"], ["ZA", "27"], ["KR", "82"], ["SS", "211"], ["ES", "34"],
+  ["LK", "94"], ["SD", "249"], ["SR", "597"], ["SJ", "47"], ["SE", "46"], ["CH", "41"], ["SY", "963"],
+  ["TW", "886"], ["TJ", "992"], ["TZ", "255"], ["TH", "66"], ["TL", "670"], ["TG", "228"], ["TK", "690"],
+  ["TO", "676"], ["TT", "1868"], ["TN", "216"], ["TR", "90"], ["TM", "993"], ["TC", "1649"], ["TV", "688"],
+  ["UG", "256"], ["UA", "380"], ["AE", "971"], ["GB", "44"], ["US", "1"], ["UY", "598"], ["VI", "1340"],
+  ["UZ", "998"], ["VU", "678"], ["VA", "39"], ["VE", "58"], ["VN", "84"], ["WF", "681"], ["EH", "212"],
+  ["YE", "967"], ["ZM", "260"], ["ZW", "263"],
+] as const;
+
+type PhoneRegionOption = {
+  iso: string;
+  dialCode: string;
+  prefix: string;
+  label: string;
+  searchLabel: string;
+};
+
+function digitsOnly(value: string) {
+  return String(value || "").replace(/\D+/g, "");
+}
+
+function getRegionName(iso: string) {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(iso) || iso;
+  } catch {
+    return iso;
+  }
+}
+
+export const PHONE_REGION_OPTIONS: PhoneRegionOption[] = PHONE_REGION_DIAL_CODES
+  .map(([iso, dialCode]) => {
+    const regionName = getRegionName(iso);
+    return {
+      iso,
+      dialCode,
+      prefix: `+${dialCode}`,
+      label: `${regionName} (+${dialCode})`,
+      searchLabel: `${regionName} ${iso} +${dialCode}`.toLowerCase(),
+    };
+  })
+  .sort((a, b) => a.label.localeCompare(b.label));
 
 export function splitPhoneNumber(value: string, fallbackCode = "27") {
   const raw = String(value || "").trim();
-  const digits = raw.replace(/\D+/g, "");
+  const digits = digitsOnly(raw);
   if (!digits) {
     return { countryCode: fallbackCode, localNumber: "" };
   }
 
-  const normalized = raw.startsWith("+") ? digits : digits;
-  const matched = COUNTRY_OPTIONS.find((option) => normalized.startsWith(option.code));
-  if (raw.startsWith("+") && matched) {
+  const matched = [...PHONE_REGION_OPTIONS]
+    .sort((a, b) => b.dialCode.length - a.dialCode.length)
+    .find((option) => raw.startsWith("+") && digits.startsWith(option.dialCode));
+
+  if (matched) {
     return {
-      countryCode: matched.code,
-      localNumber: normalized.slice(matched.code.length),
+      countryCode: matched.dialCode,
+      localNumber: digits.slice(matched.dialCode.length),
     };
   }
 
@@ -30,9 +95,25 @@ export function splitPhoneNumber(value: string, fallbackCode = "27") {
   };
 }
 
+export function sanitizePhoneLocalNumber(countryCode: string, value: string) {
+  const digits = digitsOnly(value);
+  if (!digits) return "";
+
+  const cc = digitsOnly(countryCode);
+  if (!cc) return digits;
+
+  if (digits.startsWith(`00${cc}`)) {
+    return digits.slice(cc.length + 2);
+  }
+  if (digits.startsWith(cc)) {
+    return digits.slice(cc.length);
+  }
+  return digits;
+}
+
 export function combinePhoneNumber(countryCode: string, localNumber: string) {
-  const cc = String(countryCode || "").replace(/\D+/g, "");
-  const local = String(localNumber || "").replace(/\D+/g, "");
+  const cc = digitsOnly(countryCode);
+  const local = sanitizePhoneLocalNumber(cc, localNumber);
   if (!cc && !local) return "";
   if (!local) return cc ? `+${cc}` : "";
   return `+${cc}${local}`;
@@ -60,24 +141,28 @@ export function PhoneInput({
   return (
     <label className="block">
       <span className="mb-2 block text-[12px] font-semibold text-[#202020]">{label}</span>
-      <div className="grid grid-cols-[108px_minmax(0,1fr)] gap-2">
+      <div className="grid grid-cols-[180px_minmax(0,1fr)] gap-2">
         <select
           value={countryCode}
-          onChange={(event) => onCountryCodeChange(event.target.value)}
+          onChange={(event) => {
+            const nextCode = digitsOnly(event.target.value);
+            onCountryCodeChange(nextCode);
+            onLocalNumberChange(sanitizePhoneLocalNumber(nextCode, localNumber));
+          }}
           disabled={disabled}
           className="h-11 rounded-[8px] border border-black/10 bg-white px-3 text-[14px] outline-none focus:border-[#cbb26b] disabled:bg-[#fafafa] disabled:text-[#8b94a3]"
         >
-          {COUNTRY_OPTIONS.map((option) => (
-            <option key={option.code} value={option.code}>
-              {option.label} {option.prefix}
+          {PHONE_REGION_OPTIONS.map((option) => (
+            <option key={`${option.iso}-${option.dialCode}`} value={option.dialCode}>
+              {option.label}
             </option>
           ))}
         </select>
         <input
-          inputMode="numeric"
+          inputMode="tel"
           autoComplete="tel-national"
           value={localNumber}
-          onChange={(event) => onLocalNumberChange(event.target.value.replace(/\D+/g, ""))}
+          onChange={(event) => onLocalNumberChange(sanitizePhoneLocalNumber(countryCode, event.target.value))}
           disabled={disabled}
           placeholder="Enter phone number"
           className="h-11 w-full rounded-[8px] border border-black/10 px-3 text-[14px] outline-none focus:border-[#cbb26b] disabled:bg-[#fafafa] disabled:text-[#8b94a3]"

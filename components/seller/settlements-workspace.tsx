@@ -634,7 +634,56 @@ export function SellerSettlementsWorkspace({
     }
   }
 
+  const renderLoadingSkeleton = () => (
+    <section className="space-y-4">
+      <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="animate-pulse space-y-3">
+          <div className="h-4 w-20 rounded-[8px] bg-black/5" />
+          <div className="h-8 w-96 max-w-full rounded-[8px] bg-black/5" />
+          <div className="h-4 w-[520px] max-w-full rounded-[8px] bg-black/5" />
+        </div>
+      </section>
+
+      <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+        <div className="grid gap-4 lg:grid-cols-[1.2fr_.9fr_1fr] lg:items-center">
+          <div className="space-y-2">
+            <div className="h-4 w-28 rounded-[8px] bg-black/5" />
+            <div className="h-10 w-36 rounded-[8px] bg-black/5" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-4 w-28 rounded-[8px] bg-black/5" />
+            <div className="h-6 w-32 rounded-[8px] bg-black/5" />
+          </div>
+          <div className="rounded-[12px] border border-black/8 bg-[rgba(32,32,32,0.02)] px-4 py-3">
+            <div className="space-y-2">
+              <div className="h-4 w-24 rounded-[8px] bg-black/5" />
+              <div className="h-5 w-32 rounded-[8px] bg-black/5" />
+              <div className="h-4 w-52 rounded-[8px] bg-black/5" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-[8px] border border-black/5 bg-white shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+        <div className="border-b border-black/5 px-4 py-3">
+          <div className="h-4 w-28 animate-pulse rounded-[8px] bg-black/5" />
+          <div className="mt-2 h-4 w-[420px] max-w-full animate-pulse rounded-[8px] bg-black/5" />
+        </div>
+        <div className="divide-y divide-black/5">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <div key={index} className="grid gap-3 px-4 py-4 md:grid-cols-[1.2fr_.9fr_.8fr_.9fr_auto] md:items-center">
+              {Array.from({ length: 5 }).map((__, cellIndex) => (
+                <div key={cellIndex} className="h-10 animate-pulse rounded-[8px] bg-black/5" />
+              ))}
+            </div>
+          ))}
+        </div>
+      </section>
+    </section>
+  );
+
   return (
+    loading ? renderLoadingSkeleton() : (
     <section className="space-y-4">
       <section className="rounded-[8px] border border-black/5 bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -707,7 +756,7 @@ export function SellerSettlementsWorkspace({
           </div>
           <div className="rounded-[12px] border border-black/8 bg-[rgba(32,32,32,0.02)] px-4 py-3">
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Payout method</p>
-            <p className="mt-2 text-[14px] font-semibold text-[#202020]">Automatic via Stripe</p>
+            <p className="mt-2 text-[14px] font-semibold text-[#202020]">Automatic via Wise</p>
             <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">
               Eligible funds are paid out automatically on the next Wise payout run.
             </p>
@@ -1148,5 +1197,6 @@ export function SellerSettlementsWorkspace({
 
       <AppSnackbar notice={message} />
     </section>
+    )
   );
 }

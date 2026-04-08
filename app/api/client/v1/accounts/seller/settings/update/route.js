@@ -10,6 +10,8 @@ import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/t
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { normalizeMoneyAmount } from "@/lib/money";
+import { encryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
+import { enqueueGoogleSyncForSeller } from "@/lib/integrations/google-sync-queue";
 import { NextResponse } from "next/server";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
@@ -149,6 +151,14 @@ function parsePayoutProfile(payload) {
     wiseProfileId: sanitizeText(source.wiseProfileId || "").slice(0, 120),
     wiseRecipientId: sanitizeText(source.wiseRecipientId || "").slice(0, 120),
     wiseRecipientStatus: sanitizeText(source.wiseRecipientStatus || "").slice(0, 60),
+    wiseRequirementType: sanitizeText(source.wiseRequirementType || source.wise_requirement_type || "").slice(0, 80),
+    wiseRequirements: Array.isArray(source.wiseRequirements) ? source.wiseRequirements : [],
+    wiseDetails:
+      source.wiseDetails && typeof source.wiseDetails === "object"
+        ? Object.fromEntries(
+            Object.entries(source.wiseDetails).map(([key, value]) => [sanitizeText(key).replace(/\//g, ".").slice(0, 120), sanitizeText(value).slice(0, 240)]),
+          )
+        : {},
     onboardingStatus: sanitizeEnum(source.onboardingStatus, ["created", "information_needed", "collecting", "pending_review", "ready", "failed"], "created"),
     payoutMethodEnabled: source.payoutMethodEnabled === true,
     lastCollectionLinkSentAt: toStr(source.lastCollectionLinkSentAt || ""),
@@ -264,6 +274,7 @@ export async function POST(req) {
     const branding = parseBranding(data?.branding || data);
     const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
     const payoutProfile = parsePayoutProfile(data?.payoutProfile || data?.payout || {});
+    const encryptedPayoutProfile = encryptPayoutProfile(payoutProfile);
     const payoutProvider = "wise";
     const vendorName = titleCaseVendorName(data?.vendorName || data?.seller?.vendorName || "");
     const vendorDescription = normalizeSellerDescription(
@@ -308,11 +319,16 @@ export async function POST(req) {
       "seller.groupSellerCode": sellerCode,
       "seller.branding": branding,
       "seller.deliveryProfile": deliveryProfile,
-      "seller.payoutProfile": payoutProfile,
+      "seller.payoutProfile": encryptedPayoutProfile,
       "seller.payoutProvider": payoutProvider,
       "seller.businessDetails": businessDetails,
       "seller.media": branding,
       "timestamps.updatedAt": new Date(),
+    });
+    await enqueueGoogleSyncForSeller({
+      sellerCode,
+      sellerSlug,
+      reason: "seller_settings_changed",
     });
 
     return ok({

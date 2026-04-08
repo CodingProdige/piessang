@@ -138,6 +138,12 @@ export const emailMessages = {
       subjectTemplate: "Brand request — <%= brandTitle %> — <%= vendorName %>"
     },
 
+    "product-review-submitted-internal": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "product-review-submitted-internal.ejs",
+      subjectTemplate: "Product review submission — <%= productTitle %> — <%= vendorName %>"
+    },
+
     "product-report-internal": {
       wrapper: "corporate-wrapper.ejs",
       template: "product-report-internal.ejs",

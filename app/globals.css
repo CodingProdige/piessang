@@ -101,6 +101,15 @@ iframe {
   animation: subtle-float 4.6s ease-in-out infinite;
 }
 
+@keyframes piessang-image-shimmer {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
 [data-clickable-container="true"] {
   transition:
     transform 180ms ease,

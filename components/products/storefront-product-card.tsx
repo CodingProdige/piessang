@@ -33,6 +33,7 @@ export function StorefrontProductCard({
   stockLabel,
   stockTone = "neutral",
   variantCount,
+  sellerOfferCount,
   reviewAverage,
   reviewCount,
   deliveryLabel,
@@ -59,6 +60,7 @@ export function StorefrontProductCard({
   stockLabel?: string | null;
   stockTone?: "success" | "danger" | "warning" | "neutral";
   variantCount?: number;
+  sellerOfferCount?: number;
   reviewAverage?: number | null;
   reviewCount?: number | null;
   deliveryLabel?: string | null;
@@ -161,11 +163,13 @@ export function StorefrontProductCard({
                 {stockLabel}
               </span>
             ) : null}
-            {stockLabel && typeof variantCount === "number" ? <span className="text-[#d6d6d6]">•</span> : null}
+            {stockLabel && (typeof variantCount === "number" || (sellerOfferCount ?? 0) > 1) ? <span className="text-[#d6d6d6]">•</span> : null}
             {typeof variantCount === "number" ? <span>{variantCount} variants</span> : null}
+            {typeof variantCount === "number" && (sellerOfferCount ?? 0) > 1 ? <span className="text-[#d6d6d6]">•</span> : null}
+            {(sellerOfferCount ?? 0) > 1 ? <span>{sellerOfferCount} sellers</span> : null}
             {reviewAverage && reviewCount ? (
               <>
-                {(stockLabel || typeof variantCount === "number") ? <span className="text-[#d6d6d6]">•</span> : null}
+                {(stockLabel || typeof variantCount === "number" || (sellerOfferCount ?? 0) > 1) ? <span className="text-[#d6d6d6]">•</span> : null}
                 <span className="inline-flex items-center gap-0.5">
                   {Array.from({ length: 5 }).map((_, index) => (
                     <StarIcon key={`${resolvedTitle}-star-${index}`} filled={index < reviewStars} />

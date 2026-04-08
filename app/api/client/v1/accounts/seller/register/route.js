@@ -30,6 +30,16 @@ function sanitizeDigits(value) {
   return toStr(value).replace(/\D+/g, "");
 }
 
+function sanitizePhoneNumber(value, fallbackCountryCode = "27") {
+  const raw = toStr(value);
+  const digits = sanitizeDigits(raw);
+  const countryCode = sanitizeDigits(fallbackCountryCode || "27");
+  if (!digits) return "";
+  if (raw.startsWith("+")) return `+${digits}`;
+  if (countryCode && digits.startsWith(countryCode)) return `+${digits}`;
+  return countryCode ? `+${countryCode}${digits}` : `+${digits}`;
+}
+
 function normalizeSlug(value) {
   return toStr(value).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
@@ -105,7 +115,10 @@ export async function POST(req) {
     const vendorNameFormatted = titleCaseVendorName(vendorName);
     const contactEmail = sanitizeEmail(seller?.contactEmail || seller?.email || current?.email);
     const countryCode = sanitizeDigits(seller?.countryCode || seller?.dialCode || "27");
-    const phoneNumber = sanitizeDigits(seller?.phoneNumber || seller?.contactPhone || current?.account?.phoneNumber);
+    const phoneNumber = sanitizePhoneNumber(
+      seller?.phoneNumber || seller?.contactPhone || current?.account?.phoneNumber,
+      countryCode || "27",
+    );
     const baseLocation = toStr(seller?.baseLocation || seller?.location || seller?.city);
     const sellerCountry = normalizeCountry(seller?.sellerCountry || current?.seller?.sellerCountry || "ZA");
     const vendorDescription = normalizeSellerDescription(

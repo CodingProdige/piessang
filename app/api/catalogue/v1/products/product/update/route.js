@@ -5,9 +5,12 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
-import { collectSellerNotificationEmails, sendSellerNotificationEmails } from "@/lib/seller/notifications";
+import { createSellerNotification } from "@/lib/notifications/seller-inbox";
+import { collectSellerNotificationEmails, collectSystemAdminNotificationEmails, sendSellerNotificationEmails } from "@/lib/seller/notifications";
 import { findBrandRecord, findOrCreatePendingBrandRequest } from "@/lib/catalogue/brand-upsert";
 import { ensureSkuUnique, ensureUniqueProductCode } from "@/lib/catalogue/sku-uniqueness";
+import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
+import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
@@ -179,6 +182,89 @@ function deepMerge(target, patch) {
   return out;
 }
 
+function hasReviewSensitiveProductChanges(patch, { changeRequestOnly = false } = {}) {
+  if (!patch || typeof patch !== "object") return false;
+
+  if ("grouping" in patch) return true;
+  if ("media" in patch) return true;
+  if ("inventory" in patch) return true;
+
+  if ("product" in patch) {
+    const productPatch = patch.product || {};
+    const reviewSensitiveProductKeys = new Set([
+      "title",
+      "overview",
+      "description",
+      "keywords",
+      "brand",
+      "brandTitle",
+      "brandCode",
+      "brandRequestId",
+      "brandStatus",
+      "vendorName",
+    ]);
+
+    if (Object.keys(productPatch).some((key) => reviewSensitiveProductKeys.has(key))) {
+      return true;
+    }
+  }
+
+  if ("placement" in patch) {
+    const placementPatch = patch.placement || {};
+    const safePlacementKeys = new Set(["isActive", "inventory_tracking", "supplier_out_of_stock", "in_stock"]);
+    if (Object.keys(placementPatch).some((key) => !safePlacementKeys.has(key))) {
+      return true;
+    }
+  }
+
+  if ("fulfillment" in patch) {
+    const fulfillmentPatch = patch.fulfillment || {};
+    const safeFulfillmentKeys = new Set([
+      "commission_rate",
+      "success_fee_percent",
+      "success_fee_label",
+      "lead_time_days",
+      "cutoff_time",
+      "change_request",
+      "locked",
+      "mode",
+    ]);
+    if (Object.keys(fulfillmentPatch).some((key) => !safeFulfillmentKeys.has(key))) {
+      return true;
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(fulfillmentPatch, "mode") &&
+      !changeRequestOnly
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function findProductRefByUniqueId(db, pid) {
+  const directRef = db.collection("products_v2").doc(pid);
+  const directSnap = await directRef.get();
+  if (directSnap.exists) {
+    return { ref: directRef, snap: directSnap };
+  }
+
+  const fallbackSnap = await db
+    .collection("products_v2")
+    .where("product.unique_id", "==", pid)
+    .limit(1)
+    .get();
+
+  if (!fallbackSnap.empty) {
+    const docSnap = fallbackSnap.docs[0];
+    return { ref: docSnap.ref, snap: docSnap };
+  }
+
+  return { ref: directRef, snap: directSnap };
+}
+
 /* ------------------ existing sanitizers preserved ------------------ */
 function parseKeywords(value){
   const raw = Array.isArray(value) ? value.join(",") : (value ?? "");
@@ -272,6 +358,41 @@ function formatModerationStatusLabel(status) {
   if (normalized === "rejected") return "Rejected";
   if (normalized === "draft") return "Draft";
   return normalized.replace(/_/g, " ");
+}
+
+function buildSellerProductNotification({ status = "", productTitle = "", reason = "", isLiveUpdate = false }) {
+  const normalized = toStr(status).toLowerCase();
+  if (normalized === "in_review") {
+    return {
+      title: isLiveUpdate ? "Product update submitted" : "Product submitted for review",
+      message: isLiveUpdate
+        ? `${productTitle || "Your product"} has been resubmitted for review. The current live version will stay visible until Piessang approves the update.`
+        : `${productTitle || "Your product"} has been submitted for review. Piessang will review it before it can go live.`,
+    };
+  }
+  if (normalized === "rejected") {
+    return {
+      title: isLiveUpdate ? "Product update rejected" : "Product rejected",
+      message: reason
+        ? `${productTitle || "Your product"} needs changes before it can move forward: ${reason}`
+        : `${productTitle || "Your product"} needs changes before it can move forward.`,
+    };
+  }
+  if (normalized === "published") {
+    return {
+      title: isLiveUpdate ? "Product update approved" : "Product approved",
+      message: isLiveUpdate
+        ? `${productTitle || "Your product"} update has been approved and applied to the live listing.`
+        : `${productTitle || "Your product"} has been approved and is now live on Piessang.`,
+    };
+  }
+  if (normalized === "awaiting_stock") {
+    return {
+      title: "Product approved and awaiting stock",
+      message: `${productTitle || "Your product"} has been approved and is now waiting for stock before it can go live.`,
+    };
+  }
+  return null;
 }
 
 function buildStatusNextStep(status, fulfillmentMode, reason) {
@@ -440,8 +561,7 @@ export async function POST(req){
       return err(400,"Variants Not Allowed","Use variant endpoints.");
 
     /* -- Load existing product -- */
-    const ref = db.collection("products_v2").doc(pid);
-    const snap = await ref.get();
+    const { ref, snap } = await findProductRefByUniqueId(db, pid);
 
     if (!snap.exists)
       return err(404,"Product Not Found",`No product with ID ${pid}.`);
@@ -509,14 +629,7 @@ export async function POST(req){
     const preserveLiveVersionDuringReview =
       currentModerationStatus === "published" || hasLiveSnapshotRecord(current);
     const nextModerationStatus = toStr(next?.moderation?.status, currentModerationStatus) || currentModerationStatus;
-    const meaningfulContentChange = Boolean(
-      ("grouping" in patch) ||
-      ("media" in patch) ||
-      ("product" in patch) ||
-      ("inventory" in patch) ||
-      ("placement" in patch && !Object.keys(patch.placement || {}).every((key) => key === "isActive")) ||
-      ("fulfillment" in patch && !changeRequestOnly)
-    );
+    const meaningfulContentChange = hasReviewSensitiveProductChanges(patch, { changeRequestOnly });
     next.moderation = next.moderation || {};
     next.moderation.status = meaningfulContentChange
       ? preserveLiveVersionDuringReview
@@ -675,6 +788,13 @@ export async function POST(req){
     /* -- Update Firestore -- */
     const updatePayload = {
       ...next,
+      marketplace: {
+        ...(next?.marketplace && typeof next.marketplace === "object" ? next.marketplace : {}),
+        ...buildOfferGroupMetadata({
+          sellerCode,
+          variants: Array.isArray(next?.variants) ? next.variants : [],
+        }),
+      },
       timestamps: {
         ...(next?.timestamps || current?.timestamps || {}),
         updatedAt: FieldValue.serverTimestamp(),
@@ -688,10 +808,32 @@ export async function POST(req){
     const updatedSnap = await ref.get();
     const updated = normalizeTimestamps(updatedSnap.data());
     const wasLiveUpdate = hasLiveSnapshotRecord(current);
+    const previousPublishedStatus = toStr(current?.moderation?.status).toLowerCase();
+    const updatedModerationStatus = toStr(updated?.moderation?.status).toLowerCase();
+    const shouldQueueGoogleSync =
+      previousPublishedStatus === "published" ||
+      updatedModerationStatus === "published" ||
+      wasLiveUpdate ||
+      previousPublishedStatus === "awaiting_stock" ||
+      updatedModerationStatus === "awaiting_stock";
+
+    if (shouldQueueGoogleSync) {
+      const queueReason =
+        previousPublishedStatus !== "published" && updatedModerationStatus === "published"
+          ? "product_published"
+          : previousPublishedStatus === "published" && updatedModerationStatus !== "published"
+            ? "product_unpublished"
+            : "product_updated";
+      await enqueueGoogleSyncProducts({
+        productIds: [pid],
+        reason: queueReason,
+        metadata: { source: "product_update" },
+      });
+    }
 
     const becamePublished =
-      toStr(current?.moderation?.status).toLowerCase() !== "published" &&
-      toStr(updated?.moderation?.status).toLowerCase() === "published" &&
+      previousPublishedStatus !== "published" &&
+      updatedModerationStatus === "published" &&
       updated?.placement?.isActive === true;
 
     if (becamePublished) {
@@ -850,6 +992,33 @@ export async function POST(req){
       const productTitle = toStr(next?.product?.title || current?.product?.title || "your product");
       const fulfillmentModeForEmail = toStr(next?.fulfillment?.mode || current?.fulfillment?.mode || "seller");
       const reason = toStr(next?.moderation?.reason || current?.moderation?.reason || "");
+      const sellerCode = toStr(next?.seller?.sellerCode || current?.seller?.sellerCode || next?.product?.sellerCode || current?.product?.sellerCode || "");
+      const sellerNotification = buildSellerProductNotification({
+        status: next.moderation.status,
+        productTitle,
+        reason,
+        isLiveUpdate: wasLiveUpdate,
+      });
+      const sellerProductHref = `/seller/catalogue/new?unique_id=${encodeURIComponent(pid)}`;
+
+      if (sellerSlug && sellerNotification) {
+        await createSellerNotification({
+          sellerCode,
+          sellerSlug,
+          type: "seller-product-status",
+          title: sellerNotification.title,
+          message: sellerNotification.message,
+          href: sellerProductHref,
+          metadata: {
+            productId: pid,
+            productTitle,
+            status: toStr(next.moderation.status),
+            isLiveUpdate: wasLiveUpdate,
+          },
+        }).catch((notificationError) => {
+          console.error("seller product notification failed:", notificationError);
+        });
+      }
 
       if (process.env.SENDGRID_API_KEY?.startsWith("SG.") && sellerSlug) {
         const recipients = await collectSellerNotificationEmails({
@@ -889,6 +1058,26 @@ export async function POST(req){
                 isLiveUpdate: wasLiveUpdate,
               }),
             },
+          });
+        }
+      }
+
+      if (process.env.SENDGRID_API_KEY?.startsWith("SG.") && toStr(next.moderation.status).toLowerCase() === "in_review") {
+        const internalRecipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["support@piessang.com"] });
+        if (internalRecipients.length) {
+          await sendSellerNotificationEmails({
+            origin: new URL(req.url).origin,
+            type: "product-review-submitted-internal",
+            to: internalRecipients,
+            data: {
+              vendorName,
+              productTitle,
+              productCode: pid,
+              fulfillmentLabel: fulfillmentModeForEmail === "bevgo" ? "Piessang fulfils" : "Seller fulfils",
+              reviewUrl: `${new URL(req.url).origin}/seller/dashboard?section=review-products`,
+            },
+          }).catch((notificationError) => {
+            console.error("product review internal email failed:", notificationError);
           });
         }
       }

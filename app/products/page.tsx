@@ -87,6 +87,21 @@ type ProductItem = {
       position?: number;
     };
     variants?: ProductVariant[];
+    seller_offer_count?: number;
+    alternate_offers?: Array<{
+      productId?: string | null;
+      title?: string | null;
+      titleSlug?: string | null;
+      sellerCode?: string | null;
+      sellerSlug?: string | null;
+      vendorName?: string | null;
+      variantId?: string | null;
+      variantLabel?: string | null;
+      barcode?: string | null;
+      priceIncl?: number | null;
+      hasInStockVariants?: boolean;
+      imageUrl?: string | null;
+    }>;
     ratings?: {
       average?: number;
       count?: number;
@@ -348,7 +363,7 @@ function pickDisplayVariant(variants?: ProductVariant[]) {
         price: getVariantPriceExVat(variant),
       }))
       .filter((entry): entry is { variant: ProductVariant; price: number } => typeof entry.price === "number")
-      .sort((a, b) => b.price - a.price)[0]?.variant ?? variants[0]
+      .sort((a, b) => a.price - b.price)[0]?.variant ?? variants[0]
   );
 }
 

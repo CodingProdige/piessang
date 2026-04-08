@@ -105,7 +105,7 @@ function pickDisplayVariant(variants?: ProductVariant[]) {
     [...variants]
       .map((variant) => ({ variant, price: getPrice(variant) }))
       .filter((entry): entry is { variant: ProductVariant; price: number } => typeof entry.price === "number")
-      .sort((a, b) => b.price - a.price)[0]?.variant ?? variants[0]
+      .sort((a, b) => a.price - b.price)[0]?.variant ?? variants[0]
   );
 }
 
@@ -171,7 +171,7 @@ function getStockLabel(variant: ProductVariant | null, item: ProductSpotlightIte
   }
 
   if (variant?.placement?.continue_selling_out_of_stock) {
-    return { label: "Continue selling out of stock", tone: "success" as const };
+    return { label: "In stock", tone: "success" as const };
   }
 
   const stock = variant?.total_in_stock_items_available;

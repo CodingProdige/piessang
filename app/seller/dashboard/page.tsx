@@ -22,6 +22,7 @@ import { SellerOrdersWorkspace } from "@/components/seller/orders-workspace";
 import { SellerPayoutBatchesWorkspace } from "@/components/seller/payout-batches-workspace";
 import { SellerPlatformDeliveryWorkspace } from "@/components/seller/platform-delivery-workspace";
 import { SellerGoogleMerchantCountriesWorkspace } from "@/components/seller/google-merchant-countries-workspace";
+import { SellerGoogleMerchantWorkspace } from "@/components/seller/google-merchant-workspace";
 import { SellerProductReportsWorkspace } from "@/components/seller/product-reports-workspace";
 import { SellerProductReviewsWorkspace } from "@/components/seller/product-reviews-workspace";
 import { SellerProductsWorkspace } from "@/components/seller/products-workspace";
@@ -64,6 +65,7 @@ type SidebarSection =
   | "admin-orders"
   | "admin-platform-delivery"
   | "admin-google-merchant-countries"
+  | "admin-google-merchant"
   | "admin-payouts"
   | "admin-support"
   | "admin-campaign-reviews"
@@ -212,6 +214,7 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   "admin-orders": ["admin"],
   "admin-platform-delivery": ["admin"],
   "admin-google-merchant-countries": ["admin"],
+  "admin-google-merchant": ["admin"],
   "admin-payouts": ["admin"],
   "admin-support": ["admin"],
   "admin-campaign-reviews": ["admin"],
@@ -658,7 +661,7 @@ function SidebarMenu({
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-google-merchant-countries", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-google-merchant-countries", "admin-google-merchant", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -913,13 +916,29 @@ function SidebarMenu({
               collapsed={compactDesktop}
               onClick={() => handleNavigate("admin-platform-delivery")}
             />
-            <SidebarButton
-              label="Google countries"
+            <SidebarGroup
+              title="Google Merchant"
+              description="Country rollout and sync operations"
               icon="globe"
-              active={activeSection === "admin-google-merchant-countries"}
               collapsed={compactDesktop}
-              onClick={() => handleNavigate("admin-google-merchant-countries")}
-            />
+            >
+              <SidebarButton
+                label="Countries"
+                icon="globe"
+                active={activeSection === "admin-google-merchant-countries"}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("admin-google-merchant-countries")}
+                nested
+              />
+              <SidebarButton
+                label="Sync"
+                icon="globe"
+                active={activeSection === "admin-google-merchant"}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("admin-google-merchant")}
+                nested
+              />
+            </SidebarGroup>
             <SidebarButton
               label="Payouts"
               icon="cash"
@@ -1080,6 +1099,10 @@ function SellerDashboardContent() {
       case "google-merchant-countries":
       case "google-countries":
         return "admin-google-merchant-countries";
+      case "admin-google-merchant":
+      case "google-merchant":
+      case "google-sync":
+        return "admin-google-merchant";
       case "admin-payouts":
       case "payouts":
         return "admin-payouts";
@@ -1411,7 +1434,7 @@ function SellerDashboardContent() {
   const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
   const sectionLocked = sellerUnavailable
     ? blockedSections.includes(activeSection)
-      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "admin-landing-builder" || activeSection === "admin-landing-seo" || activeSection === "admin-newsletters" || activeSection === "admin-orders" || activeSection === "admin-platform-delivery" || activeSection === "admin-google-merchant-countries" || activeSection === "admin-payouts" || activeSection === "admin-support" || activeSection === "admin-campaign-reviews" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
+      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "admin-landing-builder" || activeSection === "admin-landing-seo" || activeSection === "admin-newsletters" || activeSection === "admin-orders" || activeSection === "admin-platform-delivery" || activeSection === "admin-google-merchant-countries" || activeSection === "admin-google-merchant" || activeSection === "admin-payouts" || activeSection === "admin-support" || activeSection === "admin-campaign-reviews" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
         ? !canManageSellerDashboard
         : !canAccessSellerSection(activeSellerRole, activeSection);
   const firstAllowedSection = useMemo(() => {
@@ -1489,7 +1512,7 @@ function SellerDashboardContent() {
   }, [activeSection, pathname, router, searchParams]);
 
   function setSection(nextSection: SidebarSection) {
-    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-landing-builder" || nextSection === "admin-landing-seo" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-google-merchant-countries" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
+    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-landing-builder" || nextSection === "admin-landing-seo" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-google-merchant-countries" || nextSection === "admin-google-merchant" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
     if (!canAccessSellerSection(activeSellerRole, nextSection)) return;
     setActiveSection(nextSection);
     setMobileMenuOpen(false);
@@ -1568,6 +1591,8 @@ function SellerDashboardContent() {
         return "Platform delivery";
       case "admin-google-merchant-countries":
         return "Google countries";
+      case "admin-google-merchant":
+        return "Google sync";
       case "admin-payouts":
         return "Payouts";
       case "admin-support":
@@ -1651,6 +1676,10 @@ function SellerDashboardContent() {
         return "See every marketplace order in one place, including payment, fulfilment, and delivery progress.";
       case "admin-platform-delivery":
         return "Manage the Piessang fulfilment shipping origin, direct-delivery radius, shipping zones, and pickup rules.";
+      case "admin-google-merchant-countries":
+        return "Manage which countries Google Merchant product ads are allowed to target.";
+      case "admin-google-merchant":
+        return "Monitor Google Merchant queue activity, manual syncs, logs, and offer cleanup from one workspace.";
       case "admin-payouts":
         return "Prepare, submit, and reconcile seller payout batches from one admin queue.";
       case "admin-support":
@@ -1906,6 +1935,8 @@ function SellerDashboardContent() {
               <SellerPlatformDeliveryWorkspace />
             ) : activeSection === "admin-google-merchant-countries" && canManageSellerDashboard ? (
               <SellerGoogleMerchantCountriesWorkspace />
+            ) : activeSection === "admin-google-merchant" && canManageSellerDashboard ? (
+              <SellerGoogleMerchantWorkspace />
             ) : activeSection === "admin-payouts" && canManageSellerDashboard ? (
               <SellerPayoutBatchesWorkspace />
             ) : activeSection === "admin-support" && canManageSellerDashboard ? (

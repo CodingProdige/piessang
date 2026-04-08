@@ -4,21 +4,15 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { processSupportTicketLifecycle } from "@/lib/support/ticket-lifecycle";
+import { isAuthorizedCronRequest } from "@/lib/server/cron-auth";
 
 const ok = (data = {}, status = 200) => NextResponse.json({ ok: true, data }, { status });
 const err = (status, title, message, extra = {}) =>
   NextResponse.json({ ok: false, title, message, ...extra }, { status });
 
-function isAuthorized(req) {
-  const secret = String(process.env.CRON_SECRET || "").trim();
-  if (!secret) return false;
-  const authorization = String(req.headers.get("authorization") || "").trim();
-  return authorization === `Bearer ${secret}`;
-}
-
 export async function GET(req) {
   try {
-    if (!isAuthorized(req)) return err(401, "Unauthorized", "Invalid cron authorization.");
+    if (!isAuthorizedCronRequest(req)) return err(401, "Unauthorized", "Invalid cron authorization.");
     const result = await processSupportTicketLifecycle();
     return ok(result);
   } catch (e) {

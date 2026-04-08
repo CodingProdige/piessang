@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { PageBody } from "@/components/layout/page-body";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeMoneyAmount } from "@/lib/money";
+import { GoogleAdsPurchaseConversion } from "@/components/analytics/google-ads-purchase-conversion";
 
 export const metadata: Metadata = {
   title: "Order Placed",
@@ -19,9 +22,41 @@ export default async function CheckoutSuccessPage({
   const params = await searchParams;
   const orderId = typeof params.orderId === "string" ? params.orderId.trim() : "";
   const orderNumber = typeof params.orderNumber === "string" ? params.orderNumber.trim() : "";
+  const conversionId = "AW-18066581333";
+  const conversionLabel = "UbKbCJeYipgcENXO6KZD";
+
+  let conversionValue = 0;
+  let conversionCurrency = "ZAR";
+  let conversionTransactionId = orderNumber || orderId;
+
+  if (orderId) {
+    try {
+      const db = getAdminDb();
+      const snap = db ? await db.collection("orders_v2").doc(orderId).get() : null;
+      const order = snap?.exists ? snap.data() || {} : {};
+      conversionValue = normalizeMoneyAmount(
+        Number(order?.payment?.required_amount_incl || order?.totals?.final_payable_incl || 0),
+      );
+      conversionCurrency = String(order?.payment?.currency || "ZAR").trim().toUpperCase() || "ZAR";
+      conversionTransactionId =
+        String(order?.orderNumber || orderNumber || orderId).trim() ||
+        String(orderNumber || orderId).trim();
+    } catch {
+      // Leave the conversion payload on safe fallbacks.
+    }
+  }
 
   return (
     <PageBody className="py-10 sm:py-14">
+      {conversionValue > 0 && conversionTransactionId ? (
+        <GoogleAdsPurchaseConversion
+          conversionId={conversionId}
+          conversionLabel={conversionLabel}
+          value={conversionValue}
+          currency={conversionCurrency}
+          transactionId={conversionTransactionId}
+        />
+      ) : null}
       <section className="overflow-hidden rounded-[18px] border border-black/5 bg-white shadow-[0_18px_44px_rgba(20,24,27,0.08)]">
         <div className="border-b border-black/5 bg-[linear-gradient(135deg,#fff8d6_0%,#ffffff_45%,#fff4b3_100%)] px-6 py-8 sm:px-10">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#907d4c]">Order placed</p>

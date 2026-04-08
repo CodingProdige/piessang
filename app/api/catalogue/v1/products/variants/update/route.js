@@ -11,6 +11,8 @@ import {
   normalizeMarketplaceVariantLogistics,
 } from "@/lib/marketplace/fees";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
+import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
+import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
 
 /* ---------- helpers ---------- */
 const ok = (p = {}, s = 200) =>
@@ -107,12 +109,21 @@ function parseImages(value){
   return arr;
 }
 
+function getProductSellerCode(data) {
+  return String(
+    data?.product?.sellerCode ??
+    data?.seller?.sellerCode ??
+    ""
+  ).trim();
+}
+
 async function collectAllBarcodes(db) {
   const snap = await db.collection("products_v2").get();
   const list = [];
   for (const d of snap.docs) {
     const pid = d.id;
     const data = d.data() || {};
+    const sellerCode = getProductSellerCode(data).toUpperCase();
     const variants = Array.isArray(data?.variants)
       ? data.variants
       : [];
@@ -122,7 +133,7 @@ async function collectAllBarcodes(db) {
         .toUpperCase();
       const vId = String(v?.variant_id ?? "").trim();
       if (bc)
-        list.push({ productId: pid, variantId: vId, barcode: bc });
+        list.push({ productId: pid, variantId: vId, sellerCode, barcode: bc });
     }
   }
   return list;
@@ -149,6 +160,28 @@ function deepMerge(target, patch) {
 
 function hasLiveSnapshotRecord(product) {
   return Boolean(product?.live_snapshot && typeof product.live_snapshot === "object");
+}
+
+function hasVariantReviewSensitiveChanges(patch = {}) {
+  if (!patch || typeof patch !== "object") return false;
+
+  if ("variant_id" in patch) return true;
+  if ("label" in patch) return true;
+  if ("sku" in patch) return true;
+  if ("barcode" in patch) return true;
+  if ("barcodeImageUrl" in patch) return true;
+  if ("color" in patch) return true;
+  if ("media" in patch) return true;
+  if ("pack" in patch) return true;
+
+  if (patch?.placement && typeof patch.placement === "object") {
+    const placementKeys = Object.keys(patch.placement || {});
+    if (placementKeys.some((key) => !["continue_selling_out_of_stock", "track_inventory"].includes(String(key)))) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function isSaleActive(variant) {
@@ -389,19 +422,18 @@ export async function POST(req) {
     if (incomingBC) {
       const allBCs = await collectAllBarcodes(db);
       const normalized = incomingBC.toUpperCase();
-      const currentBC = toStr(
-        list[idx]?.barcode
-      ).toUpperCase();
+      const currentSellerCode = getProductSellerCode(current).toUpperCase();
       const conflict = allBCs.find(
         (b) =>
           b.barcode === normalized &&
+          b.sellerCode === currentSellerCode &&
           !(b.productId === pid && b.variantId === vid)
       );
       if (conflict) {
         return err(
           409,
           "Duplicate Barcode",
-          `Barcode '${incomingBC}' already exists on another variant.`
+          `Barcode '${incomingBC}' already exists on another variant in your catalogue.`
         );
       }
     }
@@ -429,11 +461,11 @@ export async function POST(req) {
       );
     }
     const nextBarcode = toStr(data?.barcode ?? list[idx]?.barcode);
-    if (requiresLogistics && !nextBarcode) {
+    if (!nextBarcode) {
       return err(
         400,
         "Missing Barcode",
-        "A barcode is required for Piessang fulfilment variants. Seller-fulfilled variants may leave it blank."
+        "A barcode is required for every variant."
       );
     }
 
@@ -561,22 +593,38 @@ export async function POST(req) {
 
     const preserveLiveVersionDuringReview =
       toStr(docData?.moderation?.status).toLowerCase() === "published" || hasLiveSnapshotRecord(docData);
+    const reviewSensitiveVariantChange = hasVariantReviewSensitiveChanges(patch);
 
     const updatePayload = {
       variants: list,
+      marketplace: {
+        ...(docData?.marketplace && typeof docData.marketplace === "object" ? docData.marketplace : {}),
+        ...buildOfferGroupMetadata({
+          sellerCode: getProductSellerCode(docData),
+          variants: list,
+        }),
+      },
       moderation: {
         ...(docData?.moderation || {}),
-        status: preserveLiveVersionDuringReview ? "in_review" : "draft",
-        reason: "variant_changed",
-        notes: preserveLiveVersionDuringReview
-          ? "Variant updates are in review. The current live version stays visible until the changes are approved."
-          : "Variant updates require the listing to be reviewed again before it goes live.",
-        reviewedAt: null,
-        reviewedBy: null,
+        ...(reviewSensitiveVariantChange
+          ? {
+              status: preserveLiveVersionDuringReview ? "in_review" : "draft",
+              reason: "variant_changed",
+              notes: preserveLiveVersionDuringReview
+                ? "Variant updates are in review. The current live version stays visible until the changes are approved."
+                : "Variant updates require the listing to be reviewed again before it goes live.",
+              reviewedAt: null,
+              reviewedBy: null,
+            }
+          : {}),
       },
       placement: {
         ...(docData?.placement || {}),
-        isActive: preserveLiveVersionDuringReview ? Boolean(docData?.placement?.isActive) : false,
+        isActive: reviewSensitiveVariantChange
+          ? preserveLiveVersionDuringReview
+            ? Boolean(docData?.placement?.isActive)
+            : false
+          : Boolean(docData?.placement?.isActive),
       },
       meta: {
         ...(docData?.meta || {}),
@@ -584,10 +632,17 @@ export async function POST(req) {
       },
       "timestamps.updatedAt": FieldValue.serverTimestamp(),
     };
-    if (preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(docData)) {
+    if (reviewSensitiveVariantChange && preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(docData)) {
       updatePayload.live_snapshot = docData;
     }
     await ref.update(updatePayload);
+    if (preserveLiveVersionDuringReview) {
+      await enqueueGoogleSyncProducts({
+        productIds: [pid],
+        reason: "variant_updated",
+        metadata: { source: "variant_update", variantId: vid },
+      });
+    }
 
     const default_variant_id =
       (
@@ -634,8 +689,8 @@ export async function POST(req) {
       unique_id: pid,
       variant_id: vid,
       default_variant_id,
-      resubmissionRequired: true,
-      liveVersionKept: preserveLiveVersionDuringReview,
+      resubmissionRequired: reviewSensitiveVariantChange,
+      liveVersionKept: reviewSensitiveVariantChange && preserveLiveVersionDuringReview,
       variant: list[idx],
     });
   } catch (e) {

@@ -7,7 +7,9 @@ import { formatMoneyExact } from "@/lib/money";
 import { resolveGoogleTargetCountries, resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
 import { loadGoogleMerchantSettings } from "@/lib/platform/google-merchant-settings";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
-import { sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { getCanonicalOfferBarcode } from "@/lib/catalogue/offer-group";
 
 const VAT = 0.15;
 const FEED_TITLE = "Piessang Product Feed";
@@ -16,6 +18,7 @@ const FEED_LINK = "https://piessang.com";
 
 const PRODUCTS_COLLECTION = "products_v2";
 const GOOGLE_FEED_SECRET = process.env.GOOGLE_FEED_SECRET || "";
+const sellerOwnerCache = new Map();
 
 const esc = (v) =>
   String(v ?? "")
@@ -54,6 +57,7 @@ const slugify = (v) =>
     .replace(/['".]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+const toStr = (value, fallback = "") => (value == null ? fallback : String(value).trim());
 
 const moneyIncl = (excl) => {
   const n = Number(excl);
@@ -199,6 +203,136 @@ function isEligibleVariantForGoogle(product, variant) {
   );
 }
 
+function getSellerIdentifier(product = {}) {
+  return toStr(
+    product?.seller?.sellerCode ||
+      product?.seller?.activeSellerCode ||
+      product?.seller?.groupSellerCode ||
+      product?.seller?.sellerSlug ||
+      product?.product?.sellerCode ||
+      product?.product?.sellerSlug ||
+      product?.product?.vendorSlug
+  );
+}
+
+async function hydrateProductSeller(product = {}) {
+  const embeddedSeller =
+    product?.seller && typeof product.seller === "object" ? product.seller : {};
+  const hasEmbeddedDeliveryProfile =
+    embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object";
+  const hasEmbeddedSellerIdentity =
+    Boolean(
+      embeddedSeller?.sellerCode ||
+        embeddedSeller?.activeSellerCode ||
+        embeddedSeller?.groupSellerCode ||
+        embeddedSeller?.sellerSlug ||
+        product?.product?.sellerCode ||
+        product?.product?.sellerSlug
+    );
+
+  if (hasEmbeddedDeliveryProfile && hasEmbeddedSellerIdentity) {
+    return product;
+  }
+
+  const sellerIdentifier = getSellerIdentifier(product);
+  if (!sellerIdentifier) return product;
+
+  if (!sellerOwnerCache.has(sellerIdentifier)) {
+    sellerOwnerCache.set(sellerIdentifier, await findSellerOwnerByIdentifier(sellerIdentifier));
+  }
+
+  const sellerOwner = sellerOwnerCache.get(sellerIdentifier);
+  const sellerNode =
+    sellerOwner?.data?.seller && typeof sellerOwner.data.seller === "object"
+      ? sellerOwner.data.seller
+      : null;
+  if (!sellerNode) return product;
+
+  return {
+    ...product,
+    seller: {
+      ...embeddedSeller,
+      sellerCode:
+        toStr(
+          sellerNode?.sellerCode ||
+            sellerNode?.activeSellerCode ||
+            sellerNode?.groupSellerCode ||
+            embeddedSeller?.sellerCode ||
+            product?.product?.sellerCode
+        ) || null,
+      sellerSlug:
+        toStr(
+          sellerNode?.sellerSlug ||
+            sellerNode?.activeSellerSlug ||
+            sellerNode?.groupSellerSlug ||
+            embeddedSeller?.sellerSlug ||
+            product?.product?.sellerSlug
+        ) || null,
+      activeSellerSlug:
+        toStr(sellerNode?.activeSellerSlug || sellerNode?.sellerSlug || embeddedSeller?.activeSellerSlug) || null,
+      groupSellerSlug:
+        toStr(sellerNode?.groupSellerSlug || sellerNode?.sellerSlug || embeddedSeller?.groupSellerSlug) || null,
+      sellerCountry:
+        toStr(
+          sellerNode?.sellerCountry ||
+            sellerNode?.businessDetails?.country ||
+            embeddedSeller?.sellerCountry
+        ) || null,
+      vendorName:
+        toStr(sellerNode?.vendorName || sellerNode?.groupVendorName || embeddedSeller?.vendorName || product?.product?.vendorName) ||
+        null,
+      deliveryProfile: normalizeSellerDeliveryProfile(
+        sellerNode?.deliveryProfile && typeof sellerNode.deliveryProfile === "object"
+          ? sellerNode.deliveryProfile
+          : embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object"
+            ? embeddedSeller.deliveryProfile
+            : {}
+      ),
+    },
+  };
+}
+
+function getGoogleCandidatePrice(variant) {
+  const priced = variantPriceFields(variant);
+  if (!priced?.salePrice && !priced?.price) return Number.POSITIVE_INFINITY;
+  const value = String(priced.salePrice || priced.price || "")
+    .replace(/[^\d.]/g, "")
+    .trim();
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : Number.POSITIVE_INFINITY;
+}
+
+function pickCheapestGroupedFeedItems(items = []) {
+  const grouped = new Map();
+
+  for (const item of items) {
+    const barcode = String(item?.canonicalBarcode || "").trim().toUpperCase();
+    const targetCountry = String(item?.targetCountry || "").trim().toUpperCase();
+    const groupKey = barcode && targetCountry ? `${barcode}::${targetCountry}` : null;
+    if (!groupKey) {
+      grouped.set(`__ungrouped__${grouped.size}`, item);
+      continue;
+    }
+
+    if (!grouped.has(groupKey)) {
+      grouped.set(groupKey, item);
+      continue;
+    }
+
+    const current = grouped.get(groupKey);
+    if (item.priceIncl < current.priceIncl) {
+      grouped.set(groupKey, item);
+      continue;
+    }
+
+    if (item.priceIncl === current.priceIncl && String(item.offerId).localeCompare(String(current.offerId)) < 0) {
+      grouped.set(groupKey, item);
+    }
+  }
+
+  return Array.from(grouped.values());
+}
+
 export async function GET(req) {
   try {
     const { searchParams } = new URL(req.url);
@@ -249,7 +383,8 @@ export async function GET(req) {
       );
     };
 
-    const productRows = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+    const rawProductRows = productsSnap.docs.map((d) => ({ id: d.id, ...(d.data() || {}) }));
+    const productRows = await Promise.all(rawProductRows.map((product) => hydrateProductSeller(product)));
     let products = [];
     for (const product of productRows) {
       if (!hasActiveParents(product)) continue;
@@ -259,7 +394,7 @@ export async function GET(req) {
     if (limit != null) products = products.slice(0, limit);
 
     const now = new Date().toUTCString();
-    const items = [];
+    const candidateItems = [];
 
     for (const p of products) {
       const uniqueId = String(p?.product?.unique_id || "").trim();
@@ -279,6 +414,14 @@ export async function GET(req) {
       });
 
       const variants = Array.isArray(p?.variants) ? p.variants.filter((variant) => isEligibleVariantForGoogle(p, variant)) : [];
+      const canonicalBarcode =
+        String(
+          p?.marketplace?.canonical_offer_barcode ||
+            getCanonicalOfferBarcode(variants) ||
+            ""
+        )
+          .trim()
+          .toUpperCase() || null;
       for (const v of variants) {
         const variantId = String(v?.variant_id || "").trim();
         if (!variantId) continue;
@@ -302,9 +445,10 @@ export async function GET(req) {
         for (const targetCountry of targetCountries) {
           const link = productLink(uniqueId, title, variantId);
           const normalizedTargetCountry = String(targetCountry || "ZA").trim().toUpperCase();
+          const offerId = `${uniqueId}-${variantId}`;
           const xml = [
             "<item>",
-            `<g:id>${esc(`${uniqueId}-${variantId}-${normalizedTargetCountry}`)}</g:id>`,
+            `<g:id>${esc(offerId)}</g:id>`,
             `<g:item_group_id>${esc(uniqueId)}</g:item_group_id>`,
             `<title>${esc(itemTitle)}</title>`,
             `<description>${esc(desc)}</description>`,
@@ -326,10 +470,18 @@ export async function GET(req) {
             .filter(Boolean)
             .join("");
 
-          items.push(xml);
+          candidateItems.push({
+            xml,
+            canonicalBarcode,
+            targetCountry: normalizedTargetCountry,
+            priceIncl: getGoogleCandidatePrice(v),
+            offerId,
+          });
         }
       }
     }
+
+    const items = pickCheapestGroupedFeedItems(candidateItems).map((item) => item.xml);
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss xmlns:g="http://base.google.com/ns/1.0" version="2.0">

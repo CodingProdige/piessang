@@ -220,6 +220,260 @@ function exclToIncl(value: string | number) {
   return money2(Number(value) * (1 + VAT_RATE));
 }
 
+function hasEnteredReviewFlow(status: string | null | undefined) {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  return ["published", "in_review", "awaiting_stock"].includes(normalized);
+}
+
+function ChangeImpactHint({
+  mode,
+  className = "",
+}: {
+  mode: "review" | "live";
+  className?: string;
+}) {
+  return (
+    <p className={`${mode === "review" ? "text-[#907d4c]" : "text-[#166534]"} text-[11px] font-medium ${className}`.trim()}>
+      {mode === "review"
+        ? "Changes here require review before they go live."
+        : "Changes here update the live listing immediately."}
+    </p>
+  );
+}
+
+type ProductEditorBaseline = {
+  title: string;
+  category: string;
+  subCategory: string;
+  brandSlug: string;
+  brandTitle: string;
+  overview: string;
+  description: string;
+  keywords: string[];
+  imageKeys: string[];
+  fulfillmentMode: "seller" | "bevgo";
+  inventoryTracking: boolean;
+};
+
+type VariantEditorBaseline = {
+  label: string;
+  sku: string;
+  barcode: string;
+  color: string;
+  imageKeys: string[];
+  unitCount: string;
+  volume: string;
+  volumeUnit: string;
+  sellingPriceIncl: string;
+  saleDiscountPercent: string;
+  isOnSale: boolean;
+  inventoryQty: string;
+  continueSellingOutOfStock: boolean;
+  trackInventory: boolean;
+  isDefault: boolean;
+  isActive: boolean;
+};
+
+function createProductEditorBaseline(input: Partial<ProductEditorBaseline>): ProductEditorBaseline {
+  return {
+    title: String(input.title ?? "").trim(),
+    category: String(input.category ?? "").trim(),
+    subCategory: String(input.subCategory ?? "").trim(),
+    brandSlug: String(input.brandSlug ?? "").trim(),
+    brandTitle: String(input.brandTitle ?? "").trim(),
+    overview: String(input.overview ?? "").trim(),
+    description: String(input.description ?? "").trim(),
+    keywords: Array.isArray(input.keywords)
+      ? input.keywords.map((item) => String(item ?? "").trim().toLowerCase()).filter(Boolean)
+      : [],
+    imageKeys: Array.isArray(input.imageKeys)
+      ? input.imageKeys.map((item) => String(item ?? "").trim()).filter(Boolean)
+      : [],
+    fulfillmentMode: input.fulfillmentMode === "bevgo" ? "bevgo" : "seller",
+    inventoryTracking: Boolean(input.inventoryTracking),
+  };
+}
+
+function imageSignatureFromItems(items: ProductImage[]) {
+  return items
+    .map((item) => String(item?.imageUrl ?? "").trim())
+    .filter(Boolean);
+}
+
+function createVariantEditorBaseline(input: Partial<VariantEditorBaseline>): VariantEditorBaseline {
+  return {
+    label: String(input.label ?? "").trim(),
+    sku: String(input.sku ?? "").trim(),
+    barcode: String(input.barcode ?? "").trim(),
+    color: String(input.color ?? "").trim(),
+    imageKeys: Array.isArray(input.imageKeys)
+      ? input.imageKeys.map((item) => String(item ?? "").trim()).filter(Boolean)
+      : [],
+    unitCount: String(input.unitCount ?? "").trim(),
+    volume: String(input.volume ?? "").trim(),
+    volumeUnit: String(input.volumeUnit ?? "").trim(),
+    sellingPriceIncl: String(input.sellingPriceIncl ?? "").trim(),
+    saleDiscountPercent: String(input.saleDiscountPercent ?? "").trim(),
+    isOnSale: Boolean(input.isOnSale),
+    inventoryQty: String(input.inventoryQty ?? "").trim(),
+    continueSellingOutOfStock: Boolean(input.continueSellingOutOfStock),
+    trackInventory: Boolean(input.trackInventory),
+    isDefault: Boolean(input.isDefault),
+    isActive: Boolean(input.isActive),
+  };
+}
+
+function getVariantChangeImpactSummary({
+  baseline,
+  current,
+  hasLiveListing,
+  isEditing,
+}: {
+  baseline: VariantEditorBaseline | null;
+  current: VariantEditorBaseline;
+  hasLiveListing: boolean;
+  isEditing: boolean;
+}) {
+  if (!isEditing) {
+    if (!hasLiveListing) {
+      return {
+        tone: "neutral" as const,
+        title: "New variant for this draft",
+        message: "You can add this variant to the draft now. Price and stock are operational, while the listing will still be reviewed before it goes live.",
+      };
+    }
+    return {
+      tone: "review" as const,
+      title: "Adding this variant will require review",
+      message: "This is a brand-new variant on a live listing, so Piessang will send the update for review before the new variant goes live.",
+    };
+  }
+
+  if (!baseline) {
+    return {
+      tone: "neutral" as const,
+      title: "Checking variant change impact",
+      message: "Piessang is comparing your current variant edits against the last saved version.",
+    };
+  }
+
+  const reviewTriggers: string[] = [];
+  const liveChanges: string[] = [];
+
+  if (baseline.label !== current.label) reviewTriggers.push("variant label");
+  if (baseline.sku !== current.sku) reviewTriggers.push("SKU");
+  if (baseline.barcode !== current.barcode) reviewTriggers.push("barcode");
+  if (baseline.color !== current.color) reviewTriggers.push("color");
+  if (JSON.stringify(baseline.imageKeys) !== JSON.stringify(current.imageKeys)) reviewTriggers.push("images");
+  if (baseline.unitCount !== current.unitCount || baseline.volume !== current.volume || baseline.volumeUnit !== current.volumeUnit) {
+    reviewTriggers.push("pack details");
+  }
+  if (baseline.isDefault !== current.isDefault) reviewTriggers.push("default selection");
+  if (baseline.isActive !== current.isActive) reviewTriggers.push("variant visibility");
+
+  if (baseline.sellingPriceIncl !== current.sellingPriceIncl) liveChanges.push("price");
+  if (
+    baseline.isOnSale !== current.isOnSale ||
+    baseline.saleDiscountPercent !== current.saleDiscountPercent
+  ) {
+    liveChanges.push("sale pricing");
+  }
+  if (baseline.inventoryQty !== current.inventoryQty) liveChanges.push("stock");
+  if (baseline.continueSellingOutOfStock !== current.continueSellingOutOfStock) liveChanges.push("availability handling");
+  if (baseline.trackInventory !== current.trackInventory) liveChanges.push("inventory tracking");
+
+  if (reviewTriggers.length) {
+    const preview = reviewTriggers.slice(0, 3).join(", ");
+    const remaining = reviewTriggers.length > 3 ? ` and ${reviewTriggers.length - 3} more` : "";
+    return {
+      tone: "review" as const,
+      title: "Current variant changes will require review",
+      message: `Your unsaved variant edits affect ${preview}${remaining}. Save them when you are ready, then re-submit the listing for review.`,
+    };
+  }
+
+  if (liveChanges.length) {
+    return {
+      tone: "live" as const,
+      title: "Current variant changes can update without re-review",
+      message: `Your unsaved variant edits only affect ${liveChanges.join(", ")}. These changes do not trigger another listing review.`,
+    };
+  }
+
+  return {
+    tone: "neutral" as const,
+    title: "No unsaved variant changes detected",
+    message: "The variant form currently matches the last saved version.",
+  };
+}
+
+function getProductChangeImpactSummary({
+  baseline,
+  current,
+  hasSavedProduct,
+}: {
+  baseline: ProductEditorBaseline | null;
+  current: ProductEditorBaseline;
+  hasSavedProduct: boolean;
+}) {
+  if (!hasSavedProduct) {
+    return {
+      tone: "neutral" as const,
+      title: "Save the draft first",
+      message: "Once this product has been saved, Piessang will show whether later edits update live immediately or require review.",
+    };
+  }
+
+  if (!baseline) {
+    return {
+      tone: "neutral" as const,
+      title: "Checking change impact",
+      message: "Piessang is comparing your current edits against the last saved version.",
+    };
+  }
+
+  const reviewTriggers: string[] = [];
+  const liveChanges: string[] = [];
+
+  if (baseline.title !== current.title) reviewTriggers.push("title");
+  if (baseline.category !== current.category) reviewTriggers.push("primary category");
+  if (baseline.subCategory !== current.subCategory) reviewTriggers.push("sub category");
+  if (baseline.brandSlug !== current.brandSlug || baseline.brandTitle !== current.brandTitle) reviewTriggers.push("brand");
+  if (baseline.overview !== current.overview) reviewTriggers.push("overview");
+  if (baseline.description !== current.description) reviewTriggers.push("description");
+  if (JSON.stringify(baseline.keywords) !== JSON.stringify(current.keywords)) reviewTriggers.push("keywords");
+  if (JSON.stringify(baseline.imageKeys) !== JSON.stringify(current.imageKeys)) reviewTriggers.push("images");
+  if (baseline.fulfillmentMode !== current.fulfillmentMode) reviewTriggers.push("fulfilment mode");
+
+  if (baseline.inventoryTracking !== current.inventoryTracking) {
+    liveChanges.push("inventory tracking");
+  }
+
+  if (reviewTriggers.length) {
+    const preview = reviewTriggers.slice(0, 3).join(", ");
+    const remaining = reviewTriggers.length > 3 ? ` and ${reviewTriggers.length - 3} more` : "";
+    return {
+      tone: "review" as const,
+      title: "Current draft changes will require review",
+      message: `Your unsaved edits affect ${preview}${remaining}. Save them when you are ready, then re-submit the listing for review.`,
+    };
+  }
+
+  if (liveChanges.length) {
+    return {
+      tone: "live" as const,
+      title: "Current draft changes can update without re-review",
+      message: `Your unsaved edits only affect ${liveChanges.join(", ")}. These changes do not trigger another product review.`,
+    };
+  }
+
+  return {
+    tone: "neutral" as const,
+    title: "No unsaved product changes detected",
+    message: "The saved product details and the current product form match right now.",
+  };
+}
+
 function variantEffectiveSellingPriceIncl(variantLike: {
   pricing?: { selling_price_incl?: number | string | null };
   sale?: { is_on_sale?: boolean; discount_percent?: number | string | null; sale_price_incl?: number | string | null };
@@ -742,6 +996,7 @@ export function SellerCatalogueEditor({
   const searchParams = useSearchParams();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const variantUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const uniqueCodeRequestRef = useRef(0);
   const editorProductId = useMemo(
     () => {
       const nextId =
@@ -753,6 +1008,23 @@ export function SellerCatalogueEditor({
     },
     [editorProductIdOverride, searchParams],
   );
+  const hasEditorTarget = useMemo(
+    () =>
+      Boolean(
+        String(editorProductIdOverride ?? "").trim() ||
+        searchParams.get("unique_id")?.trim() ||
+        searchParams.get("id")?.trim(),
+      ),
+    [editorProductIdOverride, searchParams],
+  );
+  const hasEditorTargetRef = useRef(hasEditorTarget);
+  useEffect(() => {
+    hasEditorTargetRef.current = hasEditorTarget;
+    if (hasEditorTarget) {
+      uniqueCodeRequestRef.current += 1;
+      setGeneratingCode(false);
+    }
+  }, [hasEditorTarget]);
 
   const sellerContexts = useMemo<SellerContextItem[]>(() => {
     const items: SellerContextItem[] = [];
@@ -808,7 +1080,6 @@ export function SellerCatalogueEditor({
   const activeSellerContext = useMemo(() => {
     return sellerContexts.find((item) => item.sellerSlug === activeSellerSlug) ?? sellerContexts[0] ?? null;
   }, [activeSellerSlug, sellerContexts]);
-
   const isSystemAdmin = String(profile?.systemAccessType ?? "").trim().toLowerCase() === "admin";
   const canUseSellerEditor = isSeller || isSystemAdmin;
   const vendorName = activeSellerContext?.vendorName ?? profile?.sellerVendorName ?? "";
@@ -911,10 +1182,23 @@ export function SellerCatalogueEditor({
   const [productDisputeMessage, setProductDisputeMessage] = useState("");
   const [productDisputeSubmitting, setProductDisputeSubmitting] = useState(false);
   const [createdProduct, setCreatedProduct] = useState<CreatedProductSummary | null>(null);
+  const [productEditorBaseline, setProductEditorBaseline] = useState<ProductEditorBaseline | null>(null);
   const [loadedProductSku, setLoadedProductSku] = useState("");
   const [loadedProductSellerCode, setLoadedProductSellerCode] = useState("");
   const [loadedProductSellerSlug, setLoadedProductSellerSlug] = useState("");
   const [loadedProductVendorName, setLoadedProductVendorName] = useState("");
+  const effectiveSellerSettingsIdentifier = useMemo(
+    () =>
+      String(
+        loadedProductSellerSlug ||
+          loadedProductSellerCode ||
+          activeSellerContext?.sellerSlug ||
+          activeSellerContext?.sellerCode ||
+          activeSellerSlug ||
+          "",
+      ).trim(),
+    [activeSellerContext?.sellerCode, activeSellerContext?.sellerSlug, activeSellerSlug, loadedProductSellerCode, loadedProductSellerSlug],
+  );
   const [productAccessDenied, setProductAccessDenied] = useState(false);
   const [feeConfig, setFeeConfig] = useState(DEFAULT_MARKETPLACE_FEE_CONFIG);
   const [sellerDeliverySettingsReady, setSellerDeliverySettingsReady] = useState(true);
@@ -961,8 +1245,6 @@ export function SellerCatalogueEditor({
   const fulfillmentLocked = Boolean(editorProductId || createdProduct?.uniqueId);
   const activeProcessLabel = useMemo(() => {
     if (submitting) return "Saving product...";
-    if (loadingProduct) return "Loading product...";
-    if (loadingVariants) return "Loading variants...";
     if (uploadingImages) return "Uploading images...";
     if (uploadingVariantImages) return "Uploading variant images...";
     if (generatingCode) return "Refreshing product code...";
@@ -980,10 +1262,119 @@ export function SellerCatalogueEditor({
     submitting,
     uploadingImages,
     uploadingVariantImages,
-    loadingProduct,
-    loadingVariants,
   ]);
+  const showInitialEditorSkeleton = Boolean(editorProductId) && (loadingProduct || (loadingVariants && !variantItems.length));
   const activeProductId = createdProduct?.uniqueId || editorProductId || "";
+  const productChangeImpact = useMemo(
+    () =>
+      getProductChangeImpactSummary({
+        baseline: productEditorBaseline,
+        current: createProductEditorBaseline({
+          title,
+          category,
+          subCategory,
+          brandSlug: selectedBrand?.slug || "",
+          brandTitle: selectedBrand?.title || brandName,
+          overview,
+          description,
+          keywords: keywordTags.slice(0, 10),
+          imageKeys: imageSignatureFromItems(productImages),
+          fulfillmentMode,
+          inventoryTracking,
+        }),
+        hasSavedProduct: Boolean(activeProductId),
+      }),
+    [
+      activeProductId,
+      brandName,
+      category,
+      description,
+      fulfillmentMode,
+      inventoryTracking,
+      keywordTags,
+      overview,
+      productEditorBaseline,
+      productImages,
+      selectedBrand?.slug,
+      selectedBrand?.title,
+      subCategory,
+      title,
+    ],
+  );
+  const variantChangeImpact = useMemo(() => {
+    const editingVariant =
+      editingVariantIndex !== null && variantItems[editingVariantIndex]
+        ? variantItems[editingVariantIndex]
+        : null;
+
+    const baseline = editingVariant
+      ? createVariantEditorBaseline({
+          label: String(editingVariant.label ?? "").trim(),
+          sku: String(editingVariant.sku ?? "").trim(),
+          barcode: String(editingVariant.barcode ?? "").trim(),
+          color: String(editingVariant.color ?? "").trim(),
+          imageKeys: Array.isArray(editingVariant.media?.images)
+            ? editingVariant.media.images.map((item: any) => String(item?.imageUrl ?? "").trim()).filter(Boolean)
+            : [],
+          unitCount: String(editingVariant.pack?.unit_count ?? ""),
+          volume: String(editingVariant.pack?.volume ?? ""),
+          volumeUnit: normalizeVolumeUnit(String(editingVariant.pack?.volume_unit ?? "ml")),
+          sellingPriceIncl: String(editingVariant.pricing?.selling_price_incl ?? ""),
+          saleDiscountPercent: String(editingVariant.sale?.discount_percent ?? ""),
+          isOnSale: Boolean(editingVariant.sale?.is_on_sale),
+          inventoryQty: String(editingVariant.inventory?.[0]?.in_stock_qty ?? ""),
+          continueSellingOutOfStock: Boolean(editingVariant.placement?.continue_selling_out_of_stock),
+          trackInventory: Boolean(editingVariant.placement?.track_inventory),
+          isDefault: Boolean(editingVariant.placement?.is_default),
+          isActive: Boolean(editingVariant.placement?.isActive ?? true),
+        })
+      : null;
+
+    return getVariantChangeImpactSummary({
+      baseline,
+      current: createVariantEditorBaseline({
+        label: variantDraft.label,
+        sku: variantDraft.sku,
+        barcode: variantDraft.barcode,
+        color: variantDraft.hasColor ? variantDraft.color : "",
+        imageKeys: imageSignatureFromItems(variantImages),
+        unitCount: variantDraft.unitCount,
+        volume: variantDraft.volume,
+        volumeUnit: normalizeVolumeUnit(variantDraft.volumeUnit || "ml"),
+        sellingPriceIncl: variantDraft.sellingPriceIncl,
+        saleDiscountPercent: variantDraft.saleDiscountPercent,
+        isOnSale: variantDraft.isOnSale,
+        inventoryQty: variantDraft.inventoryQty,
+        continueSellingOutOfStock: variantDraft.continueSellingOutOfStock,
+        trackInventory: variantDraft.trackInventory,
+        isDefault: variantDraft.isDefault,
+        isActive: variantDraft.isActive,
+      }),
+      hasLiveListing: String(createdProduct?.moderationStatus ?? "").trim().toLowerCase() === "published",
+      isEditing: editingVariantIndex !== null,
+    });
+  }, [
+    createdProduct?.moderationStatus,
+    editingVariantIndex,
+    variantDraft.barcode,
+    variantDraft.color,
+    variantDraft.continueSellingOutOfStock,
+    variantDraft.hasColor,
+    variantDraft.inventoryQty,
+    variantDraft.isActive,
+    variantDraft.isDefault,
+    variantDraft.isOnSale,
+    variantDraft.label,
+    variantDraft.saleDiscountPercent,
+    variantDraft.sellingPriceIncl,
+    variantDraft.sku,
+    variantDraft.trackInventory,
+    variantDraft.unitCount,
+    variantDraft.volume,
+    variantDraft.volumeUnit,
+    variantImages,
+    variantItems,
+  ]);
   const isEditingProduct = Boolean(activeProductId);
   const productStatusLabel = useMemo(() => {
     if (!isEditingProduct) return "Draft";
@@ -1114,12 +1505,12 @@ export function SellerCatalogueEditor({
 
   useEffect(() => {
     let cancelled = false;
-    if (!activeSellerSlug) {
+    if (!effectiveSellerSettingsIdentifier) {
       setSellerDeliverySettingsReady(true);
       return;
     }
 
-    fetch(`/api/client/v1/accounts/seller/settings/get?sellerSlug=${encodeURIComponent(activeSellerSlug)}`, {
+    fetch(`/api/client/v1/accounts/seller/settings/get?sellerSlug=${encodeURIComponent(effectiveSellerSettingsIdentifier)}`, {
       cache: "no-store",
     })
       .then((response) => response.json().catch(() => ({})))
@@ -1135,7 +1526,7 @@ export function SellerCatalogueEditor({
     return () => {
       cancelled = true;
     };
-  }, [activeSellerSlug]);
+  }, [effectiveSellerSettingsIdentifier]);
 
   const formIsValid =
     Boolean(authReady) &&
@@ -1245,6 +1636,28 @@ export function SellerCatalogueEditor({
               <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
                 This product is already in review. Piessang will review it before it can move forward.
               </p>
+            ) : moderationStatusKey === "rejected" ? (
+              <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
+                <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Review changes needed</p>
+                <p className="mt-1">
+                  {createdProduct?.moderationReason || "Piessang rejected this product during review. Fix the feedback, then submit it again."}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void submitForReview()}
+                  disabled={!canSubmitReview}
+                  className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {submitReviewLabel}
+                </button>
+                <p className="mt-2 text-[11px] leading-[1.4] text-[#7f1d1d]">
+                  {variantItems.length === 0
+                    ? "Add at least one variant before you can re-submit this product."
+                    : fulfillmentMode === "seller" && !sellerDeliverySettingsReady
+                      ? "Add your delivery and shipping settings before re-submitting this self-fulfilled listing."
+                      : "Once you’ve fixed the feedback above, re-submit this product for review."}
+                </p>
+              </div>
             ) : moderationStatusKey === "blocked" ? (
               <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
                 <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Product blocked</p>
@@ -1362,7 +1775,53 @@ export function SellerCatalogueEditor({
     </div>
   );
 
+  const renderEditorLoadingSkeleton = () => (
+    <div className="mt-4 grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="space-y-4">
+        <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+          <div className="animate-pulse space-y-4">
+            <div className="h-5 w-32 rounded-[8px] bg-black/5" />
+            <div className="h-16 rounded-[8px] bg-black/5" />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="h-24 rounded-[8px] bg-black/5" />
+              <div className="h-24 rounded-[8px] bg-black/5" />
+            </div>
+            <div className="h-28 rounded-[8px] bg-black/5" />
+            <div className="h-12 w-44 rounded-[8px] bg-black/5" />
+          </div>
+        </section>
+
+        <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+          <div className="animate-pulse space-y-4">
+            <div className="h-5 w-40 rounded-[8px] bg-black/5" />
+            <div className="space-y-3">
+              <div className="h-20 rounded-[8px] bg-black/5" />
+              <div className="h-20 rounded-[8px] bg-black/5" />
+              <div className="h-20 rounded-[8px] bg-black/5" />
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <aside className="space-y-4 xl:sticky xl:top-4">
+        <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+          <div className="animate-pulse space-y-3">
+            <div className="h-5 w-32 rounded-[8px] bg-black/5" />
+            <div className="space-y-2">
+              <div className="h-14 rounded-[8px] bg-black/5" />
+              <div className="h-14 rounded-[8px] bg-black/5" />
+              <div className="h-14 rounded-[8px] bg-black/5" />
+              <div className="h-14 rounded-[8px] bg-black/5" />
+              <div className="h-14 rounded-[8px] bg-black/5" />
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  );
+
   async function fetchUniqueCode() {
+    const requestId = ++uniqueCodeRequestRef.current;
     setGeneratingCode(true);
     setMessage(null);
     setError(null);
@@ -1376,11 +1835,16 @@ export function SellerCatalogueEditor({
       if (!/^\d{8}$/.test(code)) {
         throw new Error("Invalid product code returned.");
       }
+      if (uniqueCodeRequestRef.current !== requestId || hasEditorTargetRef.current) {
+        return;
+      }
       setUniqueId(code);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to generate a unique product code.");
     } finally {
-      setGeneratingCode(false);
+      if (uniqueCodeRequestRef.current === requestId) {
+        setGeneratingCode(false);
+      }
     }
   }
 
@@ -1564,9 +2028,9 @@ export function SellerCatalogueEditor({
   }, [activeProductId, variantDraft.sku, variantDraft.variantId]);
 
   useEffect(() => {
-    if (!isSeller || editorProductId) return;
+    if (!isSeller || hasEditorTarget) return;
     void fetchUniqueCode();
-  }, [editorProductId, isSeller]);
+  }, [hasEditorTarget, isSeller]);
 
   useEffect(() => {
     if (!editorProductId) return;
@@ -1587,8 +2051,20 @@ export function SellerCatalogueEditor({
           throw new Error(payload?.message || "Unable to load the product.");
         }
         const record = payload?.data ?? payload?.product ?? payload ?? {};
-        const recordSellerCode = String(record?.product?.sellerCode ?? record?.seller?.sellerCode ?? "").trim();
-        const recordSellerSlug = String(record?.seller?.sellerSlug ?? "").trim();
+        const recordSellerCode = String(
+          record?.product?.sellerCode ??
+            record?.seller?.sellerCode ??
+            record?.seller?.activeSellerCode ??
+            record?.seller?.groupSellerCode ??
+            "",
+        ).trim();
+        const recordSellerSlug = String(
+          record?.seller?.sellerSlug ??
+            record?.product?.sellerSlug ??
+            record?.seller?.activeSellerSlug ??
+            record?.seller?.groupSellerSlug ??
+            "",
+        ).trim();
         const recordVendorName = String(record?.product?.vendorName ?? record?.seller?.vendorName ?? "").trim();
         const allowedSellerKeys = new Set(
           [
@@ -1669,6 +2145,23 @@ export function SellerCatalogueEditor({
           vendorName: recordVendorName || String(vendorName ?? "").trim(),
           moderationStatus: String(record?.moderation?.status ?? "draft").trim() || "draft",
           moderationReason: String(record?.moderation?.reason ?? record?.moderation?.notes ?? "").trim(),
+        });
+        updateProductEditorBaseline({
+          title: String(record?.product?.title ?? "").trim(),
+          category: String(record?.grouping?.category ?? "").trim(),
+          subCategory: String(record?.grouping?.subCategory ?? "").trim(),
+          brandSlug: String(record?.product?.brand ?? "").trim(),
+          brandTitle: String(record?.product?.brandTitle ?? record?.product?.brand ?? "").trim(),
+          overview: String(record?.product?.overview ?? "").trim(),
+          description: String(record?.product?.description ?? "").trim(),
+          keywords: Array.isArray(record?.product?.keywords)
+            ? record.product.keywords.map((item: string) => String(item).trim().toLowerCase()).slice(0, 10)
+            : [],
+          imageKeys: Array.isArray(record?.media?.images)
+            ? record.media.images.map((item: any) => String(item?.imageUrl ?? "").trim()).filter(Boolean)
+            : [],
+          fulfillmentMode: nextFulfillmentMode,
+          inventoryTracking: nextInventoryTracking,
         });
       } catch (cause) {
         if (!cancelled) {
@@ -2123,6 +2616,7 @@ export function SellerCatalogueEditor({
 
   function resetProductForm() {
     setCreatedProduct(null);
+    setProductEditorBaseline(null);
     setProductAccessDenied(false);
     setUniqueId("");
     setTitle("");
@@ -2154,6 +2648,7 @@ export function SellerCatalogueEditor({
     if (editorProductId && !embeddedMode) {
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.delete("id");
+      nextUrl.searchParams.delete("unique_id");
       router.replace(`${pathname}?${nextUrl.searchParams.toString()}`.replace(/\?$/, ""), { scroll: false });
     }
     if (!embeddedMode) {
@@ -2286,8 +2781,10 @@ export function SellerCatalogueEditor({
         return "Sale discount percentage must be between 1 and 100.";
       }
     }
+    if (!variantDraft.barcode.trim()) {
+      return "A barcode is required for every variant.";
+    }
     if (fulfillmentMode === "bevgo") {
-      if (!variantDraft.barcode.trim()) return "A barcode is required for Piessang fulfilment variants.";
       if (!variantDraft.weightKg.trim()) return "Variant weight is required for Piessang fulfilment.";
       if (!variantDraft.lengthCm.trim()) return "Variant length is required for Piessang fulfilment.";
       if (!variantDraft.widthCm.trim()) return "Variant width is required for Piessang fulfilment.";
@@ -2304,7 +2801,16 @@ export function SellerCatalogueEditor({
 
   async function checkVariantBarcodeUnique(barcode: string, currentBarcode = "") {
     const trimmed = barcode.trim();
+    const sellerCode = String(
+      loadedProductSellerCode ||
+      activeSellerContext?.sellerCode ||
+      ""
+    ).trim();
     if (!trimmed) {
+      setVariantBarcodeStatus("idle");
+      return true;
+    }
+    if (!sellerCode) {
       setVariantBarcodeStatus("idle");
       return true;
     }
@@ -2316,6 +2822,7 @@ export function SellerCatalogueEditor({
         body: JSON.stringify({
           barcode: trimmed,
           exclude_barcode: currentBarcode.trim() || undefined,
+          seller_code: sellerCode,
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -2397,6 +2904,7 @@ export function SellerCatalogueEditor({
     setError(null);
     try {
       const isUpdate = Boolean(activeProductId);
+      const productHasEnteredReviewFlow = hasEnteredReviewFlow(createdProduct?.moderationStatus);
       if (
         isUpdate &&
         !(await requestDraftImpactConfirmation({
@@ -2404,7 +2912,9 @@ export function SellerCatalogueEditor({
           message:
             String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
               ? "Updating this product will send your changes for review while the current live version stays visible until approval."
-              : "Updating this product will move it back to draft and it will need to be resubmitted for review.",
+              : productHasEnteredReviewFlow
+                ? "Updating this product will move it back to draft and it will need to be resubmitted for review."
+                : "Update this draft with your latest changes?",
         }))
       ) {
         return { savedId: activeProductId, isUpdate };
@@ -2452,6 +2962,7 @@ export function SellerCatalogueEditor({
         moderationStatus,
         moderationReason: String(returnedProduct?.moderation?.reason ?? returnedProduct?.moderation?.notes ?? "").trim(),
       });
+      setUniqueId(savedId);
       const savedBrandSlug = String(returnedProduct?.product?.brand ?? returnedProduct?.brand ?? normalizedBrandSlug).trim();
       const savedBrandTitle = String(returnedProduct?.product?.brandTitle ?? returnedProduct?.brandTitle ?? normalizedBrandTitle).trim();
       const brandCreated = Boolean(payloadResponse?.brandCreated);
@@ -2473,13 +2984,28 @@ export function SellerCatalogueEditor({
       }
       setEditingVariantIndex(null);
       setLoadedProductSku(normalizedSku);
+      updateProductEditorBaseline({
+        title: normalizedTitle,
+        category,
+        subCategory,
+        brandSlug: savedBrandSlug || normalizedBrandSlug,
+        brandTitle: savedBrandTitle || normalizedBrandTitle,
+        overview,
+        description,
+        keywords: keywordTags.slice(0, 10),
+        imageKeys: imageSignatureFromItems(productImages),
+        fulfillmentMode,
+        inventoryTracking,
+      });
       setMessage(
         [
           isUpdate
             ? payloadResponse?.resubmissionRequired
               ? payloadResponse?.liveVersionKept
                 ? "Product updated. Your changes are now in review while the current live version stays visible."
-                : "Product updated. It has been moved back to draft and must be resubmitted for review."
+                : productHasEnteredReviewFlow
+                  ? "Product updated. It has been moved back to draft and must be resubmitted for review."
+                  : "Draft updated."
               : "Draft updated."
             : "Product saved as draft.",
           savedBrandTitle
@@ -2769,10 +3295,14 @@ export function SellerCatalogueEditor({
             editingVariantIndex !== null
               ? String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
                 ? "Updating this variant will send your changes for review while the current live version stays visible until approval."
-                : "Updating this variant will move the product back to draft and it will need to be resubmitted for review."
+                : hasEnteredReviewFlow(createdProduct?.moderationStatus)
+                  ? "Updating this variant will move the product back to draft and it will need to be resubmitted for review."
+                  : "Update this draft variant with your latest changes?"
               : String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
                 ? "Adding this variant will send your changes for review while the current live version stays visible until approval."
-                : "Adding this variant will move the product back to draft and it will need to be resubmitted for review.",
+                : hasEnteredReviewFlow(createdProduct?.moderationStatus)
+                  ? "Adding this variant will move the product back to draft and it will need to be resubmitted for review."
+                  : "Add this variant to your draft product?",
         }))
       ) {
         return;
@@ -2998,7 +3528,9 @@ export function SellerCatalogueEditor({
           payload?.resubmissionRequired
             ? payload?.liveVersionKept
               ? "Variant updated. Your changes are in review while the current live version stays visible."
-              : "Variant updated. The product is back in draft and must be resubmitted for review."
+              : hasEnteredReviewFlow(createdProduct?.moderationStatus)
+                ? "Variant updated. The product is back in draft and must be resubmitted for review."
+                : "Variant updated."
             : "Variant updated.",
         );
         if (payload?.resubmissionRequired) {
@@ -3087,7 +3619,9 @@ export function SellerCatalogueEditor({
         payload?.resubmissionRequired
           ? payload?.liveVersionKept
             ? "Variant added. Your changes are in review while the current live version stays visible."
-            : "Variant added. The product is back in draft and must be resubmitted for review."
+            : hasEnteredReviewFlow(createdProduct?.moderationStatus)
+              ? "Variant added. The product is back in draft and must be resubmitted for review."
+              : "Variant added."
           : "Variant added.",
       );
       if (payload?.resubmissionRequired) {
@@ -3277,6 +3811,10 @@ export function SellerCatalogueEditor({
 
   function openDeleteModal() {
     setShowDeleteModal(true);
+  }
+
+  function updateProductEditorBaseline(next: Partial<ProductEditorBaseline>) {
+    setProductEditorBaseline(createProductEditorBaseline(next));
   }
 
   async function requestFulfillmentChange() {
@@ -3514,11 +4052,38 @@ export function SellerCatalogueEditor({
         </div>
       </section>
 
+      <section
+        className={[
+          "mt-3 rounded-[8px] border px-4 py-3 shadow-[0_8px_24px_rgba(20,24,27,0.05)]",
+          productChangeImpact.tone === "review"
+            ? "border-[#f0c7cb] bg-[#fff7f8]"
+            : productChangeImpact.tone === "live"
+              ? "border-[#cfe8d8] bg-[rgba(57,169,107,0.07)]"
+              : "border-black/5 bg-white",
+        ].join(" ")}
+      >
+        <p
+          className={[
+            "text-[11px] font-semibold uppercase tracking-[0.12em]",
+            productChangeImpact.tone === "review"
+              ? "text-[#b91c1c]"
+              : productChangeImpact.tone === "live"
+                ? "text-[#1a8553]"
+                : "text-[#907d4c]",
+          ].join(" ")}
+        >
+          Change impact
+        </p>
+        <p className="mt-2 text-[15px] font-semibold text-[#202020]">{productChangeImpact.title}</p>
+        <p className="mt-1 text-[13px] leading-[1.6] text-[#57636c]">{productChangeImpact.message}</p>
+      </section>
+
       <SellerPageIntro
         title="Create product"
         description="Start with the product record here. Variants, pricing, and stock are added once the core listing is saved."
       />
 
+      {showInitialEditorSkeleton ? renderEditorLoadingSkeleton() : (
       <div className="mt-4 grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-4">
           <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
@@ -3590,6 +4155,7 @@ export function SellerCatalogueEditor({
 
               <label className="block">
                 <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Product title <span className="text-[#d11c1c]">*</span></span>
+                <ChangeImpactHint mode="review" className="mb-1.5" />
                 <input
                   value={title}
                   onChange={(event) => setTitle(sanitizeProductTitle(event.target.value))}
@@ -3649,6 +4215,7 @@ export function SellerCatalogueEditor({
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="block">
                   <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Primary category <span className="text-[#d11c1c]">*</span></span>
+                  <ChangeImpactHint mode="review" className="mb-1.5" />
                   <select
                     value={category}
                     onChange={(event) => {
@@ -3669,6 +4236,7 @@ export function SellerCatalogueEditor({
 
                 <label className="block">
                   <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Sub category <span className="text-[#d11c1c]">*</span></span>
+                  <ChangeImpactHint mode="review" className="mb-1.5" />
                   <select
                     value={subCategory}
                     onChange={(event) => setSubCategory(event.target.value)}
@@ -3894,6 +4462,7 @@ export function SellerCatalogueEditor({
                 <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                   Product overview <span className="text-[#d11c1c]">*</span>
                 </span>
+                <ChangeImpactHint mode="review" className="mb-1.5" />
                 <textarea
                   value={overview}
                   onChange={(event) => setOverview(event.target.value.slice(0, OVERVIEW_MAX_LENGTH))}
@@ -3925,6 +4494,7 @@ export function SellerCatalogueEditor({
                 <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                   Product description <span className="text-[#d11c1c]">*</span>
                 </span>
+                <ChangeImpactHint mode="review" className="mb-1.5" />
                 <RichTextEditor
                   value={description}
                   onChange={(value) => setDescription(value)}
@@ -3959,6 +4529,7 @@ export function SellerCatalogueEditor({
                   </span>
                   <span className="text-[11px] text-[#57636c]">{keywordTags.length}/10</span>
                 </div>
+                <ChangeImpactHint mode="review" className="mb-1.5" />
                 <div className="rounded-[8px] border border-black/10 bg-white px-3 py-2 transition-colors focus-within:border-[#cbb26b]">
                   <div className="flex flex-wrap gap-2">
                     {keywordTags.map((keyword, index) => (
@@ -4022,6 +4593,9 @@ export function SellerCatalogueEditor({
                   }}
                 />
                 <div className="flex flex-wrap gap-3">
+                  <div className="w-full">
+                    <ChangeImpactHint mode="review" />
+                  </div>
                   <button
                     type="button"
                     onClick={() => uploadInputRef.current?.click()}
@@ -4092,6 +4666,31 @@ export function SellerCatalogueEditor({
 
                 {variantFormOpen ? (
                   <div className="mt-4 space-y-3 rounded-[8px] border border-black/5 bg-white p-4">
+                    <div
+                      className={[
+                        "rounded-[8px] border px-3 py-3",
+                        variantChangeImpact.tone === "review"
+                          ? "border-[#f0c7cb] bg-[#fff7f8]"
+                          : variantChangeImpact.tone === "live"
+                            ? "border-[#cfe8d8] bg-[rgba(57,169,107,0.07)]"
+                            : "border-black/5 bg-[#fafafa]",
+                      ].join(" ")}
+                    >
+                      <p
+                        className={[
+                          "text-[11px] font-semibold uppercase tracking-[0.12em]",
+                          variantChangeImpact.tone === "review"
+                            ? "text-[#b91c1c]"
+                            : variantChangeImpact.tone === "live"
+                              ? "text-[#1a8553]"
+                              : "text-[#907d4c]",
+                        ].join(" ")}
+                      >
+                        Variant change impact
+                      </p>
+                      <p className="mt-2 text-[14px] font-semibold text-[#202020]">{variantChangeImpact.title}</p>
+                      <p className="mt-1 text-[12px] leading-[1.55] text-[#57636c]">{variantChangeImpact.message}</p>
+                    </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant ID <span className="text-[#d11c1c]">*</span></span>
@@ -4120,6 +4719,7 @@ export function SellerCatalogueEditor({
                       </label>
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant label <span className="text-[#d11c1c]">*</span></span>
+                        <ChangeImpactHint mode="review" className="mb-1" />
                         <input
                           value={variantDraft.label}
                           onChange={(event) => setVariantDraft((current) => ({ ...current, label: event.target.value }))}
@@ -4128,11 +4728,12 @@ export function SellerCatalogueEditor({
                         />
                       </label>
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
                           Barcode {fulfillmentMode === "bevgo" ? <span className="text-[#d11c1c]">*</span> : null}
                         </span>
+                        <ChangeImpactHint mode="review" className="mb-1" />
                         <input
                           value={variantDraft.barcode}
                           onChange={(event) => {
@@ -4151,7 +4752,7 @@ export function SellerCatalogueEditor({
                         <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
                           {fulfillmentMode === "bevgo"
                             ? "Required for Piessang fulfilment. Piessang can only receive inbound stock when the barcode on the delivered unit matches this platform variant."
-                            : "Optional for seller fulfilment. Use the supplier barcode or generate one if the item does not already have one."}
+                            : "Required for seller fulfilment too. Use the supplier barcode or generate one if the item does not already have one."}
                         </p>
                         {variantBarcodeStatus === "taken" ? <p className="mt-1 text-[11px] text-[#b91c1c]">That barcode is already used on another variant.</p> : null}
                         {variantBarcodeStatus === "unique" ? <p className="mt-1 text-[11px] text-[#166534]">Barcode is available.</p> : null}
@@ -4160,7 +4761,7 @@ export function SellerCatalogueEditor({
                         type="button"
                         onClick={() => void generateVariantBarcode()}
                         disabled={generatingVariantBarcode || submitting}
-                        className="inline-flex h-[42px] items-center self-end rounded-[8px] border border-black/10 bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex h-[42px] items-center justify-center self-start sm:self-end rounded-[8px] border border-black/10 bg-[#202020] px-4 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {generatingVariantBarcode ? "Generating..." : "Generate barcode"}
                       </button>
@@ -4281,6 +4882,7 @@ export function SellerCatalogueEditor({
                     <div className="grid gap-3 sm:grid-cols-3">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
+                        <ChangeImpactHint mode="review" className="mb-1" />
                         <input
                           type="number"
                           min="1"
@@ -4291,6 +4893,7 @@ export function SellerCatalogueEditor({
                       </label>
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Volume</span>
+                        <ChangeImpactHint mode="review" className="mb-1" />
                         <input
                           type="number"
                           min="0"
@@ -4301,6 +4904,7 @@ export function SellerCatalogueEditor({
                       </label>
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Unit</span>
+                        <ChangeImpactHint mode="review" className="mb-1" />
                         <select
                           value={variantDraft.volumeUnit}
                           onChange={(event) => setVariantDraft((current) => ({ ...current, volumeUnit: event.target.value }))}
@@ -4317,6 +4921,7 @@ export function SellerCatalogueEditor({
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Selling price incl <span className="text-[#d11c1c]">*</span></span>
+                        <ChangeImpactHint mode="live" className="mb-1" />
                         <input
                           type="number"
                           min="0"
@@ -4350,6 +4955,7 @@ export function SellerCatalogueEditor({
                                 This is the percentage discount off the selling price incl. It is separate from the success fee.
                               </HelpTip>
                             </div>
+                            <ChangeImpactHint mode="live" className="mb-1" />
                             <input
                               type="number"
                               min="1"
@@ -4403,6 +5009,7 @@ export function SellerCatalogueEditor({
                             <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
                               Starting stock <span className="text-[#d11c1c]">*</span>
                             </span>
+                            <ChangeImpactHint mode="live" className="mb-1" />
                             <input
                               type="number"
                               min="0"
@@ -4823,6 +5430,7 @@ export function SellerCatalogueEditor({
           </div>
         </aside>
       </div>
+      )}
 
       {activeProcessLabel ? (
         <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">

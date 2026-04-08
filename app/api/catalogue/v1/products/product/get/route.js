@@ -10,6 +10,7 @@ import {
   getSellerUnavailableReason,
   isSellerAccountUnavailable,
 } from "@/lib/seller/account-status";
+import { getCanonicalOfferBarcode as resolveCanonicalOfferBarcode, pickPrimaryOfferVariant } from "@/lib/catalogue/offer-group";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -312,6 +313,187 @@ function productInStock(data){
   return placement?.in_stock !== false;
 }
 
+function getVariantPriceIncl(variant) {
+  if (!variant || typeof variant !== "object") return null;
+  if (variant?.sale?.is_on_sale === true && Number.isFinite(Number(variant?.sale?.sale_price_incl))) {
+    return Number(variant.sale.sale_price_incl);
+  }
+  if (Number.isFinite(Number(variant?.pricing?.selling_price_incl))) {
+    return Number(variant.pricing.selling_price_incl);
+  }
+  if (variant?.sale?.is_on_sale === true && Number.isFinite(Number(variant?.sale?.sale_price_excl))) {
+    return Number(variant.sale.sale_price_excl) * 1.15;
+  }
+  if (Number.isFinite(Number(variant?.pricing?.selling_price_excl))) {
+    return Number(variant.pricing.selling_price_excl) * 1.15;
+  }
+  return null;
+}
+
+function getVariantAvailabilityRank(variant) {
+  if (!variant || typeof variant !== "object") return 0;
+  if (variantTotalInStockItemsAvailable(variant) > 0) return 2;
+  if (variantCanContinueSellingOutOfStock(variant)) return 1;
+  return 0;
+}
+
+function getCanonicalOfferBarcode(data) {
+  const stored = normStr(data?.marketplace?.canonical_offer_barcode).toUpperCase();
+  if (stored) return stored;
+  return resolveCanonicalOfferBarcode(Array.isArray(data?.variants) ? data.variants : []);
+}
+
+function buildAlternateOfferSummary(item) {
+  const data = item?.data || {};
+  const variants = Array.isArray(data?.variants) ? data.variants : [];
+  const selectedVariant = pickPrimaryOfferVariant(variants);
+  const priceIncl = getVariantPriceIncl(selectedVariant);
+  return {
+    productId: normStr(data?.product?.unique_id || item?.id),
+    title: normStr(data?.product?.title),
+    titleSlug: normStr(data?.product?.titleSlug),
+    sellerCode: normStr(data?.product?.sellerCode || data?.seller?.sellerCode),
+    sellerSlug: normStr(data?.seller?.sellerSlug || data?.product?.sellerSlug),
+    vendorName: normStr(data?.product?.vendorName || data?.seller?.vendorName),
+    variantId: normStr(selectedVariant?.variant_id),
+    variantLabel: normStr(selectedVariant?.label),
+    barcode: normStr(selectedVariant?.barcode).toUpperCase(),
+    priceIncl: Number.isFinite(priceIncl) ? Math.round(priceIncl * 100) / 100 : null,
+    hasInStockVariants: data?.has_in_stock_variants === true,
+    imageUrl:
+      normStr(selectedVariant?.media?.images?.[0]?.imageUrl) ||
+      normStr(data?.media?.images?.[0]?.imageUrl) ||
+      null,
+  };
+}
+
+function compareAlternateOffers(a, b) {
+  const aReady = a?.hasInStockVariants === true ? 1 : 0;
+  const bReady = b?.hasInStockVariants === true ? 1 : 0;
+  if (bReady !== aReady) return bReady - aReady;
+  const aPrice = Number.isFinite(a?.priceIncl) ? Number(a.priceIncl) : Number.POSITIVE_INFINITY;
+  const bPrice = Number.isFinite(b?.priceIncl) ? Number(b.priceIncl) : Number.POSITIVE_INFINITY;
+  if (aPrice !== bPrice) return aPrice - bPrice;
+  return String(a?.vendorName || "").localeCompare(String(b?.vendorName || ""), "en", { sensitivity: "base" });
+}
+
+function groupItemsByCanonicalBarcode(items) {
+  const buckets = new Map();
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const key = getCanonicalOfferBarcode(item?.data);
+    const bucketKey = key || `product:${normStr(item?.data?.product?.unique_id || item?.id)}`;
+    if (!buckets.has(bucketKey)) buckets.set(bucketKey, []);
+    buckets.get(bucketKey).push(item);
+  }
+
+  return Array.from(buckets.values()).map((bucket) => {
+    if (bucket.length === 1) {
+      const [item] = bucket;
+      const offerSummary = buildAlternateOfferSummary(item);
+      return {
+        ...item,
+        data: {
+          ...item.data,
+          seller_offer_count: 1,
+          alternate_offers: offerSummary.productId ? [offerSummary] : [],
+          canonical_offer_barcode: offerSummary.barcode || null,
+        },
+      };
+    }
+
+    const sortedBucket = [...bucket].sort((a, b) =>
+      compareAlternateOffers(buildAlternateOfferSummary(a), buildAlternateOfferSummary(b)),
+    );
+    const primary = sortedBucket[0];
+    const alternateOffers = sortedBucket.map(buildAlternateOfferSummary).filter((offer) => offer.productId);
+    return {
+      ...primary,
+      data: {
+        ...primary.data,
+        seller_offer_count: alternateOffers.length,
+        alternate_offers: alternateOffers,
+        canonical_offer_barcode: alternateOffers[0]?.barcode || null,
+      },
+    };
+  });
+}
+
+function annotateItemsWithOfferGroupContext(items) {
+  const counts = new Map();
+  for (const item of items) {
+    const barcode = getCanonicalOfferBarcode(item?.data);
+    if (!barcode) continue;
+    counts.set(barcode, (counts.get(barcode) || 0) + 1);
+  }
+
+  return items.map((item) => {
+    const barcode = getCanonicalOfferBarcode(item?.data);
+    const sellerOfferCount = barcode ? counts.get(barcode) || 1 : 1;
+    return {
+      ...item,
+      data: {
+        ...item.data,
+        seller_offer_count: sellerOfferCount,
+        canonical_offer_barcode: barcode || null,
+      },
+    };
+  });
+}
+
+async function buildAlternateOffersForBarcode(db, barcode, includeUnavailable = false) {
+  const normalizedBarcode = normStr(barcode).toUpperCase();
+  if (!normalizedBarcode) return [];
+
+  const rs = await db.collection("products_v2").get();
+  const items = rs.docs.map((d) => ({
+    id: d.id,
+    rawData: normalizeTimestamps(d.data() || {}),
+    data: includeUnavailable
+      ? normalizeTimestamps(d.data() || {})
+      : getPublicMarketplaceSource(normalizeTimestamps(d.data() || {})),
+  }));
+
+  const sellerIdentifierSet = new Set();
+  for (const item of items) {
+    const sellerIdentifier = getSellerIdentifier(item?.data);
+    if (sellerIdentifier) sellerIdentifierSet.add(sellerIdentifier);
+  }
+
+  const sellerMetaMap = new Map();
+  await Promise.all(
+    Array.from(sellerIdentifierSet).map(async (sellerIdentifier) => {
+      try {
+        sellerMetaMap.set(sellerIdentifier, await findSellerOwnerByIdentifier(sellerIdentifier));
+      } catch {
+        sellerMetaMap.set(sellerIdentifier, null);
+      }
+    }),
+  );
+
+  return items
+    .filter((item) => getCanonicalOfferBarcode(item?.data) === normalizedBarcode)
+    .map((item) => {
+      const enrichedVariants = enrichVariantsWithAvailability(item?.data?.variants);
+      const dataWithVariantAvailability = { ...item.data, variants: enrichedVariants };
+      const sellerIdentifier = getSellerIdentifier(dataWithVariantAvailability);
+      const sellerOwner = sellerIdentifier ? sellerMetaMap.get(sellerIdentifier) : null;
+      if (!includeUnavailable && sellerOwner && isSellerAccountUnavailable(sellerOwner.data)) return null;
+      if (!includeUnavailable && productMissingSellerDeliverySettings(dataWithVariantAvailability, sellerOwner)) return null;
+      if (!includeUnavailable && !productHasListableAvailability(dataWithVariantAvailability)) return null;
+      const displayData = applySellerDisplayData(
+        {
+          ...dataWithVariantAvailability,
+          has_in_stock_variants: hasInStockVariants(dataWithVariantAvailability),
+        },
+        sellerOwner,
+      );
+      return buildAlternateOfferSummary({ id: item.id, data: displayData });
+    })
+    .filter(Boolean)
+    .sort(compareAlternateOffers);
+}
+
 export async function GET(req){
   try{
     const db = getAdminDb();
@@ -380,11 +562,17 @@ export async function GET(req){
         const uid = String(dataWithVariantAvailability?.product?.unique_id ?? "");
         isFavorite = favorites.length > 0 && uid ? favorites.includes(uid) : false;
       }
+      const alternateOffers = includeUnavailable
+        ? []
+        : await buildAlternateOffersForBarcode(db, getCanonicalOfferBarcode(dataWithVariantAvailability), includeUnavailable);
       return ok({
         id: snap.id,
         data: {
           ...dataWithVariantAvailability,
           is_favorite: isFavorite,
+          seller_offer_count: alternateOffers.length || 1,
+          alternate_offers: alternateOffers,
+          canonical_offer_barcode: getCanonicalOfferBarcode(dataWithVariantAvailability) || null,
           has_in_stock_variants: hasInStockVariants(dataWithVariantAvailability),
           is_eligible_by_variant_availability: productHasListableAvailability(dataWithVariantAvailability),
           is_unavailable_for_listing:
@@ -626,6 +814,12 @@ export async function GET(req){
         }
       };
     });
+
+    items = annotateItemsWithOfferGroupContext(items);
+
+    if (!includeUnavailable) {
+      items = groupItemsByCanonicalBarcode(items);
+    }
 
     // 4) Optional fuzzy search on product.title (after filters)
     const search = normText(searchRaw);

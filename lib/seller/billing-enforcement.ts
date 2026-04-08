@@ -1,4 +1,5 @@
 import { getAdminDb } from "@/lib/firebase/admin";
+import { enqueueGoogleSyncForSeller } from "@/lib/integrations/google-sync-queue";
 
 function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
@@ -122,6 +123,12 @@ export async function applySellerBillingBlock({
   });
 
   await Promise.all(updates);
+
+  await enqueueGoogleSyncForSeller({
+    sellerSlug: slug,
+    sellerCode: code,
+    reason: "seller_billing_blocked",
+  }).catch(() => null);
 }
 
 export async function clearSellerBillingBlock({
@@ -189,4 +196,10 @@ export async function clearSellerBillingBlock({
   });
 
   await Promise.all(updates);
+
+  await enqueueGoogleSyncForSeller({
+    sellerSlug: slug,
+    sellerCode: code,
+    reason: "seller_billing_restored",
+  }).catch(() => null);
 }

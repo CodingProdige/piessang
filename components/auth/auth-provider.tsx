@@ -17,6 +17,7 @@ import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
 import { clientAuth } from "@/lib/firebase";
 import { clientDb } from "@/lib/firebase";
 import { EMPTY_AUTH_BOOTSTRAP, type AuthBootstrap } from "@/lib/auth/bootstrap";
+import { PhoneInput, combinePhoneNumber, sanitizePhoneLocalNumber } from "@/components/shared/phone-input";
 import {
   canCreateSellerAccount,
   getActiveSellerManagedAccount,
@@ -167,14 +168,6 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const DEFAULT_MODAL_MESSAGE = "Sign in to continue.";
 const DEFAULT_SELLER_MESSAGE = "Register your seller account to unlock catalogue tools.";
-const SELLER_COUNTRY_CODES = [
-  { code: "27", label: "+27 South Africa" },
-  { code: "264", label: "+264 Namibia" },
-  { code: "267", label: "+267 Botswana" },
-  { code: "266", label: "+266 Lesotho" },
-  { code: "268", label: "+268 Eswatini" },
-  { code: "258", label: "+258 Mozambique" },
-] as const;
 
 function inferAccountName(user: FirebaseUser | null) {
   return user?.displayName ?? user?.email?.split("@")[0] ?? "Piessang user";
@@ -750,16 +743,18 @@ export function AuthProvider({
   const sellerFormIsValid = useMemo(() => {
     const vendorName = sanitizeVendorNameInput(sellerModal.vendorName);
     const contactEmail = sanitizeEmail(sellerModal.contactEmail);
-    const countryCode = sanitizeDigits(sellerModal.countryCode);
-    const contactPhone = sanitizeDigits(sellerModal.contactPhone);
-    const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
+      const countryCode = sanitizeDigits(sellerModal.countryCode);
+      const contactPhone = sanitizePhoneLocalNumber(countryCode, sellerModal.contactPhone);
+      const fullPhoneNumber = combinePhoneNumber(countryCode, contactPhone).trim();
+      const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
 
-    const hasBasicFields =
+      const hasBasicFields =
       vendorName &&
       contactEmail &&
       contactEmail.includes("@") &&
       countryCode &&
       contactPhone.length >= 6 &&
+      fullPhoneNumber &&
       sellerCountry;
 
     return Boolean(hasBasicFields && sellerNameCheck.unique === true && !sellerNameCheck.checking);
@@ -832,7 +827,8 @@ export function AuthProvider({
       const vendorName = sanitizeVendorNameInput(sellerModal.vendorName);
       const contactEmail = sanitizeEmail(sellerModal.contactEmail);
       const countryCode = sanitizeDigits(sellerModal.countryCode) || "27";
-      const contactPhone = sanitizeDigits(sellerModal.contactPhone);
+      const contactPhone = sanitizePhoneLocalNumber(countryCode, sellerModal.contactPhone);
+      const fullPhoneNumber = combinePhoneNumber(countryCode, contactPhone).trim();
       const sellerCountry = sanitizeText(sellerModal.sellerCountry).slice(0, 2).toUpperCase();
       const baseLocation = sanitizeText(
         SUPPORTED_SELLER_PAYOUT_COUNTRIES.find((country) => country.code === sellerCountry)?.label || sellerCountry,
@@ -847,6 +843,7 @@ export function AuthProvider({
       if (!contactEmail || !contactEmail.includes("@")) throw new Error("A valid contact email is required.");
       if (!countryCode) throw new Error("Country code is required.");
       if (contactPhone.length < 6) throw new Error("Please enter a valid contact phone number.");
+      if (!fullPhoneNumber) throw new Error("Please enter a valid contact phone number.");
       if (!sellerCountry) throw new Error("Please choose the country you plan on selling from.");
 
       const vendorNameCheckResponse = await fetch("/api/client/v1/accounts/seller/check-vendor-name", {
@@ -888,7 +885,7 @@ export function AuthProvider({
               vendorName,
               contactEmail,
               countryCode,
-              phoneNumber: contactPhone,
+              phoneNumber: fullPhoneNumber,
               sellerCountry,
               baseLocation,
               category: "",
@@ -1553,45 +1550,27 @@ export function AuthProvider({
                     </label>
 
                     <div className="grid gap-3 sm:grid-cols-[0.38fr_0.62fr]">
-                      <label className="block">
-                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                          Country code <span className="text-[#d11c1c]">*</span>
-                        </span>
-                        <select
-                          required
-                          value={sellerModal.countryCode}
-                          onChange={(event) =>
-                            setSellerModal((current) => ({ ...current, countryCode: sanitizeDigits(event.target.value) }))
-                          }
-                          className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors focus:border-[#cbb26b]"
-                        >
-                          {SELLER_COUNTRY_CODES.map((item) => (
-                            <option key={item.code} value={item.code}>
-                              {item.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <label className="block">
-                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                          Phone number <span className="text-[#d11c1c]">*</span>
-                        </span>
-                        <input
-                          required
-                          inputMode="numeric"
-                          maxLength={9}
-                          value={sellerModal.contactPhone}
-                          onChange={(event) =>
+                      <div className="sm:col-span-2">
+                        <PhoneInput
+                          label={`Phone number `}
+                          countryCode={sellerModal.countryCode}
+                          localNumber={sellerModal.contactPhone}
+                          onCountryCodeChange={(value) =>
                             setSellerModal((current) => ({
                               ...current,
-                              contactPhone: sanitizeDigits(event.target.value),
+                              countryCode: sanitizeDigits(value),
+                              contactPhone: sanitizePhoneLocalNumber(value, current.contactPhone),
                             }))
                           }
-                          className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
-                          placeholder="821234567"
+                          onLocalNumberChange={(value) =>
+                            setSellerModal((current) => ({
+                              ...current,
+                              contactPhone: sanitizePhoneLocalNumber(current.countryCode, value),
+                            }))
+                          }
+                          hint="Choose the correct international dial code and enter the rest of your number. If you paste a full number, Piessang will strip the selected country prefix automatically."
                         />
-                      </label>
+                      </div>
                     </div>
 
                     <label className="block">

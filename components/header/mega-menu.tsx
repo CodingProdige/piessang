@@ -174,12 +174,106 @@ function HeaderDeliveryLocationControl({
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
   const [areaReady, setAreaReady] = useState(false);
+  const geoRequestInFlightRef = useRef(false);
 
   useEffect(() => {
     setArea(readShopperDeliveryArea());
     setAreaReady(true);
     return subscribeToShopperDeliveryArea(setArea);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!areaReady) return;
+    if (area) return;
+    if (isAuthenticated) return;
+    if (!navigator.geolocation) return;
+
+    let cancelled = false;
+
+    async function detectCurrentArea() {
+      if (cancelled || geoRequestInFlightRef.current) return;
+      geoRequestInFlightRef.current = true;
+      setGeoError(null);
+      setGeoLoading(true);
+
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          if (cancelled) {
+            geoRequestInFlightRef.current = false;
+            return;
+          }
+          try {
+            const place = await reverseGeocodeCoordinates(position.coords.latitude, position.coords.longitude);
+            if (cancelled) return;
+            const nextArea = {
+              city: String(place.city || "").trim(),
+              province: String(place.region || "").trim(),
+              suburb: String(place.suburb || "").trim(),
+              postalCode: String(place.postalCode || "").trim(),
+              country: String(place.country || "").trim(),
+              latitude: typeof place.latitude === "number" ? place.latitude : null,
+              longitude: typeof place.longitude === "number" ? place.longitude : null,
+            };
+            if (nextArea.city || nextArea.province) {
+              saveShopperDeliveryArea(nextArea);
+              setArea(nextArea);
+              setGeoError(null);
+            } else {
+              setGeoError("Unable to match your current location.");
+            }
+          } catch (error) {
+            if (!cancelled) {
+              setGeoError(error instanceof Error ? error.message : "Unable to detect your location.");
+              setPickerOpen(true);
+            }
+          } finally {
+            geoRequestInFlightRef.current = false;
+            if (!cancelled) setGeoLoading(false);
+          }
+        },
+        (error) => {
+          geoRequestInFlightRef.current = false;
+          if (cancelled) return;
+          setGeoLoading(false);
+          if (error?.code !== error.PERMISSION_DENIED) {
+            setGeoError("Unable to detect your location right now.");
+          }
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 20000,
+          maximumAge: 300000,
+        },
+      );
+    }
+
+    void detectCurrentArea();
+
+    let permissionStatus: PermissionStatus | null = null;
+    const handlePermissionChange = () => {
+      if (cancelled) return;
+      if (permissionStatus?.state === "granted" && !readShopperDeliveryArea()) {
+        void detectCurrentArea();
+      }
+    };
+
+    if (typeof navigator !== "undefined" && navigator.permissions?.query) {
+      navigator.permissions
+        .query({ name: "geolocation" })
+        .then((status) => {
+          if (cancelled) return;
+          permissionStatus = status;
+          permissionStatus.addEventListener("change", handlePermissionChange);
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      cancelled = true;
+      permissionStatus?.removeEventListener("change", handlePermissionChange);
+    };
+  }, [area, areaReady, isAuthenticated]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -196,54 +290,6 @@ function HeaderDeliveryLocationControl({
     }
 
     if (!navigator.geolocation) return;
-
-    let cancelled = false;
-    setGeoLoading(true);
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        if (cancelled) return;
-        try {
-          const place = await reverseGeocodeCoordinates(position.coords.latitude, position.coords.longitude);
-          if (cancelled) return;
-          const nextArea = {
-            city: String(place.city || "").trim(),
-            province: String(place.region || "").trim(),
-            suburb: String(place.suburb || "").trim(),
-            postalCode: String(place.postalCode || "").trim(),
-            country: String(place.country || "").trim(),
-            latitude: typeof place.latitude === "number" ? place.latitude : null,
-            longitude: typeof place.longitude === "number" ? place.longitude : null,
-          };
-          if (nextArea.city || nextArea.province) {
-            saveShopperDeliveryArea(nextArea);
-            setArea(nextArea);
-          }
-        } catch (error) {
-          if (!cancelled) {
-            setGeoError(error instanceof Error ? error.message : "Unable to detect your location.");
-            setPickerOpen(true);
-          }
-        } finally {
-          if (!cancelled) setGeoLoading(false);
-        }
-      },
-      (error) => {
-        if (cancelled) return;
-        setGeoLoading(false);
-        if (error?.code !== error.PERMISSION_DENIED) {
-          setGeoError("Unable to detect your location right now.");
-        }
-      },
-      {
-        enableHighAccuracy: false,
-        timeout: 10000,
-        maximumAge: 300000,
-      },
-    );
-
-    return () => {
-      cancelled = true;
-    };
   }, [area, areaReady, isAuthenticated]);
 
   return (
@@ -1790,7 +1836,7 @@ function HeartButton({
   onRequireAuth: () => void;
   onClearFavorites: () => void;
 }) {
-  const showBadge = isAuthenticated && favoriteCount > 0;
+  const showBadge = isAuthenticated;
 
   if (!isAuthenticated) {
     return (

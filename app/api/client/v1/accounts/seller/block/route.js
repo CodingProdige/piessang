@@ -8,6 +8,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { getSellerBlockReasonFix, getSellerBlockReasonLabel, normalizeSellerBlockReasonCode } from "@/lib/seller/account-status";
 import { collectSellerNotificationEmails, sendSellerNotificationEmails } from "@/lib/seller/notifications";
+import { enqueueGoogleSyncForSeller } from "@/lib/integrations/google-sync-queue";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
@@ -154,6 +155,12 @@ export async function POST(req) {
         });
       }),
     );
+
+    await enqueueGoogleSyncForSeller({
+      sellerSlug,
+      sellerCode: toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode),
+      reason: "seller_blocked",
+    }).catch(() => null);
 
     if (process.env.SENDGRID_API_KEY?.startsWith("SG.")) {
       const origin = new URL(req.url).origin;

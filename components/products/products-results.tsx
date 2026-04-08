@@ -121,6 +121,21 @@ export type ProductItem = {
       title?: string | null;
       slug?: string | null;
     };
+    seller_offer_count?: number;
+    alternate_offers?: Array<{
+      productId?: string | null;
+      title?: string | null;
+      titleSlug?: string | null;
+      sellerCode?: string | null;
+      sellerSlug?: string | null;
+      vendorName?: string | null;
+      variantId?: string | null;
+      variantLabel?: string | null;
+      barcode?: string | null;
+      priceIncl?: number | null;
+      hasInStockVariants?: boolean;
+      imageUrl?: string | null;
+    }>;
     shopify?: {
       vendorName?: string | null;
       handle?: string | null;
@@ -691,10 +706,10 @@ function getSalePercent(item: ProductItem) {
 function pickDisplayVariant(variants?: ProductVariant[]) {
   if (!variants?.length) return null;
   return (
-    [...variants]
-      .map((variant) => ({ variant, price: getVariantPriceExVat(variant) }))
-      .filter((entry): entry is { variant: ProductVariant; price: number } => typeof entry.price === "number")
-      .sort((a, b) => b.price - a.price)[0]?.variant ?? variants[0]
+    variants.find((variant) => variant?.placement?.is_default === true) ||
+    variants.find((variant) => String(variant?.variant_id || "").trim()) ||
+    variants[0] ||
+    null
   );
 }
 
@@ -876,14 +891,14 @@ export function BrowseProductCard({
   item: ProductItem;
   view: "grid" | "list";
   openInNewTab: boolean;
-  brandHref: string;
-  vendorHref: string;
-  brandLabel: string;
-  vendorLabel: string;
-  currentUrl: string;
-  onAddToCartSuccess: (cart: CartPreview | null) => void;
-  cartBurstKey: number;
-  shopperArea: ShopperDeliveryArea | null;
+  brandHref?: string;
+  vendorHref?: string;
+  brandLabel?: string;
+  vendorLabel?: string;
+  currentUrl?: string;
+  onAddToCartSuccess?: (cart: CartPreview | null) => void;
+  cartBurstKey?: number;
+  shopperArea?: ShopperDeliveryArea | null;
 }) {
   const { formatMoney } = useDisplayCurrency();
   const displayImages = getDisplayImages(item);
@@ -926,6 +941,7 @@ export function BrowseProductCard({
   const reviewState = getReviewState(item);
   const reviewMeta = getReviewMeta(item);
   const variantCount = getVariantCount(item);
+  const sellerOfferCount = Number(item.data?.seller_offer_count || 0);
   const selectedVariantLabel = getSelectedVariantLabel(item);
   const imageCount = getImageCount(item);
   const salePercent = getSalePercent(item);
@@ -938,16 +954,25 @@ export function BrowseProductCard({
   const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
   const isNewArrival = item.data?.is_new_arrival === true;
   const isSponsored = item.ad?.sponsored === true;
-  const deliveryPromise = getDeliveryPromise(item, shopperArea);
+  const resolvedShopperArea = shopperArea ?? null;
+  const deliveryPromise = getDeliveryPromise(item, resolvedShopperArea);
   const href = getProductHref(item);
+  const resolvedBrandLabel = brandLabel || getBrandLabel(item);
+  const resolvedVendorLabel = vendorLabel || getVendorLabel(item);
+  const resolvedBrandHref =
+    brandHref || `/products?brand=${encodeURIComponent(getBrandSlug(item) || "piessang")}`;
+  const resolvedVendorHref =
+    vendorHref || `/vendors/${encodeURIComponent(getVendorSlug(item) || "piessang")}`;
+  const resolvedCurrentUrl = currentUrl || href;
   const linkTarget = openInNewTab ? "_blank" : undefined;
   const linkRel = openInNewTab ? "noreferrer noopener" : undefined;
-  const renderBrandLink = brandHref !== currentUrl;
-  const renderVendorLink = vendorHref !== currentUrl;
+  const renderBrandLink = resolvedBrandHref !== resolvedCurrentUrl;
+  const renderVendorLink = resolvedVendorHref !== resolvedCurrentUrl;
   const cartProductCount = productUniqueId ? cartProductCounts[productUniqueId] ?? 0 : 0;
   const cartVariantCount =
     productUniqueId && defaultVariantId ? cartVariantCounts[`${productUniqueId}::${defaultVariantId}`] ?? 0 : 0;
   const cartCount = cartProductCount || cartVariantCount;
+  const handleCartSuccess = onAddToCartSuccess ?? (() => {});
   useEffect(() => {
     const favoriteMatch = favoriteIds?.includes(productUniqueId);
     setIsFavorite(Boolean(item.data?.is_favorite) || Boolean(favoriteMatch));
@@ -1054,7 +1079,7 @@ export function BrowseProductCard({
         throw new Error(payload?.message || "Unable to update cart.");
       }
       await refreshCart();
-      onAddToCartSuccess((payload?.data?.cart ?? null) as CartPreview | null);
+      handleCartSuccess((payload?.data?.cart ?? null) as CartPreview | null);
     } catch {
       openAuthModal("We could not update your cart right now.");
     } finally {
@@ -1250,7 +1275,7 @@ export function BrowseProductCard({
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-normal leading-none">
               {renderBrandLink ? (
                 <Link
-                  href={brandHref}
+                  href={resolvedBrandHref}
                   target={linkTarget}
                   rel={linkRel}
                   prefetch={false}
@@ -1258,17 +1283,17 @@ export function BrowseProductCard({
                   onClick={(event) => event.stopPropagation()}
                   className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
                 >
-                  {brandLabel}
+                  {resolvedBrandLabel}
                 </Link>
               ) : (
                 <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">
-                  {brandLabel}
+                  {resolvedBrandLabel}
                 </span>
               )}
               <span className="text-[#d6d6d6]">•</span>
               {renderVendorLink ? (
                 <Link
-                  href={vendorHref}
+                  href={resolvedVendorHref}
                   target={linkTarget}
                   rel={linkRel}
                   prefetch={false}
@@ -1276,11 +1301,11 @@ export function BrowseProductCard({
                   onClick={(event) => event.stopPropagation()}
                   className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
                 >
-                  {vendorLabel}
+                  {resolvedVendorLabel}
                 </Link>
               ) : (
                 <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">
-                  {vendorLabel}
+                  {resolvedVendorLabel}
                 </span>
               )}
             </div>
@@ -1394,16 +1419,17 @@ export function BrowseProductCard({
         title={titleText}
         titleText={titleText}
         selectedVariantLabel={selectedVariantLabel}
-        brandLabel={brandLabel}
-        brandHref={brandHref}
-        vendorLabel={vendorLabel}
-        vendorHref={vendorHref}
-        currentUrl={currentUrl}
+        brandLabel={resolvedBrandLabel}
+        brandHref={resolvedBrandHref}
+        vendorLabel={resolvedVendorLabel}
+        vendorHref={resolvedVendorHref}
+        currentUrl={resolvedCurrentUrl}
         linkTarget={linkTarget}
         linkRel={linkRel}
         stockLabel={stockState.label}
         stockTone={stockState.tone as any}
         variantCount={variantCount}
+        sellerOfferCount={sellerOfferCount}
         reviewAverage={reviewMeta?.average ?? null}
         reviewCount={reviewMeta?.count ?? null}
         deliveryLabel={deliveryPromise?.label ?? null}

@@ -60,14 +60,16 @@ export default async function RootLayout({
 }>) {
   const initialAuthBootstrap = await getServerAuthBootstrap();
   const googleAnalyticsId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim();
+  const googleAdsId = "AW-18066581333";
+  const primaryGoogleTagId = googleAnalyticsId || googleAdsId;
 
   return (
     <html lang="en">
       <head>
-        {googleAnalyticsId ? (
+        {primaryGoogleTagId ? (
           <>
             <Script
-              src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}
+              src={`https://www.googletagmanager.com/gtag/js?id=${primaryGoogleTagId}`}
               strategy="afterInteractive"
             />
             <Script id="google-analytics" strategy="afterInteractive">
@@ -75,7 +77,8 @@ export default async function RootLayout({
                 window.dataLayer = window.dataLayer || [];
                 function gtag(){dataLayer.push(arguments);}
                 gtag('js', new Date());
-                gtag('config', '${googleAnalyticsId}');
+                ${googleAnalyticsId ? `gtag('config', '${googleAnalyticsId}');` : ""}
+                gtag('config', '${googleAdsId}');
               `}
             </Script>
           </>
