@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
 
 const ok = (p={}, s=200) => NextResponse.json({ ok:true, data:p }, { status:s });
 const err = (s,t,m,x={}) => NextResponse.json({ ok:false, title:t, message:m, ...x }, { status:s });
@@ -38,6 +39,12 @@ export async function POST(req) {
     if (idx === -1) return err(404, "Location Not Found", `Location ${locationId} does not exist.`);
 
     // Handle is_default rule
+    const currentLocation = locations[idx] || {};
+    const geocodedLocation = await enrichLocationWithGeocode({
+      ...currentLocation,
+      ...updates,
+    });
+
     let updatedLocations = locations.map((loc) => {
       if (loc.id === locationId) {
         return {
@@ -49,8 +56,8 @@ export async function POST(req) {
           phoneNumber: updates.phoneNumber ?? loc.phoneNumber ?? "",
           instructions: updates.instructions ?? loc.instructions ?? loc.deliveryInstructions ?? "",
           deliveryInstructions: updates.deliveryInstructions ?? updates.instructions ?? loc.deliveryInstructions ?? loc.instructions ?? "",
-          latitude: typeof updates.latitude === "number" ? updates.latitude : loc.latitude ?? null,
-          longitude: typeof updates.longitude === "number" ? updates.longitude : loc.longitude ?? null,
+          latitude: typeof geocodedLocation.latitude === "number" ? geocodedLocation.latitude : loc.latitude ?? null,
+          longitude: typeof geocodedLocation.longitude === "number" ? geocodedLocation.longitude : loc.longitude ?? null,
           updatedAt: now(),
         };
       }

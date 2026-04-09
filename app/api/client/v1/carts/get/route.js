@@ -3,6 +3,7 @@ export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { normalizeCartForClient } from "@/lib/cart/public-api";
+import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
@@ -11,7 +12,8 @@ export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
     const uid = String(body?.uid || "").trim();
-    const deliveryAddress = body?.deliveryAddress && typeof body.deliveryAddress === "object" ? body.deliveryAddress : null;
+    const deliveryAddressInput = body?.deliveryAddress && typeof body.deliveryAddress === "object" ? body.deliveryAddress : null;
+    const deliveryAddress = deliveryAddressInput ? await enrichLocationWithGeocode(deliveryAddressInput) : null;
     const pickupSelections = Array.isArray(body?.pickupSelections) ? body.pickupSelections : [];
     if (!uid) return err(400, "Invalid Request", "uid is required.");
 

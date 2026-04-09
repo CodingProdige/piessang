@@ -11,15 +11,20 @@ import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/s
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { normalizeMoneyAmount } from "@/lib/money";
+import { getCardBrandFamily, resolveCardTheme } from "@/lib/payments/card-presentation";
 import { resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 
 type CartItem = {
+  product_unique_id?: string | null;
+  variant_id?: string | null;
   qty?: number;
   quantity?: number;
   product_snapshot?: {
     product?: {
       title?: string | null;
       sellerCode?: string | null;
+      unique_id?: string | null;
+      docId?: string | null;
     };
     seller?: {
       vendorName?: string | null;
@@ -39,6 +44,8 @@ type CartItem = {
   };
   selected_variant_snapshot?: {
     label?: string | null;
+    variant_id?: string | null;
+    id?: string | null;
   };
   line_totals?: {
     final_incl?: number;
@@ -59,6 +66,19 @@ type CartPayload = {
     final_incl?: number;
     seller_delivery_fee_incl?: number;
     seller_delivery_fee_excl?: number;
+    seller_delivery_breakdown?: Array<{
+      seller_key?: string;
+      seller_name?: string;
+      label?: string;
+      applicable?: boolean;
+      delivery_type?: string;
+      lead_time_days?: number | null;
+      matched_rule_id?: string | null;
+      matched_rule_label?: string | null;
+      amount_incl?: number;
+      amount_excl?: number;
+      currency?: string;
+    }>;
     delivery_fee_incl?: number;
     delivery_fee_excl?: number;
   };
@@ -90,6 +110,7 @@ type SavedCard = {
   expiryMonth?: string;
   expiryYear?: string;
   status?: string;
+  themeKey?: string;
 };
 
 type NewCardState = {
@@ -134,7 +155,17 @@ type StripeCheckoutState = {
   merchantTransactionId: string;
 };
 
+type PaymentOverlayState = {
+  open: boolean;
+  tone: "processing" | "auth" | "success";
+  title: string;
+  message: string;
+};
+
 let stripeJsPromise: Promise<any> | null = null;
+const STRIPE_CHECKOUT_STORAGE_KEY = "piessang-stripe-checkout-state";
+const ORDER_FINALIZATION_POLL_MS = 1500;
+const ORDER_FINALIZATION_MAX_ATTEMPTS = 20;
 
 function loadStripeJs() {
   if (typeof window === "undefined") return Promise.resolve(null);
@@ -156,6 +187,51 @@ function loadStripeJs() {
     });
   }
   return stripeJsPromise;
+}
+
+function persistStripeCheckoutState(checkout: StripeCheckoutState | null) {
+  if (typeof window === "undefined") return;
+  if (!checkout) {
+    window.sessionStorage.removeItem(STRIPE_CHECKOUT_STORAGE_KEY);
+    return;
+  }
+  window.sessionStorage.setItem(STRIPE_CHECKOUT_STORAGE_KEY, JSON.stringify(checkout));
+}
+
+function readPersistedStripeCheckoutState(): StripeCheckoutState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(STRIPE_CHECKOUT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const paymentIntentId = String(parsed?.paymentIntentId || "").trim();
+    const clientSecret = String(parsed?.clientSecret || "").trim();
+    const publishableKey = String(parsed?.publishableKey || "").trim();
+    const orderId = String(parsed?.orderId || "").trim();
+    const orderNumber = String(parsed?.orderNumber || "").trim();
+    const merchantTransactionId = String(parsed?.merchantTransactionId || "").trim();
+    if (!paymentIntentId || !clientSecret || !publishableKey || !orderId) return null;
+    return { paymentIntentId, clientSecret, publishableKey, orderId, orderNumber, merchantTransactionId };
+  } catch {
+    return null;
+  }
+}
+
+function readOrderPaymentStatus(order: any): string {
+  return String(
+    order?.lifecycle?.paymentStatus ||
+      order?.payment?.status ||
+      order?.order?.status?.payment ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function readOrderFinalizationState(order: any): string {
+  return String(order?.meta?.paymentFinalization?.state || "")
+    .trim()
+    .toLowerCase();
 }
 
 function getCartTotalIncl(cart: CartPayload | null) {
@@ -208,18 +284,43 @@ function getSellerDeliverySummary(items: CartItem[], selectedLocation?: Delivery
   if (!deliveryProfile) return { label: "Seller shipping settings still need to be confirmed", amount: 0 };
   const shopperArea = {
     city: selectedLocation?.city || selectedLocation?.suburb || fallbackArea?.city || "",
-    suburb: selectedLocation?.suburb || "",
+    suburb: selectedLocation?.suburb || fallbackArea?.suburb || "",
     province: selectedLocation?.province || selectedLocation?.stateProvinceRegion || fallbackArea?.province || "",
     stateProvinceRegion: selectedLocation?.stateProvinceRegion || selectedLocation?.province || fallbackArea?.province || "",
-    postalCode: selectedLocation?.postalCode || "",
-    country: selectedLocation?.country || "South Africa",
+    postalCode: selectedLocation?.postalCode || fallbackArea?.postalCode || "",
+    country: selectedLocation?.country || fallbackArea?.country || "South Africa",
+    latitude: selectedLocation?.latitude ?? fallbackArea?.latitude ?? null,
+    longitude: selectedLocation?.longitude ?? fallbackArea?.longitude ?? null,
   };
   const resolved = resolveSellerDeliveryOption({
     profile: deliveryProfile,
     sellerBaseLocation: seller?.baseLocation || "",
     shopperArea: shopperArea as any,
   });
-  return { label: resolved.label, amount: Number(resolved.amountIncl || 0), isPickup: resolved.kind === "collection" };
+  return {
+    label: resolved.label,
+    amount: Number(resolved.amountIncl || 0),
+    isPickup: resolved.kind === "collection",
+    isUnavailable: resolved.kind === "unavailable",
+    reasons: Array.isArray((resolved as any)?.unavailableReasons) ? (resolved as any).unavailableReasons : [],
+    distanceKm: typeof (resolved as any)?.distanceKm === "number" ? Number((resolved as any).distanceKm) : null,
+  };
+}
+
+function getLineIds(item: CartItem) {
+  const productId = String(
+    item?.product_snapshot?.product?.unique_id ||
+      item?.product_snapshot?.product?.docId ||
+      item?.product_unique_id ||
+      "",
+  ).trim();
+  const variantId = String(
+    item?.selected_variant_snapshot?.variant_id ||
+      item?.selected_variant_snapshot?.id ||
+      item?.variant_id ||
+      "",
+  ).trim();
+  return { productId, variantId };
 }
 
 function formatAddress(location: DeliveryLocation) {
@@ -243,6 +344,162 @@ function formatCard(card: SavedCard) {
   const expiryMonth = String(card?.expiryMonth || "").padStart(2, "0");
   const expiryYear = String(card?.expiryYear || "");
   return `${brand} ending ${last4}${expiryMonth && expiryYear ? ` · ${expiryMonth}/${expiryYear}` : ""}`;
+}
+
+function formatPreviewExpiry(month?: string, year?: string) {
+  const safeMonth = String(month || "").replace(/\D+/g, "").slice(0, 2);
+  const safeYear = String(year || "").replace(/\D+/g, "");
+  if (!safeMonth && !safeYear) return "MM/YY";
+  const displayMonth = safeMonth ? safeMonth.padStart(2, "0") : "MM";
+  const displayYear = safeYear ? safeYear.slice(-2) : "YY";
+  return `${displayMonth}/${displayYear}`;
+}
+
+function maskPreviewNumber(last4?: string) {
+  const safeLast4 = String(last4 || "").replace(/\D+/g, "").slice(-4);
+  return `••••  ••••  ••••  ${safeLast4 || "••••"}`;
+}
+
+function getOrderedCards(cards: SavedCard[], selectedCardId: string) {
+  if (!cards.length) return [];
+  const selectedIndex = cards.findIndex((card) => String(card?.id || "") === selectedCardId);
+  if (selectedIndex <= 0) return cards;
+  return [...cards.slice(selectedIndex), ...cards.slice(0, selectedIndex)];
+}
+
+function rotateCardId(cards: SavedCard[], selectedCardId: string, direction: 1 | -1) {
+  if (!cards.length) return "";
+  const selectedIndex = Math.max(0, cards.findIndex((card) => String(card?.id || "") === selectedCardId));
+  const nextIndex = (selectedIndex + direction + cards.length) % cards.length;
+  return String(cards[nextIndex]?.id || "");
+}
+
+function PremiumCardFace({
+  brand,
+  cardholder,
+  number,
+  expiry,
+  themeKey,
+  compact = false,
+  selected = false,
+}: {
+  brand: string;
+  cardholder: string;
+  number: string;
+  expiry: string;
+  themeKey?: string;
+  compact?: boolean;
+  selected?: boolean;
+}) {
+  const theme = resolveCardTheme(themeKey);
+  const brandFamily = getCardBrandFamily(brand);
+  return (
+    <div className="absolute inset-0 overflow-hidden rounded-[18px] text-white shadow-[0_22px_50px_rgba(20,24,27,0.18)]">
+      <div
+        className="absolute inset-0"
+        style={{ background: theme.cardBackground }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-20"
+        style={{
+          backgroundImage: `repeating-linear-gradient(135deg, ${theme.stripeColor} 0px, ${theme.stripeColor} 2px, transparent 2px, transparent 20px)`,
+        }}
+      />
+      <div className="relative flex h-full flex-col p-4 sm:p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/65 sm:text-[11px]">Piessang pay</p>
+            <p className={`${compact ? "text-[16px] sm:text-[18px]" : "text-[18px] sm:text-[24px]"} mt-3 font-semibold tracking-[0.08em] text-white`}>
+              {number}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-start gap-2">
+            {selected ? (
+              <span className="inline-flex items-center rounded-full border border-white/20 bg-white/12 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/90">
+                Selected
+              </span>
+            ) : null}
+            <CardBrandMark brandFamily={brandFamily} brandLabel={brand} compact={compact} />
+          </div>
+        </div>
+        <div className="mt-auto flex items-end justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/55 sm:text-[10px]">Cardholder</p>
+            <p className={`${compact ? "text-[11px] sm:text-[12px]" : "text-[12px] sm:text-[14px]"} mt-1 truncate font-semibold uppercase tracking-[0.12em] text-white/95`}>
+              {cardholder}
+            </p>
+          </div>
+          <div className="shrink-0 text-right">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/55 sm:text-[10px]">Expires</p>
+            <p className={`${compact ? "text-[11px] sm:text-[12px]" : "text-[12px] sm:text-[14px]"} mt-1 font-semibold tracking-[0.12em] text-white/95`}>
+              {expiry}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CardBrandMark({
+  brandFamily,
+  brandLabel,
+  compact = false,
+}: {
+  brandFamily: string;
+  brandLabel: string;
+  compact?: boolean;
+}) {
+  const sizeClass = compact ? "scale-[0.88]" : "";
+  if (brandFamily === "visa") {
+    return (
+      <div className={`inline-flex items-center rounded-[10px] bg-white px-3 py-1.5 text-[#1a1f71] shadow-[0_4px_14px_rgba(0,0,0,0.18)] ${sizeClass}`}>
+        <span className="text-[12px] font-black italic tracking-[0.12em]">VISA</span>
+      </div>
+    );
+  }
+  if (brandFamily === "mastercard") {
+    return (
+      <div className={`inline-flex items-center rounded-[10px] bg-white px-2.5 py-1.5 shadow-[0_4px_14px_rgba(0,0,0,0.18)] ${sizeClass}`}>
+        <div className="relative h-5 w-9">
+          <span className="absolute left-0 top-0 h-5 w-5 rounded-full bg-[#eb001b]" />
+          <span className="absolute right-0 top-0 h-5 w-5 rounded-full bg-[#f79e1b]" />
+          <span className="absolute left-[7px] top-0 h-5 w-5 rounded-full bg-[rgba(255,95,0,0.86)]" />
+        </div>
+      </div>
+    );
+  }
+  if (brandFamily === "amex") {
+    return (
+      <div className={`inline-flex items-center rounded-[10px] bg-[#2e77bb] px-3 py-1.5 text-white shadow-[0_4px_14px_rgba(0,0,0,0.18)] ${sizeClass}`}>
+        <span className="text-[11px] font-black tracking-[0.08em]">AMEX</span>
+      </div>
+    );
+  }
+  if (brandFamily === "discover") {
+    return (
+      <div className={`inline-flex items-center rounded-[10px] bg-white px-3 py-1.5 text-[#202020] shadow-[0_4px_14px_rgba(0,0,0,0.18)] ${sizeClass}`}>
+        <span className="text-[11px] font-black tracking-[0.06em]">DISCOVER</span>
+      </div>
+    );
+  }
+  if (brandFamily === "maestro") {
+    return (
+      <div className={`inline-flex items-center rounded-[10px] bg-white px-2.5 py-1.5 shadow-[0_4px_14px_rgba(0,0,0,0.18)] ${sizeClass}`}>
+        <div className="relative h-5 w-9">
+          <span className="absolute left-0 top-0 h-5 w-5 rounded-full bg-[#0099df]" />
+          <span className="absolute right-0 top-0 h-5 w-5 rounded-full bg-[#ed1c2e]" />
+          <span className="absolute left-[7px] top-0 h-5 w-5 rounded-full bg-[rgba(103,42,145,0.86)]" />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={`inline-flex items-center rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-white/85 sm:text-[11px] ${sizeClass}`}>
+      {brandLabel}
+    </div>
+  );
 }
 
 function detectCardBrand(number: string) {
@@ -380,6 +637,30 @@ export function CartCheckout() {
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [stripeCheckout, setStripeCheckout] = useState<StripeCheckoutState | null>(null);
   const [stripeLoading, setStripeLoading] = useState(false);
+  const [paymentOverlay, setPaymentOverlay] = useState<PaymentOverlayState>({
+    open: false,
+    tone: "processing",
+    title: "Processing payment",
+    message: "Please wait while we confirm your order.",
+  });
+  const [cardSwipeStartX, setCardSwipeStartX] = useState<number | null>(null);
+
+  useEffect(() => {
+    const persisted = readPersistedStripeCheckoutState();
+    if (!persisted) return;
+    setStripeCheckout((current) => current || persisted);
+    setSubmitting(true);
+    setPaymentOverlay({
+      open: true,
+      tone: "auth",
+      title: "Resuming payment",
+      message: "We’re restoring your payment and checking the latest Stripe confirmation status.",
+    });
+  }, []);
+
+  useEffect(() => {
+    persistStripeCheckoutState(stripeCheckout);
+  }, [stripeCheckout]);
   const [loading, setLoading] = useState(true);
   const [deliveryFeeLoading, setDeliveryFeeLoading] = useState(false);
   const [checkoutReserveLoading, setCheckoutReserveLoading] = useState(false);
@@ -638,13 +919,28 @@ export function CartCheckout() {
   const sellerDeliverySummaries = sellerGroups
     .map((group) => ({
       seller: group.seller,
+      sellerKey: group.sellerKey,
       summary: getSellerDeliverySummary(group.items, selectedLocation, pickupSelections),
     }))
     .filter((entry) => entry.summary);
+  const unavailableLocalSellerGroups = sellerDeliverySummaries.filter(
+    (entry) => entry.summary?.isUnavailable === true,
+  );
+  const sellerDeliveryBreakdown = Array.isArray(cart?.totals?.seller_delivery_breakdown)
+    ? cart.totals.seller_delivery_breakdown
+    : [];
+  const unavailableSellerDeliveryGroups = sellerDeliveryBreakdown.filter(
+    (entry) => entry?.applicable === false && String(entry?.delivery_type || "").trim().toLowerCase() === "unavailable",
+  );
   const unavailableItems = cartItems.filter(
     (item) => String(item?.availability?.status || "").trim().toLowerCase() === "out_of_stock",
   );
-  const checkoutBlocked = unavailableItems.length > 0;
+  const blockedSellerKeys = new Set([
+    ...unavailableSellerDeliveryGroups.map((entry) => String(entry?.seller_key || "").trim()).filter(Boolean),
+    ...unavailableLocalSellerGroups.map((entry) => String(entry?.sellerKey || "").trim()).filter(Boolean),
+  ]);
+  const checkoutBlocked = unavailableItems.length > 0 || blockedSellerKeys.size > 0;
+  const deliveryBlocked = blockedSellerKeys.size > 0;
   const canUseSavedCard = paymentMode === "saved" && Boolean(selectedCard?.id);
   const canUseNewCard = paymentMode === "new" && newCard.holder.trim().length > 1;
   const hasCheckoutContactDetails = Boolean(
@@ -658,9 +954,98 @@ export function CartCheckout() {
     expiryYear: "",
     cvv: "",
   };
+  const previewCardBrand =
+    paymentMode === "saved"
+      ? String(selectedCard?.brand || "Piessang").toUpperCase()
+      : "PIESSANG PAY";
+  const previewCardholder =
+    paymentMode === "saved"
+      ? String(profile?.accountName || profile?.displayName || "Piessang shopper").trim() || "Piessang shopper"
+      : newCard.holder.trim() || "CARDHOLDER NAME";
+  const previewCardNumber =
+    paymentMode === "saved"
+      ? maskPreviewNumber(selectedCard?.last4)
+      : "••••  ••••  ••••  ••••";
+  const previewCardExpiry =
+    paymentMode === "saved"
+      ? formatPreviewExpiry(selectedCard?.expiryMonth, selectedCard?.expiryYear)
+      : "MM/YY";
+  const previewCardThemeKey =
+    paymentMode === "saved"
+      ? selectedCard?.themeKey || `${selectedCard?.id || ""}:${previewCardBrand}:${selectedCard?.last4 || ""}`
+      : `${previewCardBrand}:${newCard.holder.trim()}`;
+  const previewCardTheme = resolveCardTheme(previewCardThemeKey);
+  const orderedSavedCards = useMemo(() => getOrderedCards(cards, selectedCardId), [cards, selectedCardId]);
+
+  function rotateSavedCard(direction: 1 | -1) {
+    const nextCardId = rotateCardId(cards, selectedCardId, direction);
+    if (nextCardId) setSelectedCardId(nextCardId);
+  }
+
+  async function completeSuccessfulStripeCheckout(currentCheckout: StripeCheckoutState) {
+    const clearCartResponse = await fetch("/api/client/v1/carts/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid }),
+    });
+    const clearCartPayload = await clearCartResponse.json().catch(() => ({}));
+    if (!clearCartResponse.ok || clearCartPayload?.ok === false) {
+      throw new Error(clearCartPayload?.message || "Your payment went through, but we could not clear your cart yet.");
+    }
+
+    syncCartState({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
+    await refreshCart();
+    setStripeCheckout(null);
+    persistStripeCheckoutState(null);
+    setSuccessState({ orderNumber: currentCheckout.orderNumber, orderId: currentCheckout.orderId });
+    setCart({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
+    setSnackbarMessage("Payment successful.");
+    setPaymentOverlay({
+      open: true,
+      tone: "success",
+      title: "Payment successful",
+      message: `Order ${currentCheckout.orderNumber} is confirmed. Redirecting you to your order success page now.`,
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    router.replace(
+      `/checkout/success?orderId=${encodeURIComponent(currentCheckout.orderId)}&orderNumber=${encodeURIComponent(currentCheckout.orderNumber)}`,
+    );
+  }
+
+  async function waitForOrderFinalization(currentCheckout: StripeCheckoutState) {
+    for (let attempt = 0; attempt < ORDER_FINALIZATION_MAX_ATTEMPTS; attempt += 1) {
+      const response = await fetch("/api/client/v1/orders/get", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: currentCheckout.orderId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload?.ok !== false) {
+        const orderData = payload?.data?.data ?? payload?.data ?? null;
+        const paymentStatus = readOrderPaymentStatus(orderData);
+        const finalizationState = readOrderFinalizationState(orderData);
+        if (paymentStatus === "paid") {
+          return true;
+        }
+        if (finalizationState === "failed") {
+          throw new Error("Your payment was received, but we could not finalize the order yet. Please contact support if this persists.");
+        }
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, ORDER_FINALIZATION_POLL_MS));
+    }
+
+    throw new Error("Your payment was received and is still finalizing. Please refresh in a moment if you are not redirected automatically.");
+  }
 
   async function finalizeStripeCheckout(currentCheckout: StripeCheckoutState, paymentIntentId?: string) {
     try {
+      setPaymentOverlay({
+        open: true,
+        tone: "processing",
+        title: "Processing payment",
+        message: "Your payment was received. We’re now confirming your order and clearing your cart.",
+      });
       const finalizeResponse = await fetch("/api/client/v1/orders/payment-success", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -690,30 +1075,26 @@ export function CartCheckout() {
         }).catch(() => null);
         throw new Error(finalizePayload?.message || "We couldn’t confirm your Stripe payment.");
       }
-
-      const clearCartResponse = await fetch("/api/client/v1/carts/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid }),
-      });
-      const clearCartPayload = await clearCartResponse.json().catch(() => ({}));
-      if (!clearCartResponse.ok || clearCartPayload?.ok === false) {
-        throw new Error(clearCartPayload?.message || "Your payment went through, but we could not clear your cart yet.");
+      const finalizeStatus = String(
+        finalizePayload?.data?.status || finalizePayload?.status || "",
+      )
+        .trim()
+        .toLowerCase();
+      if (finalizeStatus === "processing") {
+        setPaymentOverlay({
+          open: true,
+          tone: "processing",
+          title: "Finalizing order",
+          message: "Your payment went through. We’re still finalizing your order in the background now.",
+        });
+        await waitForOrderFinalization(currentCheckout);
       }
-
-      syncCartState({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
-      await refreshCart();
-      setStripeCheckout(null);
-      setSuccessState({ orderNumber: currentCheckout.orderNumber, orderId: currentCheckout.orderId });
-      setCart({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
-      setSnackbarMessage("Payment successful.");
-      router.replace(
-        `/checkout/success?orderId=${encodeURIComponent(currentCheckout.orderId)}&orderNumber=${encodeURIComponent(currentCheckout.orderNumber)}`,
-      );
+      await completeSuccessfulStripeCheckout(currentCheckout);
     } catch (error) {
       const message = error instanceof Error ? error.message : "We could not confirm your payment.";
       setErrorMessage(message);
       setSnackbarMessage(message);
+      setPaymentOverlay((current) => ({ ...current, open: false }));
     } finally {
       setSubmitting(false);
     }
@@ -728,7 +1109,9 @@ export function CartCheckout() {
     cardCvcRef.current = null;
     const currentCheckout = stripeCheckout;
     setStripeCheckout(null);
+    persistStripeCheckoutState(null);
     setStripeLoading(false);
+    setPaymentOverlay((current) => ({ ...current, open: false }));
     if (!currentCheckout) return;
     await fetch("/api/client/v1/orders/delete", {
       method: "POST",
@@ -748,6 +1131,12 @@ export function CartCheckout() {
       const Stripe = await loadStripeJs();
       const stripe = stripeRef.current || (Stripe ? Stripe(currentCheckout.publishableKey) : null);
       if (!stripe) throw new Error("Stripe.js is not available.");
+      setPaymentOverlay({
+        open: true,
+        tone: "auth",
+        title: "Confirming payment",
+        message: "Your bank may ask you to complete 3D Secure authentication. Keep this page open while Stripe confirms the payment.",
+      });
 
       let result: any;
       if (paymentMode === "saved" && selectedCard?.id) {
@@ -805,9 +1194,78 @@ export function CartCheckout() {
       const message = error instanceof Error ? error.message : "Your payment could not be completed.";
       setErrorMessage(message);
       setSnackbarMessage(message);
+      setPaymentOverlay((current) => ({ ...current, open: false }));
       setSubmitting(false);
     }
   }
+
+  useEffect(() => {
+    if (!stripeCheckout || successState) return;
+    let cancelled = false;
+    const currentCheckout = stripeCheckout;
+
+    async function resumeStripeCheckout() {
+      try {
+        const statusResponse = await fetch(
+          `/api/client/v1/payments/stripe/payment-intent-status?paymentIntentId=${encodeURIComponent(currentCheckout.paymentIntentId)}`,
+          { cache: "no-store" },
+        );
+        const statusPayload = await statusResponse.json().catch(() => ({}));
+        const confirmedStatus = String(statusPayload?.data?.status || "").trim().toLowerCase();
+        if (cancelled) return;
+
+        if (confirmedStatus === "succeeded") {
+          setPaymentOverlay({
+            open: true,
+            tone: "processing",
+            title: "Finalizing order",
+            message: "Your bank has confirmed the payment. We’re wrapping up your order now.",
+          });
+          await finalizeStripeCheckout(currentCheckout, currentCheckout.paymentIntentId);
+          return;
+        }
+
+        if (confirmedStatus === "processing" || confirmedStatus === "requires_capture") {
+          setSubmitting(true);
+          setPaymentOverlay({
+            open: true,
+            tone: "processing",
+            title: "Payment processing",
+            message: "Stripe is still confirming your payment. Please keep this page open for a few more seconds.",
+          });
+          return;
+        }
+
+        if (confirmedStatus === "requires_action") {
+          setSubmitting(true);
+          setPaymentOverlay({
+            open: true,
+            tone: "auth",
+            title: "Additional authentication required",
+            message: "Please complete the bank authentication step to finish paying for this order.",
+          });
+          return;
+        }
+
+        if (confirmedStatus && confirmedStatus !== "requires_payment_method") {
+          setSubmitting(true);
+          return;
+        }
+
+        setPaymentOverlay((current) => ({ ...current, open: false }));
+        setSubmitting(false);
+      } catch {
+        if (cancelled) return;
+        setPaymentOverlay((current) => ({ ...current, open: false }));
+        setSubmitting(false);
+      }
+    }
+
+    void resumeStripeCheckout();
+    return () => {
+      cancelled = true;
+    };
+  }, [stripeCheckout, successState]);
 
   async function refreshSavedCards() {
     if (!uid) return;
@@ -971,6 +1429,49 @@ export function CartCheckout() {
     }
   }
 
+  async function removeSellerGroupItems(groupItems: CartItem[], sellerName: string) {
+    if (!uid || !groupItems.length) return;
+    setSubmitting(true);
+    setErrorMessage(null);
+    try {
+      for (const item of groupItems) {
+        const { productId, variantId } = getLineIds(item);
+        if (!productId || !variantId) continue;
+        const response = await fetch("/api/client/v1/carts/removeItem", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uid, unique_id: productId, variant_id: variantId }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || `We could not remove ${sellerName} from your cart right now.`);
+        }
+      }
+
+      const refreshed = await fetch("/api/client/v1/carts/get", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid,
+          deliveryAddress: selectedLocation,
+          pickupSelections,
+        }),
+      });
+      const refreshedPayload = await refreshed.json().catch(() => ({}));
+      const nextCart = (refreshedPayload?.data?.cart ?? null) as CartPayload | null;
+      setCart(nextCart);
+      syncCartState(nextCart);
+      await refreshCart();
+      setSnackbarMessage(`${sellerName} removed from your cart.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "We could not update your cart right now.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleCheckout() {
     if (!uid) {
       openAuthModal("Sign in to continue to checkout.");
@@ -986,8 +1487,11 @@ export function CartCheckout() {
       return;
     }
     if (checkoutBlocked) {
-      setErrorMessage("Remove the out-of-stock items from your cart before placing your order.");
-      setSnackbarMessage("Remove the out-of-stock items from your cart before placing your order.");
+      const message = deliveryBlocked
+        ? "One or more seller-delivered items cannot be delivered to this address. Remove them or change your address before placing your order."
+        : "Remove the out-of-stock items from your cart before placing your order.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
       return;
     }
     if (stripeCheckout) {
@@ -1146,7 +1650,7 @@ export function CartCheckout() {
           {[0, 1, 2].map((index) => (
             <div key={index} className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
               <div className="h-4 w-28 animate-pulse rounded bg-[#ece8df]" />
-              <div className="mt-4 h-16 animate-pulse rounded-[8px] bg-[#f5f1e8]" />
+              <div className="mt-4 h-16 animate-pulse rounded-[8px] bg-[#eef1f4]" />
             </div>
           ))}
         </div>
@@ -1205,7 +1709,9 @@ export function CartCheckout() {
               </div>
               {checkoutBlocked ? (
                 <div className="mt-4 rounded-[8px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-[13px] font-medium text-[#b91c1c]">
-                  One or more items in your cart are now out of stock. Remove them from your cart before continuing.
+                  {deliveryBlocked
+                    ? "One or more seller-delivered items cannot be delivered to this address. Remove the affected seller items or choose a different delivery address before continuing."
+                    : "One or more items in your cart are now out of stock. Remove them from your cart before continuing."}
                 </div>
               ) : null}
               {showAddAddress ? (
@@ -1430,20 +1936,105 @@ export function CartCheckout() {
 
               {paymentMode === "saved" && cards.length ? (
                 <div className="mt-4 space-y-3">
-                  {cards.map((card) => (
-                    <button
-                      key={String(card?.id || "")}
-                      type="button"
-                      onClick={() => setSelectedCardId(String(card?.id || ""))}
-                      className={
-                        String(card?.id || "") === selectedCardId
-                          ? "w-full rounded-[8px] border border-[rgba(203,178,107,0.7)] bg-[rgba(203,178,107,0.08)] p-4 text-left"
-                          : "w-full rounded-[8px] border border-black/10 bg-white p-4 text-left"
-                      }
+                  <div className={`rounded-[22px] p-4 sm:p-5 ${previewCardTheme.frameClass}`}>
+                    <div
+                      className="relative mx-auto w-full max-w-[430px] touch-pan-y select-none"
+                      onTouchStart={(event) => setCardSwipeStartX(event.touches[0]?.clientX ?? null)}
+                      onTouchEnd={(event) => {
+                        if (cardSwipeStartX == null) return;
+                        const deltaX = (event.changedTouches[0]?.clientX ?? 0) - cardSwipeStartX;
+                        setCardSwipeStartX(null);
+                        if (Math.abs(deltaX) < 36) return;
+                        rotateSavedCard(deltaX < 0 ? 1 : -1);
+                      }}
                     >
-                      <p className="text-[14px] font-semibold text-[#202020]">{formatCard(card)}</p>
-                    </button>
-                  ))}
+                      <div className="relative aspect-[1.586/1] w-full">
+                        {orderedSavedCards.slice(0, 3).reverse().map((card, stackIndex, reversedList) => {
+                          const depth = reversedList.length - stackIndex - 1;
+                          const cardId = String(card?.id || "");
+                          const isFront = depth === 0;
+                          const brand = String(card?.brand || "Piessang").toUpperCase();
+                          const cardholder =
+                            String(profile?.accountName || profile?.displayName || "Piessang shopper").trim() || "Piessang shopper";
+                          const number = maskPreviewNumber(card?.last4);
+                          const expiry = formatPreviewExpiry(card?.expiryMonth, card?.expiryYear);
+
+                          return (
+                            <button
+                              key={cardId}
+                              type="button"
+                              onClick={() => setSelectedCardId(cardId)}
+                              aria-label={isFront ? `Selected card ${formatCard(card)}` : `Select ${formatCard(card)}`}
+                              className={[
+                                "absolute inset-0 block w-full text-left transition-transform duration-200 ease-out",
+                                isFront
+                                  ? "hover:-translate-y-1 hover:rotate-[0.4deg]"
+                                  : depth % 2 === 0
+                                    ? "hover:rotate-[0.8deg]"
+                                    : "hover:-rotate-[0.8deg]",
+                              ].join(" ")}
+                              style={{
+                                transform: `translateY(${depth * 10}px) scale(${1 - depth * 0.04})`,
+                                zIndex: 30 - depth,
+                                opacity: 1 - depth * 0.14,
+                              }}
+                            >
+                              <PremiumCardFace
+                                brand={brand}
+                                cardholder={cardholder}
+                                number={number}
+                                expiry={expiry}
+                                themeKey={card?.themeKey || `${cardId}:${brand}:${card?.last4 || ""}`}
+                                compact={!isFront}
+                                selected={isFront}
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {cards.length > 1 ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => rotateSavedCard(-1)}
+                            className="absolute left-2 top-1/2 z-40 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/25 text-white shadow-[0_10px_24px_rgba(20,24,27,0.22)] backdrop-blur-sm transition-all duration-150 hover:scale-[1.06] hover:bg-black/35 active:scale-[0.95]"
+                            aria-label="Show previous saved card"
+                          >
+                            <span className="text-[22px] leading-none">‹</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => rotateSavedCard(1)}
+                            className="absolute right-2 top-1/2 z-40 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/25 text-white shadow-[0_10px_24px_rgba(20,24,27,0.22)] backdrop-blur-sm transition-all duration-150 hover:scale-[1.06] hover:bg-black/35 active:scale-[0.95]"
+                            aria-label="Show next saved card"
+                          >
+                            <span className="text-[22px] leading-none">›</span>
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[12px] font-semibold text-[#202020]">{selectedCard ? formatCard(selectedCard) : "Saved card"}</p>
+                        <p className="mt-1 text-[12px] text-[#57636c]">
+                          {cards.length > 1 ? "Swipe or tap the stack to choose a different saved card." : "Saved for faster checkout."}
+                        </p>
+                      </div>
+                      {cards.length > 1 ? (
+                        <div className="flex items-center gap-3">
+                          <span className="text-[11px] font-medium text-[#57636c]">Swipe or use arrows</span>
+                          <div className="inline-flex items-center gap-1.5">
+                            {orderedSavedCards.slice(0, Math.min(cards.length, 6)).map((card, index) => (
+                              <span
+                                key={`${String(card?.id || "")}-${index}`}
+                                className={index === 0 ? "h-2.5 w-6 rounded-full bg-[#202020]" : "h-2.5 w-2.5 rounded-full bg-black/15"}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               ) : paymentMode === "saved" ? (
                 <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-4 py-4 text-[13px] text-[#57636c]">
@@ -1451,6 +2042,19 @@ export function CartCheckout() {
                 </div>
               ) : (
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className={`sm:col-span-2 rounded-[22px] p-4 sm:p-5 ${previewCardTheme.frameClass}`}>
+                    <div className="mx-auto w-full max-w-[430px]">
+                      <div className="relative aspect-[1.586/1] w-full">
+                        <PremiumCardFace
+                          brand={previewCardBrand}
+                          cardholder={previewCardholder}
+                          number={previewCardNumber}
+                          expiry={previewCardExpiry}
+                          themeKey={previewCardThemeKey}
+                        />
+                      </div>
+                    </div>
+                  </div>
                   <div className="sm:col-span-2">
                     <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Card holder</label>
                     <input
@@ -1511,6 +2115,42 @@ export function CartCheckout() {
               <div className="mt-4 space-y-3">
                 {sellerGroups.map((group) => (
                   <div key={group.seller} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
+                    {(() => {
+                      const summary = getSellerDeliverySummary(group.items, selectedLocation, pickupSelections);
+                      const sellerBlockedByDelivery = summary && !summary.isPickup && summary.isUnavailable === true;
+                      return sellerBlockedByDelivery ? (
+                        <div className="mb-4 rounded-[10px] border border-[#fecaca] bg-[#fff1f2] px-4 py-3">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="text-[13px] font-semibold uppercase tracking-[0.12em] text-[#b91c1c]">Delivery unavailable</p>
+                              <p className="mt-2 text-[14px] font-semibold text-[#7f1d1d]">
+                                {group.seller} cannot deliver these items to your selected address right now.
+                              </p>
+                              <p className="mt-1 text-[13px] leading-[1.6] text-[#991b1b]">
+                                Change your delivery address, switch to seller collection if available, or remove this seller&apos;s items to continue.
+                              </p>
+                              {summary?.reasons?.length ? (
+                                <div className="mt-3 space-y-1">
+                                  {summary.reasons.map((reason: string, reasonIndex: number) => (
+                                    <p key={`${group.sellerKey}-reason-${reasonIndex}`} className="text-[12px] leading-[1.5] text-[#991b1b]">
+                                      {reason}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void removeSellerGroupItems(group.items, group.seller)}
+                              disabled={submitting}
+                              className="inline-flex h-10 shrink-0 items-center justify-center rounded-[8px] border border-[#ef4444]/20 bg-white px-4 text-[12px] font-semibold text-[#b91c1c] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {submitting ? "Updating..." : "Remove seller items"}
+                            </button>
+                          </div>
+                        </div>
+                      ) : null;
+                    })()}
                     <div className="border-b border-black/5 pb-3">
                       <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Sold by</p>
                       <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
@@ -1604,9 +2244,31 @@ export function CartCheckout() {
                   <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Seller delivery</p>
                   <div className="mt-2 space-y-2">
                     {sellerDeliverySummaries.map((entry) => (
-                      <div key={entry.seller} className="flex items-start justify-between gap-3">
-                        <span>{entry.seller}</span>
-                        <span className="text-right font-semibold text-[#202020]">{entry.summary?.label}</span>
+                      <div key={entry.sellerKey || entry.seller} className="rounded-[8px] border border-black/5 bg-white px-3 py-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <span>{entry.seller}</span>
+                          <span className={`text-right font-semibold ${entry.summary?.isUnavailable ? "text-[#991b1b]" : "text-[#202020]"}`}>
+                            {entry.summary?.label}
+                          </span>
+                        </div>
+                        {entry.summary?.isUnavailable ? (
+                          <div className="mt-2 flex items-center justify-between gap-3">
+                            <p className="text-[12px] leading-[1.5] text-[#991b1b]">
+                              {entry.summary?.reasons?.[0] || "Change your address or remove this seller's items to continue."}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const group = sellerGroups.find((candidate) => candidate.sellerKey === entry.sellerKey);
+                                if (group) void removeSellerGroupItems(group.items, group.seller);
+                              }}
+                              disabled={submitting}
+                              className="shrink-0 text-[12px] font-semibold text-[#b91c1c] disabled:opacity-50"
+                            >
+                              Remove items
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -1621,7 +2283,51 @@ export function CartCheckout() {
               </div>
             </div>
 
-            {errorMessage ? (
+            {deliveryBlocked ? (
+              <div className="mt-4 rounded-[10px] border border-[#fecaca] bg-[#fff1f2] px-4 py-4 text-[13px] text-[#991b1b]">
+                <p className="font-semibold text-[#7f1d1d]">Checkout is blocked for this address.</p>
+                <p className="mt-2 leading-[1.6]">
+                  One or more seller-delivered items are unavailable for your selected delivery area. Remove the affected seller items or change your address before placing your order.
+                </p>
+                <div className="mt-3 space-y-2">
+                  {sellerGroups
+                    .filter((group) => blockedSellerKeys.has(group.sellerKey))
+                    .map((group, index) => {
+                      const localSummary = sellerDeliverySummaries.find((entry) => entry.sellerKey === group.sellerKey)?.summary;
+                      const backendSummary = unavailableSellerDeliveryGroups.find((entry) => String(entry?.seller_key || "").trim() === group.sellerKey);
+                      return (
+                        <div key={`${group.sellerKey || group.seller}-${index}`} className="rounded-[8px] border border-[#fecaca] bg-white px-3 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <span className="font-medium text-[#7f1d1d]">{group.seller || "Seller"}</span>
+                            <span className="text-right font-semibold text-[#991b1b]">
+                              {localSummary?.label || backendSummary?.label || "Delivery unavailable in your area"}
+                            </span>
+                          </div>
+                          {localSummary?.reasons?.length ? (
+                            <div className="mt-2 space-y-1">
+                              {localSummary.reasons.map((reason: string, reasonIndex: number) => (
+                                <p key={`${group.sellerKey}-blocked-reason-${reasonIndex}`} className="text-[12px] leading-[1.5] text-[#991b1b]">
+                                  {reason}
+                                </p>
+                              ))}
+                            </div>
+                          ) : null}
+                          <div className="mt-3">
+                            <button
+                              type="button"
+                              onClick={() => void removeSellerGroupItems(group.items, group.seller)}
+                              disabled={submitting}
+                              className="inline-flex h-10 items-center justify-center rounded-[8px] border border-[#ef4444]/20 bg-white px-4 text-[12px] font-semibold text-[#b91c1c] disabled:opacity-50"
+                            >
+                              {submitting ? "Updating..." : "Remove seller items"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            ) : errorMessage ? (
               <div className="mt-4 rounded-[8px] border border-[rgba(185,28,28,0.16)] bg-[rgba(185,28,28,0.05)] px-4 py-3 text-[12px] text-[#b91c1c]">
                 {errorMessage}
               </div>
@@ -1653,6 +2359,34 @@ export function CartCheckout() {
         </div>
       )}
     </section>
+    {paymentOverlay.open ? (
+      <div className="fixed inset-0 z-[180] flex items-center justify-center bg-[rgba(20,24,27,0.55)] px-4 py-6" role="dialog" aria-modal="true">
+        <div className="w-full max-w-[520px] rounded-[28px] border border-black/10 bg-white p-6 shadow-[0_24px_80px_rgba(20,24,27,0.24)]">
+          <div
+            className={`inline-flex h-12 w-12 items-center justify-center rounded-full ${
+              paymentOverlay.tone === "success" ? "bg-[#ecfdf3] text-[#15803d]" : "bg-[#f4f4f5] text-[#202020]"
+            }`}
+          >
+            {paymentOverlay.tone === "success" ? (
+              <svg viewBox="0 0 20 20" className="h-6 w-6 fill-none stroke-current stroke-[2.2]">
+                <path d="M4 10.5l3.5 3.5L16 5.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" className="h-6 w-6 animate-spin fill-none stroke-current stroke-[2]">
+                <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </div>
+          <h3 className="mt-4 text-[24px] font-semibold tracking-[-0.03em] text-[#202020]">{paymentOverlay.title}</h3>
+          <p className="mt-3 text-[14px] leading-[1.7] text-[#57636c]">{paymentOverlay.message}</p>
+          {paymentOverlay.tone !== "success" ? (
+            <div className="mt-5 rounded-[14px] border border-black/5 bg-[#fafafa] px-4 py-3 text-[12px] leading-[1.6] text-[#57636c]">
+              Stripe may open a bank-authentication step if 3D Secure is required. Please do not close this page while your payment is being confirmed.
+            </div>
+          ) : null}
+        </div>
+      </div>
+    ) : null}
     <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />
     <GooglePlacePickerModal
       open={addressPickerOpen}

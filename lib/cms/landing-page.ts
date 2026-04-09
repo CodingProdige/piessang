@@ -65,12 +65,13 @@ function sanitizeFixedHero(value: any): LandingFixedHero {
       .map((entry: unknown) => {
         if (typeof entry === "string") {
           const imageUrl = toStr(entry);
-          return imageUrl ? { imageUrl, href: "" } : null;
+          return imageUrl ? { imageUrl, href: "", blurHashUrl: "" } : null;
         }
         if (entry && typeof entry === "object") {
           const imageUrl = toStr((entry as any)?.imageUrl);
           const href = toStr((entry as any)?.href);
-          return imageUrl ? { imageUrl, href } : null;
+          const blurHashUrl = toStr((entry as any)?.blurHashUrl);
+          return imageUrl ? { imageUrl, href, blurHashUrl } : null;
         }
         return null;
       })

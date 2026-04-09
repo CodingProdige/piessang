@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
+import { Clarity, ClarityPrivacyBoundary } from "@/components/analytics/clarity";
 import { AppShell } from "@/components/layout/app-shell";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 import "./globals.css";
@@ -62,6 +63,7 @@ export default async function RootLayout({
   const googleAnalyticsId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim();
   const googleAdsId = "AW-18066581333";
   const primaryGoogleTagId = googleAnalyticsId || googleAdsId;
+  const clarityProjectId = process.env.NEXT_PUBLIC_CLARITY_PROJECT_ID?.trim();
 
   return (
     <html lang="en">
@@ -88,7 +90,10 @@ export default async function RootLayout({
         suppressHydrationWarning
         className={`${geistSans.variable} ${geistMono.variable} bg-[var(--background)] text-[var(--foreground)] antialiased`}
       >
-        <AppShell initialAuthBootstrap={initialAuthBootstrap}>{children}</AppShell>
+        <Clarity projectId={clarityProjectId} />
+        <ClarityPrivacyBoundary>
+          <AppShell initialAuthBootstrap={initialAuthBootstrap}>{children}</AppShell>
+        </ClarityPrivacyBoundary>
         <Analytics />
         <SpeedInsights />
       </body>

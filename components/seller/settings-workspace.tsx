@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { decode, encode } from "blurhash";
+import { decode } from "blurhash";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import { useAuth } from "@/components/auth/auth-provider";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
@@ -11,6 +11,7 @@ import { PhoneInput, combinePhoneNumber, sanitizePhoneLocalNumber, splitPhoneNum
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { clientStorage } from "@/lib/firebase";
+import { prepareImageAsset } from "@/lib/client/image-prep";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
 import { SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES } from "@/lib/marketplace/country-config";
@@ -743,10 +744,6 @@ export function SellerSettingsWorkspace({
     }
   }, [profile?.sellerCode, sellerCodeValue]);
 
-  if (loading) {
-    return renderLoadingSkeleton();
-  }
-
   useEffect(() => {
     if (!canEditSettings) return;
 
@@ -1180,35 +1177,22 @@ export function SellerSettingsWorkspace({
     };
   }, [profile?.uid, sellerSlug]);
 
-  async function fileToBlurHash(file: File) {
-    const bitmap = await createImageBitmap(file);
-    const width = 32;
-    const height = Math.max(1, Math.round((bitmap.height / bitmap.width) * width));
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("Unable to process image preview.");
-    context.drawImage(bitmap, 0, 0, width, height);
-    const imageData = context.getImageData(0, 0, width, height);
-    return encode(imageData.data, imageData.width, imageData.height, 4, 3);
-  }
-
   async function uploadAsset(file: File, kind: "banner" | "logo") {
     if (!profile?.uid) throw new Error("Missing seller profile.");
-    if (!file.type.startsWith("image/")) throw new Error("Please upload an image file.");
-
-    const blurHashUrl = await fileToBlurHash(file);
-    const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+    const prepared = await prepareImageAsset(file, {
+      maxDimension: kind === "banner" ? 2400 : 1400,
+      quality: kind === "banner" ? 0.84 : 0.88,
+    });
+    const safeName = prepared.file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
     const path = `users/${profile.uid}/seller-branding/${sellerSlug}-${kind}-${Date.now()}-${safeName}`;
     const fileRef = storageRef(clientStorage, path);
-    await uploadBytes(fileRef, file, { contentType: file.type });
+    await uploadBytes(fileRef, prepared.file, { contentType: prepared.file.type });
     const imageUrl = await getDownloadURL(fileRef);
 
     return {
       imageUrl,
-      blurHashUrl,
-      altText: sanitizeFileName(file.name) || `${vendorName} ${kind}`,
+      blurHashUrl: prepared.blurHashUrl,
+      altText: prepared.altText || `${vendorName} ${kind}`,
     };
   }
 
@@ -1465,6 +1449,10 @@ export function SellerSettingsWorkspace({
     } finally {
       setDeleting(false);
     }
+  }
+
+  if (loading) {
+    return renderLoadingSkeleton();
   }
 
   function updateBannerPosition(clientX: number, clientY: number) {

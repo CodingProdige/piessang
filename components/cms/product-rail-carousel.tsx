@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BrowseProductCard, type ProductItem } from "@/components/products/products-results";
+import { BrowseProductCard, type ProductItem } from "@/components/products/browse-product-card";
+import { hasShopperFacingProductImage } from "@/components/products/products-results";
 import {
   readShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
@@ -16,21 +17,32 @@ export function ProductRailCarousel({
   subtitle,
   products,
   emptyMessage,
+  mobileLeadingSpacer = true,
+  viewAllHref = "/products",
+  shopperArea: shopperAreaProp = null,
 }: {
   title: string;
   subtitle: string;
   products: ProductRailItem[];
   emptyMessage: string;
+  mobileLeadingSpacer?: boolean;
+  viewAllHref?: string;
+  shopperArea?: ShopperDeliveryArea | null;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
+  const visibleProducts = useMemo(() => products.filter(hasShopperFacingProductImage), [products]);
 
   useEffect(() => {
+    if (shopperAreaProp) {
+      setShopperArea(shopperAreaProp);
+      return () => {};
+    }
     setShopperArea(readShopperDeliveryArea());
     return subscribeToShopperDeliveryArea(setShopperArea);
-  }, []);
+  }, [shopperAreaProp]);
 
-  const showControls = useMemo(() => products.length > 1, [products.length]);
+  const showControls = useMemo(() => visibleProducts.length > 1, [visibleProducts.length]);
 
   function scrollByCard(direction: -1 | 1) {
     const node = trackRef.current;
@@ -42,76 +54,86 @@ export function ProductRailCarousel({
 
   return (
     <section className="w-full">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
           <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{title}</p>
-          <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{subtitle}</p>
+          <p className="mt-2 max-w-[56ch] text-[13px] leading-[1.55] text-[#57636c] sm:text-[14px]">{subtitle}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link href="/products" className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3.5 text-[12px] font-semibold text-[#202020] sm:h-10 sm:px-4 sm:text-[13px]">
-            Browse all
+        <div className="flex shrink-0 items-start pt-1">
+          <Link
+            href={viewAllHref}
+            className="inline-flex items-center text-[13px] font-semibold text-[#145af2] transition-colors hover:text-[#0f49c7] sm:text-[14px]"
+          >
+            <span>View all</span>
           </Link>
+        </div>
+      </div>
+
+      {visibleProducts.length ? (
+        <div className="relative mt-4 sm:mt-5">
           {showControls ? (
             <>
               <button
                 type="button"
                 onClick={() => scrollByCard(-1)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-black/10 bg-white text-[16px] text-[#202020] sm:h-10 sm:w-10 sm:text-[18px]"
+                className="absolute left-3 top-1/2 z-10 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-black/8 bg-white text-[#202020] shadow-[0_10px_24px_rgba(20,24,27,0.12)] transition-all duration-150 hover:-translate-y-1/2 hover:border-black/12 hover:shadow-[0_14px_30px_rgba(20,24,27,0.16)] active:scale-[0.94] active:bg-[#f5f6f7] active:shadow-[0_6px_14px_rgba(20,24,27,0.14)] md:inline-flex"
                 aria-label="Scroll products left"
               >
-                ←
+                <ArrowLeftIcon />
               </button>
               <button
                 type="button"
                 onClick={() => scrollByCard(1)}
-                className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-black/10 bg-white text-[16px] text-[#202020] sm:h-10 sm:w-10 sm:text-[18px]"
+                className="absolute right-3 top-1/2 z-10 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-black/8 bg-white text-[#202020] shadow-[0_10px_24px_rgba(20,24,27,0.12)] transition-all duration-150 hover:-translate-y-1/2 hover:border-black/12 hover:shadow-[0_14px_30px_rgba(20,24,27,0.16)] active:scale-[0.94] active:bg-[#f5f6f7] active:shadow-[0_6px_14px_rgba(20,24,27,0.14)] md:inline-flex"
                 aria-label="Scroll products right"
               >
-                →
+                <ArrowRightIcon />
               </button>
             </>
           ) : null}
-        </div>
-      </div>
+          <div
+            ref={trackRef}
+            className={[
+              "flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] after:block after:h-px after:w-4 after:flex-none sm:gap-4 sm:after:hidden [&::-webkit-scrollbar]:hidden",
+              mobileLeadingSpacer ? "before:block before:h-px before:w-4 before:flex-none sm:before:hidden" : "before:hidden",
+            ].join(" ")}
+          >
+            {visibleProducts.map((product, index) => {
+              const data = product?.data || {};
+              const brandSlug = String(data?.brand?.slug || "").trim();
+              const brandHref = brandSlug ? `/products?brand=${encodeURIComponent(brandSlug)}` : "/products";
+              const sellerIdentifier = String(
+                data?.seller?.sellerCode || data?.product?.sellerCode || data?.seller?.sellerSlug || data?.product?.sellerSlug || "",
+              ).trim();
+              const vendorHref = sellerIdentifier ? `/vendors/${encodeURIComponent(sellerIdentifier)}` : "/products";
+              const brandLabel = String(
+                data?.brand?.title || data?.product?.brandTitle || data?.product?.brand || data?.grouping?.brand || "",
+              ).trim();
+              const vendorLabel = String(data?.seller?.vendorName || data?.product?.vendorName || "").trim();
 
-      {products.length ? (
-        <div
-          ref={trackRef}
-          className="mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] sm:mt-5 sm:gap-4 [&::-webkit-scrollbar]:hidden"
-        >
-          {products.map((product, index) => {
-            const data = product?.data || {};
-            const brandSlug = String(data?.brand?.slug || "").trim();
-            const brandHref = brandSlug ? `/products?brand=${encodeURIComponent(brandSlug)}` : "/products";
-            const sellerIdentifier = String(
-              data?.seller?.sellerCode || data?.product?.sellerCode || data?.seller?.sellerSlug || data?.product?.sellerSlug || "",
-            ).trim();
-            const vendorHref = sellerIdentifier ? `/vendors/${encodeURIComponent(sellerIdentifier)}` : "/products";
-            const brandLabel = String(data?.brand?.title || "Brand").trim();
-            const vendorLabel = String(data?.seller?.vendorName || data?.product?.vendorName || "Seller").trim();
-
-            return (
-              <div
-                key={String(product?.id || data?.docId || data?.product?.unique_id || index)}
-                data-rail-card="true"
-                className="w-[42vw] max-w-[172px] min-w-[42vw] snap-start sm:w-[190px] sm:min-w-[190px] lg:w-[220px] lg:min-w-[220px]"
-              >
-                <BrowseProductCard
-                  item={product}
-                  view="grid"
-                  openInNewTab={false}
-                  brandHref={brandHref}
-                  vendorHref={vendorHref}
-                  brandLabel={brandLabel}
-                  vendorLabel={vendorLabel}
-                  currentUrl=""
-                  onAddToCartSuccess={() => {}}
-                  cartBurstKey={0}
-                  shopperArea={shopperArea}
-                />
-              </div>
-            );
-          })}
+              return (
+                <div
+                  key={String(product?.id || data?.docId || data?.product?.unique_id || index)}
+                  data-rail-card="true"
+                  className="w-[42vw] max-w-[172px] min-w-[42vw] snap-start sm:w-[190px] sm:min-w-[190px] lg:w-[220px] lg:min-w-[220px]"
+                >
+                  <BrowseProductCard
+                    item={product}
+                    view="grid"
+                    openInNewTab={false}
+                    brandHref={brandHref}
+                    vendorHref={vendorHref}
+                    brandLabel={brandLabel || undefined}
+                    vendorLabel={vendorLabel || undefined}
+                    currentUrl=""
+                    onAddToCartSuccess={() => {}}
+                    cartBurstKey={0}
+                    shopperArea={shopperArea}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
       ) : (
         <div className="mt-5 rounded-[8px] border border-dashed border-black/10 px-4 py-10 text-[14px] text-[#7a8594]">
@@ -119,6 +141,36 @@ export function ProductRailCarousel({
         </div>
       )}
     </section>
+  );
+}
+
+function ArrowLeftIcon() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true">
+      <path
+        d="M11.75 4.75 6.5 10l5.25 5.25"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function ArrowRightIcon() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true">
+      <path
+        d="M8.25 4.75 13.5 10l-5.25 5.25"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
   );
 }
 

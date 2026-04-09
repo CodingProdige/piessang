@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
 
 /* ---------------- Helpers ---------------- */
 const ok = (p = {}, s = 200) =>
@@ -60,6 +61,8 @@ export async function POST(req) {
       ? existing.map(loc => ({ ...loc, is_default: false }))
       : existing;
 
+    const geocodedLocation = await enrichLocationWithGeocode(location);
+
     const newLocation = {
       id: crypto.randomUUID(),
       locationName: location.locationName || "",
@@ -73,8 +76,8 @@ export async function POST(req) {
       country: location.country || "",
       phoneCountryCode: location.phoneCountryCode || "27",
       phoneNumber: location.phoneNumber || "",
-      latitude: typeof location.latitude === "number" ? location.latitude : null,
-      longitude: typeof location.longitude === "number" ? location.longitude : null,
+      latitude: typeof geocodedLocation.latitude === "number" ? geocodedLocation.latitude : null,
+      longitude: typeof geocodedLocation.longitude === "number" ? geocodedLocation.longitude : null,
       instructions: location.instructions || location.deliveryInstructions || "",
       deliveryInstructions: location.deliveryInstructions || location.instructions || "",
       is_default: newIsDefault,

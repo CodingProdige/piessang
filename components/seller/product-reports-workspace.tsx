@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { ContentsquareReplayCaptureModal } from "@/components/seller/contentsquare-replay-capture-modal";
 
 type ProductReportItem = {
   id: string;
@@ -42,6 +43,7 @@ export function SellerProductReportsWorkspace({ onQueueChanged }: { onQueueChang
   const [filter, setFilter] = useState<"pending" | "blocked" | "disputed" | "all">("pending");
   const [blockTarget, setBlockTarget] = useState<ProductReportItem | null>(null);
   const [blockNote, setBlockNote] = useState("");
+  const [replayTarget, setReplayTarget] = useState<ProductReportItem | null>(null);
 
   async function loadItems(nextFilter = filter) {
     setLoading(true);
@@ -188,6 +190,14 @@ export function SellerProductReportsWorkspace({ onQueueChanged }: { onQueueChang
                     )}
                     <button
                       type="button"
+                      onClick={() => setReplayTarget(item)}
+                      disabled={isBusy}
+                      className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020] disabled:opacity-50"
+                    >
+                      Save replay
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void runAction(item, "dismiss", "Report dismissed after admin review.")}
                       disabled={isBusy}
                       className="inline-flex h-10 items-center rounded-[8px] border border-black/10 px-4 text-[13px] font-semibold text-[#202020] disabled:opacity-50"
@@ -239,6 +249,24 @@ export function SellerProductReportsWorkspace({ onQueueChanged }: { onQueueChang
           </div>
         </div>
       ) : null}
+
+      <ContentsquareReplayCaptureModal
+        open={Boolean(replayTarget)}
+        title={toStr(replayTarget?.product?.title, "Save replay")}
+        defaults={
+          replayTarget
+            ? {
+                title: `Product report • ${toStr(replayTarget?.product?.title, "Product")}`,
+                sellerSlug: toStr(replayTarget?.product?.sellerSlug || replayTarget?.product?.sellerCode),
+                pagePath: replayTarget?.product?.id ? `/products/${replayTarget.product.id}` : "",
+                issueType: "product report",
+                notes: replayTarget?.reportMessage || "",
+              }
+            : undefined
+        }
+        onClose={() => setReplayTarget(null)}
+        onSaved={() => setMessage("Replay saved to Contentsquare tools.")}
+      />
     </div>
   );
 }

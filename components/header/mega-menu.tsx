@@ -2,14 +2,12 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
-import { CartActionStack } from "@/components/cart/cart-actions";
-import { CartItemCard } from "@/components/cart/cart-item-card";
-import { DisplayCurrencySelector, useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import { DisplayCurrencySelector } from "@/components/currency/display-currency-provider";
 import { PageBody } from "@/components/layout/page-body";
-import { AppSnackbar } from "@/components/ui/app-snackbar";
+import { BlurhashImage } from "@/components/shared/blurhash-image";
 import {
   readShopperDeliveryArea,
   saveShopperDeliveryArea,
@@ -26,6 +24,14 @@ const PRODUCTS_PAGE = "/products";
 const MENU_HEIGHT = 430;
 const DELIVERY_PROMPT_DISMISSED_KEY = "piessang-delivery-prompt-dismissed";
 const LANDING_PAGE_ENDPOINT = "/api/client/v1/landing-page/get";
+const SearchBar = dynamic(() => import("@/components/header/header-search").then((mod) => mod.HeaderSearch), {
+  ssr: false,
+  loading: () => <HeaderSearchSkeleton />,
+});
+const CartPreviewDrawer = dynamic(
+  () => import("@/components/header/cart-preview-drawer").then((mod) => mod.CartPreviewDrawer),
+  { ssr: false },
+);
 
 type CatalogueCategory = {
   slug?: string;
@@ -130,6 +136,8 @@ type MenuState = {
   hoveredSlug: string;
   activeSubcategories: SubCategory[];
   brands: Brand[];
+  subcategoriesLoading: boolean;
+  brandsLoading: boolean;
   productCountsBySubCategory: Record<string, number>;
   productCountsByBrand: Record<string, number>;
   setHoveredSlug: (slug: string) => void;
@@ -153,6 +161,7 @@ type FixedHeroConfig = {
   images?: Array<{
     imageUrl?: string;
     href?: string;
+    blurHashUrl?: string;
   }>;
 };
 
@@ -541,7 +550,7 @@ async function fetchProductAvailabilitySummary(): Promise<ProductAvailabilitySum
   }
 }
 
-function useCatalogueMenu(): MenuState {
+function useCatalogueMenu(enabled = true): MenuState {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [hoveredSlug, setHoveredSlug] = useState("");
   const [hoveredSubcategorySlug, setHoveredSubcategorySlug] = useState("");
@@ -549,12 +558,15 @@ function useCatalogueMenu(): MenuState {
     {},
   );
   const [brandsByKey, setBrandsByKey] = useState<Record<string, Brand[]>>({});
+  const [subcategoriesLoading, setSubcategoriesLoading] = useState(false);
+  const [brandsLoading, setBrandsLoading] = useState(false);
   const [productCountsBySubCategory, setProductCountsBySubCategory] = useState<Record<string, number>>({});
   const [productCountsByBrand, setProductCountsByBrand] = useState<Record<string, number>>({});
   const subcategoryRequestId = useRef(0);
   const brandRequestId = useRef(0);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     void Promise.all([fetchDepartments(), fetchProductAvailabilitySummary()]).then(([items, summary]) => {
@@ -567,20 +579,23 @@ function useCatalogueMenu(): MenuState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     if (!hoveredSlug) return;
     if (departments.some((department) => department.slug === hoveredSlug)) return;
     setHoveredSlug("");
     setHoveredSubcategorySlug("");
-  }, [departments, hoveredSlug]);
+  }, [departments, hoveredSlug, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     const categorySlug = hoveredSlug;
     if (!categorySlug) return;
 
     const requestId = ++subcategoryRequestId.current;
+    setSubcategoriesLoading(true);
 
     void fetchSubcategories(categorySlug).then((items) => {
       if (subcategoryRequestId.current !== requestId) return;
@@ -591,32 +606,37 @@ function useCatalogueMenu(): MenuState {
           return (productCountsBySubCategory[key] ?? 0) > 0;
         }),
       }));
+      setSubcategoriesLoading(false);
     });
-  }, [hoveredSlug, productCountsBySubCategory]);
+  }, [hoveredSlug, productCountsBySubCategory, enabled]);
 
   const displayCategorySlug = hoveredSlug;
   const activeSubcategories = displayCategorySlug ? subcategoriesByCategory[displayCategorySlug] ?? [] : [];
   const displaySubcategorySlug = hoveredSubcategorySlug || "";
 
   useEffect(() => {
+    if (!enabled) return;
     if (!displayCategorySlug) return;
     if (!displaySubcategorySlug) return;
     if (activeSubcategories.some((item) => item.slug === displaySubcategorySlug)) return;
     setHoveredSubcategorySlug("");
-  }, [activeSubcategories, displayCategorySlug, displaySubcategorySlug]);
+  }, [activeSubcategories, displayCategorySlug, displaySubcategorySlug, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     if (!displayCategorySlug) return;
 
     const key = `${displayCategorySlug}::${displaySubcategorySlug || "*"}`;
     if (brandsByKey[key]) return;
 
     const requestId = ++brandRequestId.current;
+    setBrandsLoading(true);
     void fetchBrands(displayCategorySlug, displaySubcategorySlug || undefined).then((items) => {
       if (brandRequestId.current !== requestId) return;
       setBrandsByKey((current) => ({ ...current, [key]: items }));
+      setBrandsLoading(false);
     });
-  }, [displayCategorySlug, displaySubcategorySlug, brandsByKey]);
+  }, [displayCategorySlug, displaySubcategorySlug, brandsByKey, enabled]);
 
   const activeBrands = displayCategorySlug
     ? (brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? []).filter((brand) => {
@@ -635,767 +655,14 @@ function useCatalogueMenu(): MenuState {
     hoveredSlug,
     activeSubcategories,
     brands: activeBrands,
+    subcategoriesLoading,
+    brandsLoading,
     productCountsBySubCategory,
     productCountsByBrand,
     setHoveredSlug,
     setHoveredSubcategorySlug,
     hoveredSubcategorySlug,
   };
-}
-
-function SearchBar({
-  mobile = false,
-  onNavigate,
-}: {
-  mobile?: boolean;
-  onNavigate?: () => void;
-}) {
-  const router = useRouter();
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const imageCameraInputRef = useRef<HTMLInputElement | null>(null);
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [imageSearchOpen, setImageSearchOpen] = useState(false);
-  const [imageSearchBusy, setImageSearchBusy] = useState(false);
-  const [imageSearchError, setImageSearchError] = useState<string | null>(null);
-  const [imagePreview, setImagePreview] = useState<string>("");
-  const [imageSearchLabel, setImageSearchLabel] = useState("");
-  const [imageSearchNotes, setImageSearchNotes] = useState("");
-  const [imageSearchQuery, setImageSearchQuery] = useState("");
-  const [imageSearchAlternates, setImageSearchAlternates] = useState<string[]>([]);
-  const [imageSearchResults, setImageSearchResults] = useState<
-    Array<{
-      id: string;
-      title: string;
-      href: string;
-      brand: string;
-      imageUrl: string;
-    }>
-  >([]);
-  const [recentSearches, setRecentSearches] = useState<string[]>([]);
-  const [trendingSearches, setTrendingSearches] = useState<string[]>([]);
-  const [suggestions, setSuggestions] = useState<
-    Array<{
-      id: string;
-      title: string;
-      href: string;
-      brand: string;
-      imageUrl: string;
-    }>
-  >([]);
-  const hasTypedQuery = query.trim().length >= 2;
-  const searchHistoryKey = "piessang_search_history_v1";
-
-  const pageSuggestions = useMemo(() => {
-    const queryText = query.trim().toLowerCase();
-    if (queryText.length < 2) return [];
-
-    const pages = [
-      { title: "All products", description: "Browse the full catalogue", href: "/products", keywords: ["products", "shop", "browse", "catalogue", "catalog"] },
-      { title: "Categories", description: "Browse product categories", href: "/categories", keywords: ["categories", "category", "departments"] },
-      { title: "New arrivals", description: "See what just landed on Piessang", href: "/products?newArrivals=true", keywords: ["new", "new arrivals", "latest", "fresh"] },
-      { title: "Deals", description: "View products currently on sale", href: "/products?onSale=true", keywords: ["deals", "sale", "discount", "offers"] },
-      { title: "My account", description: "Manage your account and preferences", href: "/account", keywords: ["account", "profile", "settings"] },
-      { title: "Orders", description: "Track your orders and returns", href: "/account?section=orders", keywords: ["orders", "purchases", "returns"] },
-      { title: "Support tickets", description: "Open or manage your support requests", href: "/support/tickets", keywords: ["support", "ticket", "tickets", "help"] },
-      { title: "Contact us", description: "Get help from Piessang support", href: "/contact", keywords: ["contact", "support", "email", "help"] },
-      { title: "Delivery", description: "Read delivery information and policies", href: "/delivery", keywords: ["delivery", "shipping", "courier"] },
-      { title: "Returns", description: "Read the returns and refunds policy", href: "/returns", keywords: ["returns", "refunds", "refund"] },
-      { title: "Privacy policy", description: "Read how Piessang handles your data", href: "/privacy", keywords: ["privacy", "data", "policy"] },
-      { title: "Terms", description: "Read the marketplace terms and rules", href: "/terms", keywords: ["terms", "legal", "policy"] },
-    ];
-
-    return pages
-      .filter((page) => {
-        const haystack = [page.title, page.description, ...page.keywords].join(" ").toLowerCase();
-        return haystack.includes(queryText);
-      })
-      .slice(0, 4);
-  }, [query]);
-
-  const filteredRecentSearches = useMemo(() => {
-    const queryText = query.trim().toLowerCase();
-    if (!queryText) return recentSearches.slice(0, 6);
-    return recentSearches.filter((item) => item.toLowerCase().includes(queryText)).slice(0, 6);
-  }, [query, recentSearches]);
-
-  const filteredTrendingSearches = useMemo(() => {
-    const queryText = query.trim().toLowerCase();
-    const withoutRecent = trendingSearches.filter(
-      (item) => !recentSearches.some((recent) => recent.toLowerCase() === item.toLowerCase()),
-    );
-    if (!queryText) return withoutRecent.slice(0, 6);
-    return withoutRecent.filter((item) => item.toLowerCase().includes(queryText)).slice(0, 6);
-  }, [query, recentSearches, trendingSearches]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const raw = window.localStorage.getItem(searchHistoryKey);
-      const parsed = JSON.parse(raw || "[]");
-      if (!Array.isArray(parsed)) return;
-      setRecentSearches(
-        parsed
-          .map((value) => String(value || "").trim())
-          .filter(Boolean)
-          .slice(0, 6),
-      );
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    if (!imageSearchOpen) return undefined;
-    async function handlePaste(event: ClipboardEvent) {
-      const items = Array.from(event.clipboardData?.items || []);
-      const imageItem = items.find((item) => item.type.startsWith("image/"));
-      if (!imageItem) return;
-      const file = imageItem.getAsFile();
-      if (!file) return;
-      event.preventDefault();
-      const reader = new FileReader();
-      reader.onload = () => {
-        setImagePreview(typeof reader.result === "string" ? reader.result : "");
-        setImageSearchError(null);
-      };
-      reader.readAsDataURL(file);
-    }
-    window.addEventListener("paste", handlePaste);
-    return () => window.removeEventListener("paste", handlePaste);
-  }, [imageSearchOpen]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadTrendingSearches() {
-      try {
-        const response = await fetch("/api/client/v1/search/queries", { cache: "no-store" });
-        const payload = await response.json().catch(() => ({}));
-        if (cancelled || !response.ok || payload?.ok === false) return;
-        const items = Array.isArray(payload?.data?.items)
-          ? payload.data.items
-          : Array.isArray(payload?.items)
-            ? payload.items
-            : [];
-        if (cancelled) return;
-        setTrendingSearches(
-          items
-            .map((item: any) => String(item?.query || "").trim())
-            .filter(Boolean)
-            .slice(0, 6),
-        );
-      } catch {}
-    }
-
-    loadTrendingSearches();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    const trimmed = query.trim();
-    if (trimmed.length < 2) {
-      setSuggestions([]);
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    const timer = window.setTimeout(async () => {
-      setLoading(true);
-      try {
-        const params = new URLSearchParams({
-          search: trimmed,
-          limit: "6",
-          isActive: "true",
-        });
-        const response = await fetch(`/api/catalogue/v1/products/product/get?${params.toString()}`, {
-          cache: "no-store",
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (cancelled || !response.ok || payload?.ok === false) {
-          if (!cancelled) setSuggestions([]);
-          return;
-        }
-
-        const items = Array.isArray(payload?.items) ? payload.items : [];
-        if (cancelled) return;
-        setSuggestions(
-          items
-            .map((item: any) => {
-              const slug = String(
-                item?.data?.product?.slug ||
-                item?.data?.product?.handle ||
-                item?.data?.docId ||
-                item?.data?.product?.unique_id ||
-                item?.id ||
-                "",
-              ).trim();
-              const title = String(item?.data?.product?.title || "").trim();
-              if (!slug || !title) return null;
-              return {
-                id: String(item?.id || item?.data?.docId || slug),
-                title,
-                href: `/products/${encodeURIComponent(slug)}`,
-                brand: String(item?.data?.brand?.title || item?.data?.grouping?.brand || "").trim(),
-                imageUrl: String(item?.data?.media?.images?.[0]?.imageUrl || "").trim(),
-              };
-            })
-            .filter(Boolean),
-        );
-      } catch {
-        if (!cancelled) setSuggestions([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 180);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [query]);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    }
-
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  function persistRecentSearch(search: string) {
-    const normalized = search.trim();
-    if (!normalized || typeof window === "undefined") return;
-    const next = [normalized, ...recentSearches.filter((item) => item.toLowerCase() !== normalized.toLowerCase())].slice(0, 6);
-    setRecentSearches(next);
-    try {
-      window.localStorage.setItem(searchHistoryKey, JSON.stringify(next));
-    } catch {}
-  }
-
-  async function trackSearch(search: string) {
-    try {
-      await fetch("/api/client/v1/search/queries", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: search }),
-      });
-    } catch {}
-  }
-
-  function submitSearch(nextQuery?: string) {
-    const search = String(nextQuery ?? query).trim();
-    if (!search) return;
-    persistRecentSearch(search);
-    void trackSearch(search);
-    setOpen(false);
-    onNavigate?.();
-    router.push(`/products?search=${encodeURIComponent(search)}`);
-  }
-
-  function resetImageSearchModal() {
-    setImageSearchOpen(false);
-    setImageSearchBusy(false);
-    setImageSearchError(null);
-    setImagePreview("");
-    setImageSearchLabel("");
-    setImageSearchNotes("");
-    setImageSearchQuery("");
-    setImageSearchAlternates([]);
-    setImageSearchResults([]);
-    if (imageInputRef.current) imageInputRef.current.value = "";
-    if (imageCameraInputRef.current) imageCameraInputRef.current.value = "";
-  }
-
-  function readImageFile(file: File) {
-    if (!file.type.startsWith("image/")) {
-      setImageSearchError("Please choose an image file.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImagePreview(typeof reader.result === "string" ? reader.result : "");
-      setImageSearchError(null);
-      setImageSearchLabel("");
-      setImageSearchNotes("");
-      setImageSearchQuery("");
-      setImageSearchAlternates([]);
-      setImageSearchResults([]);
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function pushImageSearchResults(nextQuery: string, nextLabel = "") {
-    const params = new URLSearchParams({
-      search: nextQuery,
-      imageSearch: "true",
-    });
-    if (nextLabel) params.set("imageLabel", nextLabel);
-    onNavigate?.();
-    router.push(`/products?${params.toString()}`);
-  }
-
-  async function runImageSearch() {
-    if (!imagePreview) {
-      setImageSearchError("Add an image first.");
-      return;
-    }
-    setImageSearchBusy(true);
-    setImageSearchError(null);
-    try {
-      const response = await fetch("/api/client/v1/search/image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageDataUrl: imagePreview }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "Unable to search with this image right now.");
-      }
-      const nextQuery = String(payload?.searchQuery || "").trim();
-      const nextLabel = String(payload?.label || "").trim();
-      const nextNotes = String(payload?.notes || "").trim();
-      const nextAlternates = Array.isArray(payload?.alternateQueries)
-        ? payload.alternateQueries.map((value: unknown) => String(value || "").trim()).filter(Boolean).slice(0, 4)
-        : [];
-      const nextResults = Array.isArray(payload?.items)
-        ? payload.items
-            .map((item: any) => {
-              const slug = String(
-                item?.data?.product?.slug ||
-                  item?.data?.product?.handle ||
-                  item?.data?.docId ||
-                  item?.data?.product?.unique_id ||
-                  item?.id ||
-                  "",
-              ).trim();
-              const title = String(item?.data?.product?.title || "").trim();
-              if (!slug || !title) return null;
-              return {
-                id: String(item?.id || item?.data?.docId || slug),
-                title,
-                href: `/products/${encodeURIComponent(slug)}`,
-                brand: String(item?.data?.brand?.title || item?.data?.grouping?.brand || "").trim(),
-                imageUrl: String(item?.data?.media?.images?.[0]?.imageUrl || "").trim(),
-              };
-            })
-            .filter(Boolean)
-            .slice(0, 8)
-        : [];
-      if (!nextQuery) {
-        throw new Error("We could not find a useful product match from that image.");
-      }
-      setImageSearchLabel(nextLabel);
-      setImageSearchNotes(nextNotes);
-      setImageSearchQuery(nextQuery);
-      setImageSearchAlternates(nextAlternates);
-      setImageSearchResults(nextResults);
-    } catch (cause) {
-      setImageSearchError(cause instanceof Error ? cause.message : "Unable to search with this image right now.");
-    } finally {
-      setImageSearchBusy(false);
-    }
-  }
-
-  const shouldShowDropdown =
-    open &&
-    (hasTypedQuery ||
-      filteredRecentSearches.length > 0 ||
-      filteredTrendingSearches.length > 0 ||
-      loading);
-
-  return (
-    <div ref={containerRef} className="relative flex min-w-0 flex-1">
-      <form
-        action="/products"
-        className="flex min-w-0 flex-1"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submitSearch();
-        }}
-      >
-      <label className={`flex min-w-0 flex-1 items-center bg-white px-4 py-1.5 shadow-[0_4px_14px_rgba(20,24,27,0.08)] ${mobile ? "rounded-l-[14px]" : "rounded-l-[4px]"}`}>
-        <input
-          type="search"
-          name="search"
-          value={query}
-          placeholder="Search for products, brands..."
-          className="w-full bg-transparent text-[15px] text-[#4b5563] outline-none placeholder:text-[#8a94a3]"
-          autoComplete="off"
-          autoFocus={mobile}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-        />
-      </label>
-      <button
-        type="button"
-        onClick={() => {
-          setImageSearchOpen(true);
-          setOpen(false);
-          setImageSearchError(null);
-        }}
-        className="inline-flex h-[36px] w-[44px] items-center justify-center border-l border-black/8 bg-white text-[#4a4545] shadow-[0_4px_14px_rgba(20,24,27,0.08)]"
-        aria-label="Search by image"
-      >
-        <ImageSearchIcon />
-      </button>
-      <button
-        type="submit"
-        className={`inline-flex h-[36px] w-[46px] items-center justify-center bg-[#4a4545] text-white shadow-[0_4px_14px_rgba(20,24,27,0.12)] ${mobile ? "rounded-r-[14px]" : "rounded-r-[4px]"}`}
-        aria-label="Search"
-      >
-        <SearchIcon />
-      </button>
-      </form>
-
-      {shouldShowDropdown ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-[80] overflow-hidden rounded-[10px] border border-black/5 bg-white shadow-[0_18px_40px_rgba(20,24,27,0.16)]">
-          {hasTypedQuery ? (
-            <button
-              type="button"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => submitSearch()}
-              className="flex w-full items-center justify-between border-b border-black/5 px-4 py-3 text-left hover:bg-[#faf7ef]"
-            >
-              <span>
-                <span className="block text-[13px] font-semibold text-[#202020]">Search for "{query.trim()}"</span>
-                <span className="mt-0.5 block text-[12px] text-[#57636c]">View all matching products</span>
-              </span>
-              <span className="text-[16px] text-[#b8b8b8]">→</span>
-            </button>
-          ) : null}
-
-          {filteredRecentSearches.length ? (
-            <div className="border-b border-black/5">
-              <div className="bg-[#fcfbf7] px-4 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Recent searches</p>
-              </div>
-              <div>
-                {filteredRecentSearches.map((item) => (
-                  <button
-                    key={`recent-${item}`}
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => submitSearch(item)}
-                    className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
-                  >
-                    <span>
-                      <span className="block text-[13px] font-semibold text-[#202020]">{item}</span>
-                      <span className="mt-0.5 block text-[12px] text-[#57636c]">Search again</span>
-                    </span>
-                    <span className="text-[16px] text-[#b8b8b8]">↺</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {filteredTrendingSearches.length ? (
-            <div className="border-b border-black/5">
-              <div className="bg-[#fcfbf7] px-4 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Popular searches</p>
-              </div>
-              <div>
-                {filteredTrendingSearches.map((item) => (
-                  <button
-                    key={`trending-${item}`}
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => submitSearch(item)}
-                    className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
-                  >
-                    <span>
-                      <span className="block text-[13px] font-semibold text-[#202020]">{item}</span>
-                      <span className="mt-0.5 block text-[12px] text-[#57636c]">Popular on Piessang</span>
-                    </span>
-                    <span className="text-[16px] text-[#b8b8b8]">↗</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {pageSuggestions.length ? (
-            <div className="border-b border-black/5">
-              <div className="bg-[#fcfbf7] px-4 py-2">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Suggested pages</p>
-              </div>
-              <div>
-                {pageSuggestions.map((page) => (
-                  <button
-                    key={page.href}
-                      type="button"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        setOpen(false);
-                        onNavigate?.();
-                        router.push(page.href);
-                      }}
-                    className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
-                  >
-                    <span>
-                      <span className="block text-[13px] font-semibold text-[#202020]">{page.title}</span>
-                      <span className="mt-0.5 block text-[12px] text-[#57636c]">{page.description}</span>
-                    </span>
-                    <span className="text-[16px] text-[#b8b8b8]">→</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {suggestions.length ? (
-            <div className="border-y border-black/5 bg-[#fcfbf7] px-4 py-2">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Matching products</p>
-            </div>
-          ) : null}
-
-          {loading ? (
-            <div className="px-4 py-3 text-[12px] text-[#57636c]">Searching…</div>
-          ) : suggestions.length ? (
-            <div className="max-h-[360px] overflow-y-auto">
-              {suggestions.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => {
-                    setOpen(false);
-                    onNavigate?.();
-                    router.push(item.href);
-                  }}
-                  className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[#fafafa]"
-                >
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-[8px] bg-[#f5f5f5]">
-                    {item.imageUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={item.imageUrl} alt={item.title} className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Item</span>
-                    )}
-                  </div>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-semibold text-[#202020]">{item.title}</span>
-                    {item.brand ? (
-                      <span className="mt-0.5 block truncate text-[12px] text-[#57636c]">{item.brand}</span>
-                    ) : null}
-                  </span>
-                  <span className="text-[16px] text-[#b8b8b8]">→</span>
-                </button>
-              ))}
-            </div>
-          ) : !pageSuggestions.length && !filteredRecentSearches.length && !filteredTrendingSearches.length && hasTypedQuery ? (
-            <div className="px-4 py-3 text-[12px] text-[#57636c]">No matching products found yet.</div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {imageSearchOpen ? (
-        <div className="fixed inset-0 z-[120] flex items-start justify-center bg-[rgba(20,24,27,0.48)] px-4 py-12 sm:py-20">
-          <div className="w-full max-w-[720px] rounded-[24px] border border-black/10 bg-white p-5 shadow-[0_28px_80px_rgba(20,24,27,0.22)]">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Image search</p>
-                <h3 className="mt-2 text-[28px] font-semibold tracking-[-0.03em] text-[#202020]">Find similar products from an image</h3>
-                <p className="mt-2 text-[14px] text-[#57636c]">Upload, drag in, or paste an image to search Piessang for visually similar products.</p>
-              </div>
-              <button
-                type="button"
-                onClick={resetImageSearchModal}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 text-[18px] text-[#57636c]"
-                aria-label="Close image search"
-              >
-                ×
-              </button>
-            </div>
-
-            <div
-              className="mt-5 rounded-[20px] border border-dashed border-black/10 bg-[#fbfaf7] p-5"
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                const file = event.dataTransfer.files?.[0];
-                if (file) readImageFile(file);
-              }}
-            >
-              {imagePreview ? (
-                <div className="grid gap-4 md:grid-cols-[220px_minmax(0,1fr)] md:items-center">
-                  <div className="overflow-hidden rounded-[16px] border border-black/8 bg-white">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={imagePreview} alt="Uploaded search reference" className="h-[220px] w-full object-cover" />
-                  </div>
-                  <div className="space-y-3">
-                    <p className="text-[15px] font-semibold text-[#202020]">Image ready</p>
-                    <p className="text-[13px] leading-[1.5] text-[#57636c]">We’ll analyze the image and turn it into a product search across the Piessang catalogue.</p>
-                    <div className="flex flex-wrap gap-2">
-                      <button type="button" onClick={() => imageInputRef.current?.click()} className="rounded-[12px] border border-black/10 bg-white px-4 py-2 text-[13px] font-semibold text-[#202020]">
-                        Replace image
-                      </button>
-                      <button type="button" onClick={() => imageCameraInputRef.current?.click()} className="rounded-[12px] border border-black/10 bg-white px-4 py-2 text-[13px] font-semibold text-[#202020] sm:hidden">
-                        Use camera
-                      </button>
-                      <button type="button" onClick={() => setImagePreview("")} className="rounded-[12px] border border-black/10 bg-white px-4 py-2 text-[13px] font-semibold text-[#202020]">
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex min-h-[220px] flex-col items-center justify-center text-center">
-                  <div className="inline-flex h-14 w-14 items-center justify-center rounded-full bg-white text-[#4a4545] shadow-[0_8px_24px_rgba(20,24,27,0.08)]">
-                    <ImageSearchIcon className="h-7 w-7" />
-                  </div>
-                  <p className="mt-5 text-[16px] font-semibold text-[#202020]">Drop an image here or upload one</p>
-                  <p className="mt-2 max-w-[420px] text-[13px] leading-[1.5] text-[#57636c]">You can also paste a copied image with `Cmd/Ctrl + V` while this window is open.</p>
-                  <button type="button" onClick={() => imageInputRef.current?.click()} className="mt-5 rounded-[14px] bg-[#202020] px-5 py-3 text-[14px] font-semibold text-white">
-                    Upload image
-                  </button>
-                  <button type="button" onClick={() => imageCameraInputRef.current?.click()} className="mt-3 rounded-[14px] border border-black/10 bg-white px-5 py-3 text-[14px] font-semibold text-[#202020] sm:hidden">
-                    Take photo
-                  </button>
-                </div>
-              )}
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) readImageFile(file);
-                }}
-              />
-              <input
-                ref={imageCameraInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) readImageFile(file);
-                }}
-              />
-            </div>
-
-            {imageSearchError ? (
-              <div className="mt-4 rounded-[14px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[13px] text-[#b91c1c]">
-                {imageSearchError}
-              </div>
-            ) : null}
-
-            {imageSearchQuery ? (
-              <div className="mt-4 space-y-4">
-                <div className="rounded-[18px] border border-black/8 bg-[#fcfcfc] p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Best match idea</p>
-                      <p className="mt-2 text-[18px] font-semibold text-[#202020]">{imageSearchLabel || imageSearchQuery}</p>
-                      <p className="mt-1 text-[13px] text-[#57636c]">Searching Piessang for: "{imageSearchQuery}"</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpen(false);
-                        resetImageSearchModal();
-                        pushImageSearchResults(imageSearchQuery, imageSearchLabel);
-                      }}
-                      className="rounded-[12px] bg-[#202020] px-4 py-2.5 text-[13px] font-semibold text-white"
-                    >
-                      View all results
-                    </button>
-                  </div>
-                  {imageSearchNotes ? <p className="mt-3 text-[13px] leading-[1.5] text-[#57636c]">{imageSearchNotes}</p> : null}
-                  {imageSearchAlternates.length ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {imageSearchAlternates.map((alternate) => (
-                        <button
-                          key={alternate}
-                          type="button"
-                          onClick={() => {
-                            setQuery(alternate);
-                            setOpen(false);
-                            resetImageSearchModal();
-                            submitSearch(alternate);
-                          }}
-                          className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[12px] font-semibold text-[#202020]"
-                        >
-                          {alternate}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-
-                {imageSearchResults.length ? (
-                  <div>
-                    <div className="mb-3 flex items-center justify-between gap-3">
-                      <p className="text-[14px] font-semibold text-[#202020]">Similar products</p>
-                      <p className="text-[12px] text-[#57636c]">Tap a result to open it directly.</p>
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {imageSearchResults.map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => {
-                            setOpen(false);
-                            resetImageSearchModal();
-                            onNavigate?.();
-                            router.push(item.href);
-                          }}
-                          className="flex items-center gap-3 rounded-[18px] border border-black/8 bg-white p-3 text-left shadow-[0_8px_22px_rgba(20,24,27,0.05)] transition hover:-translate-y-[1px]"
-                        >
-                          <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[14px] bg-[#f5f5f5]">
-                            {item.imageUrl ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={item.imageUrl} alt={item.title} className="h-full w-full object-cover" />
-                            ) : (
-                              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Item</span>
-                            )}
-                          </div>
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-[14px] font-semibold leading-[1.3] text-[#202020]">{item.title}</span>
-                            {item.brand ? <span className="mt-1 block text-[12px] text-[#57636c]">{item.brand}</span> : null}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="rounded-[16px] border border-black/8 bg-[#fcfcfc] px-4 py-4 text-[13px] text-[#57636c]">
-                    No close visual matches were found yet, but you can still open the full results using the search terms we detected.
-                  </div>
-                )}
-              </div>
-            ) : null}
-
-            <div className="mt-5 flex flex-wrap justify-end gap-3">
-              <button type="button" onClick={resetImageSearchModal} className="rounded-[12px] border border-black/10 bg-white px-4 py-2.5 text-[13px] font-semibold text-[#202020]">
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void runImageSearch()}
-                disabled={imageSearchBusy || !imagePreview}
-                className="rounded-[12px] bg-[#202020] px-4 py-2.5 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {imageSearchBusy ? "Searching image..." : "Search by image"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function MenuIcon() {
@@ -1420,13 +687,15 @@ function SearchIcon() {
   );
 }
 
-function ImageSearchIcon({ className = "h-5 w-5" }: { className?: string }) {
+function HeaderSearchSkeleton() {
   return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-      <rect x="3.5" y="5" width="17" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <circle cx="9" cy="10" r="1.7" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M6.5 16l4.2-4.1 2.9 2.7 2.8-2.3 1.1.9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <div className="flex min-w-0 flex-1">
+      <div className="flex h-[36px] min-w-0 flex-1 items-center rounded-l-[4px] bg-white px-4 shadow-[0_4px_14px_rgba(20,24,27,0.08)]">
+        <div className="h-3.5 w-40 animate-pulse rounded-full bg-[#ece6d9]" />
+      </div>
+      <div className="h-[36px] w-[44px] border-l border-black/8 bg-white shadow-[0_4px_14px_rgba(20,24,27,0.08)]" />
+      <div className="h-[36px] w-[46px] rounded-r-[4px] bg-[#4a4545] shadow-[0_4px_14px_rgba(20,24,27,0.12)]" />
+    </div>
   );
 }
 
@@ -1466,6 +735,55 @@ function PiessangLogo() {
         className="h-8 w-auto sm:h-9 lg:h-10"
       />
     </Link>
+  );
+}
+
+function LogoMeaningLink({ onClick, compact = false }: { onClick: () => void; compact?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={[
+        "inline-flex items-center justify-center text-center font-semibold text-[#6a7280] transition-colors hover:text-[#202020]",
+        compact ? "text-[10px]" : "text-[11px]",
+      ].join(" ")}
+      aria-label="What does Piessang mean?"
+    >
+      What is Piessang?
+    </button>
+  );
+}
+
+function LogoMeaningModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(20,24,27,0.62)] px-4" onClick={onClose}>
+      <div
+        className="relative w-auto max-w-[min(92vw,840px)] overflow-hidden rounded-[16px] bg-white shadow-[0_20px_60px_rgba(20,24,27,0.28)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-3 top-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/92 text-[28px] leading-none text-[#4b5563] shadow-[0_8px_18px_rgba(20,24,27,0.14)]"
+          aria-label="Close meaning modal"
+        >
+          ×
+        </button>
+        <div className="relative max-h-[86vh] w-[min(92vw,840px)] bg-[#f8f5ee]">
+          <Image
+            src="/misc/piessang-meaning.png"
+            alt="What Piessang means"
+            width={1200}
+            height={1600}
+            sizes="(max-width: 768px) 100vw, 720px"
+            className="h-auto max-h-[86vh] w-full object-contain"
+            priority
+          />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1555,274 +873,6 @@ function CartButton({
   );
 }
 
-function CartPreviewDrawer({
-  open,
-  onClose,
-  uid,
-  onCartChange,
-}: {
-  open: boolean;
-  onClose: () => void;
-  uid: string | null;
-  onCartChange?: (cart: unknown) => void;
-}) {
-  const { formatMoney } = useDisplayCurrency();
-  type CartPreviewItem = {
-    cart_item_key?: string;
-    product_unique_id?: string;
-    qty?: number;
-    quantity?: number;
-    sale_qty?: number;
-    regular_qty?: number;
-    line_totals?: {
-      final_incl?: number;
-      final_excl?: number;
-    };
-    product_snapshot?: {
-      product?: {
-        unique_id?: string | number | null;
-        title?: string | null;
-        vendorName?: string | null;
-      };
-      seller?: {
-        vendorName?: string | null;
-      };
-      fulfillment?: {
-        mode?: string | null;
-      };
-      media?: {
-        images?: Array<{ imageUrl?: string | null }>;
-      };
-    };
-    selected_variant_snapshot?: {
-      variant_id?: string | number | null;
-      label?: string | null;
-      pricing?: {
-        selling_price_excl?: number;
-        selling_price_incl?: number;
-        sale_price_incl?: number;
-        sale_price_excl?: number;
-      };
-      sale?: {
-        is_on_sale?: boolean;
-        sale_price_incl?: number;
-        sale_price_excl?: number;
-        qty_available?: number;
-      };
-    };
-  };
-
-  const [loading, setLoading] = useState(false);
-  const [hasLoaded, setHasLoaded] = useState(false);
-  const [lineBusyKey, setLineBusyKey] = useState<string | null>(null);
-  const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
-  const [cart, setCart] = useState<{
-    items?: CartPreviewItem[];
-    totals?: { final_payable_incl?: number; final_incl?: number };
-    cart?: { item_count?: number };
-  } | null>(null);
-
-  useEffect(() => {
-    if (!open || !uid) return;
-
-    let mounted = true;
-    setLoading(true);
-    fetch("/api/client/v1/carts/get", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uid }),
-    })
-      .then((response) => response.json())
-      .then((payload) => {
-        if (!mounted) return;
-        const nextCart = (payload?.data?.cart ?? null) as typeof cart;
-        setCart(nextCart);
-        onCartChange?.(nextCart);
-        setHasLoaded(true);
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setCart(null);
-        setHasLoaded(true);
-      })
-      .finally(() => {
-        if (!mounted) return;
-        setLoading(false);
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, [onCartChange, open, uid]);
-
-  const items = Array.isArray(cart?.items) ? cart.items : [];
-  const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
-  const totalIncl = cart?.totals?.final_payable_incl ?? cart?.totals?.final_incl ?? 0;
-  const showDrawerLoading = loading && !hasLoaded;
-  const sellerGroups = items.reduce<Array<{ seller: string; items: CartPreviewItem[] }>>((groups, item) => {
-    const seller =
-      item?.product_snapshot?.seller?.vendorName?.trim() ||
-      item?.product_snapshot?.product?.vendorName?.trim() ||
-      "Piessang seller";
-    const existing = groups.find((group) => group.seller === seller);
-    if (existing) existing.items.push(item);
-    else groups.push({ seller, items: [item] });
-    return groups;
-  }, []);
-
-  const updateLine = async (
-    item: CartPreviewItem,
-    action: "increment" | "decrement" | "remove",
-  ) => {
-    if (!uid) return;
-    const productId =
-      String(item?.product_snapshot?.product?.unique_id || "") ||
-      String(item?.product_unique_id || "");
-    const variantId = String(item?.selected_variant_snapshot?.variant_id || "");
-    if (!productId || !variantId) return;
-
-    const busyKey = String(item?.cart_item_key || `${productId}::${variantId}`);
-    setLineBusyKey(busyKey);
-    try {
-      const endpoint = action === "remove" ? "/api/client/v1/carts/removeItem" : "/api/client/v1/carts/update";
-      const payload =
-        action === "remove"
-          ? { uid, unique_id: productId, variant_id: variantId }
-          : { uid, productId, variantId, mode: "change", qty: action === "increment" ? 1 : -1 };
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const json = await response.json().catch(() => ({}));
-      if (!response.ok || json?.ok === false) throw new Error(json?.message || "Unable to update cart.");
-      const nextCart = (json?.data?.cart ?? null) as typeof cart;
-      setCart(nextCart);
-      onCartChange?.(nextCart);
-      setSnackbarMessage(action === "remove" ? "Item removed from your cart." : "Cart quantity updated.");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to update your cart.";
-      setSnackbarMessage(message);
-    } finally {
-      setLineBusyKey(null);
-    }
-  };
-
-  useEffect(() => {
-    if (!snackbarMessage) return undefined;
-    const timer = window.setTimeout(() => setSnackbarMessage(null), 2200);
-    return () => window.clearTimeout(timer);
-  }, [snackbarMessage]);
-
-  return (
-    <div className={`fixed inset-0 z-[68] ${open ? "" : "pointer-events-none"}`}>
-      <button
-        type="button"
-        aria-label="Close cart preview backdrop"
-        className={`absolute inset-0 bg-black/35 transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
-        onClick={onClose}
-      />
-      <aside
-        className={`absolute right-0 top-0 h-full w-[92vw] max-w-[420px] overflow-y-auto bg-white shadow-[0_20px_48px_rgba(20,24,27,0.22)] transition-transform duration-300 ${
-          open ? "translate-x-0" : "translate-x-full"
-        }`}
-      >
-        <div className="flex items-center justify-between border-b border-black/5 px-5 py-4">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Cart preview</p>
-            {showDrawerLoading ? (
-              <div className="mt-2 h-6 w-24 animate-pulse rounded bg-[#ece8df]" />
-            ) : (
-              <h3 className="mt-1 text-[18px] font-semibold text-[#202020]">{itemCount} items</h3>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#f5f5f5] text-[20px] leading-none text-[#57636c] transition-colors hover:bg-[#ededed]"
-            aria-label="Close cart"
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="space-y-4 px-5 py-4">
-          <div className="rounded-[8px] bg-[#fafafa] px-4 py-3">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Estimated total</p>
-            {showDrawerLoading ? (
-              <div className="mt-2 h-8 w-32 animate-pulse rounded bg-[#ece8df]" />
-            ) : (
-              <p className="mt-1 text-[22px] font-semibold text-[#202020]">{formatMoney(totalIncl)}</p>
-            )}
-          </div>
-
-          {showDrawerLoading ? (
-            <div className="space-y-3">
-              {[0, 1].map((index) => (
-                <div key={index} className="rounded-[8px] border border-black/5 bg-white p-3 shadow-[0_6px_18px_rgba(20,24,27,0.05)]">
-                  <div className="flex gap-3">
-                    <div className="h-14 w-14 animate-pulse rounded-[8px] bg-[#f1ede4]" />
-                    <div className="flex-1 space-y-2">
-                      <div className="h-3.5 w-3/4 animate-pulse rounded bg-[#f1ede4]" />
-                      <div className="h-3 w-1/2 animate-pulse rounded bg-[#f5f1e8]" />
-                      <div className="h-3 w-2/5 animate-pulse rounded bg-[#f5f1e8]" />
-                      <div className="h-3.5 w-24 animate-pulse rounded bg-[#f1ede4]" />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {!showDrawerLoading && items.length ? (
-            <div className="space-y-3">
-              {sellerGroups.map((group) => (
-                <section key={group.seller} className="space-y-2">
-                  <div className="flex items-center justify-between px-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{group.seller}</p>
-                    <p className="text-[10px] text-[#8b94a3]">
-                      {group.items.some((item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "bevgo")
-                        ? "Piessang delivery available"
-                        : "Seller delivery"}
-                    </p>
-                  </div>
-                  {group.items.map((item, index) => {
-                    const productId =
-                      String(item?.product_snapshot?.product?.unique_id || "") ||
-                      String(item?.product_unique_id || "");
-                    const variantId = String(item?.selected_variant_snapshot?.variant_id || "");
-                    const busyKey = String(item?.cart_item_key || `${productId}::${variantId}`);
-                    return (
-                      <CartItemCard
-                        key={`${group.seller}-${item.product_snapshot?.product?.title ?? "item"}-${index}`}
-                        item={item}
-                        compact
-                        onIncrement={() => void updateLine(item, "increment")}
-                        onDecrement={() => void updateLine(item, "decrement")}
-                        onRemove={() => void updateLine(item, "remove")}
-                        busy={lineBusyKey === busyKey}
-                      />
-                    );
-                  })}
-                </section>
-              ))}
-            </div>
-          ) : !showDrawerLoading ? (
-            <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-6 text-[13px] text-[#57636c]">
-              Your cart is empty right now.
-            </div>
-          ) : null}
-
-          <CartActionStack onNavigate={onClose} compact />
-        </div>
-
-        <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />
-      </aside>
-    </div>
-  );
-}
-
 function HeartButton({
   isAuthenticated,
   favoriteCount,
@@ -1902,13 +952,14 @@ function DesktopHero({ hero }: { hero?: FixedHeroConfig | null }) {
         .map((entry) => {
           if (typeof entry === "string") {
             const imageUrl = String(entry || "").trim();
-            return imageUrl ? { imageUrl, href: "" } : null;
+            return imageUrl ? { imageUrl, href: "", blurHashUrl: "" } : null;
           }
           const imageUrl = String(entry?.imageUrl || "").trim();
           const href = String(entry?.href || "").trim();
-          return imageUrl ? { imageUrl, href } : null;
+          const blurHashUrl = String(entry?.blurHashUrl || "").trim();
+          return imageUrl ? { imageUrl, href, blurHashUrl } : null;
         })
-        .filter(Boolean) as Array<{ imageUrl: string; href: string }>
+        .filter(Boolean) as Array<{ imageUrl: string; href: string; blurHashUrl?: string }>
     : [];
   const rotationMs = Math.max(2000, Number(hero?.rotationSeconds || 4) * 1000);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -1926,40 +977,56 @@ function DesktopHero({ hero }: { hero?: FixedHeroConfig | null }) {
   }, [images.length, rotationMs]);
 
   return (
-    <div className="relative h-full overflow-hidden rounded-[4px] bg-[linear-gradient(135deg,#081a4f_0%,#0e2a7a_48%,#1f1146_100%)]">
+    <div className="relative h-full overflow-hidden rounded-[4px] bg-transparent">
       {images.length ? (
-        <div className="relative h-full w-full">
+        <div className="relative h-full w-full bg-[rgba(255,255,255,0.02)]">
           {images.map((image, index) => (
             <div
               key={`${image.imageUrl}-${index}`}
               className={`absolute inset-0 transition-opacity duration-700 ${index === activeIndex ? "opacity-100" : "opacity-0"}`}
             >
+              <div className="pointer-events-none absolute inset-0 scale-[1.18]">
+                <Image
+                  src={image.imageUrl}
+                  alt=""
+                  fill
+                  sizes="(min-width: 1024px) 50vw, 100vw"
+                  className="object-cover object-center opacity-75 blur-3xl saturate-[1.35]"
+                  priority={index === 0}
+                  aria-hidden="true"
+                />
+              </div>
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.08),transparent_58%)]" />
+              <div className="pointer-events-none absolute inset-y-0 left-0 w-[18%] bg-[linear-gradient(90deg,rgba(8,26,79,0.42),transparent)]" />
+              <div className="pointer-events-none absolute inset-y-0 right-0 w-[18%] bg-[linear-gradient(270deg,rgba(31,17,70,0.42),transparent)]" />
               {image.href ? (
                 <Link href={image.href} className="block h-full w-full" aria-label={`Open header hero ${index + 1}`}>
-                  <Image
+                  <BlurhashImage
                     src={image.imageUrl}
+                    blurHash={image.blurHashUrl}
                     alt={`Header hero ${index + 1}`}
-                    fill
-                    sizes="(min-width: 1024px) 50vw, 0vw"
-                    className="object-cover"
+                    sizes="(min-width: 1024px) 50vw, 100vw"
+                    className="h-full w-full"
+                    imageClassName="object-contain object-center"
                     priority={index === 0}
                   />
                 </Link>
               ) : (
-                <Image
+                <BlurhashImage
                   src={image.imageUrl}
+                  blurHash={image.blurHashUrl}
                   alt={`Header hero ${index + 1}`}
-                  fill
-                  sizes="(min-width: 1024px) 50vw, 0vw"
-                  className="object-cover"
+                  sizes="(min-width: 1024px) 50vw, 100vw"
+                  className="h-full w-full"
+                  imageClassName="object-contain object-center"
                   priority={index === 0}
                 />
               )}
             </div>
           ))}
-          <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(6,18,55,0.18)_0%,rgba(6,18,55,0.05)_45%,rgba(6,18,55,0.24)_100%)]" />
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,rgba(6,18,55,0.18)_0%,rgba(6,18,55,0.05)_45%,rgba(6,18,55,0.24)_100%)]" />
           {images.length > 1 ? (
-            <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2">
+            <div className="pointer-events-none absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2">
               {images.map((_, index) => (
                 <span
                   key={`hero-dot-${index}`}
@@ -1970,8 +1037,12 @@ function DesktopHero({ hero }: { hero?: FixedHeroConfig | null }) {
           ) : null}
         </div>
       ) : (
-        <div className="flex h-full items-center justify-center p-6 text-center text-[14px] font-semibold text-white/82">
-          Add rotating hero images in the landing page builder.
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 overflow-hidden rounded-[4px] bg-[#f1f3f5]"
+        >
+          <div className="absolute inset-0 animate-pulse bg-[linear-gradient(180deg,rgba(255,255,255,0.34),rgba(225,229,234,0.92))]" />
+          <div className="absolute inset-y-0 left-[-35%] w-[35%] animate-[piessang-image-shimmer_1.25s_ease-in-out_infinite] bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.82),transparent)]" />
         </div>
       )}
     </div>
@@ -1982,12 +1053,16 @@ function CategoryFlyout({
   department,
   subcategories,
   brands,
+  subcategoriesLoading,
+  brandsLoading,
   hoveredSubcategorySlug,
   setHoveredSubcategorySlug,
 }: {
   department?: Department;
   subcategories: SubCategory[];
   brands: Brand[];
+  subcategoriesLoading: boolean;
+  brandsLoading: boolean;
   hoveredSubcategorySlug: string;
   setHoveredSubcategorySlug: (slug: string) => void;
 }) {
@@ -2019,7 +1094,11 @@ function CategoryFlyout({
                 {subcategory.title}
               </Link>
             ))}
-            {!subcategories.length ? (
+            {subcategoriesLoading ? (
+              <div className="rounded-[8px] bg-[#fafafa] px-3 py-2 text-[13px] text-[#57636c]">
+                Loading sub categories...
+              </div>
+            ) : !subcategories.length ? (
               <div className="text-[13px] text-[#57636c]">
                 Hover a category to load sub categories.
               </div>
@@ -2051,6 +1130,10 @@ function CategoryFlyout({
                   </span>
                 </Link>
               ))
+            ) : brandsLoading ? (
+              <div className="rounded-[8px] bg-[#fafafa] px-3 py-2 text-[13px] text-[#57636c]">
+                Loading brands...
+              </div>
             ) : (
               <div className="rounded-[8px] bg-[#fafafa] px-3 py-2 text-[13px] text-[#57636c]">
                 Hover a sub category to load brands.
@@ -2077,6 +1160,7 @@ function MobileDrawer({
   onRequireAuth,
   onOpenCartPreview,
   onSignOut,
+  onOpenLogoMeaning,
 }: {
   open: boolean;
   onClose: () => void;
@@ -2091,6 +1175,7 @@ function MobileDrawer({
   onRequireAuth: () => void;
   onOpenCartPreview: () => void;
   onSignOut: () => void;
+  onOpenLogoMeaning: () => void;
 }) {
   const { openAuthModal } = useAuth();
   const [view, setView] = useState<"root" | "categories" | "subcategories">("root");
@@ -2134,7 +1219,6 @@ function MobileDrawer({
     { title: "Deals", href: "/products?onSale=true" },
     { title: "Orders", href: "/account?section=orders" },
     ...(isAuthenticated ? [{ title: "My Account", href: "/account" }] : authReady ? [{ title: "Login", href: "/" }, { title: "Register", href: "/" }] : []),
-    ...(isSeller ? [{ title: "Seller dashboard", href: "/seller/dashboard" }] : []),
     { title: "Help Centre", href: "/account?section=support" },
   ] as const;
 
@@ -2153,7 +1237,10 @@ function MobileDrawer({
       >
         <div className="border-b border-black/5 bg-white/95 px-4 py-4 backdrop-blur">
           <div className="mb-3 flex items-center justify-between">
-            <PiessangLogo />
+            <div className="flex flex-col items-start gap-1">
+              <PiessangLogo />
+              <LogoMeaningLink onClick={onOpenLogoMeaning} compact />
+            </div>
             <button
               type="button"
               onClick={onClose}
@@ -2163,13 +1250,20 @@ function MobileDrawer({
               ×
             </button>
           </div>
-          <div className="rounded-[14px] border border-black/5 bg-[linear-gradient(135deg,#081a4f_0%,#0e2a7a_55%,#1f1146_100%)] px-4 py-3 text-white shadow-[0_10px_24px_rgba(20,24,27,0.14)]">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#d8c793]">
-              Browse Piessang
-            </p>
-            <p className="mt-1 text-[14px] leading-6 text-white/84">
-              Shop categories, manage your account, and jump back into your cart without leaving this menu.
-            </p>
+          <div className="flex items-center justify-end text-[13px] font-semibold">
+            <Link
+              href={isSeller ? "/seller/dashboard" : "/sell-on-piessang"}
+              className="group inline-flex items-center gap-2 text-[#2563eb] transition-colors hover:text-[#1d4ed8]"
+              onClick={onClose}
+            >
+              {isSeller ? "Open seller dashboard" : "Sell on Piessang"}
+              <span
+                aria-hidden="true"
+                className="text-[16px] leading-none transition-transform duration-200 group-hover:translate-x-[1px]"
+              >
+                →
+              </span>
+            </Link>
           </div>
         </div>
 
@@ -2398,6 +1492,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [cartPreviewOpen, setCartPreviewOpen] = useState(false);
+  const [logoMeaningOpen, setLogoMeaningOpen] = useState(false);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [fixedHeroConfig, setFixedHeroConfig] = useState<FixedHeroConfig | null>(null);
   const {
@@ -2416,16 +1511,19 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   const authSettled = authReady || isAuthenticated;
   const showAuthenticatedActions = isAuthenticated;
   const showGuestActions = authReady && !isAuthenticated;
+  const catalogueMenuEnabled = showMegaMenu || mobileOpen;
   const {
     departments,
     hoveredSlug,
     activeSubcategories,
     brands,
+    subcategoriesLoading,
+    brandsLoading,
     productCountsBySubCategory,
     hoveredSubcategorySlug,
     setHoveredSlug,
     setHoveredSubcategorySlug,
-  } = useCatalogueMenu();
+  } = useCatalogueMenu(catalogueMenuEnabled);
   const activeDepartment = useMemo(
     () => departments.find((department) => department.slug === hoveredSlug) ?? departments[0],
     [hoveredSlug, departments],
@@ -2442,11 +1540,14 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
 
   useEffect(() => {
     let cancelled = false;
+    let idleCallbackId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     async function loadNotificationCount() {
       if (!showAuthenticatedActions) {
         if (!cancelled) setNotificationUnreadCount(0);
         return;
       }
+      const run = async () => {
       try {
         const response = await fetch("/api/client/v1/accounts/notifications", { cache: "no-store" });
         const payload = await response.json().catch(() => ({}));
@@ -2457,14 +1558,31 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
       } catch {
         if (!cancelled) setNotificationUnreadCount(0);
       }
+      };
+      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+        idleCallbackId = window.requestIdleCallback(() => {
+          void run();
+        });
+        return;
+      }
+      timeoutId = setTimeout(() => {
+        void run();
+      }, 350);
     }
     void loadNotificationCount();
     return () => {
       cancelled = true;
+      if (idleCallbackId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleCallbackId);
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
     };
   }, [showAuthenticatedActions]);
 
   useEffect(() => {
+    if (!showMegaMenu) return;
     let cancelled = false;
     async function loadFixedHero() {
       try {
@@ -2479,7 +1597,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [showMegaMenu]);
 
   const handleClearFavorites = async () => {
     if (!showAuthenticatedActions || !uid) {
@@ -2519,7 +1637,10 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         <div className="flex w-full items-center justify-between gap-4">
           <div className="flex items-center gap-4 lg:gap-8">
             <div className="hidden lg:flex">
-              <PiessangLogo />
+              <div className="flex flex-col items-center gap-1">
+                <PiessangLogo />
+                <LogoMeaningLink onClick={() => setLogoMeaningOpen(true)} />
+              </div>
             </div>
           <div className="hidden items-center gap-0 lg:flex">
               {[
@@ -2625,16 +1746,19 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               <MenuIcon />
             </button>
 
-            <Link href="/" className="absolute left-1/2 -translate-x-1/2">
-              <Image
-                src="/logo/Piessang%20Logo.png"
-                alt="Piessang"
-                width={132}
-                height={34}
-                priority
-                className="h-8 w-auto"
-              />
-            </Link>
+            <div className="absolute left-1/2 flex -translate-x-1/2 flex-col items-center gap-0.5">
+              <Link href="/">
+                <Image
+                  src="/logo/Piessang%20Logo.png"
+                  alt="Piessang"
+                  width={132}
+                  height={34}
+                  priority
+                  className="h-8 w-auto"
+                />
+              </Link>
+              <LogoMeaningLink onClick={() => setLogoMeaningOpen(true)} compact />
+            </div>
 
             <div className="flex items-center gap-3">
               <button
@@ -2745,6 +1869,16 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
       </div>
 
       {showMegaMenu ? (
+        <div className="border-b border-black/5 bg-transparent lg:hidden">
+          <PageBody as="div" className="py-3">
+            <div className="h-[180px] overflow-hidden rounded-[16px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)] sm:h-[220px]">
+              <DesktopHero hero={fixedHeroConfig} />
+            </div>
+          </PageBody>
+        </div>
+      ) : null}
+
+      {showMegaMenu ? (
         <div className="hidden border-b border-black/5 bg-transparent lg:block">
           <PageBody as="div" className="py-4">
             <div
@@ -2807,6 +1941,8 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                   department={activeDepartment}
                   subcategories={activeSubcategories}
                   brands={brands}
+                  subcategoriesLoading={subcategoriesLoading}
+                  brandsLoading={brandsLoading}
                   hoveredSubcategorySlug={hoveredSubcategorySlug}
                   setHoveredSubcategorySlug={setHoveredSubcategorySlug}
                 />
@@ -2816,12 +1952,14 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         </div>
       ) : null}
 
-      <CartPreviewDrawer
-        open={cartPreviewOpen}
-        onClose={() => setCartPreviewOpen(false)}
-        uid={uid}
-        onCartChange={syncCartState}
-      />
+      {cartPreviewOpen ? (
+        <CartPreviewDrawer
+          open={cartPreviewOpen}
+          onClose={() => setCartPreviewOpen(false)}
+          uid={uid}
+          onCartChange={syncCartState}
+        />
+      ) : null}
 
       <MobileDrawer
         open={mobileOpen}
@@ -2837,7 +1975,10 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         onRequireAuth={() => openAuthModal("Sign in to manage your cart and favourites.")}
         onOpenCartPreview={() => setCartPreviewOpen(true)}
         onSignOut={() => void signOut()}
+        onOpenLogoMeaning={() => setLogoMeaningOpen(true)}
       />
+
+      <LogoMeaningModal open={logoMeaningOpen} onClose={() => setLogoMeaningOpen(false)} />
     </header>
   );
 }

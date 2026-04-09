@@ -16,7 +16,7 @@ export async function GET() {
     const docRef = db.collection("analytics_live").doc("commerce");
     const snap = await docRef.get();
     const existing = snap.exists ? snap.data() || null : null;
-    const stale = !existing?.updatedAt || Date.now() - Date.parse(String(existing.updatedAt)) > 60_000;
+    const stale = !existing?.updatedAt || Date.now() - Date.parse(String(existing.updatedAt)) > 5_000;
 
     const snapshot = stale ? await refreshLiveCommerceSnapshot() : existing;
     return ok({ snapshot: snapshot || null });

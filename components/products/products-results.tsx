@@ -12,9 +12,11 @@ import {
 } from "@/components/products/delivery-area-gate";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
-import { StorefrontProductCard } from "@/components/products/storefront-product-card";
 import { trackProductEngagement, useProductImpressionTracker } from "@/lib/analytics/product-engagement-client";
 import { formatCurrency, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
+
+export const PRODUCT_CARD_LIST_IMAGE_SIZES = "(max-width: 640px) calc(100vw - 2rem), 180px";
+export const PRODUCT_CARD_GRID_IMAGE_SIZES = "(max-width: 640px) 72vw, (max-width: 1024px) 40vw, 280px";
 
 type ProductVariant = {
   variant_id?: string | number;
@@ -63,6 +65,8 @@ export type ProductItem = {
     product?: {
       unique_id?: string | number;
       title?: string | null;
+      brandTitle?: string | null;
+      brand?: string | null;
       description?: string | null;
       keywords?: string[];
       vendorName?: string | null;
@@ -219,6 +223,8 @@ const VAT_DIVISOR = 1.15;
 const PAGE_SIZE = 24;
 const LOW_STOCK_THRESHOLD = 13;
 const HOT_SALES_FIRE_THRESHOLD = 100;
+const DEFERRED_CARD_EAGER_COUNT_GRID = 8;
+const DEFERRED_CARD_EAGER_COUNT_LIST = 6;
 
 function formatSoldCount(value?: number | null) {
   const count = Number(value || 0);
@@ -316,6 +322,54 @@ function splitCurrencyParts(formattedValue?: string | null) {
   return { whole, cents };
 }
 
+function DeferredProductCard({
+  eager = false,
+  minHeight,
+  children,
+}: {
+  eager?: boolean;
+  minHeight: number;
+  children: React.ReactNode;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [active, setActive] = useState(eager);
+
+  useEffect(() => {
+    if (eager) {
+      setActive(true);
+      return;
+    }
+    const node = containerRef.current;
+    if (!node || active) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry?.isIntersecting) {
+          setActive(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "500px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [active, eager]);
+
+  return (
+    <div ref={containerRef} className="w-full">
+      {active ? (
+        children
+      ) : (
+        <div
+          className="w-full animate-pulse rounded-[8px] border border-black/6 bg-[linear-gradient(180deg,#f2f3f5,#f7f7f8)] shadow-[0_8px_20px_rgba(20,24,27,0.04)]"
+          style={{ minHeight }}
+          aria-hidden="true"
+        />
+      )}
+    </div>
+  );
+}
+
 function StorefrontPrice({
   valueExVat,
   tone = "default",
@@ -398,6 +452,11 @@ function getDisplayImages(item: ProductItem) {
     item.data?.variants?.[0];
 
   return (defaultVariant?.media?.images ?? []).filter((image) => Boolean(image?.imageUrl));
+}
+
+export function hasShopperFacingProductImage(item: ProductItem | null | undefined) {
+  if (!item) return false;
+  return getDisplayImages(item).length > 0;
 }
 
 function parseCutoffMinutes(cutoff?: string | null) {
@@ -490,13 +549,13 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
   if (resolved.kind === "collection") {
     return { label: "Pickup available from seller", tone: "neutral" as const };
   }
-  if (resolved.kind === "local") {
+  if (resolved.kind === "direct") {
     return {
       label: "Direct delivery available",
       tone: "success" as const,
     };
   }
-  if (resolved.kind === "courier") {
+  if (resolved.kind === "shipping") {
     return {
       label: "Shipping available",
       tone: "success" as const,
@@ -714,7 +773,13 @@ function pickDisplayVariant(variants?: ProductVariant[]) {
 }
 
 function getBrandLabel(item: ProductItem) {
-  return item.data?.brand?.title ?? item.data?.grouping?.brand ?? "Piessang";
+  return (
+    item.data?.brand?.title ??
+    item.data?.product?.brandTitle ??
+    item.data?.product?.brand ??
+    item.data?.grouping?.brand ??
+    "Piessang"
+  );
 }
 
 function normalizeSlug(value?: string | null) {
@@ -728,7 +793,12 @@ function normalizeSlug(value?: string | null) {
 }
 
 function getBrandSlug(item: ProductItem) {
-  return item.data?.brand?.slug ?? item.data?.grouping?.brand ?? normalizeSlug(item.data?.brand?.title);
+  const explicitSlug = item.data?.brand?.slug ?? "";
+  const productBrandSlug = normalizeSlug(item.data?.product?.brand);
+  const groupingBrand = item.data?.grouping?.brand ?? "";
+  const brandTitleSlug = normalizeSlug(item.data?.brand?.title);
+  const productBrandTitleSlug = normalizeSlug(item.data?.product?.brandTitle);
+  return explicitSlug || productBrandSlug || groupingBrand || brandTitleSlug || productBrandTitleSlug;
 }
 
 function getVendorLabel(item: ProductItem) {
@@ -956,6 +1026,23 @@ export function BrowseProductCard({
   const isSponsored = item.ad?.sponsored === true;
   const resolvedShopperArea = shopperArea ?? null;
   const deliveryPromise = getDeliveryPromise(item, resolvedShopperArea);
+  const deliveryLabel = deliveryPromise?.label ?? null;
+  const deliveryCutoffText = deliveryPromise?.cutoffText ?? null;
+  const deliveryTone: "success" | "danger" | "warning" | "neutral" = deliveryPromise ? "success" : "neutral";
+  const deliveryToneClass =
+    {
+      success: "inline-flex items-center gap-1 rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]",
+      danger: "inline-flex items-center gap-1 rounded-full bg-[rgba(185,28,28,0.08)] px-2.5 py-1 text-[#b91c1c]",
+      warning: "inline-flex items-center gap-1 rounded-full bg-[rgba(180,83,9,0.08)] px-2.5 py-1 text-[#b45309]",
+      neutral: "inline-flex items-center gap-1 rounded-full bg-[rgba(87,99,108,0.08)] px-2.5 py-1 text-[#57636c]",
+    }[deliveryTone];
+  const deliveryPillClass =
+    {
+      success: "rounded-full bg-[rgba(26,133,83,0.1)] px-2 py-1 text-[#1a8553]",
+      danger: "rounded-full bg-[rgba(185,28,28,0.08)] px-2 py-1 text-[#b91c1c]",
+      warning: "rounded-full bg-[rgba(180,83,9,0.08)] px-2 py-1 text-[#b45309]",
+      neutral: "rounded-full bg-[rgba(87,99,108,0.08)] px-2 py-1 text-[#57636c]",
+    }[deliveryTone];
   const href = getProductHref(item);
   const resolvedBrandLabel = brandLabel || getBrandLabel(item);
   const resolvedVendorLabel = vendorLabel || getVendorLabel(item);
@@ -1251,7 +1338,7 @@ export function BrowseProductCard({
               src={image?.imageUrl ?? ""}
               blurHash={image?.blurHashUrl ?? ""}
               alt={titleText}
-              sizes="(max-width: 640px) 100vw, 180px"
+              sizes={PRODUCT_CARD_LIST_IMAGE_SIZES}
               className="h-full w-full"
               imageClassName="object-cover"
             />
@@ -1341,15 +1428,15 @@ export function BrowseProductCard({
             )}
           </div>
 
-          {deliveryPromise ? (
+          {deliveryLabel ? (
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
-              <span className="inline-flex items-center gap-1 rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]">
+              <span className={deliveryToneClass}>
                 <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current">
                   <path d="M6 2a1 1 0 0 1 1 1v1h6V3a1 1 0 1 1 2 0v1h.5A2.5 2.5 0 0 1 18 6.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 15.5v-9A2.5 2.5 0 0 1 4.5 4H5V3a1 1 0 0 1 1-1zm9.5 6h-11a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5z" />
                 </svg>
-                {deliveryPromise.label}
+                {deliveryLabel}
               </span>
-              {deliveryPromise.cutoffText ? <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span> : null}
+              {deliveryCutoffText ? <span className="text-[#8b94a3]">{deliveryCutoffText}</span> : null}
             </div>
           ) : null}
           {soldCountLabel ? (
@@ -1414,88 +1501,180 @@ export function BrowseProductCard({
   }
 
   return (
-    <div ref={impressionRef as any}>
-      <StorefrontProductCard
-        title={titleText}
-        titleText={titleText}
-        selectedVariantLabel={selectedVariantLabel}
-        brandLabel={resolvedBrandLabel}
-        brandHref={resolvedBrandHref}
-        vendorLabel={resolvedVendorLabel}
-        vendorHref={resolvedVendorHref}
-        currentUrl={resolvedCurrentUrl}
-        linkTarget={linkTarget}
-        linkRel={linkRel}
-        stockLabel={stockState.label}
-        stockTone={stockState.tone as any}
-        variantCount={variantCount}
-        sellerOfferCount={sellerOfferCount}
-        reviewAverage={reviewMeta?.average ?? null}
-        reviewCount={reviewMeta?.count ?? null}
-        deliveryLabel={deliveryPromise?.label ?? null}
-        deliveryCutoffText={deliveryPromise?.cutoffText ?? null}
-        soldCountLabel={soldCountLabel}
-        showHotSales={showHotSales}
-        imageBadges={imageBadges}
-        mediaNode={
-          <div
-            className="h-full w-full"
-            onMouseMove={handleImagePointerMove}
-            onMouseLeave={handleImagePointerLeave}
-          >
-            <BlurhashImage
-              src={image?.imageUrl ?? ""}
-              blurHash={image?.blurHashUrl ?? ""}
-              alt={titleText}
-              sizes="(max-width: 640px) 50vw, 25vw"
+    <div ref={impressionRef as any} className="h-full">
+      <article
+        role="link"
+        tabIndex={0}
+        onClick={openCardIfAllowed}
+        onKeyDown={onCardKeyDown}
+        data-clickable-container="true"
+        className="flex h-full flex-col overflow-hidden rounded-[8px] bg-white shadow-[0_8px_20px_rgba(20,24,27,0.06)]"
+      >
+        <div className="flex h-full flex-col">
+          <div className="relative aspect-[1/1] overflow-hidden bg-[#fafafa]">
+            {imageBadges}
+            <div
               className="h-full w-full"
-              imageClassName="object-cover"
-            />
-          </div>
-        }
-        priceNode={
-          salePrice ? (
-            <div className="flex flex-wrap items-end gap-2 pt-0.5">
-              <StorefrontPrice valueExVat={displayPriceValue} tone={saleActive ? "sale" : "default"} size="md" />
-              {saleActive && compareAtPrice ? (
-                <p className="text-[11px] font-medium leading-none text-[#8b94a3] line-through">
-                  {compareAtPrice}
-                </p>
-              ) : null}
+              onMouseMove={handleImagePointerMove}
+              onMouseLeave={handleImagePointerLeave}
+            >
+              <BlurhashImage
+                src={image?.imageUrl ?? ""}
+                blurHash={image?.blurHashUrl ?? ""}
+                alt={titleText}
+                sizes={PRODUCT_CARD_GRID_IMAGE_SIZES}
+                className="h-full w-full"
+                imageClassName="object-cover"
+              />
             </div>
-          ) : (
-            <p className="pt-0.5 text-[12px] text-[#8b94a3]">Price unavailable</p>
-          )
-        }
-        actionNode={
-          <button
-            type="button"
-            data-ignore-card-open="true"
-            onMouseDown={(event) => event.stopPropagation()}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={handleAddDefaultVariantToCart}
-            disabled={cartBusy}
-            className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
-            aria-label="Add default variant to cart"
-          >
-            <CartPlusIcon />
-            <span className="whitespace-nowrap sm:hidden">Add</span>
-            <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
-            {cartCount > 0 ? (
-              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
-                {cartCount}
-              </span>
+          </div>
+
+          <div className="flex flex-1 flex-col space-y-1.5 px-3 py-3 sm:px-4 sm:py-4">
+            <h2 title={titleText} style={titleClampStyle} className="text-[12px] font-normal leading-[1.2] text-[#202020] sm:text-[15px]">
+              {titleText}
+            </h2>
+
+            {selectedVariantLabel ? (
+              <p className="text-[10px] font-medium leading-none text-[#8b94a3] sm:text-[11px]">{selectedVariantLabel}</p>
             ) : null}
-            {cartBurstKey ? (
-              <span className="absolute -top-3 right-2 animate-bevgo-pop text-[10px] font-semibold text-[#cbb26b]">
-                +1
-              </span>
+
+            {resolvedBrandLabel || resolvedVendorLabel ? (
+              <div className="flex flex-wrap items-center gap-2 text-[10px] font-normal leading-none sm:text-[11px]">
+                {resolvedBrandLabel ? (
+                  renderBrandLink ? (
+                    <Link
+                      href={resolvedBrandHref}
+                      target={linkTarget}
+                      rel={linkRel}
+                      prefetch={false}
+                      scroll={false}
+                      onClick={(event) => event.stopPropagation()}
+                      className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
+                    >
+                      {resolvedBrandLabel}
+                    </Link>
+                  ) : (
+                    <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">{resolvedBrandLabel}</span>
+                  )
+                ) : null}
+                {resolvedBrandLabel && resolvedVendorLabel ? <span className="text-[#d6d6d6]">•</span> : null}
+                {resolvedVendorLabel ? (
+                  renderVendorLink ? (
+                    <Link
+                      href={resolvedVendorHref}
+                      target={linkTarget}
+                      rel={linkRel}
+                      prefetch={false}
+                      scroll={false}
+                      onClick={(event) => event.stopPropagation()}
+                      className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
+                    >
+                      {resolvedVendorLabel}
+                    </Link>
+                  ) : (
+                    <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">{resolvedVendorLabel}</span>
+                  )
+                ) : null}
+              </div>
             ) : null}
-          </button>
-        }
-        onCardClick={openCardIfAllowed}
-        onCardKeyDown={onCardKeyDown}
-      />
+
+            <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-medium uppercase tracking-[0.08em] sm:gap-2 sm:text-[10px]">
+              {stockState.label ? (
+                <span
+                  className={
+                    stockState.tone === "success"
+                      ? "text-[#1a8553]"
+                      : stockState.tone === "danger"
+                        ? "text-[#b91c1c]"
+                        : stockState.tone === "warning"
+                          ? "text-[#b45309]"
+                          : "text-[#57636c]"
+                  }
+                >
+                  {stockState.label}
+                </span>
+              ) : null}
+              {stockState.label && (typeof variantCount === "number" || (sellerOfferCount ?? 0) > 1) ? <span className="text-[#d6d6d6]">•</span> : null}
+              {typeof variantCount === "number" ? <span>{variantCount} variants</span> : null}
+              {typeof variantCount === "number" && (sellerOfferCount ?? 0) > 1 ? <span className="text-[#d6d6d6]">•</span> : null}
+              {(sellerOfferCount ?? 0) > 1 ? <span>{sellerOfferCount} sellers</span> : null}
+              {reviewMeta ? (
+                <>
+                  {(stockState.label || typeof variantCount === "number" || (sellerOfferCount ?? 0) > 1) ? <span className="text-[#d6d6d6]">•</span> : null}
+                  <span className="inline-flex items-center gap-0.5">
+                    {Array.from({ length: 5 }).map((_, index) => (
+                      <StarIcon key={`${titleText}-grid-star-${index}`} filled={index < reviewStars} />
+                    ))}
+                    <span className="ml-1 text-[#4a4545]">
+                      {reviewMeta.average.toFixed(1)} ({reviewMeta.count})
+                    </span>
+                  </span>
+                </>
+              ) : (
+                <span className="text-[#8b94a3]">No reviews yet</span>
+              )}
+            </div>
+
+            {deliveryLabel ? (
+              <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold normal-case tracking-normal sm:text-[11px]">
+                <span className={deliveryPillClass}>
+                  {deliveryLabel}
+                </span>
+                {deliveryCutoffText ? <span className="text-[#8b94a3]">{deliveryCutoffText}</span> : null}
+              </div>
+            ) : null}
+
+            {soldCountLabel ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-semibold normal-case tracking-normal sm:text-[11px]">
+                <span className={showHotSales ? "inline-flex items-center gap-1 text-[#f97316]" : "text-[#57636c]"}>
+                  {showHotSales ? <FlameIcon /> : null}
+                  {soldCountLabel}
+                </span>
+              </div>
+            ) : null}
+
+            {salePrice ? (
+              <div className="mt-auto flex flex-wrap items-end gap-2 pt-2">
+                <StorefrontPrice valueExVat={displayPriceValue} tone={saleActive ? "sale" : "default"} size="md" />
+                {saleActive && compareAtPrice ? (
+                  <p className="text-[11px] font-medium leading-none text-[#8b94a3] line-through">
+                    {compareAtPrice}
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="mt-auto pt-2 text-[12px] text-[#8b94a3]">Price unavailable</p>
+            )}
+
+            <div className="mt-2.5 flex items-stretch gap-2 sm:mt-3">
+              <button
+                type="button"
+                data-ignore-card-open="true"
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={handleAddDefaultVariantToCart}
+                disabled={cartBusy}
+                className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
+                aria-label="Add default variant to cart"
+              >
+                <CartPlusIcon />
+                <span className="whitespace-nowrap sm:hidden">Add</span>
+                <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
+                {cartCount > 0 ? (
+                  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
+                    {cartCount}
+                  </span>
+                ) : null}
+                {cartBurstKey ? (
+                  <span className="absolute -top-3 right-2 animate-bevgo-pop text-[10px] font-semibold text-[#cbb26b]">
+                    +1
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          </div>
+        </div>
+      </article>
     </div>
   );
 }
@@ -1519,7 +1698,7 @@ export function ProductsResults({
   sponsoredPlacement?: string;
   sponsoredContext?: { category?: string; subCategory?: string; search?: string };
 }) {
-  const [items, setItems] = useState(initialItems);
+  const [items, setItems] = useState(() => initialItems.filter(hasShopperFacingProductImage));
   const [sponsoredItems, setSponsoredItems] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
@@ -1548,7 +1727,7 @@ export function ProductsResults({
   }, []);
 
   useEffect(() => {
-    setItems(initialItems);
+    setItems(initialItems.filter(hasShopperFacingProductImage));
   }, [initialItems]);
 
   useEffect(() => {
@@ -1721,7 +1900,9 @@ export function ProductsResults({
 
       const response = await fetch(buildProductsApiUrl(params));
       const payload = (await response.json()) as { items?: ProductItem[]; groups?: Array<{ items?: ProductItem[] }>; count?: number; total?: number };
-      const raw = payload.items ?? payload.groups?.flatMap((group) => group.items ?? []) ?? [];
+      const raw = (payload.items ?? payload.groups?.flatMap((group) => group.items ?? []) ?? []).filter(
+        hasShopperFacingProductImage,
+      );
       const merged = new Map<string, ProductItem>();
 
       for (const item of [...items, ...raw]) {
@@ -1828,10 +2009,15 @@ export function ProductsResults({
   }
 
   return (
-    <div className="space-y-4">
+      <div className="space-y-4">
           {currentView === "list" ? (
         <div className="space-y-4">
-          {sortedItems.map((item) => (
+          {sortedItems.map((item, index) => (
+          <DeferredProductCard
+                key={item.id ?? item.data?.docId}
+                eager={index < DEFERRED_CARD_EAGER_COUNT_LIST}
+                minHeight={248}
+              >
           <BrowseProductCard
                 key={item.id ?? item.data?.docId}
                 item={item}
@@ -1846,11 +2032,17 @@ export function ProductsResults({
                 cartBurstKey={cartBurstKey}
                 shopperArea={shopperArea}
               />
+              </DeferredProductCard>
             ))}
           </div>
         ) : (
         <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-4">
-          {sortedItems.map((item) => (
+          {sortedItems.map((item, index) => (
+            <DeferredProductCard
+              key={item.id ?? item.data?.docId}
+              eager={index < DEFERRED_CARD_EAGER_COUNT_GRID}
+              minHeight={460}
+            >
             <BrowseProductCard
               key={item.id ?? item.data?.docId}
               item={item}
@@ -1865,6 +2057,7 @@ export function ProductsResults({
               cartBurstKey={cartBurstKey}
               shopperArea={shopperArea}
             />
+            </DeferredProductCard>
           ))}
         </div>
       )}

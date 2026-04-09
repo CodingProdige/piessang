@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
 import { stripeRequest } from "@/lib/payments/stripe";
+import { buildCardPresentationMetadata } from "@/lib/payments/card-presentation";
 
 /* ---------- helpers ---------- */
 const ok = (p = {}, s = 200) =>
@@ -43,6 +44,10 @@ export async function POST(req) {
     }
 
     const userData = snap.data() || {};
+    const cardPresentation =
+      userData?.paymentMethods?.cardPresentation && typeof userData.paymentMethods.cardPresentation === "object"
+        ? userData.paymentMethods.cardPresentation
+        : {};
     const stripeCustomerId = String(
       userData?.paymentMethods?.stripeCustomerId ||
         userData?.billing?.stripeCustomerId ||
@@ -62,10 +67,25 @@ export async function POST(req) {
         expiryMonth: String(paymentMethod?.card?.exp_month || "").padStart(2, "0"),
         expiryYear: String(paymentMethod?.card?.exp_year || ""),
         status: "active",
+        ...(cardPresentation[String(paymentMethod?.id || "")] || buildCardPresentationMetadata({
+          cardId: String(paymentMethod?.id || ""),
+          brand: String(paymentMethod?.card?.brand || "").toUpperCase(),
+          last4: String(paymentMethod?.card?.last4 || ""),
+        })),
       }));
     } else {
       const cards = userData.paymentMethods?.cards ?? [];
-      activeCards = cards.filter((c) => c.status === "active");
+      activeCards = cards
+        .filter((c) => c.status === "active")
+        .map((card) => ({
+          ...card,
+          ...(cardPresentation[String(card?.id || card?.card_id || "")] || buildCardPresentationMetadata({
+            cardId: String(card?.id || card?.card_id || ""),
+            brand: String(card?.brand || "").toUpperCase(),
+            last4: String(card?.last4 || ""),
+            themeKey: card?.themeKey,
+          })),
+        }));
     }
 
     return ok({

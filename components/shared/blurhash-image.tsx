@@ -31,11 +31,13 @@ export function BlurhashImage({
   imageStyle,
 }: BlurhashImageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const showLoadingFallback = Boolean(src) && !loaded;
+  const [loadState, setLoadState] = useState<"loading" | "loaded" | "error">("loading");
+  const hasBlurHash = Boolean(blurHash);
+  const showLoadingFallback = Boolean(src) && !hasBlurHash && loadState === "loading";
+  const showErrorFallback = Boolean(src) && !hasBlurHash && loadState === "error";
 
   useEffect(() => {
-    setLoaded(false);
+    setLoadState(src ? "loading" : "error");
   }, [src, blurHash]);
 
   useEffect(() => {
@@ -73,45 +75,83 @@ export function BlurhashImage({
 
   return (
     <div className={`relative overflow-hidden bg-white ${className}`}>
-      {showLoadingFallback && !blurHash ? (
+      {showLoadingFallback ? (
         <div
           aria-hidden="true"
-          className="absolute inset-0 overflow-hidden rounded-inherit bg-[#f5f1e8]"
+          className="absolute inset-0 z-[1] overflow-hidden rounded-inherit bg-[#f1f3f5]"
         >
+          <div className="absolute inset-0 animate-pulse bg-[linear-gradient(180deg,rgba(255,255,255,0.34),rgba(225,229,234,0.9))]" />
           <div className="absolute inset-y-0 left-[-40%] w-[40%] animate-[piessang-image-shimmer_1.25s_ease-in-out_infinite] bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.82),transparent)]" />
         </div>
       ) : null}
-      {blurHash ? (
+      {hasBlurHash ? (
         <canvas
           ref={canvasRef}
           aria-hidden="true"
           className={[
             "absolute inset-0 h-full w-full object-cover transition-opacity duration-300",
-            loaded ? "opacity-0" : "opacity-100",
+            loadState === "loaded" ? "opacity-0" : "opacity-100",
           ].join(" ")}
           style={imageStyle}
         />
       ) : null}
       {src ? (
-        <Image
-          src={src}
-          alt={alt}
-          fill
-          sizes={sizes}
-          priority={priority}
-          className={[
-            "object-cover transition-opacity duration-300",
-            loaded ? "opacity-100" : "opacity-0",
-            imageClassName,
-          ].join(" ")}
-          style={imageStyle}
-          onLoad={() => setLoaded(true)}
-          onError={() => setLoaded(true)}
-          onClick={onClick}
-        />
+        <>
+          <Image
+            src={src}
+            alt={alt}
+            fill
+            sizes={sizes}
+            priority={priority}
+            className={[
+              "object-cover transition-opacity duration-300",
+              loadState === "loaded" ? "opacity-100" : "opacity-0",
+              imageClassName,
+            ].join(" ")}
+            style={imageStyle}
+            onLoad={() => setLoadState("loaded")}
+            onError={() => setLoadState("error")}
+            onClick={onClick}
+          />
+          {showErrorFallback ? (
+            <div className="absolute inset-0 z-[1] flex h-full w-full items-center justify-center bg-[#f1f3f5]">
+              <div className="flex items-center justify-center rounded-full border border-black/5 bg-white/80 p-3 text-[#a1a8b3] shadow-[0_8px_18px_rgba(20,24,27,0.06)]">
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  className="h-5 w-5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="3" y="5" width="18" height="14" rx="2" />
+                  <circle cx="9" cy="10" r="1.5" />
+                  <path d="M21 15l-4.2-4.2a1 1 0 0 0-1.4 0L9 17" />
+                </svg>
+              </div>
+            </div>
+          ) : null}
+        </>
       ) : (
-        <div className={["flex h-full w-full items-center justify-center bg-white text-[13px] text-[#8b94a3]", fallbackClassName].join(" ")}>
-          No image available
+        <div className={["flex h-full w-full items-center justify-center bg-[#f1f3f5]", fallbackClassName].join(" ")}>
+          <div className="flex items-center justify-center rounded-full border border-black/5 bg-white/80 p-3 text-[#a1a8b3] shadow-[0_8px_18px_rgba(20,24,27,0.06)]">
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <circle cx="9" cy="10" r="1.5" />
+              <path d="M21 15l-4.2-4.2a1 1 0 0 0-1.4 0L9 17" />
+            </svg>
+          </div>
         </div>
       )}
     </div>

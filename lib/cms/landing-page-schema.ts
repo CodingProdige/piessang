@@ -29,6 +29,7 @@ export type LandingPromoTile = {
 export type LandingFixedHeroImage = {
   imageUrl: string;
   href: string;
+  blurHashUrl?: string;
 };
 
 export type LandingFixedHero = {

@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
+import { buildCardPresentationMetadata } from "@/lib/payments/card-presentation";
 
 export async function POST(req) {
   try {
@@ -28,8 +29,9 @@ export async function POST(req) {
       merchantTransactionId
     } = await req.json();
 
+    const cardId = `card_${Date.now()}`;
     const card = {
-      card_id: `card_${Date.now()}`,
+      card_id: cardId,
       token,
       brand,
       last4,
@@ -38,6 +40,7 @@ export async function POST(req) {
       peachTransactionId,
       merchantTransactionId,
       isActive: true,
+      themeKey: buildCardPresentationMetadata({ cardId, brand, last4 }).themeKey,
       lastCharged: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

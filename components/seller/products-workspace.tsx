@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
 import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
@@ -185,6 +186,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+  const [bulkNotice, setBulkNotice] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [rejectionModalItem, setRejectionModalItem] = useState<ProductItem | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<{
@@ -275,6 +277,12 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
 
   useOutsideDismiss(bulkMenuOpen, () => setBulkMenuOpen(false), { refs: [bulkMenuRef] });
 
+  useEffect(() => {
+    if (!bulkNotice) return undefined;
+    const timeoutId = window.setTimeout(() => setBulkNotice(null), 2400);
+    return () => window.clearTimeout(timeoutId);
+  }, [bulkNotice]);
+
   const stats = useMemo(() => {
     const totals = {
       all: items.length,
@@ -309,6 +317,22 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
     () => rows.filter((row) => selectedIds.includes(row.id)),
     [rows, selectedIds],
   );
+  const selectedStatuses = useMemo(
+    () => selectedRows.map((row) => normalizeStatus(row.data)),
+    [selectedRows],
+  );
+  const canBulkPublish = useMemo(
+    () =>
+      selectedRows.length > 0 &&
+      selectedStatuses.every((status) => status === "draft" || status === "rejected"),
+    [selectedRows.length, selectedStatuses],
+  );
+  const canBulkDraft = useMemo(
+    () =>
+      selectedRows.length > 0 &&
+      selectedStatuses.some((status) => status !== "draft"),
+    [selectedRows.length, selectedStatuses],
+  );
 
   function getPublishBlockingReasons(item: ProductItem) {
     const reasons: string[] = [];
@@ -330,8 +354,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
     }
     if (variants.length === 0) reasons.push("At least one variant");
     if (fulfillmentMode === "seller") {
-      if (!String(item.data?.fulfillment?.lead_time_days ?? "").trim()) reasons.push("Lead time");
-      if (!String(item.data?.fulfillment?.cutoff_time ?? "").trim()) reasons.push("Cutoff time");
+      if (!deliverySettingsReady) reasons.push("Delivery settings");
     }
     return reasons;
   }
@@ -373,6 +396,13 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
 
     setBulkBusy(true);
     setBulkMessage(null);
+    setBulkNotice({
+      tone: "info",
+      message:
+        nextStatus === "active"
+          ? `Submitting ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} for review...`
+          : `Moving ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} to draft...`,
+    });
     try {
       const results = await Promise.allSettled(
         selectedIds.map((productId) =>
@@ -413,9 +443,18 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
           ? `Submitted ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} for review.`
           : `Moved ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} to draft.`,
       );
+      setBulkNotice({
+        tone: "success",
+        message:
+          nextStatus === "active"
+            ? `Submitted ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} for review.`
+            : `Moved ${selectedIds.length} product${selectedIds.length === 1 ? "" : "s"} to draft.`,
+      });
       await loadProducts();
     } catch (cause) {
-      setBulkMessage(cause instanceof Error ? cause.message : "Unable to update selected products.");
+      const message = cause instanceof Error ? cause.message : "Unable to update selected products.";
+      setBulkMessage(message);
+      setBulkNotice({ tone: "error", message });
     } finally {
       setBulkBusy(false);
     }
@@ -518,6 +557,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
 
   return (
     <div className="space-y-4">
+      <AppSnackbar notice={bulkNotice} />
       <section className="flex flex-col gap-3 rounded-[8px] border border-black/5 bg-white px-4 py-4 shadow-[0_8px_24px_rgba(20,24,27,0.05)] lg:flex-row lg:items-center lg:justify-between">
         <p className="text-[12px] text-[#57636c]">
           {activeRowCount} product{activeRowCount === 1 ? "" : "s"} visible
@@ -581,31 +621,36 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                   <button
                     type="button"
                     onClick={() => setBulkMenuOpen((current) => !current)}
-                    className="inline-flex h-8 items-center gap-1 rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
+                    disabled={bulkBusy || deleteProgress !== null}
+                    className="inline-flex h-8 items-center gap-1 rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-50"
                   aria-haspopup="menu"
                   aria-expanded={bulkMenuOpen}
                 >
-                  Bulk actions
+                  {bulkBusy ? "Working..." : "Bulk actions"}
                   <ChevronDownIcon className="h-3.5 w-3.5" />
                 </button>
                 {bulkMenuOpen ? (
                   <div className="absolute right-0 top-full z-20 mt-2 w-44 rounded-[8px] border border-black/10 bg-white p-1 shadow-[0_16px_36px_rgba(20,24,27,0.12)]">
-                    <button
-                      type="button"
-                      onClick={() => void applyBulkStatus("active")}
-                      disabled={bulkBusy || deleteProgress !== null}
-                      className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5] disabled:opacity-60"
-                    >
-                      Publish selected
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void applyBulkStatus("draft")}
-                      disabled={bulkBusy || deleteProgress !== null}
-                      className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5] disabled:opacity-60"
-                    >
-                      Set as draft
-                    </button>
+                    {canBulkPublish ? (
+                      <button
+                        type="button"
+                        onClick={() => void applyBulkStatus("active")}
+                        disabled={bulkBusy || deleteProgress !== null}
+                        className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5] disabled:opacity-60"
+                      >
+                        Publish selected
+                      </button>
+                    ) : null}
+                    {canBulkDraft ? (
+                      <button
+                        type="button"
+                        onClick={() => void applyBulkStatus("draft")}
+                        disabled={bulkBusy || deleteProgress !== null}
+                        className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5] disabled:opacity-60"
+                      >
+                        Set as draft
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => {

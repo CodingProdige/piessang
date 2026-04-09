@@ -181,6 +181,8 @@ function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelectio
         stateProvinceRegion: deliveryAddress?.stateProvinceRegion || deliveryAddress?.province || "",
         postalCode: deliveryAddress?.postalCode || "",
         country: deliveryAddress?.country || "South Africa",
+        latitude: deliveryAddress?.latitude == null ? null : Number(deliveryAddress.latitude),
+        longitude: deliveryAddress?.longitude == null ? null : Number(deliveryAddress.longitude),
       }
     : null;
 
@@ -694,11 +696,12 @@ export async function POST(req){
         product_snapshot: enrichedProductSnapshot,
       };
 
+      const continueSellingOutOfStock = Boolean(liveVar?.placement?.continue_selling_out_of_stock);
       const variantUnavailable =
         !liveVar ||
         liveProd?.placement?.isActive === false ||
         liveProd?.moderation?.status === "blocked" ||
-        getVariantAvailableQuantity(liveVar) <= 0;
+        (!continueSellingOutOfStock && getVariantAvailableQuantity(liveVar) <= 0);
 
       if (variantUnavailable) {
         clean.availability = {

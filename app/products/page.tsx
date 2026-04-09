@@ -7,6 +7,10 @@ import { ProductsToolbar } from "@/components/products/products-toolbar";
 import { MobileProductFilters } from "@/components/products/mobile-filters";
 import { PriceRangeFilter } from "@/components/products/price-range-filter";
 import { ProductsResults } from "@/components/products/products-results";
+import {
+  PRODUCT_CARD_GRID_IMAGE_SIZES,
+  PRODUCT_CARD_LIST_IMAGE_SIZES,
+} from "@/components/products/products-results";
 import { ResultsCount } from "@/components/products/results-count";
 import { SingleProductView } from "@/components/products/single-product-view";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
@@ -228,6 +232,8 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
     if (typeof value === "string" && value) {
       if (key === "unique_id") {
         params.set("id", value);
+      } else if (key === "ids") {
+        params.set("ids", value);
       } else if (key === "vendor") {
         params.set("sellerSlug", value);
         params.set("vendor", value);
@@ -237,6 +243,8 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
     } else if (Array.isArray(value) && value[0]) {
       if (key === "unique_id") {
         params.set("id", value[0]);
+      } else if (key === "ids") {
+        params.set("ids", value[0]);
       } else if (key === "vendor") {
         params.set("sellerSlug", value[0]);
         params.set("vendor", value[0]);
@@ -376,11 +384,15 @@ function getBrandKey(item: ProductItem) {
 }
 
 function getPageTitle(searchParams: Record<string, SearchParamValue>) {
+  const personalized = currentParam(searchParams, "personalized");
   const category = currentParam(searchParams, "category");
   const subCategory = currentParam(searchParams, "subCategory");
   const vendor = currentParam(searchParams, "vendor");
   const brand = currentParam(searchParams, "brand");
 
+  if (personalized === "recently-viewed") return "Continue browsing";
+  if (personalized === "recommended") return "Recommended for you";
+  if (personalized === "search-history") return "Inspired by your searches";
   if (vendor) return humanizeSlug(vendor);
   if (brand) return humanizeSlug(brand);
   if (subCategory) return humanizeSlug(subCategory);
@@ -840,7 +852,7 @@ function ProductCard({
               src={image?.imageUrl ?? ""}
               blurHash={image?.blurHashUrl ?? ""}
               alt={titleText}
-              sizes="(max-width: 640px) 100vw, 180px"
+              sizes={PRODUCT_CARD_LIST_IMAGE_SIZES}
               className="h-full w-full"
               imageClassName="object-cover"
             />
@@ -915,7 +927,7 @@ function ProductCard({
           src={image?.imageUrl ?? ""}
           blurHash={image?.blurHashUrl ?? ""}
           alt={titleText}
-          sizes="(max-width: 640px) 100vw, 25vw"
+          sizes={PRODUCT_CARD_GRID_IMAGE_SIZES}
           className="h-full w-full"
           imageClassName="object-cover"
         />
@@ -985,16 +997,61 @@ export async function ProductsPage({
   const origin = `${proto}://${host}`;
 
   const resolvedSearchParams = await Promise.resolve(searchParams);
+  const requestedUniqueId = currentParam(resolvedSearchParams, "unique_id") || currentParam(resolvedSearchParams, "id");
+  if (requestedUniqueId) {
+    const payload = await fetchProducts(resolvedSearchParams, origin);
+    const singleItem = payload.data ? { id: payload.id, data: payload.data } : null;
+
+    if (singleItem) {
+      const currentVariantId = currentParam(resolvedSearchParams, "variant_id");
+      const singleProductBackHref = buildProductsHref(resolvedSearchParams, { id: undefined, unique_id: undefined });
+      const sellerUnavailable = Boolean(singleItem.data?.seller_unavailable);
+
+      if (sellerUnavailable) {
+        const unavailableMessage =
+          singleItem.data?.seller_unavailable_reason_message ||
+          "This seller is no longer open for business on our marketplace.";
+
+        return (
+          <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
+            <section className="rounded-[8px] bg-white p-6 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller unavailable</p>
+              <h1 className="mt-2 text-[28px] font-semibold leading-tight text-[#202020]">
+                This seller is no longer open for business on our marketplace.
+              </h1>
+              <p className="mt-2 text-[13px] leading-[1.7] text-[#57636c]">{unavailableMessage}</p>
+              <div className="mt-4 flex justify-center">
+                <Link
+                  href="/products"
+                  scroll={false}
+                  className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b]"
+                >
+                  Back to products
+                </Link>
+              </div>
+            </section>
+          </PageBody>
+        );
+      }
+
+      return (
+        <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
+          <SingleProductView item={singleItem} backHref={singleProductBackHref} selectedVariantId={currentVariantId} />
+        </PageBody>
+      );
+    }
+  }
+
   const [payload, catalogPayload] = await Promise.all([
     fetchProducts(resolvedSearchParams, origin),
     fetchProducts({ isActive: "true", limit: "9999" }, origin),
   ]);
   const rawItems = payload.items ?? payload.groups?.flatMap((group) => group.items ?? []) ?? [];
+
   const catalogItems = catalogPayload.items ?? catalogPayload.groups?.flatMap((group) => group.items ?? []) ?? [];
-  const singleItem = payload.data ? { id: payload.id, data: payload.data } : null;
   const items = rawItems.filter((item): item is ProductItem => Boolean(item?.data));
   const placement = currentParam(resolvedSearchParams, "search") ? "search_results" : "category_grid";
-  const displayItems = singleItem ? [singleItem] : items;
+  const displayItems = items;
   const countItems = catalogItems.filter((item): item is ProductItem => Boolean(item?.data));
   const options = payload.options ?? {};
   const title = payload.data?.product?.title ?? getPageTitle(resolvedSearchParams);
@@ -1025,7 +1082,7 @@ export async function ProductsPage({
   const currentMinRating = currentNumberParam(resolvedSearchParams, "minRating");
   const currentView = currentParam(resolvedSearchParams, "view") === "list" ? "list" : "grid";
   const currentSort = currentParam(resolvedSearchParams, "sort") ?? "relevance";
-  const currentVariantId = currentParam(resolvedSearchParams, "variant_id");
+  const personalizedMode = currentParam(resolvedSearchParams, "personalized");
   const imageSearchActive = currentParam(resolvedSearchParams, "imageSearch") === "true";
   const imageSearchLabel = currentParam(resolvedSearchParams, "imageLabel");
   const currentBrandCount = currentBrand ? brandCounts[currentBrand] ?? 0 : 0;
@@ -1061,44 +1118,6 @@ export async function ProductsPage({
           blurHashUrl: brandBannerRemote.blurHashUrl ?? null,
         }
       : null;
-  const singleProductBackHref = buildProductsHref(resolvedSearchParams, { id: undefined, unique_id: undefined });
-  const sellerUnavailable = Boolean(singleItem?.data?.seller_unavailable);
-
-  if (singleItem && sellerUnavailable) {
-    const unavailableMessage =
-      singleItem.data?.seller_unavailable_reason_message ||
-      "This seller is no longer open for business on our marketplace.";
-
-    return (
-      <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
-        <section className="rounded-[8px] bg-white p-6 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Seller unavailable</p>
-          <h1 className="mt-2 text-[28px] font-semibold leading-tight text-[#202020]">
-            This seller is no longer open for business on our marketplace.
-          </h1>
-          <p className="mt-2 text-[13px] leading-[1.7] text-[#57636c]">{unavailableMessage}</p>
-          <div className="mt-4 flex justify-center">
-            <Link
-              href="/products"
-              scroll={false}
-              className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b]"
-            >
-              Back to products
-            </Link>
-          </div>
-        </section>
-      </PageBody>
-    );
-  }
-
-  if (singleItem) {
-    return (
-      <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
-        <SingleProductView item={singleItem} backHref={singleProductBackHref} selectedVariantId={currentVariantId} />
-      </PageBody>
-    );
-  }
-
   const hasActiveFilters =
     Boolean(currentCategory) ||
     Boolean(currentSubCategory) ||
@@ -1209,6 +1228,21 @@ export async function ProductsPage({
         {imageSearchActive ? (
           <div className="mt-4 rounded-[16px] border border-[#e5dcc1] bg-[#fcfbf7] px-4 py-3 text-[13px] text-[#5f5a4a]">
             Showing visual matches{imageSearchLabel ? ` for "${imageSearchLabel}"` : ""}. Refine the results with filters if you want to narrow the match.
+          </div>
+        ) : null}
+        {!imageSearchActive && personalizedMode === "recently-viewed" ? (
+          <div className="mt-4 rounded-[16px] border border-[#e7e1d3] bg-[#faf8f3] px-4 py-3 text-[13px] text-[#5f5a4a]">
+            Showing the products you recently viewed.
+          </div>
+        ) : null}
+        {!imageSearchActive && personalizedMode === "recommended" ? (
+          <div className="mt-4 rounded-[16px] border border-[#e7e1d3] bg-[#faf8f3] px-4 py-3 text-[13px] text-[#5f5a4a]">
+            Showing products based on your recent browsing and search history.
+          </div>
+        ) : null}
+        {!imageSearchActive && personalizedMode === "search-history" ? (
+          <div className="mt-4 rounded-[16px] border border-[#e7e1d3] bg-[#faf8f3] px-4 py-3 text-[13px] text-[#5f5a4a]">
+            Showing products related to your recent searches.
           </div>
         ) : null}
       </section>
@@ -1357,7 +1391,7 @@ export async function ProductsPage({
           openInNewTab={openInNewTab}
           searchParams={resolvedSearchParams}
           totalCount={totalCount}
-          sponsoredPlacement={singleItem ? undefined : placement}
+          sponsoredPlacement={placement}
           sponsoredContext={{
             category: currentParam(resolvedSearchParams, "category") || undefined,
             subCategory: currentParam(resolvedSearchParams, "subCategory") || undefined,

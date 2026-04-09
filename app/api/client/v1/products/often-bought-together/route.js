@@ -4,12 +4,102 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
 
 function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
+}
+
+function tsToIso(v) {
+  return v && typeof v?.toDate === "function" ? v.toDate().toISOString() : v ?? null;
+}
+
+function normalizeTimestamps(doc) {
+  if (!doc || typeof doc !== "object") return doc;
+  const ts = doc.timestamps;
+  return {
+    ...doc,
+    ...(ts
+      ? {
+          timestamps: {
+            createdAt: tsToIso(ts.createdAt),
+            updatedAt: tsToIso(ts.updatedAt),
+          },
+        }
+      : {}),
+  };
+}
+
+function getPublicMarketplaceSource(doc) {
+  if (!doc || typeof doc !== "object") return doc;
+  const status = toStr(doc?.moderation?.status).toLowerCase();
+  const liveSnapshot =
+    doc?.live_snapshot && typeof doc.live_snapshot === "object"
+      ? normalizeTimestamps(doc.live_snapshot)
+      : null;
+  if (liveSnapshot && ["in_review", "draft", "rejected"].includes(status)) {
+    return liveSnapshot;
+  }
+  return doc;
+}
+
+function getSellerIdentifier(data) {
+  return toStr(
+    data?.seller?.sellerCode ||
+      data?.seller?.activeSellerCode ||
+      data?.seller?.groupSellerCode ||
+      data?.seller?.sellerSlug ||
+      data?.product?.sellerCode ||
+      data?.product?.sellerSlug ||
+      data?.product?.vendorSlug,
+  );
+}
+
+function applySellerDisplayData(data, sellerOwner) {
+  if (!sellerOwner || !sellerOwner.data) return data;
+  const seller = sellerOwner.data?.seller && typeof sellerOwner.data.seller === "object" ? sellerOwner.data.seller : {};
+  const sellerCode = toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode);
+  const vendorName = toStr(seller?.vendorName || seller?.groupVendorName || "");
+  const vendorDescription = toStr(seller?.vendorDescription || seller?.description || "");
+  const deliveryProfile = normalizeSellerDeliveryProfile(
+    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
+  );
+
+  return {
+    ...data,
+    seller: {
+      ...(data?.seller && typeof data.seller === "object" ? data.seller : {}),
+      sellerCode: sellerCode || null,
+      vendorName: vendorName || null,
+      vendorDescription: vendorDescription || null,
+      baseLocation: toStr(seller?.baseLocation || data?.seller?.baseLocation) || null,
+      sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug) || null,
+      activeSellerSlug: toStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug) || null,
+      groupSellerSlug: toStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug) || null,
+      deliveryProfile,
+    },
+    product: {
+      ...(data?.product && typeof data.product === "object" ? data.product : {}),
+      vendorName: vendorName || data?.product?.vendorName || null,
+      vendorDescription: vendorDescription || data?.product?.vendorDescription || null,
+      sellerCode: sellerCode || data?.product?.sellerCode || null,
+      sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.product?.sellerSlug) || null,
+    },
+  };
+}
+
+async function hydrateProductSellerData(db, data) {
+  const sellerIdentifier = getSellerIdentifier(data);
+  const sellerOwner =
+    (sellerIdentifier ? await findSellerOwnerByIdentifier(db, sellerIdentifier) : null) ||
+    (toStr(data?.seller?.sellerSlug || data?.product?.sellerSlug)
+      ? await findSellerOwnerBySlug(db, toStr(data?.seller?.sellerSlug || data?.product?.sellerSlug))
+      : null);
+  return applySellerDisplayData(data, sellerOwner);
 }
 
 function getCanonicalOfferBarcode(source) {
@@ -128,7 +218,7 @@ export async function GET(req) {
 
     const sourceDoc = await findProductDoc(db, productId);
     if (!sourceDoc) return err(404, "Not Found", "We could not find that product.");
-    const source = sourceDoc.data() || {};
+    const source = getPublicMarketplaceSource(normalizeTimestamps(sourceDoc.data() || {}));
     const sourceUniqueId = toStr(source?.product?.unique_id || productId);
     const sourceBarcode = getCanonicalOfferBarcode(source);
 
@@ -151,13 +241,13 @@ export async function GET(req) {
     for (const relatedId of rankedIds) {
       const relatedDoc = await findProductDoc(db, relatedId);
       if (!relatedDoc) continue;
-      const data = relatedDoc.data() || {};
+      const data = getPublicMarketplaceSource(normalizeTimestamps(relatedDoc.data() || {}));
       if (data?.placement?.isActive !== true) continue;
       const candidateBarcode = getCanonicalOfferBarcode(data);
       if (sourceBarcode && candidateBarcode && candidateBarcode === sourceBarcode) continue;
       items.push({
         id: relatedDoc.id,
-        data,
+        data: await hydrateProductSellerData(db, data),
         coPurchaseCount: coCounts.get(relatedId) || 0,
       });
     }
@@ -171,7 +261,10 @@ export async function GET(req) {
     if (pairingTerms.length > 0) {
       const fallbackSnap = await db.collection("products_v2").where("placement.isActive", "==", true).limit(120).get();
       const fallbackItems = fallbackSnap.docs
-        .map((docSnap) => ({ id: docSnap.id, data: docSnap.data() || {} }))
+        .map((docSnap) => ({
+          id: docSnap.id,
+          data: getPublicMarketplaceSource(normalizeTimestamps(docSnap.data() || {})),
+        }))
         .map((entry) => ({
           ...entry,
           pairingScore: scoreFallbackCandidate(source, entry.data, sourceKeywords, pairingTerms),
@@ -184,6 +277,10 @@ export async function GET(req) {
           data: entry.data,
           pairingScore: entry.pairingScore,
         }));
+
+      for (const item of fallbackItems) {
+        item.data = await hydrateProductSellerData(db, item.data);
+      }
 
       if (fallbackItems.length > 0) {
         return ok({ count: fallbackItems.length, items: fallbackItems, source: "catalog_pairing" });

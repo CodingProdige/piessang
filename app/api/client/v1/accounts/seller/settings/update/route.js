@@ -12,6 +12,7 @@ import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { encryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
 import { enqueueGoogleSyncForSeller } from "@/lib/integrations/google-sync-queue";
+import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
 import { NextResponse } from "next/server";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
@@ -273,6 +274,15 @@ export async function POST(req) {
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     const branding = parseBranding(data?.branding || data);
     const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
+    deliveryProfile.origin = await enrichLocationWithGeocode({
+      country: deliveryProfile.origin?.country,
+      region: deliveryProfile.origin?.region,
+      city: deliveryProfile.origin?.city,
+      suburb: deliveryProfile.origin?.suburb,
+      postalCode: deliveryProfile.origin?.postalCode,
+      latitude: deliveryProfile.origin?.latitude,
+      longitude: deliveryProfile.origin?.longitude,
+    });
     const payoutProfile = parsePayoutProfile(data?.payoutProfile || data?.payout || {});
     const encryptedPayoutProfile = encryptPayoutProfile(payoutProfile);
     const payoutProvider = "wise";

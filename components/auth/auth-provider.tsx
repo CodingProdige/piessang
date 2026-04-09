@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   GoogleAuthProvider,
@@ -514,6 +514,12 @@ export function AuthProvider({
   const sellerHasTeamMemberships = useMemo(() => hasSellerTeamMemberships(profile), [profile]);
   const activeSellerTeamMembership = useMemo(() => getActiveSellerManagedAccount(profile), [profile]);
   const sellerOwnsSellerAccount = useMemo(() => ownsSellerAccount(profile), [profile]);
+  const lastAuthUidRef = useRef<string | null>(initialAuthBootstrap.user?.uid ?? null);
+  const authReadyRef = useRef(Boolean(initialAuthBootstrap.user || initialAuthBootstrap.profile));
+
+  useEffect(() => {
+    authReadyRef.current = authReady;
+  }, [authReady]);
 
   const refreshProfile = useCallback(async () => {
     const activeUser = clientAuth.currentUser ?? user;
@@ -560,7 +566,13 @@ export function AuthProvider({
 
   useEffect(() => {
     const unsubscribe = onIdTokenChanged(clientAuth, async (nextUser) => {
-      setAuthReady(false);
+      const nextUid = nextUser?.uid ?? null;
+      const previousUid = lastAuthUidRef.current;
+      const authIdentityChanged = previousUid !== nextUid;
+      lastAuthUidRef.current = nextUid;
+      if (authIdentityChanged || !authReadyRef.current) {
+        setAuthReady(false);
+      }
       setUser(nextUser);
 
       if (!nextUser) {

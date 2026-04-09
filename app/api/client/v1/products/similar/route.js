@@ -4,12 +4,102 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
 
 function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
+}
+
+function tsToIso(v) {
+  return v && typeof v?.toDate === "function" ? v.toDate().toISOString() : v ?? null;
+}
+
+function normalizeTimestamps(doc) {
+  if (!doc || typeof doc !== "object") return doc;
+  const ts = doc.timestamps;
+  return {
+    ...doc,
+    ...(ts
+      ? {
+          timestamps: {
+            createdAt: tsToIso(ts.createdAt),
+            updatedAt: tsToIso(ts.updatedAt),
+          },
+        }
+      : {}),
+  };
+}
+
+function getPublicMarketplaceSource(doc) {
+  if (!doc || typeof doc !== "object") return doc;
+  const status = toStr(doc?.moderation?.status).toLowerCase();
+  const liveSnapshot =
+    doc?.live_snapshot && typeof doc.live_snapshot === "object"
+      ? normalizeTimestamps(doc.live_snapshot)
+      : null;
+  if (liveSnapshot && ["in_review", "draft", "rejected"].includes(status)) {
+    return liveSnapshot;
+  }
+  return doc;
+}
+
+function getSellerIdentifier(data) {
+  return toStr(
+    data?.seller?.sellerCode ||
+      data?.seller?.activeSellerCode ||
+      data?.seller?.groupSellerCode ||
+      data?.seller?.sellerSlug ||
+      data?.product?.sellerCode ||
+      data?.product?.sellerSlug ||
+      data?.product?.vendorSlug,
+  );
+}
+
+function applySellerDisplayData(data, sellerOwner) {
+  if (!sellerOwner || !sellerOwner.data) return data;
+  const seller = sellerOwner.data?.seller && typeof sellerOwner.data.seller === "object" ? sellerOwner.data.seller : {};
+  const sellerCode = toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode);
+  const vendorName = toStr(seller?.vendorName || seller?.groupVendorName || "");
+  const vendorDescription = toStr(seller?.vendorDescription || seller?.description || "");
+  const deliveryProfile = normalizeSellerDeliveryProfile(
+    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
+  );
+
+  return {
+    ...data,
+    seller: {
+      ...(data?.seller && typeof data.seller === "object" ? data.seller : {}),
+      sellerCode: sellerCode || null,
+      vendorName: vendorName || null,
+      vendorDescription: vendorDescription || null,
+      baseLocation: toStr(seller?.baseLocation || data?.seller?.baseLocation) || null,
+      sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug) || null,
+      activeSellerSlug: toStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug) || null,
+      groupSellerSlug: toStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug) || null,
+      deliveryProfile,
+    },
+    product: {
+      ...(data?.product && typeof data.product === "object" ? data.product : {}),
+      vendorName: vendorName || data?.product?.vendorName || null,
+      vendorDescription: vendorDescription || data?.product?.vendorDescription || null,
+      sellerCode: sellerCode || data?.product?.sellerCode || null,
+      sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.product?.sellerSlug) || null,
+    },
+  };
+}
+
+async function hydrateProductSellerData(db, data) {
+  const sellerIdentifier = getSellerIdentifier(data);
+  const sellerOwner =
+    (sellerIdentifier ? await findSellerOwnerByIdentifier(db, sellerIdentifier) : null) ||
+    (toStr(data?.seller?.sellerSlug || data?.product?.sellerSlug)
+      ? await findSellerOwnerBySlug(db, toStr(data?.seller?.sellerSlug || data?.product?.sellerSlug))
+      : null);
+  return applySellerDisplayData(data, sellerOwner);
 }
 
 function getCanonicalOfferBarcode(source) {
@@ -41,7 +131,7 @@ export async function GET(req) {
 
     const sourceDoc = await findProductDoc(db, productId);
     if (!sourceDoc) return err(404, "Not Found", "We could not find that product.");
-    const source = sourceDoc.data() || {};
+    const source = getPublicMarketplaceSource(normalizeTimestamps(sourceDoc.data() || {}));
     const sourceUniqueId = toStr(source?.product?.unique_id || productId);
     const sourceBarcode = getCanonicalOfferBarcode(source);
     const sourceCategory = toStr(source?.grouping?.category);
@@ -56,10 +146,10 @@ export async function GET(req) {
     }
 
     const snap = await query.limit(24).get();
-    const ranked = snap.docs
+    let ranked = snap.docs
       .map((docSnap) => ({
         id: docSnap.id,
-        data: docSnap.data() || {},
+        data: getPublicMarketplaceSource(normalizeTimestamps(docSnap.data() || {})),
       }))
       .filter((item) => {
         const candidateUniqueId = toStr(item?.data?.product?.unique_id || item?.id);
@@ -78,6 +168,13 @@ export async function GET(req) {
       })
       .sort((a, b) => b.similarityScore - a.similarityScore)
       .slice(0, 12);
+
+    ranked = await Promise.all(
+      ranked.map(async (item) => ({
+        ...item,
+        data: await hydrateProductSellerData(db, item.data),
+      })),
+    );
 
     return ok({ count: ranked.length, items: ranked });
   } catch (e) {

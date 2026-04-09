@@ -33,6 +33,50 @@ function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
 }
 
+function resolveCategoryIconKey(category: { slug?: string; title?: string }) {
+  const source = `${toStr(category?.slug)} ${toStr(category?.title)}`.toLowerCase();
+  if (source.includes("beverage") || source.includes("drink")) return "beverages";
+  if (source.includes("water")) return "water";
+  if (source.includes("snack")) return "snacks";
+  if (source.includes("sweet") || source.includes("candy") || source.includes("chocolate")) return "sweets";
+  if (source.includes("coffee") || source.includes("tea")) return "coffee";
+  if (source.includes("clean")) return "cleaning";
+  if (source.includes("health") || source.includes("beauty")) return "health";
+  if (source.includes("baby")) return "baby";
+  if (source.includes("pet")) return "pet";
+  if (source.includes("home")) return "home";
+  return "default";
+}
+
+function CategoryChipIcon({ category }: { category: { slug?: string; title?: string } }) {
+  const key = resolveCategoryIconKey(category);
+  const common = "h-4 w-4";
+  switch (key) {
+    case "beverages":
+      return <span className={common}>🥤</span>;
+    case "water":
+      return <span className={common}>💧</span>;
+    case "snacks":
+      return <span className={common}>🍿</span>;
+    case "sweets":
+      return <span className={common}>🍬</span>;
+    case "coffee":
+      return <span className={common}>☕</span>;
+    case "cleaning":
+      return <span className={common}>🧼</span>;
+    case "health":
+      return <span className={common}>🩺</span>;
+    case "baby":
+      return <span className={common}>🍼</span>;
+    case "pet":
+      return <span className={common}>🐾</span>;
+    case "home":
+      return <span className={common}>🏠</span>;
+    default:
+      return <span className={common}>🛍️</span>;
+  }
+}
+
 function toNum(value: unknown) {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -489,34 +533,24 @@ export function LandingPageLivePreview({
             .slice(0, 2);
           return (
             <PreviewSelectableShell key={section.id} blockId={section.id} label={label} selected={isSelected} onSelect={onSelectBlock} controls={controls}>
-              <SectionShell>
-                <div>
-                  <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Featured picks")}</p>
-                  <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
-                </div>
-                {selectedProducts.length ? (
-                  <div className="mt-4 grid grid-cols-2 gap-3 sm:gap-4">
-                    {selectedProducts.map((product, index) => (
-                      <div key={String(product?.id || index)} className="rounded-[8px] border border-black/6 bg-[#fbfbfb] p-3">
-                        <div className="aspect-square rounded-[8px] bg-white" />
-                        <p className="mt-3 line-clamp-2 text-[12px] font-semibold text-[#202020] sm:text-[13px]">{toStr(product?.data?.product?.title, "Product")}</p>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="mt-4 rounded-[8px] border border-dashed border-black/10 px-4 py-8 text-[13px] text-[#7a8594]">
-                    Select up to two products for this feature.
-                  </div>
-                )}
-              </SectionShell>
+              <ProductRailCarousel
+                title={toStr(section.props?.title, "Featured picks")}
+                subtitle={toStr(section.props?.subtitle)}
+                products={selectedProducts}
+                emptyMessage="Select up to two products for this feature."
+              />
             </PreviewSelectableShell>
           );
         }
 
         if (section.type === "category_chip_rail") {
-          const selectedCategories = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
-            ? categories.filter((category) => section.props.categorySlugs.includes(category.slug))
-            : categories.slice(0, 8);
+          const selectedCategorySlugs = Array.isArray(section.props?.categorySlugs)
+            ? section.props.categorySlugs.map((slug: unknown) => toStr(slug)).filter(Boolean)
+            : [];
+          const selectedCategories = (selectedCategorySlugs.length
+            ? categories.filter((category: any) => selectedCategorySlugs.includes(category.slug))
+            : categories
+          ).filter((category: any) => Number(category?.productCount || 0) > 0);
           return (
             <PreviewSelectableShell key={section.id} blockId={section.id} label={label} selected={isSelected} onSelect={onSelectBlock} controls={controls}>
               <SectionShell>
@@ -526,7 +560,8 @@ export function LandingPageLivePreview({
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2.5">
                   {selectedCategories.map((category) => (
-                    <div key={category.id} className="inline-flex min-h-10 items-center rounded-full border border-black/8 bg-[#fbfbfb] px-4 text-[13px] font-semibold text-[#202020]">
+                    <div key={category.id} className="inline-flex min-h-10 items-center gap-2 rounded-full border border-black/8 bg-[#fbfbfb] px-4 text-[13px] font-semibold text-[#202020]">
+                      <CategoryChipIcon category={category} />
                       {category.title}
                     </div>
                   ))}

@@ -99,7 +99,7 @@ function getItemQty(item) {
   return qty > 0 ? Math.trunc(qty) : 0;
 }
 
-function getItemLineTotalIncl(item) {
+function getItemProductRevenueIncl(item) {
   const lineTotals = item?.line_totals || {};
   const total = toNum(
     lineTotals.final_incl ??
@@ -221,7 +221,9 @@ function getLineStorageBand(item) {
 function buildSettlementLine(item, index, orderCreatedAt) {
   const identity = getItemSellerIdentity(item);
   const qty = getItemQty(item);
-  const lineTotalIncl = getItemLineTotalIncl(item);
+  // Settlement success fees must only ever apply to the product line itself.
+  // Seller/platform delivery charges live on order/cart totals and are excluded here.
+  const lineTotalIncl = getItemProductRevenueIncl(item);
   const successFeePercent = getItemSuccessFeePercent(item);
   const fulfilmentMode = getItemFulfilmentMode(item);
   const perUnitFulfilment = fulfilmentMode === "bevgo" ? getVariantFeeValue(item, "fulfilment_fee_incl") : 0;

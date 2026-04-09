@@ -23,7 +23,7 @@ const FOOTER_COLUMNS = [
   },
   {
     title: "Company",
-    items: ["About Piessang", "Sell on Piessang", "Seller fees and charges", "Terms", "Privacy"],
+    items: ["About Piessang", "Sell on Piessang", "Seller fees and charges", "Terms", "Privacy", "Sitemap"],
   },
 ];
 
@@ -95,12 +95,14 @@ export function PiessangFooter() {
                                           ? "/delivery"
                                           : item === "Returns"
                                             ? "/returns"
-                                            : item === "Payments"
+                                              : item === "Payments"
                                               ? "/payments"
                                               : item === "Privacy"
                                                 ? "/privacy"
                                                 : item === "Terms"
                                                   ? "/terms"
+                                                  : item === "Sitemap"
+                                                    ? "/sitemap.xml"
                                         : "/"
                         }
                         className="transition-colors hover:text-[#202020]"

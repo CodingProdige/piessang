@@ -3,6 +3,8 @@
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { SellerCatalogueEditor } from "@/app/seller/catalogue/new/page";
+import { ContentsquareReplayCaptureModal } from "@/components/seller/contentsquare-replay-capture-modal";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { formatMoneyExact } from "@/lib/money";
 
 type ReviewProduct = {
@@ -219,12 +221,16 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
   const [items, setItems] = useState<ReviewProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [snackbarNotice, setSnackbarNotice] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
   const [rejectTarget, setRejectTarget] = useState<ReviewProduct | null>(null);
   const [rejectIssueCode, setRejectIssueCode] = useState<string>("other");
   const [rejectFeedback, setRejectFeedback] = useState("");
   const [reviewModalProductId, setReviewModalProductId] = useState<string | null>(null);
+  const [replayTarget, setReplayTarget] = useState<ReviewProduct | null>(null);
 
   async function loadItems(options?: { silent?: boolean }) {
     const silent = Boolean(options?.silent);
@@ -266,17 +272,17 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      if (document.visibilityState === "visible" && !busyId) {
+      if (document.visibilityState === "visible" && !busyId && !bulkBusy) {
         void loadItems({ silent: true });
       }
     }, 15000);
 
     function handleWindowFocus() {
-      if (!busyId) void loadItems({ silent: true });
+      if (!busyId && !bulkBusy) void loadItems({ silent: true });
     }
 
     function handleVisibilityChange() {
-      if (document.visibilityState === "visible" && !busyId) {
+      if (document.visibilityState === "visible" && !busyId && !bulkBusy) {
         void loadItems({ silent: true });
       }
     }
@@ -289,7 +295,17 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
       window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [busyId]);
+  }, [busyId, bulkBusy]);
+
+  useEffect(() => {
+    setSelectedIds((current) => current.filter((id) => items.some((item) => item.id === id)));
+  }, [items]);
+
+  useEffect(() => {
+    if (!snackbarNotice) return undefined;
+    const timeoutId = window.setTimeout(() => setSnackbarNotice(null), 2600);
+    return () => window.clearTimeout(timeoutId);
+  }, [snackbarNotice]);
 
   const pendingCount = items.length;
 
@@ -356,6 +372,7 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
         setRejectIssueCode("other");
         setRejectFeedback("");
       }
+      setSelectedIds((current) => current.filter((id) => id !== productId));
       await loadItems();
       onQueueChanged?.();
       window.dispatchEvent(new CustomEvent("piessang:refresh-admin-badges"));
@@ -363,6 +380,83 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
       setError(cause instanceof Error ? cause.message : "Unable to update review outcome.");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function bulkApproveSelected() {
+    const targets = items.filter((item) => selectedIds.includes(item.id));
+    if (!targets.length) return;
+
+    setBulkBusy(true);
+    setBusyId(null);
+    setError(null);
+    setMessage(null);
+    setSnackbarNotice({
+      tone: "info",
+      message: `Approving ${targets.length} product${targets.length === 1 ? "" : "s"}...`,
+    });
+
+    try {
+      for (const product of targets) {
+        const productId = toStr(product?.id);
+        if (!productId) continue;
+
+        const fulfillmentMode = toStr(product?.data?.fulfillment?.mode, "seller").toLowerCase();
+        const isLiveUpdate = Boolean(product?.data?.live_snapshot);
+        const approvedStatus = fulfillmentMode === "bevgo" ? "awaiting_stock" : "published";
+
+        const response = await fetch("/api/catalogue/v1/products/product/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            unique_id: productId,
+            data: {
+              placement: {
+                isActive: approvedStatus === "published",
+              },
+              moderation: {
+                status: approvedStatus,
+                reason: null,
+                notes:
+                  fulfillmentMode === "bevgo"
+                    ? isLiveUpdate
+                      ? "Approved by Piessang. The product update is approved and now awaiting inbound stock before the changes go live."
+                      : "Approved by Piessang. Awaiting inbound stock before going live."
+                    : isLiveUpdate
+                      ? "Approved by Piessang. The product update has been approved and applied to the live listing."
+                      : "Approved by Piessang and published.",
+                reviewedAt: new Date().toISOString(),
+                reviewedBy: "system_admin",
+              },
+            },
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || `Unable to approve ${toStr(product?.data?.product?.title, "product")}.`);
+        }
+      }
+
+      setSelectedIds([]);
+      setMessage(
+        `Approved ${targets.length} product${targets.length === 1 ? "" : "s"} successfully.`,
+      );
+      setSnackbarNotice({
+        tone: "success",
+        message: `Approved ${targets.length} product${targets.length === 1 ? "" : "s"}.`,
+      });
+      await loadItems();
+      onQueueChanged?.();
+      window.dispatchEvent(new CustomEvent("piessang:refresh-admin-badges"));
+    } catch (cause) {
+      const nextError = cause instanceof Error ? cause.message : "Unable to approve selected products.";
+      setError(nextError);
+      setSnackbarNotice({
+        tone: "error",
+        message: nextError,
+      });
+    } finally {
+      setBulkBusy(false);
     }
   }
 
@@ -375,6 +469,8 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
   const reviewSellerSlug = useMemo(() => toStr(searchParams.get("seller")), [searchParams]);
 
   const cards = useMemo(() => items, [items]);
+  const selectedCount = selectedIds.length;
+  const allSelected = Boolean(cards.length) && selectedIds.length === cards.length;
   const reviewModalProduct = useMemo(
     () => cards.find((item) => item.id === reviewModalProductId) || null,
     [cards, reviewModalProductId],
@@ -416,8 +512,48 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
 
   return (
     <div className="space-y-4">
+      <AppSnackbar notice={snackbarNotice} />
+
       <div className="rounded-[8px] border border-black/5 bg-[#fafafa] px-4 py-3 text-[13px] text-[#57636c]">
-        {pendingCount} product{pendingCount === 1 ? "" : "s"} waiting for review.
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <span>{pendingCount} product{pendingCount === 1 ? "" : "s"} waiting for review.</span>
+          {cards.length ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="inline-flex items-center gap-2 text-[12px] font-medium text-[#202020]">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={(event) => setSelectedIds(event.target.checked ? cards.map((item) => item.id) : [])}
+                  className="h-4 w-4 rounded border-black/20"
+                />
+                Select all
+              </label>
+              {selectedCount ? (
+                <>
+                  <span className="text-[12px] text-[#57636c]">
+                    {selectedCount} selected
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void bulkApproveSelected()}
+                    disabled={bulkBusy || Boolean(busyId)}
+                    className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3.5 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {bulkBusy ? "Approving..." : `Approve selected${selectedCount ? ` (${selectedCount})` : ""}`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIds([])}
+                    disabled={bulkBusy}
+                    className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3.5 text-[12px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Clear
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {message ? (
@@ -451,11 +587,26 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
             const isLiveUpdate = Boolean(item?.data?.live_snapshot);
             const sellerOfferCount = Math.max(Number(item?.data?.seller_offer_count || 1), 1);
             const canonicalBarcode = toStr(item?.data?.canonical_offer_barcode || "");
+            const isSelected = selectedIds.includes(item.id);
 
             return (
               <section key={item.id} className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
                 <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                   <div className="flex min-w-0 gap-4">
+                    <label className="mt-1 inline-flex h-5 shrink-0 items-center">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(event) =>
+                          setSelectedIds((current) =>
+                            event.target.checked ? Array.from(new Set([...current, item.id])) : current.filter((id) => id !== item.id),
+                          )
+                        }
+                        disabled={bulkBusy}
+                        className="h-4 w-4 rounded border-black/20"
+                        aria-label={`Select ${title}`}
+                      />
+                    </label>
                     <div className="h-20 w-20 overflow-hidden rounded-[8px] border border-black/5 bg-[#f4f4f4]">
                       {image ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -518,8 +669,16 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
                     </button>
                     <button
                       type="button"
+                      onClick={() => setReplayTarget(item)}
+                      disabled={isBusy || bulkBusy}
+                      className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Save replay
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void updateReview(item, "approve")}
-                      disabled={isBusy}
+                      disabled={isBusy || bulkBusy}
                       className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {isBusy ? "Saving..." : "Approve"}
@@ -680,6 +839,32 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
           </div>
         </div>
       ) : null}
+
+      <ContentsquareReplayCaptureModal
+        open={Boolean(replayTarget)}
+        title={toStr(replayTarget?.data?.product?.title, "Save replay")}
+        defaults={
+          replayTarget
+            ? {
+                title: `Product review • ${toStr(replayTarget?.data?.product?.title, "Product")}`,
+                productSlug: "",
+                sellerSlug: reviewSellerSlug,
+                pagePath: replayTarget?.id ? `/products/${replayTarget.id}` : "",
+                issueType: "product review",
+                notes: replayTarget?.data?.live_snapshot
+                  ? "Replay captured from product update review flow."
+                  : "Replay captured from new product review flow.",
+              }
+            : undefined
+        }
+        onClose={() => setReplayTarget(null)}
+        onSaved={() =>
+          setSnackbarNotice({
+            tone: "success",
+            message: "Replay saved to Contentsquare tools.",
+          })
+        }
+      />
     </div>
   );
 }

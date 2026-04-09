@@ -493,6 +493,31 @@ export async function POST(req) {
       return err(400, "Empty Cart", "Cannot create order from empty cart.");
     }
 
+    const sellerDeliveryBreakdown = Array.isArray(cart?.totals?.seller_delivery_breakdown)
+      ? cart.totals.seller_delivery_breakdown
+      : [];
+    const unavailableSellerDeliveries = sellerDeliveryBreakdown.filter(
+      (entry) => entry?.applicable === false && String(entry?.delivery_type || "").trim().toLowerCase() === "unavailable",
+    );
+    if (!inStoreCollection && unavailableSellerDeliveries.length > 0) {
+      const sellerNames = unavailableSellerDeliveries
+        .map((entry) => String(entry?.seller_name || "Seller").trim())
+        .filter(Boolean);
+      return err(
+        400,
+        "Seller Delivery Unavailable",
+        sellerNames.length
+          ? `Delivery is not available for ${sellerNames.join(", ")} to this address.`
+          : "One or more seller-delivered items are not available for this address.",
+        {
+          supported: false,
+          canPlaceOrder: false,
+          reasonCode: "SELLER_DELIVERY_UNAVAILABLE",
+          sellers: sellerNames,
+        }
+      );
+    }
+
     /* ───── Validate 50-minute eligibility ───── */
 
     const isEligibleFor50 = cart.meta?.delivery_50min_eligible === true;
@@ -654,7 +679,7 @@ export async function POST(req) {
       const last = snap.exists ? snap.data().last : 0;
       const next = last + 1;
 
-      orderNumber = `PSS-${String(next).padStart(6, "0")}`;
+      orderNumber = `PSS-${String(next)}`;
       merchantTransactionId = orderNumber.replace("-", "");
 
       const orderDoc = buildPlatformOrderDocument({

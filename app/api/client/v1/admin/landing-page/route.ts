@@ -168,9 +168,10 @@ export async function POST(request: Request) {
       if (action !== "upload-asset") return err(400, "Invalid Action", "Use upload-asset for multipart uploads.");
       const file = formData.get("file");
       const folder = toStr(formData.get("folder"), "general");
+      const blurHashUrl = toStr(formData.get("blurHashUrl"));
       if (!(file instanceof File)) return err(400, "File Required", "Choose an image to upload.");
       const uploaded = await uploadLandingAsset(file, folder);
-      return ok({ uploaded });
+      return ok({ uploaded: { ...uploaded, blurHashUrl } });
     }
 
     const body = await request.json().catch(() => ({}));

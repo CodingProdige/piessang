@@ -3,7 +3,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 
-const siteUrl = (process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://piessang.co.za").replace(/\/+$/, "");
+const siteUrl = (process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://piessang.com").replace(/\/+$/, "");
 
 function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();

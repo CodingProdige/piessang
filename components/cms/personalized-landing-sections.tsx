@@ -50,16 +50,16 @@ async function loadProductsBySearchTerms(searchTerms: string[], limit: number) {
 }
 
 async function loadProductsByIds(ids: string[]) {
-  const response = await fetch("/api/catalogue/v1/products/product/get?limit=80&isActive=true", {
+  const params = new URLSearchParams({
+    ids: ids.join(","),
+    isActive: "true",
+  });
+  const response = await fetch(`/api/catalogue/v1/products/product/get?${params.toString()}`, {
     cache: "no-store",
   });
   const payload = await response.json().catch(() => ({}));
   const items = Array.isArray(payload?.items) ? payload.items : [];
-  const mapped = items.map(mapProduct).filter(Boolean) as ProductItem[];
-  const order = new Map(ids.map((id, index) => [id, index]));
-  return mapped
-    .filter((item) => order.has(toStr(item?.id)))
-    .sort((a, b) => (order.get(toStr(a?.id)) ?? 999) - (order.get(toStr(b?.id)) ?? 999));
+  return items.map(mapProduct).filter(Boolean) as ProductItem[];
 }
 
 function PersonalizedRailShell({
@@ -67,13 +67,26 @@ function PersonalizedRailShell({
   subtitle,
   products,
   emptyMessage,
+  mobileLeadingSpacer = true,
+  viewAllHref,
 }: {
   title: string;
   subtitle: string;
   products: ProductItem[];
   emptyMessage: string;
+  mobileLeadingSpacer?: boolean;
+  viewAllHref?: string;
 }) {
-  return <ProductRailCarousel title={title} subtitle={subtitle} products={products} emptyMessage={emptyMessage} />;
+  return (
+    <ProductRailCarousel
+      title={title}
+      subtitle={subtitle}
+      products={products}
+      emptyMessage={emptyMessage}
+      mobileLeadingSpacer={mobileLeadingSpacer}
+      viewAllHref={viewAllHref}
+    />
+  );
 }
 
 export function RecentlyViewedRail({
@@ -120,6 +133,11 @@ export function RecentlyViewedRail({
       subtitle={subtitle}
       products={products}
       emptyMessage="This rail will populate after shoppers browse products."
+      viewAllHref={
+        products.length
+          ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=recently-viewed`
+          : "/products"
+      }
     />
   );
 }
@@ -168,6 +186,11 @@ export function SearchHistoryRail({
       subtitle={subtitle}
       products={products}
       emptyMessage="This rail will populate after shoppers start searching."
+      viewAllHref={
+        products.length
+          ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=search-history`
+          : "/products"
+      }
     />
   );
 }
@@ -228,6 +251,12 @@ export function RecommendedForYouRail({
       subtitle={subtitle}
       products={products}
       emptyMessage="This rail will learn from shopper browsing and search history."
+      mobileLeadingSpacer={false}
+      viewAllHref={
+        products.length
+          ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=recommended`
+          : "/products"
+      }
     />
   );
 }

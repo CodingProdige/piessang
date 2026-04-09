@@ -328,11 +328,13 @@ function getVariantChangeImpactSummary({
   current,
   hasLiveListing,
   isEditing,
+  moderationStatus,
 }: {
   baseline: VariantEditorBaseline | null;
   current: VariantEditorBaseline;
   hasLiveListing: boolean;
   isEditing: boolean;
+  moderationStatus?: string | null;
 }) {
   if (!isEditing) {
     if (!hasLiveListing) {
@@ -385,6 +387,14 @@ function getVariantChangeImpactSummary({
   if (reviewTriggers.length) {
     const preview = reviewTriggers.slice(0, 3).join(", ");
     const remaining = reviewTriggers.length > 3 ? ` and ${reviewTriggers.length - 3} more` : "";
+    const hasReviewHistory = hasEnteredReviewFlow(moderationStatus) || String(moderationStatus ?? "").trim().toLowerCase() === "published";
+    if (!hasReviewHistory) {
+      return {
+        tone: "neutral" as const,
+        title: "Current variant changes will be included in review",
+        message: `Your unsaved variant edits affect ${preview}${remaining}. Save them when you are ready. Piessang will only review the listing once you submit it.`,
+      };
+    }
     return {
       tone: "review" as const,
       title: "Current variant changes will require review",
@@ -411,10 +421,12 @@ function getProductChangeImpactSummary({
   baseline,
   current,
   hasSavedProduct,
+  moderationStatus,
 }: {
   baseline: ProductEditorBaseline | null;
   current: ProductEditorBaseline;
   hasSavedProduct: boolean;
+  moderationStatus?: string | null;
 }) {
   if (!hasSavedProduct) {
     return {
@@ -452,6 +464,15 @@ function getProductChangeImpactSummary({
   if (reviewTriggers.length) {
     const preview = reviewTriggers.slice(0, 3).join(", ");
     const remaining = reviewTriggers.length > 3 ? ` and ${reviewTriggers.length - 3} more` : "";
+    const normalizedStatus = String(moderationStatus ?? "").trim().toLowerCase();
+    const hasReviewHistory = hasEnteredReviewFlow(normalizedStatus) || normalizedStatus === "published";
+    if (!hasReviewHistory) {
+      return {
+        tone: "neutral" as const,
+        title: "Current draft changes will be included in review",
+        message: `Your unsaved edits affect ${preview}${remaining}. Save them when you are ready. Piessang will only review this listing once you submit it.`,
+      };
+    }
     return {
       tone: "review" as const,
       title: "Current draft changes will require review",
@@ -519,7 +540,9 @@ function variantSalePriceIncl(value?: ProductVariantItem | null) {
 }
 
 function sanitizeProductTitle(value: string) {
-  return sanitizeText(value).slice(0, 120);
+  return String(value ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 120);
 }
 
 function sanitizeKeywords(value: string) {
@@ -1283,6 +1306,7 @@ export function SellerCatalogueEditor({
           inventoryTracking,
         }),
         hasSavedProduct: Boolean(activeProductId),
+        moderationStatus: createdProduct?.moderationStatus,
       }),
     [
       activeProductId,
@@ -1352,6 +1376,7 @@ export function SellerCatalogueEditor({
       }),
       hasLiveListing: String(createdProduct?.moderationStatus ?? "").trim().toLowerCase() === "published",
       isEditing: editingVariantIndex !== null,
+      moderationStatus: createdProduct?.moderationStatus,
     });
   }, [
     createdProduct?.moderationStatus,

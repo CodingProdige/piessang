@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { LandingPageLivePreview } from "@/components/cms/landing-page-live-preview";
 import type { LandingFixedHero, LandingPageSeo, LandingSection, LandingSectionType } from "@/lib/cms/landing-page-schema";
+import { prepareImageAsset } from "@/lib/client/image-prep";
 import { getDefaultLandingPageState } from "@/lib/cms/landing-page-schema";
 import type { ProductItem } from "@/components/products/products-results";
 
@@ -120,6 +121,20 @@ function iconForSectionType(type: LandingSectionType) {
 
 function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
+}
+
+function normalizeFixedHeroEntry(entry: unknown) {
+  if (typeof entry === "string") {
+    const imageUrl = toStr(entry);
+    return imageUrl ? { imageUrl, href: "", blurHashUrl: "" } : null;
+  }
+  if (entry && typeof entry === "object") {
+    const imageUrl = toStr((entry as any)?.imageUrl);
+    const href = toStr((entry as any)?.href);
+    const blurHashUrl = toStr((entry as any)?.blurHashUrl);
+    return imageUrl ? { imageUrl, href, blurHashUrl } : null;
+  }
+  return null;
 }
 
 function nextId(prefix: string) {
@@ -730,10 +745,15 @@ export function SellerAdminLandingBuilderWorkspace() {
   }
 
   async function uploadLandingAsset(file: File, folder = "general") {
+    const prepared = await prepareImageAsset(file, {
+      maxDimension: folder === "fixed-hero" ? 2600 : 2200,
+      quality: folder === "fixed-hero" ? 0.84 : 0.86,
+    });
     const formData = new FormData();
     formData.append("action", "upload-asset");
     formData.append("folder", folder);
-    formData.append("file", file);
+    formData.append("file", prepared.file);
+    formData.append("blurHashUrl", prepared.blurHashUrl);
     const response = await fetch("/api/client/v1/admin/landing-page", {
       method: "POST",
       body: formData,
@@ -742,7 +762,10 @@ export function SellerAdminLandingBuilderWorkspace() {
     if (!response.ok || payload?.ok === false) {
       throw new Error(payload?.message || "Unable to upload this asset.");
     }
-    return toStr(payload?.data?.uploaded?.url);
+    return {
+      url: toStr(payload?.data?.uploaded?.url),
+      blurHashUrl: toStr(payload?.data?.uploaded?.blurHashUrl || prepared.blurHashUrl),
+    };
   }
 
   async function uploadAssetFile(file: File) {
@@ -750,8 +773,8 @@ export function SellerAdminLandingBuilderWorkspace() {
     setUploadingAsset(true);
     setSnackbar({ open: true, tone: "info", message: "Uploading asset..." });
     try {
-      const url = await uploadLandingAsset(file, assetTarget?.tileId ? "promo-tiles" : "general");
-      assignImageToTarget(url);
+      const uploaded = await uploadLandingAsset(file, assetTarget?.tileId ? "promo-tiles" : "general");
+      assignImageToTarget(uploaded.url);
       setSnackbar({ open: true, tone: "success", message: "Asset uploaded." });
     } catch (error) {
       setSnackbar({ open: true, tone: "error", message: error instanceof Error ? error.message : "Unable to upload this asset." });
@@ -1151,10 +1174,7 @@ export function SellerAdminLandingBuilderWorkspace() {
                     <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Hero images</span>
                     <div className="space-y-3">
                       {(Array.isArray(fixedHero.images) ? fixedHero.images : []).map((entry, index) => {
-                        const normalized =
-                          typeof entry === "string"
-                            ? { imageUrl: toStr(entry), href: "" }
-                            : { imageUrl: toStr((entry as any)?.imageUrl), href: toStr((entry as any)?.href) };
+                          const normalized = normalizeFixedHeroEntry(entry) || { imageUrl: "", href: "", blurHashUrl: "" };
                         return (
                           <div key={`fixed-hero-image-${index}`} className="rounded-[12px] border border-black/8 bg-white p-3">
                             <div className="mb-2 flex items-center justify-between gap-3">
@@ -1186,6 +1206,7 @@ export function SellerAdminLandingBuilderWorkspace() {
                                         ? {
                                             imageUrl: event.target.value.trim(),
                                             href: typeof item === "string" ? "" : toStr((item as any)?.href),
+                                            blurHashUrl: typeof item === "string" ? "" : toStr((item as any)?.blurHashUrl),
                                           }
                                         : item,
                                     ),
@@ -1206,6 +1227,7 @@ export function SellerAdminLandingBuilderWorkspace() {
                                         ? {
                                             imageUrl: typeof item === "string" ? toStr(item) : toStr((item as any)?.imageUrl),
                                             href: event.target.value.trim(),
+                                            blurHashUrl: typeof item === "string" ? "" : toStr((item as any)?.blurHashUrl),
                                           }
                                         : item,
                                     ),
@@ -1224,7 +1246,7 @@ export function SellerAdminLandingBuilderWorkspace() {
                         onClick={() =>
                           setFixedHero((current) => ({
                             ...current,
-                            images: [...(Array.isArray(current.images) ? current.images : []), { imageUrl: "", href: "" }],
+                            images: [...(Array.isArray(current.images) ? current.images : []), { imageUrl: "", href: "", blurHashUrl: "" }],
                           }))
                         }
                         className="inline-flex h-10 items-center rounded-[11px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
@@ -1247,10 +1269,10 @@ export function SellerAdminLandingBuilderWorkspace() {
                         setUploadingAsset(true);
                         setSnackbar({ open: true, tone: "info", message: "Uploading hero image..." });
                         try {
-                          const url = await uploadLandingAsset(file, "fixed-hero");
+                          const uploaded = await uploadLandingAsset(file, "fixed-hero");
                           setFixedHero((current) => ({
                             ...current,
-                            images: [...(Array.isArray(current.images) ? current.images : []), { imageUrl: url, href: "" }],
+                            images: [...(Array.isArray(current.images) ? current.images : []), { imageUrl: uploaded.url, href: "", blurHashUrl: uploaded.blurHashUrl }],
                           }));
                           setSnackbar({ open: true, tone: "success", message: "Hero image uploaded." });
                         } catch (error) {
@@ -1273,7 +1295,7 @@ export function SellerAdminLandingBuilderWorkspace() {
                           onClick={() =>
                             setFixedHero((current) => ({
                               ...current,
-                              images: [...(Array.isArray(current.images) ? current.images : []), { imageUrl: toStr(product.imageUrl), href: "" }],
+                              images: [...(Array.isArray(current.images) ? current.images : []), { imageUrl: toStr(product.imageUrl), href: "", blurHashUrl: "" }],
                             }))
                           }
                           className="overflow-hidden rounded-[14px] border border-black/8 bg-white text-left disabled:opacity-60"

@@ -56,6 +56,62 @@ type LiveCommerceSnapshot = {
   };
 };
 
+type GeoPoint = {
+  x: number;
+  y: number;
+  label: string;
+  value: number;
+};
+
+const GEO_HINTS: Array<{ match: string; x: number; y: number }> = [
+  { match: "africa", x: 55, y: 57 },
+  { match: "south africa", x: 56, y: 79 },
+  { match: "johannesburg", x: 58, y: 76 },
+  { match: "gauteng", x: 58, y: 75 },
+  { match: "cape town", x: 54, y: 82 },
+  { match: "durban", x: 60, y: 78 },
+  { match: "europe", x: 50, y: 29 },
+  { match: "united states", x: 20, y: 37 },
+  { match: "usa", x: 20, y: 37 },
+  { match: "new york", x: 28, y: 35 },
+  { match: "california", x: 14, y: 40 },
+  { match: "canada", x: 18, y: 24 },
+  { match: "brazil", x: 31, y: 68 },
+  { match: "united kingdom", x: 47, y: 27 },
+  { match: "uk", x: 47, y: 27 },
+  { match: "england", x: 47, y: 27 },
+  { match: "france", x: 49, y: 31 },
+  { match: "germany", x: 52, y: 28 },
+  { match: "netherlands", x: 50, y: 27 },
+  { match: "spain", x: 47, y: 36 },
+  { match: "italy", x: 54, y: 36 },
+  { match: "middle east", x: 65, y: 45 },
+  { match: "uae", x: 66, y: 46 },
+  { match: "dubai", x: 67, y: 45 },
+  { match: "asia", x: 77, y: 39 },
+  { match: "india", x: 72, y: 48 },
+  { match: "singapore", x: 78, y: 62 },
+  { match: "indonesia", x: 80, y: 67 },
+  { match: "china", x: 80, y: 35 },
+  { match: "japan", x: 88, y: 37 },
+  { match: "oceania", x: 86, y: 76 },
+  { match: "australia", x: 86, y: 79 },
+  { match: "uganda", x: 57, y: 61 },
+  { match: "kenya", x: 59, y: 63 },
+  { match: "nigeria", x: 48, y: 58 },
+];
+
+function normalizeGeoLabel(value?: string) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function resolveGeoPoint(label: string, value: number): GeoPoint | null {
+  const normalized = normalizeGeoLabel(label);
+  const match = GEO_HINTS.find((entry) => normalized.includes(entry.match));
+  if (!match) return null;
+  return { x: match.x, y: match.y, label, value };
+}
+
 function toNum(value: unknown) {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -147,18 +203,144 @@ function WorldPulse({
   orders: number;
 }) {
   const topLocations = locations.slice(0, 5);
+  const mappedLocations = topLocations
+    .map((entry) => resolveGeoPoint(entry.label || "", toNum(entry.value)))
+    .filter(Boolean) as GeoPoint[];
+  const highlightedLocations = mappedLocations.slice(0, 3);
+  const locationPeak = Math.max(...topLocations.map((entry) => toNum(entry.value)), 1);
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_220px]">
-      <div className="relative min-h-[360px] overflow-hidden rounded-[28px] border border-[#d7eefc] bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.95),rgba(221,243,255,0.88)_42%,rgba(204,232,255,0.95)_100%)]">
-        <div className="absolute left-1/2 top-1/2 h-[520px] w-[520px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#9ed8fb] bg-[radial-gradient(circle_at_45%_35%,rgba(255,255,255,0.92),rgba(198,232,255,0.82)_50%,rgba(171,220,255,0.9)_100%)] shadow-[0_0_80px_rgba(125,211,252,0.28)]" />
-        <div className="absolute left-[56%] top-[42%] h-3 w-3 rounded-full bg-[#8b5cf6] shadow-[0_0_0_8px_rgba(139,92,246,0.12)]" />
-        <div className="absolute left-[54%] top-[44%] h-2.5 w-2.5 rounded-full bg-[#38bdf8] shadow-[0_0_0_8px_rgba(56,189,248,0.12)]" />
+      <div className="relative min-h-[360px] overflow-hidden rounded-[28px] border border-[#d7eefc] bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.98),rgba(232,244,255,0.94)_42%,rgba(214,236,255,0.98)_100%)]">
+        <svg
+          viewBox="0 0 1000 520"
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full"
+        >
+          <defs>
+            <linearGradient id="world-water" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#f8fdff" />
+              <stop offset="100%" stopColor="#d6efff" />
+            </linearGradient>
+            <linearGradient id="world-land" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#ffffff" />
+              <stop offset="100%" stopColor="#e5f6ff" />
+            </linearGradient>
+            <filter id="map-glow" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="16" result="blur" />
+              <feColorMatrix
+                in="blur"
+                type="matrix"
+                values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.32 0"
+              />
+            </filter>
+          </defs>
+          <rect width="1000" height="520" fill="url(#world-water)" />
+          <g stroke="rgba(14,165,233,0.14)" strokeWidth="1">
+            <path d="M0 120H1000" />
+            <path d="M0 200H1000" />
+            <path d="M0 280H1000" />
+            <path d="M0 360H1000" />
+            <path d="M150 0V520" />
+            <path d="M320 0V520" />
+            <path d="M500 0V520" />
+            <path d="M680 0V520" />
+            <path d="M850 0V520" />
+          </g>
+          <g fill="url(#world-land)" stroke="#9ed8fb" strokeWidth="2" opacity="0.98">
+            <path d="M84 138c28-30 83-41 125-32 25 5 36 18 57 24 27 7 55 4 81 18 17 9 30 25 35 46-11 17-27 25-47 31-18 5-39 3-58 5-28 2-59 17-82 3-15-9-19-30-39-38-23-8-52 1-68-18-13-16-16-27-4-39z" />
+            <path d="M268 314c18-11 44-13 62-8 10 3 16 12 25 18 13 8 31 12 38 27 7 15 1 31-10 42-13 14-35 19-54 19-22 0-47-8-61-26-14-18-13-56 0-72z" />
+            <path d="M440 132c24-19 70-25 103-20 31 4 57 21 78 44 13 15 29 26 44 37 15 12 31 30 25 50-5 17-25 24-43 29-33 10-69 1-103 3-25 1-46 13-70 16-29 3-62-4-76-28-15-25-10-63 8-88 11-15 19-32 34-43z" />
+            <path d="M508 315c18-12 40-16 59-14 18 2 35 11 47 24 9 10 18 22 18 37 0 18-13 33-29 40-20 9-44 11-64 5-21-7-39-26-41-49-2-18-4-33 10-43z" />
+            <path d="M680 164c38-25 97-29 143-19 30 7 57 23 76 47 18 21 39 35 58 53 13 12 23 31 15 47-9 17-34 21-55 24-39 5-79-3-118-1-25 1-48 10-73 10-24 0-54-5-70-24-17-21-20-53-9-78 7-16 18-32 33-41z" />
+            <path d="M791 374c26-12 56-14 83-10 28 4 52 18 73 36 10 9 25 21 22 37-4 18-27 24-45 26-35 4-71 1-107 2-31 1-68 7-89-17-18-20-10-54 11-74 14-13 33-21 52-25z" />
+          </g>
+          {mappedLocations.map((entry, index) => {
+            const pinX = entry.x * 10;
+            const pinY = entry.y * 5.2;
+            const pinColor = index === 0 ? "#8b5cf6" : "#0ea5e9";
+            const pinSize = 6 + Math.round((entry.value / locationPeak) * 4);
+            return (
+              <g key={`${entry.label}-${index}`} transform={`translate(${pinX}, ${pinY})`}>
+                <circle r={pinSize * 2.2} fill={pinColor} opacity="0.12" filter="url(#map-glow)" />
+                <circle r={pinSize + 2} fill="#ffffff" opacity="0.92" />
+                <circle r={pinSize} fill={pinColor} />
+                <path d="M0 8 L0 24" stroke={pinColor} strokeWidth="3" strokeLinecap="round" />
+              </g>
+            );
+          })}
+          {highlightedLocations.map((entry, index) => {
+            const pinX = entry.x * 10;
+            const pinY = entry.y * 5.2;
+            const pinColor = index === 0 ? "#8b5cf6" : "#0ea5e9";
+            const labelDirection = pinX > 720 ? -1 : 1;
+            const labelWidth = Math.min(260, Math.max(140, entry.label.length * 6));
+            const labelX = pinX + labelDirection * 20;
+            const labelY = Math.max(40, pinY - 36);
+            return (
+              <g key={`label-${entry.label}-${index}`}>
+                <path
+                  d={`M${pinX} ${pinY + 18} L${labelX} ${labelY + 18}`}
+                  stroke={pinColor}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeDasharray="4 5"
+                  opacity="0.65"
+                />
+                <g transform={`translate(${labelDirection < 0 ? labelX - labelWidth : labelX}, ${labelY})`}>
+                  <rect
+                    width={labelWidth}
+                    height="42"
+                    rx="16"
+                    fill="rgba(255,255,255,0.94)"
+                    stroke={pinColor}
+                    strokeOpacity="0.22"
+                  />
+                  <text x="14" y="17" fill="#202020" fontSize="12" fontWeight="700">
+                    {entry.label.length > 28 ? `${entry.label.slice(0, 28)}...` : entry.label}
+                  </text>
+                  <text x="14" y="31" fill="#64748b" fontSize="11" fontWeight="600">
+                    {entry.value} live signals
+                  </text>
+                </g>
+              </g>
+            );
+          })}
+          <g fill="#8aa4ba" fontSize="10" fontWeight="700" letterSpacing="0.16em" opacity="0.8">
+            <text x="92" y="84">NORTH AMERICA</text>
+            <text x="440" y="88">EUROPE</text>
+            <text x="468" y="206">AFRICA</text>
+            <text x="690" y="110">ASIA</text>
+            <text x="794" y="402">AUSTRALIA</text>
+            <text x="230" y="356">SOUTH AMERICA</text>
+          </g>
+          <g stroke="rgba(14,165,233,0.18)" strokeWidth="2" fill="none">
+            <path d="M78 244c72 22 138 14 215-6 81-22 150-28 230-12 88 18 151 17 228-4 74-20 131-14 178 3" />
+            <path d="M94 308c61 18 126 18 210 5 92-15 163-10 247 7 90 18 165 15 244-5 68-18 119-17 169-6" opacity="0.6" />
+          </g>
+          {!mappedLocations.length ? (
+            <g>
+              <text x="500" y="248" textAnchor="middle" fill="#64748b" fontSize="18" fontWeight="600">
+                Waiting for enough location signals to plot the live map
+              </text>
+              <text x="500" y="274" textAnchor="middle" fill="#94a3b8" fontSize="13" fontWeight="500">
+                Session and order geography will appear here automatically
+              </text>
+            </g>
+          ) : null}
+        </svg>
         <div className="absolute bottom-4 left-4 rounded-[14px] border border-black/6 bg-white/92 px-4 py-3 shadow-[0_10px_24px_rgba(20,24,27,0.08)] backdrop-blur">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7a8594]">Live pulse</p>
           <p className="mt-2 text-[24px] font-semibold tracking-[-0.03em] text-[#202020]">{formatCompactNumber(viewers)}</p>
           <p className="text-[12px] text-[#6b7280]">viewers right now</p>
           <p className="mt-2 text-[14px] font-semibold text-[#202020]">{formatCompactNumber(orders)} orders today</p>
+        </div>
+        <div className="absolute right-4 top-4 rounded-[14px] border border-black/6 bg-white/92 px-4 py-3 shadow-[0_10px_24px_rgba(20,24,27,0.08)] backdrop-blur">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7a8594]">Map source</p>
+          <p className="mt-2 text-[13px] font-semibold text-[#202020]">Live session + order regions</p>
+          <p className="mt-1 max-w-[180px] text-[12px] leading-[1.5] text-[#6b7280]">
+            Plotted from current marketplace activity. GA can be layered in later for richer traffic geography.
+          </p>
         </div>
       </div>
 
@@ -232,7 +414,7 @@ export function SellerLiveCommerceWorkspace({ compact = false }: { compact?: boo
     };
 
     void load();
-    const interval = window.setInterval(load, 30000);
+    const interval = window.setInterval(load, 5000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);

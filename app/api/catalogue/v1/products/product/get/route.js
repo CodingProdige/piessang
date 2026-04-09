@@ -503,6 +503,79 @@ export async function GET(req){
 
     const { searchParams } = new URL(req.url);
     const includeUnavailable = toBool(searchParams.get("includeUnavailable")) === true;
+    const idsRaw = normStr(searchParams.get("ids"));
+
+    if (idsRaw) {
+      const requestedIds = idsRaw
+        .split(",")
+        .map((value) => normStr(value))
+        .filter((value, index, array) => is8(value) && array.indexOf(value) === index)
+        .slice(0, 60);
+
+      if (!requestedIds.length) {
+        return err(400, "Invalid Ids", "'ids' must contain one or more 8-digit product ids.");
+      }
+
+      const snapshots = await Promise.all(
+        requestedIds.map((id) => db.collection("products_v2").doc(id).get()),
+      );
+
+      const items = [];
+      for (const snap of snapshots) {
+        if (!snap.exists) continue;
+        const rawData = normalizeTimestamps(snap.data() || {});
+        let data = includeUnavailable ? rawData : getPublicMarketplaceSource(rawData);
+        data = {
+          ...data,
+          variants: enrichVariantsWithAvailability(data?.variants),
+        };
+
+        const shouldResolveSellerOwner = includeUnavailable !== true;
+        let sellerOwner = null;
+        const sellerIdentifier = shouldResolveSellerOwner
+          ? getSellerIdentifier({
+              seller: data?.seller,
+              product: data?.product,
+            })
+          : "";
+
+        if (sellerIdentifier) {
+          sellerOwner = await findSellerOwnerByIdentifier(sellerIdentifier);
+          if (sellerOwner && isSellerAccountUnavailable(sellerOwner.data)) {
+            continue;
+          }
+          if (sellerOwner) {
+            data = applySellerDisplayData(data, sellerOwner);
+          }
+        }
+
+        const hasListableAvailability = productHasListableAvailability(data);
+        const missingDelivery =
+          sellerIdentifier && productMissingSellerDeliverySettings(data, sellerOwner);
+
+        if (includeUnavailable !== true && (!hasListableAvailability || missingDelivery)) {
+          continue;
+        }
+
+        items.push({
+          id: snap.id,
+          data: {
+            ...data,
+            seller_offer_count: data?.seller_offer_count ?? 1,
+            canonical_offer_barcode: getCanonicalOfferBarcode(data) || null,
+            has_in_stock_variants: hasInStockVariants(data),
+            is_eligible_by_variant_availability: hasListableAvailability,
+            is_unavailable_for_listing: !hasListableAvailability || Boolean(missingDelivery),
+          },
+        });
+      }
+
+      return ok({
+        total: items.length,
+        count: items.length,
+        items,
+      });
+    }
 
     // --- Single by id (docId == unique_id) ---
     const byId = normStr(searchParams.get("id"));

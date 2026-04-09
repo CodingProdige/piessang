@@ -13,6 +13,8 @@ import { ensureOrderInvoice } from "@/lib/orders/invoices";
 import { getFrozenLineTotalIncl } from "@/lib/orders/frozen-money";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
+import { stripeRequest } from "@/lib/payments/stripe";
+import { buildCardPresentationMetadata } from "@/lib/payments/card-presentation";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -146,9 +148,18 @@ function getLineRevenueIncl(item) {
   return getFrozenLineTotalIncl(item);
 }
 
+const FINALIZATION_LOCK_WINDOW_MS = 2 * 60 * 1000;
+
+function parseIsoMs(value) {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 /* ───────────────── ENDPOINT ───────────────── */
 
 export async function POST(req) {
+  let lockedOrderRef = null;
   try {
     const db = getAdminDb();
     if (!db) {
@@ -197,7 +208,7 @@ export async function POST(req) {
       return err(404, "Order Not Found", "Invalid orderId.");
     }
 
-    const order = snap.data();
+    let order = snap.data();
     const createIntentKey =
       typeof order?.meta?.createIntentKey === "string" ? order.meta.createIntentKey.trim() : "";
 
@@ -253,6 +264,74 @@ export async function POST(req) {
         }
       );
     }
+
+    /* ───── Finalization lock ───── */
+
+    const lockTimestamp = now();
+    const lockOutcome = await db.runTransaction(async (transaction) => {
+      const freshSnap = await transaction.get(ref);
+      if (!freshSnap.exists) {
+        throw new Error("order_not_found_during_finalization");
+      }
+
+      const freshOrder = freshSnap.data() || {};
+      const freshAttempts = Array.isArray(freshOrder?.payment?.attempts)
+        ? freshOrder.payment.attempts
+        : [];
+      const freshPaymentStatus = toStr(
+        freshOrder?.lifecycle?.paymentStatus ||
+          freshOrder?.payment?.status ||
+          freshOrder?.order?.status?.payment ||
+          "",
+      ).toLowerCase();
+      const alreadyHandled = freshAttempts.some(
+        (attempt) =>
+          toStr(
+            provider === "stripe"
+              ? attempt?.stripeSessionId || attempt?.stripePaymentIntentId || attempt?.merchantTransactionId
+              : attempt?.peachTransactionId || attempt?.merchantTransactionId,
+          ) === transactionIdentity,
+      );
+
+      if (alreadyHandled || freshPaymentStatus === "paid") {
+        return { status: "already_processed", order: freshOrder };
+      }
+
+      const finalizationMeta =
+        freshOrder?.meta?.paymentFinalization && typeof freshOrder.meta.paymentFinalization === "object"
+          ? freshOrder.meta.paymentFinalization
+          : {};
+      const lockState = toStr(finalizationMeta?.state || "").toLowerCase();
+      const lockAge = Date.now() - parseIsoMs(finalizationMeta?.startedAt);
+      if (lockState === "processing" && lockAge >= 0 && lockAge < FINALIZATION_LOCK_WINDOW_MS) {
+        return { status: "processing", order: freshOrder };
+      }
+
+      transaction.update(ref, {
+        "meta.paymentFinalization": {
+          state: "processing",
+          provider,
+          transactionIdentity: transactionIdentity || null,
+          startedAt: lockTimestamp,
+          updatedAt: lockTimestamp,
+          failedAt: null,
+          error: null,
+        },
+      });
+
+      return { status: "locked", order: freshOrder };
+    });
+
+    if (lockOutcome.status === "already_processed") {
+      return ok({ orderId, status: "already_processed" });
+    }
+
+    if (lockOutcome.status === "processing") {
+      return ok({ orderId, status: "processing" });
+    }
+
+    lockedOrderRef = ref;
+    order = lockOutcome.order;
 
     /* ───── Build Attempt (CIT + MIT) ───── */
 
@@ -312,6 +391,16 @@ export async function POST(req) {
         timestamp,
       }),
       "payment.attempts": nextAttempts,
+      "meta.paymentFinalization": {
+        state: "completed",
+        provider,
+        transactionIdentity: transactionIdentity || null,
+        startedAt: lockTimestamp,
+        updatedAt: timestamp,
+        completedAt: timestamp,
+        failedAt: null,
+        error: null,
+      },
     };
     updatePayload["timeline.events"] = appendOrderTimelineEvent(
       order,
@@ -376,6 +465,49 @@ export async function POST(req) {
     await db.collection("payments_v2").add(paymentDoc);
 
     await ref.update(updatePayload);
+
+    if (provider === "stripe") {
+      const customerId = toStr(
+        order?.payment?.stripeCustomerId ||
+          order?.payment_summary?.stripeCustomerId ||
+          order?.customer?.stripeCustomerId ||
+          "",
+      );
+      const paymentIntentId = toStr(payment?.stripePaymentIntentId || payment?.stripeSessionId || "");
+      const orderCustomerId = toStr(order?.order?.customerId || order?.customer?.customerId || "");
+      if (customerId && paymentIntentId && orderCustomerId) {
+        try {
+          const intent = await stripeRequest(`/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`);
+          const paymentMethodId = toStr(intent?.payment_method || "");
+          const cardBrand = toStr(intent?.charges?.data?.[0]?.payment_method_details?.card?.brand || "");
+          const last4 = toStr(intent?.charges?.data?.[0]?.payment_method_details?.card?.last4 || "");
+          if (paymentMethodId) {
+            const cardPresentation = buildCardPresentationMetadata({
+              cardId: paymentMethodId,
+              brand: cardBrand,
+              last4,
+            });
+            await db.collection("users").doc(orderCustomerId).set(
+              {
+                paymentMethods: {
+                  cardPresentation: {
+                    [paymentMethodId]: {
+                      ...cardPresentation,
+                      brand: cardBrand ? cardBrand.toUpperCase() : null,
+                      last4: last4 || null,
+                    },
+                  },
+                  updatedAt: timestamp,
+                },
+              },
+              { merge: true },
+            );
+          }
+        } catch (error) {
+          console.error("stripe card presentation sync failed:", error);
+        }
+      }
+    }
 
     if (createIntentKey) {
       await db.collection("idempotency_order_create_v2").doc(createIntentKey).delete().catch(() => null);
@@ -638,6 +770,24 @@ export async function POST(req) {
     });
 
   } catch (e) {
+    if (lockedOrderRef) {
+      const failedAt = now();
+      await lockedOrderRef
+        .set(
+          {
+            meta: {
+              paymentFinalization: {
+                state: "failed",
+                failedAt,
+                updatedAt: failedAt,
+                error: e?.message || "payment_finalization_failed",
+              },
+            },
+          },
+          { merge: true },
+        )
+        .catch(() => null);
+    }
     return err(500, "Server Error", e.message);
   }
 }

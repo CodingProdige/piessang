@@ -52,9 +52,7 @@ const accountCards: AccountCard[] = [
     section: "payments" as const,
     icon: "card",
     links: [
-      { label: "Coupons & offers", href: "/account/payments" },
       { label: "Credit & refunds", href: "/account/payments" },
-      { label: "Redeem gift voucher", href: "/account/payments" },
     ],
     href: "/account/payments",
   },
@@ -68,6 +66,7 @@ const accountCards: AccountCard[] = [
       { label: "Address book", href: "/account/address-book" },
       { label: "Newsletter subscriptions", href: "/account/newsletters" },
     ],
+    href: "/account/personal-details",
   },
   {
     title: "My Lists",
@@ -76,7 +75,6 @@ const accountCards: AccountCard[] = [
     links: [
       { label: "My favourites", href: "/account?section=lists" },
       { label: "Saved products", href: "/account?section=lists" },
-      { label: "Create a list", href: "/account?section=lists" },
     ],
   },
   {

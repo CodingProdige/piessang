@@ -3,9 +3,12 @@ import Image from "next/image";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { LandingSection } from "@/lib/cms/landing-page-schema";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
+import { DeferredSection } from "@/components/cms/deferred-section";
 import type { ProductItem } from "@/components/products/products-results";
 import { campaignsCollection, normalizeCampaignRecord } from "@/lib/campaigns";
 import { canServeCampaign } from "@/lib/campaign-serving";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import {
   RecommendedForYouRail,
   RecentlyViewedRail,
@@ -23,6 +26,7 @@ type CategoryOption = {
   id: string;
   slug: string;
   title: string;
+  productCount: number;
 };
 
 function toStr(value: unknown, fallback = "") {
@@ -45,6 +49,95 @@ function slugify(value: unknown) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function resolveCategoryIconKey(category: { slug?: string; title?: string }) {
+  const source = `${toStr(category?.slug)} ${toStr(category?.title)}`.toLowerCase();
+  if (source.includes("beverage") || source.includes("drink")) return "beverages";
+  if (source.includes("water")) return "water";
+  if (source.includes("snack")) return "snacks";
+  if (source.includes("sweet") || source.includes("candy") || source.includes("chocolate")) return "sweets";
+  if (source.includes("coffee") || source.includes("tea")) return "coffee";
+  if (source.includes("clean")) return "cleaning";
+  if (source.includes("health") || source.includes("beauty")) return "health";
+  if (source.includes("baby")) return "baby";
+  if (source.includes("pet")) return "pet";
+  if (source.includes("home")) return "home";
+  return "default";
+}
+
+function CategoryChipIcon({ category }: { category: { slug?: string; title?: string } }) {
+  const key = resolveCategoryIconKey(category);
+  const common = "h-4 w-4";
+  switch (key) {
+    case "beverages":
+      return <span className={common}>🥤</span>;
+    case "water":
+      return <span className={common}>💧</span>;
+    case "snacks":
+      return <span className={common}>🍿</span>;
+    case "sweets":
+      return <span className={common}>🍬</span>;
+    case "coffee":
+      return <span className={common}>☕</span>;
+    case "cleaning":
+      return <span className={common}>🧼</span>;
+    case "health":
+      return <span className={common}>🩺</span>;
+    case "baby":
+      return <span className={common}>🍼</span>;
+    case "pet":
+      return <span className={common}>🐾</span>;
+    case "home":
+      return <span className={common}>🏠</span>;
+    default:
+      return <span className={common}>🛍️</span>;
+  }
+}
+
+function getSellerIdentifier(data: any) {
+  return toStr(
+    data?.seller?.sellerCode ||
+      data?.seller?.activeSellerCode ||
+      data?.seller?.groupSellerCode ||
+      data?.seller?.sellerSlug ||
+      data?.product?.sellerCode ||
+      data?.product?.sellerSlug ||
+      data?.product?.vendorSlug,
+  );
+}
+
+function applySellerDisplayData(data: any, sellerOwner: any) {
+  if (!sellerOwner || !sellerOwner.data) return data;
+  const seller = sellerOwner.data?.seller && typeof sellerOwner.data.seller === "object" ? sellerOwner.data.seller : {};
+  const sellerCode = toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode);
+  const vendorName = toStr(seller?.vendorName || seller?.groupVendorName || "");
+  const vendorDescription = toStr(seller?.vendorDescription || seller?.description || "");
+  const deliveryProfile = normalizeSellerDeliveryProfile(
+    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
+  );
+
+  return {
+    ...data,
+    seller: {
+      ...(data?.seller && typeof data.seller === "object" ? data.seller : {}),
+      sellerCode: sellerCode || null,
+      vendorName: vendorName || null,
+      vendorDescription: vendorDescription || null,
+      baseLocation: toStr(seller?.baseLocation || data?.seller?.baseLocation) || null,
+      sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug) || null,
+      activeSellerSlug: toStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug) || null,
+      groupSellerSlug: toStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug) || null,
+      deliveryProfile,
+    },
+    product: {
+      ...(data?.product && typeof data.product === "object" ? data.product : {}),
+      vendorName: vendorName || data?.product?.vendorName || null,
+      vendorDescription: vendorDescription || data?.product?.vendorDescription || null,
+      sellerCode: sellerCode || data?.product?.sellerCode || null,
+      sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.product?.sellerSlug) || null,
+    },
+  };
 }
 
 function toPlainJsonValue(value: any): any {
@@ -86,6 +179,24 @@ function formatCountdown(endDateRaw: unknown) {
   return `${minutes}m left`;
 }
 
+function isoToDate(value: unknown) {
+  if (!value) return null;
+  const date = new Date(toStr(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getFirstPublishedAt(data: any) {
+  return data?.marketplace?.firstPublishedAt || data?.timestamps?.createdAt || null;
+}
+
+function isNewArrival(firstPublishedAt: unknown, windowDays = 30) {
+  const publishedDate = isoToDate(firstPublishedAt);
+  if (!publishedDate) return false;
+  const ageMs = Date.now() - publishedDate.getTime();
+  if (ageMs < 0) return true;
+  return ageMs <= windowDays * 24 * 60 * 60 * 1000;
+}
+
 async function loadCatalogData() {
   const db = getAdminDb();
   if (!db) return { products: [] as ProductOption[], categories: [] as CategoryOption[] };
@@ -109,24 +220,45 @@ async function loadCatalogData() {
       .filter(Boolean),
   );
 
-  const products = productsSnap.docs.map((docSnap) => {
-    const data = toPlainJsonValue(docSnap.data() || {});
-    return {
-      id: docSnap.id,
-      data,
-      title: toStr(data?.product?.title, "Product"),
-      category: toStr(data?.grouping?.category),
-      categorySlug: slugify(data?.grouping?.categorySlug || data?.grouping?.category),
-      hasActiveCampaign: activeCampaignProductIds.has(docSnap.id),
-    };
-  });
+  const products = await Promise.all(
+    productsSnap.docs.map(async (docSnap) => {
+      const baseData = toPlainJsonValue(docSnap.data() || {});
+      const sellerOwner = await findSellerOwnerByIdentifier(getSellerIdentifier(baseData)).catch(() => null);
+      const hydratedData = applySellerDisplayData(baseData, sellerOwner);
+      const firstPublishedAt = getFirstPublishedAt(hydratedData);
+      const data = {
+        ...hydratedData,
+        is_new_arrival: isNewArrival(firstPublishedAt),
+        marketplace: {
+          ...(hydratedData?.marketplace && typeof hydratedData.marketplace === "object" ? hydratedData.marketplace : {}),
+          firstPublishedAt,
+        },
+      };
+      return {
+        id: docSnap.id,
+        data,
+        title: toStr(data?.product?.title, "Product"),
+        category: toStr(data?.grouping?.category),
+        categorySlug: slugify(data?.grouping?.categorySlug || data?.grouping?.category),
+        hasActiveCampaign: activeCampaignProductIds.has(docSnap.id),
+      };
+    }),
+  );
 
   const categories = categoriesSnap.docs.map((docSnap) => {
     const data = docSnap.data() || {};
+    const slug = toStr(data?.category?.slug || docSnap.id);
+    const productCount = products.reduce((count, product) => {
+      const productCategorySlug = slugify(
+        product?.data?.grouping?.categorySlug || product?.data?.grouping?.category || product?.data?.product?.grouping?.category,
+      );
+      return productCategorySlug === slug.toLowerCase() ? count + 1 : count;
+    }, 0);
     return {
       id: docSnap.id,
-      slug: toStr(data?.category?.slug || docSnap.id),
+      slug,
       title: toStr(data?.category?.title, "Category"),
+      productCount,
     };
   });
 
@@ -148,12 +280,46 @@ function SectionShell({ children }: { children: React.ReactNode }) {
   return <section className="w-full max-w-full rounded-[8px] border border-black/6 bg-white p-4 shadow-[0_10px_24px_rgba(20,24,27,0.04)] sm:p-5 sm:shadow-[0_12px_30px_rgba(20,24,27,0.05)]">{children}</section>;
 }
 
+function getDeferredSectionMinHeight(section: LandingSection) {
+  switch (section.type) {
+    case "hero_banner":
+      return 420;
+    case "split_banner":
+    case "seller_spotlight":
+    case "countdown_promo":
+      return 360;
+    case "product_rail":
+    case "featured_duo":
+    case "recently_viewed_rail":
+    case "search_history_rail":
+    case "recommended_for_you":
+      return 480;
+    case "category_rail":
+    case "category_mosaic":
+    case "promo_tiles":
+    case "editorial_collection":
+      return 320;
+    case "compact_promo_grid":
+      return 260;
+    case "category_chip_rail":
+    case "brand_logo_rail":
+    case "text_block":
+      return 220;
+    case "deal_strip_banner":
+      return 120;
+    default:
+      return 280;
+  }
+}
+
 export async function LandingPageRenderer({ sections }: { sections: LandingSection[] }) {
   const { products, categories } = await loadCatalogData();
 
-  const blocks = sections.map((section) => {
+  const blocks = sections.map((section, index) => {
+    let block: React.ReactNode = null;
+
     if (section.type === "hero_banner") {
-      return (
+      block = (
         <section
           key={section.id}
           className="relative w-full max-w-full overflow-hidden rounded-[8px] border border-black/6 bg-[linear-gradient(135deg,#fff8e8_0%,#ffffff_46%,#eef6ff_100%)] p-8 shadow-[0_18px_44px_rgba(20,24,27,0.07)]"
@@ -189,7 +355,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
     }
 
     if (section.type === "split_banner") {
-      return (
+      block = (
         <section
           key={section.id}
           className="w-full max-w-full overflow-hidden rounded-[8px] border border-black/6 bg-[linear-gradient(135deg,#ffffff_0%,#f8fafc_52%,#fff8e8_100%)] shadow-[0_18px_44px_rgba(20,24,27,0.07)]"
@@ -220,7 +386,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
     }
 
     if (section.type === "seller_spotlight") {
-      return (
+      block = (
         <section
           key={section.id}
           className="w-full max-w-full overflow-hidden rounded-[8px] border border-black/6 bg-[linear-gradient(135deg,#fffef8_0%,#ffffff_55%,#f7fbff_100%)] shadow-[0_18px_44px_rgba(20,24,27,0.07)]"
@@ -256,7 +422,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
 
     if (section.type === "countdown_promo") {
       const countdown = formatCountdown(section.props?.endsAt);
-      return (
+      block = (
         <section
           key={section.id}
           className="w-full max-w-full overflow-hidden rounded-[8px] border border-black/6 bg-[linear-gradient(135deg,#202020_0%,#2c3744_55%,#3b82f6_140%)] text-white shadow-[0_18px_44px_rgba(20,24,27,0.18)]"
@@ -290,7 +456,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
     }
 
     if (section.type === "deal_strip_banner") {
-      return (
+      block = (
         <section
           key={section.id}
           className="w-full max-w-full overflow-hidden rounded-[8px] border border-black/6 bg-[linear-gradient(135deg,#202020_0%,#2d3743_52%,#d5aa22_150%)] px-4 py-4 text-white shadow-[0_14px_34px_rgba(20,24,27,0.12)] sm:px-5"
@@ -325,7 +491,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
               })
             : products.slice().reverse();
       const items = sortProductsForRail(selectedProducts, prioritizeCampaigns, randomize).slice(0, resolveRailLimit(section.props, "desktop"));
-      return (
+      block = (
         <ProductRailCarousel
           key={section.id}
           title={toStr(section.props?.title, "Product rail")}
@@ -340,36 +506,26 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       const selected = products
         .filter((product) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
         .slice(0, 2);
-      return (
-        <SectionShell key={section.id}>
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Featured picks")}</p>
-              <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
-            </div>
-          </div>
-          {selected.length ? (
-            <div className="mt-4 grid grid-cols-2 gap-3 sm:gap-4">
-              {selected.map((product, index) => (
-                <div key={String(product?.id || index)}>
-                  <ProductRailCarousel title="" subtitle="" products={[product]} emptyMessage="" />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="mt-4 rounded-[8px] border border-dashed border-black/10 px-4 py-8 text-[13px] text-[#7a8594]">
-              Select up to two products for this feature.
-            </div>
-          )}
-        </SectionShell>
+      block = (
+        <ProductRailCarousel
+          key={section.id}
+          title={toStr(section.props?.title, "Featured picks")}
+          subtitle={toStr(section.props?.subtitle)}
+          products={selected}
+          emptyMessage="Select up to two products for this feature."
+        />
       );
     }
 
     if (section.type === "category_chip_rail") {
-      const selected = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
-        ? categories.filter((category) => section.props.categorySlugs.includes(category.slug))
-        : categories.slice(0, 8);
-      return (
+      const selectedCategorySlugs = Array.isArray(section.props?.categorySlugs)
+        ? section.props.categorySlugs.map((slug: unknown) => toStr(slug)).filter(Boolean)
+        : [];
+      const selected = (selectedCategorySlugs.length
+        ? categories.filter((category) => selectedCategorySlugs.includes(category.slug))
+        : categories
+      ).filter((category) => category.productCount > 0);
+      block = (
         <SectionShell key={section.id}>
           <div>
             <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Quick shop")}</p>
@@ -380,8 +536,9 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
               <Link
                 key={category.id}
                 href={`/products?category=${encodeURIComponent(category.slug)}`}
-                className="inline-flex min-h-10 items-center rounded-full border border-black/8 bg-[#fbfbfb] px-4 text-[13px] font-semibold text-[#202020]"
+                className="inline-flex min-h-10 items-center gap-2 rounded-full border border-black/8 bg-[#fbfbfb] px-4 text-[13px] font-semibold text-[#202020]"
               >
+                <CategoryChipIcon category={category} />
                 {category.title}
               </Link>
             ))}
@@ -394,7 +551,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       const selected = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
         ? categories.filter((category) => section.props.categorySlugs.includes(category.slug))
         : categories.slice(0, 8);
-      return (
+      block = (
         <SectionShell key={section.id}>
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -428,7 +585,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
 
     if (section.type === "brand_logo_rail") {
       const brands = (Array.isArray(section.props?.brands) ? section.props.brands : []).map((brand: unknown) => toStr(brand)).filter(Boolean);
-      return (
+      block = (
         <SectionShell key={section.id}>
           <div>
             <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Trusted brands")}</p>
@@ -449,7 +606,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       const selected = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
         ? categories.filter((category) => section.props.categorySlugs.includes(category.slug)).slice(0, 5)
         : categories.slice(0, 5);
-      return (
+      block = (
         <SectionShell key={section.id}>
           <p className="text-[28px] font-semibold tracking-[-0.04em] text-[#202020]">{toStr(section.props?.title, "Category mosaic")}</p>
           <p className="mt-2 text-[15px] text-[#57636c]">{toStr(section.props?.subtitle)}</p>
@@ -474,7 +631,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
 
     if (section.type === "compact_promo_grid") {
       const tiles = (Array.isArray(section.props?.tiles) ? section.props.tiles : []).slice(0, 4);
-      return (
+      block = (
         <SectionShell key={section.id}>
           <div>
             <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Curated highlights")}</p>
@@ -505,7 +662,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
 
     if (section.type === "promo_tiles") {
       const tiles = Array.isArray(section.props?.tiles) ? section.props.tiles : [];
-      return (
+      block = (
         <SectionShell key={section.id}>
           <p className="text-[28px] font-semibold tracking-[-0.04em] text-[#202020]">{toStr(section.props?.title, "Promo tiles")}</p>
           <p className="mt-2 text-[15px] text-[#57636c]">{toStr(section.props?.subtitle)}</p>
@@ -533,7 +690,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
     }
 
     if (section.type === "text_block") {
-      return (
+      block = (
         <SectionShell key={section.id}>
           <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#8f7531]">{toStr(section.props?.eyebrow, "Piessang")}</p>
           <p className="mt-3 text-[32px] font-semibold tracking-[-0.05em] text-[#202020]">{toStr(section.props?.title, "Editorial block")}</p>
@@ -551,7 +708,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
 
     if (section.type === "editorial_collection") {
       const points = (Array.isArray(section.props?.points) ? section.props.points : []).map((point: unknown) => toStr(point)).filter(Boolean);
-      return (
+      block = (
         <SectionShell key={section.id}>
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start">
             <div>
@@ -586,7 +743,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
     }
 
     if (section.type === "recently_viewed_rail") {
-      return (
+      block = (
         <RecentlyViewedRail
           key={section.id}
           title={toStr(section.props?.title, "Continue browsing")}
@@ -597,7 +754,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
     }
 
     if (section.type === "search_history_rail") {
-      return (
+      block = (
         <SearchHistoryRail
           key={section.id}
           title={toStr(section.props?.title, "Inspired by your searches")}
@@ -608,7 +765,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
     }
 
     if (section.type === "recommended_for_you") {
-      return (
+      block = (
         <RecommendedForYouRail
           key={section.id}
           title={toStr(section.props?.title, "Recommended for you")}
@@ -618,7 +775,20 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    return null;
+    if (!block) return null;
+
+    const eager = index < 2 || section.type === "hero_banner";
+
+    return (
+      <DeferredSection
+        key={section.id}
+        eager={eager}
+        minHeight={getDeferredSectionMinHeight(section)}
+        rootMargin="500px 0px"
+      >
+        {block}
+      </DeferredSection>
+    );
   });
 
   return <div className="w-full max-w-full space-y-6">{blocks}</div>;
