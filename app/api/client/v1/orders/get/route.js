@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { buildOrderDeliveryProgress } from "@/lib/orders/fulfillment-progress";
 import { normalizeMoneyAmount } from "@/lib/money";
+import { getOrderCancellationState } from "@/lib/orders/cancellation";
 
 /* ───────── HELPERS ───────── */
 
@@ -62,24 +63,6 @@ function normalizeNullStrings(value) {
   }
 
   return value;
-}
-
-function canCancelOrder(order) {
-  const orderStatus = order?.lifecycle?.orderStatus || order?.order?.status?.order || null;
-  const paymentStatus =
-    order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || null;
-
-  if (
-    orderStatus === "processing" ||
-    orderStatus === "dispatched" ||
-    orderStatus === "completed" ||
-    orderStatus === "cancelled"
-  )
-    return false;
-  if (paymentStatus === "refunded" || paymentStatus === "partial_refund")
-    return false;
-
-  return true;
 }
 
 function buildRefundSummary(order) {
@@ -249,13 +232,15 @@ function withCancelFlag(order) {
   const normalizedOrder = withIndexedPaymentHistory(
     withFinalPayableTotal(normalizeReturns(order))
   );
+  const cancellation = getOrderCancellationState(normalizedOrder);
   const { items, progress } = buildOrderDeliveryProgress(normalizedOrder);
   return normalizeNullStrings({
     ...normalizedOrder,
     items,
     delivery_progress: progress,
     orderPending: isOrderPending(normalizedOrder),
-    can_cancel: canCancelOrder(normalizedOrder),
+    can_cancel: cancellation.canSubmit,
+    cancellation,
     refund_summary: buildRefundSummary(normalizedOrder),
     order_summary: buildOrderSummary(normalizedOrder?.totals)
   });

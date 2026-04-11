@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import useEmblaCarousel from "embla-carousel-react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
@@ -160,12 +162,14 @@ type PaymentOverlayState = {
   tone: "processing" | "auth" | "success";
   title: string;
   message: string;
+  detail?: string;
 };
 
 let stripeJsPromise: Promise<any> | null = null;
 const STRIPE_CHECKOUT_STORAGE_KEY = "piessang-stripe-checkout-state";
 const ORDER_FINALIZATION_POLL_MS = 1500;
 const ORDER_FINALIZATION_MAX_ATTEMPTS = 20;
+const PAYMENT_SUCCESS_REDIRECT_MS = 5000;
 
 function loadStripeJs() {
   if (typeof window === "undefined") return Promise.resolve(null);
@@ -408,12 +412,7 @@ function PremiumCardFace({
       />
       <div className="relative flex h-full flex-col p-4 sm:p-5">
         <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/65 sm:text-[11px]">Piessang pay</p>
-            <p className={`${compact ? "text-[16px] sm:text-[18px]" : "text-[18px] sm:text-[24px]"} mt-3 font-semibold tracking-[0.08em] text-white`}>
-              {number}
-            </p>
-          </div>
+          <p className="truncate text-[10px] font-semibold uppercase tracking-[0.24em] text-white/65 sm:text-[11px]">Piessang pay</p>
           <div className="flex shrink-0 items-start gap-2">
             {selected ? (
               <span className="inline-flex items-center rounded-full border border-white/20 bg-white/12 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/90">
@@ -423,6 +422,14 @@ function PremiumCardFace({
             <CardBrandMark brandFamily={brandFamily} brandLabel={brand} compact={compact} />
           </div>
         </div>
+        <p
+          className={[
+            compact ? "text-[13px] sm:text-[15px]" : "text-[15px] sm:text-[18px]",
+            "mt-5 pr-2 font-semibold tracking-[0.03em] text-white",
+          ].join(" ")}
+        >
+          {number}
+        </p>
         <div className="mt-auto flex items-end justify-between gap-4">
           <div className="min-w-0">
             <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/55 sm:text-[10px]">Cardholder</p>
@@ -643,8 +650,6 @@ export function CartCheckout() {
     title: "Processing payment",
     message: "Please wait while we confirm your order.",
   });
-  const [cardSwipeStartX, setCardSwipeStartX] = useState<number | null>(null);
-
   useEffect(() => {
     const persisted = readPersistedStripeCheckoutState();
     if (!persisted) return;
@@ -706,7 +711,10 @@ export function CartCheckout() {
         setCards(nextCards);
         const defaultLocationIndex = nextLocations.findIndex((location: DeliveryLocation) => location?.is_default === true);
         setSelectedLocationIndex(defaultLocationIndex >= 0 ? defaultLocationIndex : 0);
-        setSelectedCardId(String(nextCards[0]?.id || ""));
+        setSelectedCardId((current) => {
+          if (nextCards.some((card: SavedCard) => String(card?.id || "") === current)) return current;
+          return String(nextCards[0]?.id || "");
+        });
         setPaymentMode(nextCards.length ? "saved" : "new");
       })
       .catch(() => {
@@ -975,12 +983,112 @@ export function CartCheckout() {
       ? selectedCard?.themeKey || `${selectedCard?.id || ""}:${previewCardBrand}:${selectedCard?.last4 || ""}`
       : `${previewCardBrand}:${newCard.holder.trim()}`;
   const previewCardTheme = resolveCardTheme(previewCardThemeKey);
-  const orderedSavedCards = useMemo(() => getOrderedCards(cards, selectedCardId), [cards, selectedCardId]);
+  const selectedCardIndex = useMemo(
+    () => Math.max(0, cards.findIndex((card) => String(card?.id || "") === selectedCardId)),
+    [cards, selectedCardId],
+  );
+  const successRedirectHref =
+    successState?.orderId && successState?.orderNumber
+      ? `/checkout/success?orderId=${encodeURIComponent(successState.orderId)}&orderNumber=${encodeURIComponent(successState.orderNumber)}`
+      : "";
+
+  const [emblaRef, emblaApi] = useEmblaCarousel({
+    align: "center",
+    loop: cards.length > 1,
+    dragFree: false,
+    containScroll: "trimSnaps",
+  });
+
+  const tweenCardShells = useCallback((api: NonNullable<typeof emblaApi>) => {
+    const engine = api.internalEngine();
+    const scrollProgress = api.scrollProgress();
+    const slides = api.slideNodes();
+    const snaps = api.scrollSnapList();
+
+    slides.forEach((slide) => {
+      const shell = slide.querySelector<HTMLElement>("[data-card-shell]");
+      if (!shell) return;
+      shell.style.opacity = "0";
+      shell.style.transform = "translateX(0px) scale(0.74) rotateY(0deg)";
+      shell.style.filter = "blur(1px) saturate(0.82)";
+      shell.style.zIndex = "0";
+      shell.style.boxShadow = "0 18px 34px rgba(72,32,122,0.10)";
+    });
+
+    snaps.forEach((snapPoint, snapIndex) => {
+      let diffToTarget = snapPoint - scrollProgress;
+      if (engine.options.loop) {
+        engine.slideLooper.loopPoints.forEach((loopItem) => {
+          const target = loopItem.target();
+          if (loopItem.index === snapIndex && target !== 0) {
+            const sign = Math.sign(target);
+            if (sign === -1) diffToTarget = snapPoint - (1 + scrollProgress);
+            if (sign === 1) diffToTarget = snapPoint + (1 - scrollProgress);
+          }
+        });
+      }
+
+      const slideIndexes = engine.slideRegistry[snapIndex] || [];
+      slideIndexes.forEach((slideIndex) => {
+        const slide = slides[slideIndex];
+        const shell = slide?.querySelector<HTMLElement>("[data-card-shell]");
+        if (!shell) return;
+
+        const distance = Math.min(Math.abs(diffToTarget), 1.25);
+        const closeness = Math.max(0, 1 - distance / 1.15);
+        const direction = diffToTarget === 0 ? 0 : diffToTarget > 0 ? 1 : -1;
+        const scale = 0.78 + closeness * 0.22;
+        const translateX = direction * (1 - closeness) * 68;
+        const rotateY = direction * (1 - closeness) * -24;
+        const opacity = 0.42 + closeness * 0.58;
+        const blur = (1 - closeness) * 1.1;
+        const saturation = 0.84 + closeness * 0.16;
+
+        shell.style.opacity = String(opacity);
+        shell.style.transform = `translateX(${translateX}px) scale(${scale}) rotateY(${rotateY}deg)`;
+        shell.style.filter = `blur(${blur}px) saturate(${saturation})`;
+        shell.style.zIndex = String(Math.round(closeness * 20));
+        shell.style.boxShadow = `0 ${18 + closeness * 12}px ${34 + closeness * 18}px rgba(72,32,122,${(0.10 + closeness * 0.12).toFixed(3)})`;
+      });
+    });
+  }, [emblaApi]);
 
   function rotateSavedCard(direction: 1 | -1) {
-    const nextCardId = rotateCardId(cards, selectedCardId, direction);
-    if (nextCardId) setSelectedCardId(nextCardId);
+    if (!emblaApi || cards.length < 2) return;
+    if (direction === 1) emblaApi.scrollNext();
+    else emblaApi.scrollPrev();
   }
+
+  useEffect(() => {
+    if (!emblaApi) return;
+    const syncSelection = () => {
+      const index = emblaApi.selectedScrollSnap();
+      const cardId = String(cards[index]?.id || "");
+      if (cardId) setSelectedCardId(cardId);
+    };
+    const syncTween = () => tweenCardShells(emblaApi);
+    syncSelection();
+    syncTween();
+    emblaApi.on("select", syncSelection);
+    emblaApi.on("reInit", syncSelection);
+    emblaApi.on("scroll", syncTween);
+    emblaApi.on("select", syncTween);
+    emblaApi.on("reInit", syncTween);
+    return () => {
+      emblaApi.off("select", syncSelection);
+      emblaApi.off("reInit", syncSelection);
+      emblaApi.off("scroll", syncTween);
+      emblaApi.off("select", syncTween);
+      emblaApi.off("reInit", syncTween);
+    };
+  }, [emblaApi, cards, tweenCardShells]);
+
+  useEffect(() => {
+    if (!emblaApi || !cards.length || selectedCardIndex < 0) return;
+    if (emblaApi.selectedScrollSnap() !== selectedCardIndex) {
+      emblaApi.scrollTo(selectedCardIndex);
+    }
+  }, [emblaApi, cards.length, selectedCardIndex]);
 
   async function completeSuccessfulStripeCheckout(currentCheckout: StripeCheckoutState) {
     const clearCartResponse = await fetch("/api/client/v1/carts/delete", {
@@ -1004,12 +1112,11 @@ export function CartCheckout() {
       open: true,
       tone: "success",
       title: "Payment successful",
-      message: `Order ${currentCheckout.orderNumber} is confirmed. Redirecting you to your order success page now.`,
+      message: `Order ${currentCheckout.orderNumber} is confirmed.`,
+      detail: "You can continue now or wait a few seconds while we take you to your success page automatically.",
     });
-    await new Promise((resolve) => window.setTimeout(resolve, 900));
-    router.replace(
-      `/checkout/success?orderId=${encodeURIComponent(currentCheckout.orderId)}&orderNumber=${encodeURIComponent(currentCheckout.orderNumber)}`,
-    );
+    await new Promise((resolve) => window.setTimeout(resolve, PAYMENT_SUCCESS_REDIRECT_MS));
+    router.replace(`/checkout/success?orderId=${encodeURIComponent(currentCheckout.orderId)}&orderNumber=${encodeURIComponent(currentCheckout.orderNumber)}`);
   }
 
   async function waitForOrderFinalization(currentCheckout: StripeCheckoutState) {
@@ -1044,7 +1151,8 @@ export function CartCheckout() {
         open: true,
         tone: "processing",
         title: "Processing payment",
-        message: "Your payment was received. We’re now confirming your order and clearing your cart.",
+        message: "Your payment was received.",
+        detail: "We’re confirming your order, clearing your cart, and preparing your success page.",
       });
       const finalizeResponse = await fetch("/api/client/v1/orders/payment-success", {
         method: "POST",
@@ -1085,7 +1193,8 @@ export function CartCheckout() {
           open: true,
           tone: "processing",
           title: "Finalizing order",
-          message: "Your payment went through. We’re still finalizing your order in the background now.",
+          message: "Your payment went through.",
+          detail: "We’re still finalizing your order in the background now.",
         });
         await waitForOrderFinalization(currentCheckout);
       }
@@ -1135,7 +1244,8 @@ export function CartCheckout() {
         open: true,
         tone: "auth",
         title: "Confirming payment",
-        message: "Your bank may ask you to complete 3D Secure authentication. Keep this page open while Stripe confirms the payment.",
+        message: "Securely confirming your payment with Stripe.",
+        detail: "Your bank may ask you to complete 3D Secure authentication. Keep this page open while we confirm the payment.",
       });
 
       let result: any;
@@ -1219,7 +1329,8 @@ export function CartCheckout() {
             open: true,
             tone: "processing",
             title: "Finalizing order",
-            message: "Your bank has confirmed the payment. We’re wrapping up your order now.",
+            message: "Your bank has confirmed the payment.",
+            detail: "We’re wrapping up your order now.",
           });
           await finalizeStripeCheckout(currentCheckout, currentCheckout.paymentIntentId);
           return;
@@ -1231,7 +1342,8 @@ export function CartCheckout() {
             open: true,
             tone: "processing",
             title: "Payment processing",
-            message: "Stripe is still confirming your payment. Please keep this page open for a few more seconds.",
+            message: "Stripe is still confirming your payment.",
+            detail: "Please keep this page open for a few more seconds.",
           });
           return;
         }
@@ -1242,7 +1354,8 @@ export function CartCheckout() {
             open: true,
             tone: "auth",
             title: "Additional authentication required",
-            message: "Please complete the bank authentication step to finish paying for this order.",
+            message: "Please complete the bank authentication step.",
+            detail: "Once your bank confirms it, we’ll finalize the order automatically.",
           });
           return;
         }
@@ -1497,12 +1610,26 @@ export function CartCheckout() {
     if (stripeCheckout) {
       setSubmitting(true);
       setErrorMessage(null);
+      setPaymentOverlay({
+        open: true,
+        tone: "processing",
+        title: "Preparing secure payment",
+        message: "We’re opening your secure Piessang payment flow.",
+        detail: "This will move into bank confirmation or 3D Secure if your card requires it.",
+      });
       await handleStripePaymentSubmit(stripeCheckout);
       return;
     }
 
     setSubmitting(true);
     setErrorMessage(null);
+    setPaymentOverlay({
+      open: true,
+      tone: "processing",
+      title: "Preparing secure payment",
+      message: "We’re setting up your Piessang payment now.",
+      detail: "Please keep this page open while we create your secure payment session.",
+    });
     let createdOrderId = "";
     let createdOrderNumber = "";
     let createdMerchantTransactionId = "";
@@ -1586,6 +1713,7 @@ export function CartCheckout() {
       const message = error instanceof Error ? error.message : "We could not complete your checkout.";
       setErrorMessage(message);
       setSnackbarMessage(message);
+      setPaymentOverlay((current) => ({ ...current, open: false }));
     } finally {
       setSubmitting(false);
     }
@@ -1632,6 +1760,56 @@ export function CartCheckout() {
 
   return (
     <>
+      <style jsx global>{`
+        @keyframes piessang-card-in-next {
+          0% {
+            transform: translateX(32%) scale(0.78);
+            opacity: 0.55;
+            filter: blur(2px);
+          }
+          100% {
+            transform: translateX(0) scale(1);
+            opacity: 1;
+            filter: blur(0);
+          }
+        }
+        @keyframes piessang-card-in-prev {
+          0% {
+            transform: translateX(-32%) scale(0.78);
+            opacity: 0.55;
+            filter: blur(2px);
+          }
+          100% {
+            transform: translateX(0) scale(1);
+            opacity: 1;
+            filter: blur(0);
+          }
+        }
+        @keyframes piessang-card-out-next {
+          0% {
+            transform: translateX(0) scale(1);
+            opacity: 1;
+            filter: blur(0);
+          }
+          100% {
+            transform: translateX(-32%) scale(0.78);
+            opacity: 0.18;
+            filter: blur(2px);
+          }
+        }
+        @keyframes piessang-card-out-prev {
+          0% {
+            transform: translateX(0) scale(1);
+            opacity: 1;
+            filter: blur(0);
+          }
+          100% {
+            transform: translateX(32%) scale(0.78);
+            opacity: 0.18;
+            filter: blur(2px);
+          }
+        }
+      `}</style>
     <section className="space-y-5">
       <div className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Checkout</p>
@@ -1936,84 +2114,72 @@ export function CartCheckout() {
 
               {paymentMode === "saved" && cards.length ? (
                 <div className="mt-4 space-y-3">
-                  <div className={`rounded-[22px] p-4 sm:p-5 ${previewCardTheme.frameClass}`}>
-                    <div
-                      className="relative mx-auto w-full max-w-[430px] touch-pan-y select-none"
-                      onTouchStart={(event) => setCardSwipeStartX(event.touches[0]?.clientX ?? null)}
-                      onTouchEnd={(event) => {
-                        if (cardSwipeStartX == null) return;
-                        const deltaX = (event.changedTouches[0]?.clientX ?? 0) - cardSwipeStartX;
-                        setCardSwipeStartX(null);
-                        if (Math.abs(deltaX) < 36) return;
-                        rotateSavedCard(deltaX < 0 ? 1 : -1);
-                      }}
-                    >
-                      <div className="relative aspect-[1.586/1] w-full">
-                        {orderedSavedCards.slice(0, 3).reverse().map((card, stackIndex, reversedList) => {
-                          const depth = reversedList.length - stackIndex - 1;
-                          const cardId = String(card?.id || "");
-                          const isFront = depth === 0;
-                          const brand = String(card?.brand || "Piessang").toUpperCase();
-                          const cardholder =
-                            String(profile?.accountName || profile?.displayName || "Piessang shopper").trim() || "Piessang shopper";
-                          const number = maskPreviewNumber(card?.last4);
-                          const expiry = formatPreviewExpiry(card?.expiryMonth, card?.expiryYear);
-
-                          return (
-                            <button
-                              key={cardId}
-                              type="button"
-                              onClick={() => setSelectedCardId(cardId)}
-                              aria-label={isFront ? `Selected card ${formatCard(card)}` : `Select ${formatCard(card)}`}
-                              className={[
-                                "absolute inset-0 block w-full text-left transition-transform duration-200 ease-out",
-                                isFront
-                                  ? "hover:-translate-y-1 hover:rotate-[0.4deg]"
-                                  : depth % 2 === 0
-                                    ? "hover:rotate-[0.8deg]"
-                                    : "hover:-rotate-[0.8deg]",
-                              ].join(" ")}
-                              style={{
-                                transform: `translateY(${depth * 10}px) scale(${1 - depth * 0.04})`,
-                                zIndex: 30 - depth,
-                                opacity: 1 - depth * 0.14,
-                              }}
-                            >
-                              <PremiumCardFace
-                                brand={brand}
-                                cardholder={cardholder}
-                                number={number}
-                                expiry={expiry}
-                                themeKey={card?.themeKey || `${cardId}:${brand}:${card?.last4 || ""}`}
-                                compact={!isFront}
-                                selected={isFront}
-                              />
-                            </button>
-                          );
-                        })}
+                  <div className="select-none">
+                    <div className="relative mx-auto w-full max-w-[760px]">
+                      <div className="relative mx-auto aspect-[1.42/1] w-full max-w-[680px] overflow-hidden rounded-[22px] sm:aspect-[1.92/1] sm:rounded-[30px]">
+                        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(151,114,255,0.14),rgba(255,255,255,0)_62%)]" />
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <div className="w-full overflow-hidden px-2 sm:px-0" ref={emblaRef}>
+                            <div className="flex items-center">
+                              {cards.map((card, index) => {
+                                const cardId = String(card?.id || "");
+                                const isSelected = cardId === selectedCardId;
+                                return (
+                                  <div
+                                    key={cardId || index}
+                                    className="min-w-0 flex-[0_0_84%] px-2 sm:flex-[0_0_56%] sm:px-4"
+                                    style={{ perspective: "1400px" }}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => emblaApi?.scrollTo(index)}
+                                      aria-label={formatCard(card)}
+                                      className="relative block aspect-[1.586/1] w-full overflow-hidden rounded-[18px] text-left sm:rounded-[22px]"
+                                    >
+                                      <div
+                                        data-card-shell
+                                        className="h-full w-full will-change-transform transition-[transform,opacity,filter,box-shadow] duration-200 ease-out"
+                                      >
+                                        <PremiumCardFace
+                                          brand={String(card?.brand || "Piessang").toUpperCase()}
+                                          cardholder={String(profile?.accountName || profile?.displayName || "Piessang shopper").trim() || "Piessang shopper"}
+                                          number={maskPreviewNumber(card?.last4)}
+                                          expiry={formatPreviewExpiry(card?.expiryMonth, card?.expiryYear)}
+                                          themeKey={card?.themeKey || `${String(card?.id || "")}:${String(card?.brand || "Piessang").toUpperCase()}:${card?.last4 || ""}`}
+                                          compact={!isSelected}
+                                          selected={isSelected}
+                                        />
+                                      </div>
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                       {cards.length > 1 ? (
                         <>
                           <button
                             type="button"
                             onClick={() => rotateSavedCard(-1)}
-                            className="absolute left-2 top-1/2 z-40 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/25 text-white shadow-[0_10px_24px_rgba(20,24,27,0.22)] backdrop-blur-sm transition-all duration-150 hover:scale-[1.06] hover:bg-black/35 active:scale-[0.95]"
+                            className="absolute left-[6px] top-1/2 z-40 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/18 bg-black/18 text-white shadow-[0_14px_28px_rgba(20,24,27,0.2)] backdrop-blur-md transition-all duration-300 ease-out hover:scale-[1.05] hover:bg-black/24 active:scale-[0.96] sm:left-[11%] sm:h-11 sm:w-11"
                             aria-label="Show previous saved card"
                           >
-                            <span className="text-[22px] leading-none">‹</span>
+                            <span className="text-[20px] leading-none sm:text-[22px]">‹</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => rotateSavedCard(1)}
-                            className="absolute right-2 top-1/2 z-40 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/20 bg-black/25 text-white shadow-[0_10px_24px_rgba(20,24,27,0.22)] backdrop-blur-sm transition-all duration-150 hover:scale-[1.06] hover:bg-black/35 active:scale-[0.95]"
+                            className="absolute right-[6px] top-1/2 z-40 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-white/18 bg-black/18 text-white shadow-[0_14px_28px_rgba(20,24,27,0.2)] backdrop-blur-md transition-all duration-300 ease-out hover:scale-[1.05] hover:bg-black/24 active:scale-[0.96] sm:right-[11%] sm:h-11 sm:w-11"
                             aria-label="Show next saved card"
                           >
-                            <span className="text-[22px] leading-none">›</span>
+                            <span className="text-[20px] leading-none sm:text-[22px]">›</span>
                           </button>
                         </>
                       ) : null}
                     </div>
-                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="mt-3 flex flex-col gap-3 sm:mt-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                       <div>
                         <p className="text-[12px] font-semibold text-[#202020]">{selectedCard ? formatCard(selectedCard) : "Saved card"}</p>
                         <p className="mt-1 text-[12px] text-[#57636c]">
@@ -2021,13 +2187,17 @@ export function CartCheckout() {
                         </p>
                       </div>
                       {cards.length > 1 ? (
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center justify-between gap-3 sm:justify-start">
                           <span className="text-[11px] font-medium text-[#57636c]">Swipe or use arrows</span>
                           <div className="inline-flex items-center gap-1.5">
-                            {orderedSavedCards.slice(0, Math.min(cards.length, 6)).map((card, index) => (
+                            {cards.slice(0, Math.min(cards.length, 6)).map((card, index) => (
                               <span
                                 key={`${String(card?.id || "")}-${index}`}
-                                className={index === 0 ? "h-2.5 w-6 rounded-full bg-[#202020]" : "h-2.5 w-2.5 rounded-full bg-black/15"}
+                                className={
+                                  String(card?.id || "") === selectedCardId
+                                    ? "h-2.5 w-6 rounded-full bg-[#202020]"
+                                    : "h-2.5 w-2.5 rounded-full bg-black/15"
+                                }
                               />
                             ))}
                           </div>
@@ -2361,29 +2531,92 @@ export function CartCheckout() {
     </section>
     {paymentOverlay.open ? (
       <div className="fixed inset-0 z-[180] flex items-center justify-center bg-[rgba(20,24,27,0.55)] px-4 py-6" role="dialog" aria-modal="true">
-        <div className="w-full max-w-[520px] rounded-[28px] border border-black/10 bg-white p-6 shadow-[0_24px_80px_rgba(20,24,27,0.24)]">
-          <div
-            className={`inline-flex h-12 w-12 items-center justify-center rounded-full ${
-              paymentOverlay.tone === "success" ? "bg-[#ecfdf3] text-[#15803d]" : "bg-[#f4f4f5] text-[#202020]"
-            }`}
-          >
-            {paymentOverlay.tone === "success" ? (
-              <svg viewBox="0 0 20 20" className="h-6 w-6 fill-none stroke-current stroke-[2.2]">
-                <path d="M4 10.5l3.5 3.5L16 5.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+        <div className="w-full max-w-[560px] overflow-hidden rounded-[28px] border border-black/10 bg-white shadow-[0_24px_80px_rgba(20,24,27,0.24)]">
+          <div className="relative overflow-hidden bg-[linear-gradient(135deg,#202020_0%,#2d3743_52%,#d5aa22_160%)] px-6 py-6 text-white">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 opacity-20"
+              style={{
+                backgroundImage:
+                  "repeating-linear-gradient(135deg, rgba(255,255,255,0.18) 0px, rgba(255,255,255,0.18) 2px, transparent 2px, transparent 22px)",
+              }}
+            />
+            <div className="relative flex items-center justify-between gap-4">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[14px] border border-white/14 bg-white/10 shadow-[0_10px_24px_rgba(20,24,27,0.18)] backdrop-blur-sm">
+                  <Image
+                    src="/logo/piessang-icon-only.png"
+                    alt="Piessang"
+                    fill
+                    sizes="44px"
+                    className="object-contain p-2"
+                  />
+                </div>
+                <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/85">
+                  Secure checkout
+                </span>
+              </div>
+              <div
+                className={`inline-flex h-12 w-12 items-center justify-center rounded-full ${
+                  paymentOverlay.tone === "success" ? "bg-white text-[#15803d]" : "bg-white/12 text-white"
+                }`}
+              >
+                {paymentOverlay.tone === "success" ? (
+                  <svg viewBox="0 0 20 20" className="h-6 w-6 fill-none stroke-current stroke-[2.2]">
+                    <path d="M4 10.5l3.5 3.5L16 5.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" className="h-6 w-6 animate-spin fill-none stroke-current stroke-[2]">
+                    <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </div>
+            </div>
+            <div className="relative mt-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/68">
+                {paymentOverlay.tone === "success" ? "Piessang payment complete" : "Piessang payment in progress"}
+              </p>
+              <h3 className="mt-2 text-[28px] font-semibold tracking-[-0.04em] text-white">{paymentOverlay.title}</h3>
+              <p className="mt-3 max-w-[46ch] text-[14px] leading-[1.7] text-white/82">{paymentOverlay.message}</p>
+            </div>
+          </div>
+          <div className="px-6 py-6">
+            {paymentOverlay.detail ? (
+              <div className="rounded-[16px] border border-black/6 bg-[#f7f7f8] px-4 py-4 text-[13px] leading-[1.7] text-[#57636c]">
+                {paymentOverlay.detail}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-center sm:justify-start">
+              <div className="relative h-[56px] w-[220px] overflow-hidden rounded-[12px] border border-black/6 bg-white px-2 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
+                <Image
+                  src="/badges/Stripe Secure Checkout Badge.png"
+                  alt="Stripe Secure Checkout"
+                  fill
+                  sizes="220px"
+                  className="object-contain p-2"
+                />
+              </div>
+            </div>
+            {paymentOverlay.tone !== "success" ? (
+              <div className="mt-4 rounded-[16px] border border-black/6 bg-white px-4 py-4 text-[12px] leading-[1.7] text-[#57636c] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+                If your bank requires 3D Secure, Stripe may open an authentication step. Do not close this page while your payment is being confirmed.
+              </div>
             ) : (
-              <svg viewBox="0 0 24 24" className="h-6 w-6 animate-spin fill-none stroke-current stroke-[2]">
-                <path d="M12 3a9 9 0 1 0 9 9" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-[12px] text-[#57636c]">Automatic redirect in about 5 seconds.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!successRedirectHref) return;
+                    router.replace(successRedirectHref);
+                  }}
+                  className="inline-flex h-11 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+                >
+                  Continue to success page
+                </button>
+              </div>
             )}
           </div>
-          <h3 className="mt-4 text-[24px] font-semibold tracking-[-0.03em] text-[#202020]">{paymentOverlay.title}</h3>
-          <p className="mt-3 text-[14px] leading-[1.7] text-[#57636c]">{paymentOverlay.message}</p>
-          {paymentOverlay.tone !== "success" ? (
-            <div className="mt-5 rounded-[14px] border border-black/5 bg-[#fafafa] px-4 py-3 text-[12px] leading-[1.6] text-[#57636c]">
-              Stripe may open a bank-authentication step if 3D Secure is required. Please do not close this page while your payment is being confirmed.
-            </div>
-          ) : null}
         </div>
       </div>
     ) : null}

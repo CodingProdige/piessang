@@ -1,0 +1,25 @@
+<h2>Order cancelled</h2>
+<p>
+  Hi <strong><%= vendorName || "Seller" %></strong>,
+</p>
+<p>
+  Order <strong><%= orderNumber %></strong> has been cancelled.
+</p>
+<% if (customerName) { %>
+  <p>
+    Customer: <strong><%= customerName %></strong>
+  </p>
+<% } %>
+<% if (typeof refundStarted !== "undefined" && refundStarted) { %>
+  <p>
+    The customer refund has already been started.
+  </p>
+<% } %>
+<% if (reason) { %>
+  <p>
+    Reason: <strong><%= reason %></strong>
+  </p>
+<% } %>
+<p>
+  Please stop any further fulfilment activity for this order in your seller dashboard.
+</p>

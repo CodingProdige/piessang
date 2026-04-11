@@ -233,6 +233,26 @@ export async function POST(req) {
     const touchedItems = [];
     const sellerDeliveryEntry = getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug);
     const previousOrderStatus = toLower(order?.lifecycle?.orderStatus || order?.order?.status?.order || "");
+    const cancellationStatus = toLower(order?.cancellation?.status || order?.lifecycle?.cancellationStatus || "");
+    const paymentStatus = toLower(order?.payment?.status || order?.lifecycle?.paymentStatus || order?.order?.status?.payment || "");
+
+    if (["requested", "approved", "cancelled"].includes(cancellationStatus)) {
+      return err(
+        409,
+        "Cancellation In Progress",
+        cancellationStatus === "cancelled"
+          ? "This order has already been cancelled. Seller fulfilment updates are locked."
+          : "This order has a customer cancellation request in progress. Seller fulfilment updates are locked until the cancellation is resolved.",
+        { cancellationStatus },
+      );
+    }
+
+    if (["refunded", "partial_refund"].includes(paymentStatus) || previousOrderStatus === "cancelled") {
+      return err(409, "Order Locked", "This order can no longer be fulfilled because it has been cancelled or refunded.", {
+        cancellationStatus,
+        paymentStatus,
+      });
+    }
 
     const sellerSourceItems = sourceItems
       .filter((item) => {

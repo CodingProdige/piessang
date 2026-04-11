@@ -1,0 +1,15 @@
+<h2>Cancellation request received</h2>
+<p>
+  Hi <strong><%= customerName || "there" %></strong>,
+</p>
+<p>
+  We’ve received your cancellation request for order <strong><%= orderNumber %></strong>.
+</p>
+<% if (reason) { %>
+  <p>
+    Reason: <strong><%= reason %></strong>
+  </p>
+<% } %>
+<p>
+  We’ll review it before stopping fulfilment and, where applicable, starting the refund process.
+</p>

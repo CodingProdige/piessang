@@ -60,32 +60,47 @@ export async function POST(req) {
       const payload = await stripeRequest(
         `/v1/payment_methods?customer=${encodeURIComponent(stripeCustomerId)}&type=card`,
       ).catch(() => ({ data: [] }));
-      activeCards = (Array.isArray(payload?.data) ? payload.data : []).map((paymentMethod) => ({
-        id: String(paymentMethod?.id || ""),
-        brand: String(paymentMethod?.card?.brand || "").toUpperCase(),
-        last4: String(paymentMethod?.card?.last4 || ""),
-        expiryMonth: String(paymentMethod?.card?.exp_month || "").padStart(2, "0"),
-        expiryYear: String(paymentMethod?.card?.exp_year || ""),
-        status: "active",
-        ...(cardPresentation[String(paymentMethod?.id || "")] || buildCardPresentationMetadata({
-          cardId: String(paymentMethod?.id || ""),
+      activeCards = (Array.isArray(payload?.data) ? payload.data : []).map((paymentMethod) => {
+        const paymentMethodId = String(paymentMethod?.id || "");
+        const presentation =
+          cardPresentation[paymentMethodId] ||
+          buildCardPresentationMetadata({
+            cardId: paymentMethodId,
+            brand: String(paymentMethod?.card?.brand || "").toUpperCase(),
+            last4: String(paymentMethod?.card?.last4 || ""),
+          });
+        return {
+          id: paymentMethodId,
           brand: String(paymentMethod?.card?.brand || "").toUpperCase(),
           last4: String(paymentMethod?.card?.last4 || ""),
-        })),
-      }));
+          expiryMonth: String(paymentMethod?.card?.exp_month || "").padStart(2, "0"),
+          expiryYear: String(paymentMethod?.card?.exp_year || ""),
+          status: "active",
+          themeKey: String(presentation?.themeKey || "").trim() || undefined,
+          updatedAt: presentation?.updatedAt || undefined,
+        };
+      });
     } else {
       const cards = userData.paymentMethods?.cards ?? [];
       activeCards = cards
         .filter((c) => c.status === "active")
-        .map((card) => ({
-          ...card,
-          ...(cardPresentation[String(card?.id || card?.card_id || "")] || buildCardPresentationMetadata({
-            cardId: String(card?.id || card?.card_id || ""),
-            brand: String(card?.brand || "").toUpperCase(),
-            last4: String(card?.last4 || ""),
-            themeKey: card?.themeKey,
-          })),
-        }));
+        .map((card) => {
+          const cardId = String(card?.id || card?.card_id || "");
+          const presentation =
+            cardPresentation[cardId] ||
+            buildCardPresentationMetadata({
+              cardId,
+              brand: String(card?.brand || "").toUpperCase(),
+              last4: String(card?.last4 || ""),
+              themeKey: card?.themeKey,
+            });
+          return {
+            ...card,
+            id: String(card?.id || card?.card_id || ""),
+            themeKey: String(presentation?.themeKey || card?.themeKey || "").trim() || undefined,
+            updatedAt: presentation?.updatedAt || card?.updatedAt || undefined,
+          };
+        });
     }
 
     return ok({

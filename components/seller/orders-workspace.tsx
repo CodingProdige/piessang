@@ -21,6 +21,14 @@ type SellerOrderSlice = {
   orderStatus: string;
   paymentStatus: string;
   fulfillmentStatus: string;
+  cancellation?: {
+    status?: string;
+    reason?: string;
+    requestedAt?: string;
+    approvedAt?: string;
+    blocked?: boolean;
+    blockMessage?: string;
+  };
   deliveryOption?: {
     type?: string;
     label?: string;
@@ -130,7 +138,7 @@ type LatePopoverState = {
 
 type SellerFulfillmentAction = "processing" | "dispatched" | "delivered" | "cancelled";
 type SellerMetricPeriod = "today" | "7d" | "30d";
-type SellerViewFilter = "all" | "unfulfilled" | "unpaid" | "open" | "fulfilled" | "local_delivery";
+type SellerViewFilter = "all" | "unfulfilled" | "unpaid" | "open" | "fulfilled" | "cancelled" | "local_delivery";
 
 type SellerOrdersWorkspaceProps = {
   sellerSlug?: string;
@@ -312,6 +320,7 @@ function getSellerActionLabels(item: SellerOrderSlice, nextStatus: SellerFulfill
 }
 
 function getNextSellerActions(item: SellerOrderSlice): SellerFulfillmentAction[] {
+  if (item?.cancellation?.blocked) return [];
   return getSellerFulfillmentActions({
     currentStatus: item.fulfillmentStatus || item.orderStatus,
     deliveryType: item.deliveryOption?.type,
@@ -319,7 +328,15 @@ function getNextSellerActions(item: SellerOrderSlice): SellerFulfillmentAction[]
   }) as SellerFulfillmentAction[];
 }
 
+function canSellerCancelOrder(item: SellerOrderSlice | null) {
+  if (!item) return false;
+  return getNextSellerActions(item).includes("cancelled");
+}
+
 function getDeadlineState(item: SellerOrderSlice, nowTick: number) {
+  if (item?.cancellation?.blocked) {
+    return { label: "Fulfilment locked", tone: "text-[#b91c1c]", overdue: false };
+  }
   const fulfillmentStatus = toStr(item.fulfillmentStatus).toLowerCase();
   const orderStatus = toStr(item.orderStatus).toLowerCase();
   if (["delivered", "completed", "cancelled"].includes(fulfillmentStatus) || ["completed", "cancelled"].includes(orderStatus)) {
@@ -359,6 +376,58 @@ function getDeadlineState(item: SellerOrderSlice, nowTick: number) {
     label: countdown,
     tone: "text-[#8f7531]",
     overdue: false,
+  };
+}
+
+function getCancellationTone(status: string) {
+  const normalized = toStr(status).toLowerCase();
+  if (normalized === "requested") return "border-[#facc15]/40 bg-[#fffbea] text-[#8f7531]";
+  if (normalized === "approved" || normalized === "cancelled") return "border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]";
+  return "border-black/10 bg-[#f7f7f7] text-[#57636c]";
+}
+
+function getSellerLifecycleDisplay(item: SellerOrderSlice, deadlineState: { label: string; tone: string; overdue: boolean }) {
+  const orderStatus = toStr(item.orderStatus).toLowerCase();
+  const paymentStatus = toStr(item.paymentStatus).toLowerCase();
+  const cancellationStatus = toStr(item.cancellation?.status).toLowerCase();
+
+  if (cancellationStatus === "cancelled" || orderStatus === "cancelled") {
+    return {
+      primaryLabel: "Cancelled",
+      primaryTone: getCancellationTone("cancelled"),
+      secondaryLabel: null as string | null,
+      secondaryTone: "",
+      message: item.cancellation?.blockMessage || "This order has been cancelled. Do not continue fulfilment.",
+    };
+  }
+
+  if (paymentStatus === "refunded" || paymentStatus === "partial_refund") {
+    return {
+      primaryLabel: sentenceStatus(paymentStatus),
+      primaryTone: paymentStatusTone(paymentStatus),
+      secondaryLabel: cancellationStatus === "requested" ? "Cancellation requested" : null,
+      secondaryTone: cancellationStatus === "requested" ? getCancellationTone("requested") : "",
+      message: item.cancellation?.blockMessage || "This order has been refunded. Do not continue fulfilment.",
+    };
+  }
+
+  if (cancellationStatus) {
+    const statusLabel = cancellationStatus === "requested" ? "Cancellation requested" : cancellationStatus === "approved" ? "Cancellation approved" : `Cancellation ${sentenceStatus(cancellationStatus)}`;
+    return {
+      primaryLabel: getLineStatus(item),
+      primaryTone: fulfillmentTone(item.fulfillmentStatus, deadlineState.overdue),
+      secondaryLabel: statusLabel,
+      secondaryTone: getCancellationTone(cancellationStatus),
+      message: item.cancellation?.blocked ? item.cancellation.blockMessage || "Fulfilment is locked while this cancellation is being handled." : null,
+    };
+  }
+
+  return {
+    primaryLabel: getLineStatus(item),
+    primaryTone: fulfillmentTone(item.fulfillmentStatus, deadlineState.overdue),
+    secondaryLabel: null as string | null,
+    secondaryTone: "",
+    message: item.cancellation?.blocked ? item.cancellation.blockMessage || "Fulfilment locked." : null,
   };
 }
 
@@ -501,7 +570,7 @@ function SellerMetricCard({
   return (
     <div
       data-seller-orders-metric-info
-      className="relative min-h-[120px] rounded-[18px] border border-black/6 bg-[#fcfcfc] px-5 py-4 shadow-[0_6px_20px_rgba(20,24,27,0.04)]"
+      className="relative min-h-[156px] rounded-[18px] border border-black/6 bg-[#fcfcfc] px-5 py-4 shadow-[0_6px_20px_rgba(20,24,27,0.04)]"
       onMouseEnter={() => onOpenInfo?.(id)}
       onMouseLeave={() => onCloseInfo?.()}
     >
@@ -516,13 +585,13 @@ function SellerMetricCard({
           <p className="mt-1 text-[13px] leading-[1.35] text-[#57636c]">{helper}</p>
         </PlatformPopover>
       ) : null}
-      <div className="mt-4 flex items-end justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="text-[28px] font-semibold tracking-[-0.03em] text-[#202020]">{value}</span>
-            <span className={`text-[12px] font-semibold ${delta.startsWith("-") ? "text-[#b91c1c]" : "text-[#1f8f55]"}`}>{delta}</span>
-          </div>
+      <div className="mt-5">
+        <div className="flex flex-wrap items-end gap-x-2 gap-y-1">
+          <span className="text-[24px] font-semibold tracking-[-0.025em] leading-none text-[#202020] sm:text-[26px]">{value}</span>
+          <span className={`pb-1 text-[12px] font-semibold ${delta.startsWith("-") ? "text-[#b91c1c]" : "text-[#1f8f55]"}`}>{delta}</span>
         </div>
+      </div>
+      <div className="mt-4 rounded-[14px] border border-black/6 bg-white/80 px-3 py-2">
         <Sparkline values={series} />
       </div>
     </div>
@@ -966,6 +1035,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       if (viewFilter === "unpaid" && paymentStatus !== "pending") return false;
       if (viewFilter === "open" && ["completed", "cancelled", "delivered"].includes(orderStatus)) return false;
       if (viewFilter === "fulfilled" && fulfillmentStatus !== "delivered" && !item.deliveryProgress?.isComplete) return false;
+      if (viewFilter === "cancelled" && orderStatus !== "cancelled" && toStr(item.cancellation?.status).toLowerCase() !== "cancelled") return false;
       if (viewFilter === "local_delivery" && !["direct_delivery", "collection"].includes(deliveryType)) return false;
 
       if (!needle) return true;
@@ -1113,10 +1183,24 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               <h2 className="text-[34px] font-semibold tracking-[-0.04em] text-[#202020]">{activeItem.orderNumber || activeItem.orderId}</h2>
               <span className={`inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${paymentStatusTone(activeItem.paymentStatus)}`}>{sentenceStatus(activeItem.paymentStatus)}</span>
               <span className={`inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${fulfillmentTone(activeItem.fulfillmentStatus, deadlineState.overdue)}`}>{sentenceStatus(activeItem.fulfillmentStatus)}</span>
+              {activeItem.cancellation?.status ? (
+                <span className={`inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${getCancellationTone(activeItem.cancellation.status)}`}>
+                  Cancellation {sentenceStatus(activeItem.cancellation.status)}
+                </span>
+              ) : null}
             </div>
             <p className="mt-2 text-[14px] text-[#57636c]">
               {formatTime(activeItem.createdAt)} from {getDeliveryMethodDisplayLabel(activeItem.deliveryOption)}
             </p>
+            {activeItem.cancellation?.blocked ? (
+              <div className="mt-4 max-w-[760px] rounded-[16px] border border-[#fecaca] bg-[#fff7f8] px-4 py-3 text-[13px] text-[#b91c1c]">
+                <p className="font-semibold">Fulfilment locked</p>
+                <p className="mt-1">
+                  {activeItem.cancellation.blockMessage || "This order should not be fulfilled while the cancellation is being handled."}
+                </p>
+                {activeItem.cancellation.reason ? <p className="mt-1 text-[12px]">Reason: {activeItem.cancellation.reason}</p> : null}
+              </div>
+            ) : null}
           </div>
           <div ref={detailActionsRef} className="relative flex w-full flex-wrap gap-2 lg:w-auto lg:justify-end">
             {getNextSellerActions(activeItem).slice(0, 2).map((nextStatus) => (
@@ -1130,6 +1214,16 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                 {updatingOrderId === activeItem.orderId ? "Updating..." : getSellerActionLabels(activeItem, nextStatus).primary}
               </button>
             ))}
+            {canSellerCancelOrder(activeItem) && !getNextSellerActions(activeItem).slice(0, 2).includes("cancelled") ? (
+              <button
+                type="button"
+                onClick={() => setCancelModalOrderId(activeItem.orderId)}
+                disabled={updatingOrderId === activeItem.orderId}
+                className="rounded-[12px] border border-[#f2c7cb] bg-white px-4 py-2.5 text-[13px] font-semibold text-[#b91c1c]"
+              >
+                Cancel order
+              </button>
+            ) : null}
             <button type="button" onClick={() => setMoreActionsOpen((current) => !current)} className="rounded-[12px] border border-black/10 bg-white px-4 py-2.5 text-[13px] font-semibold text-[#202020]">
               More actions
             </button>
@@ -1144,6 +1238,18 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                 <button type="button" onClick={() => { void handleGenerateDocument(activeItem, "invoice"); setMoreActionsOpen(false); }} className="block w-full rounded-[10px] px-3 py-2 text-left text-[13px] text-[#202020] hover:bg-[#f6f6f6]">
                   {documentLoadingOrderId === activeItem.orderId && documentLoadingType === "invoice" ? "Generating invoice..." : "Print invoice"}
                 </button>
+                {canSellerCancelOrder(activeItem) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCancelModalOrderId(activeItem.orderId);
+                      setMoreActionsOpen(false);
+                    }}
+                    className="mt-1 block w-full rounded-[10px] px-3 py-2 text-left text-[13px] font-semibold text-[#b91c1c] hover:bg-[#fff7f8]"
+                  >
+                    Cancel order
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -1197,6 +1303,16 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                     {updatingOrderId === activeItem.orderId ? "Updating..." : getSellerActionLabels(activeItem, nextStatus).primary}
                   </button>
                 ))}
+                {canSellerCancelOrder(activeItem) && !getNextSellerActions(activeItem).includes("cancelled") ? (
+                  <button
+                    type="button"
+                    onClick={() => setCancelModalOrderId(activeItem.orderId)}
+                    disabled={updatingOrderId === activeItem.orderId}
+                    className="rounded-[12px] border border-[#f2c7cb] bg-white px-4 py-2.5 text-[13px] font-semibold text-[#b91c1c]"
+                  >
+                    Cancel order
+                  </button>
+                ) : null}
               </div>
             </section>
 
@@ -1564,6 +1680,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               { id: "unpaid" as const, label: "Unpaid" },
               { id: "open" as const, label: "Open" },
               { id: "fulfilled" as const, label: "Fulfilled" },
+              { id: "cancelled" as const, label: "Cancelled" },
               { id: "local_delivery" as const, label: "Local Delivery" },
             ]).map((filter) => (
               <button
@@ -1639,6 +1756,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
             {filteredItems.map((item) => {
               const selected = selectedOrderIds.includes(item.orderId);
               const deadlineState = getDeadlineState(item, nowTick);
+              const lifecycleDisplay = getSellerLifecycleDisplay(item, deadlineState);
               return (
                 <button
                   key={`mobile-${item.orderId}`}
@@ -1655,8 +1773,20 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${paymentStatusTone(item.paymentStatus)}`}>{sentenceStatus(item.paymentStatus)}</span>
-                    <StatusWithLatePopover status={item.fulfillmentStatus} deadlineState={deadlineState} />
+                    <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${lifecycleDisplay.primaryTone}`}>
+                      {lifecycleDisplay.primaryLabel}
+                    </span>
+                    {lifecycleDisplay.secondaryLabel ? (
+                      <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${lifecycleDisplay.secondaryTone}`}>
+                        {lifecycleDisplay.secondaryLabel}
+                      </span>
+                    ) : null}
                   </div>
+                  {lifecycleDisplay.message ? (
+                    <div className="mt-3 rounded-[12px] border border-[#fecaca] bg-[#fff7f8] px-3 py-2 text-[12px] text-[#b91c1c]">
+                      {lifecycleDisplay.message}
+                    </div>
+                  ) : null}
                   <div className="mt-4 grid grid-cols-2 gap-3 text-[13px] text-[#57636c]">
                     <div>
                       <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b94a3]">Total</p>
@@ -1697,6 +1827,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                 {filteredItems.map((item) => {
                   const selected = selectedOrderIds.includes(item.orderId);
                   const deadlineState = getDeadlineState(item, nowTick);
+                  const lifecycleDisplay = getSellerLifecycleDisplay(item, deadlineState);
                   return (
                     <tr
                       key={item.orderId}
@@ -1738,7 +1869,21 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                         <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${paymentStatusTone(item.paymentStatus)}`}>{sentenceStatus(item.paymentStatus)}</span>
                       </td>
                       <td className="px-2 py-3">
-                        <StatusWithLatePopover status={item.fulfillmentStatus} deadlineState={deadlineState} />
+                        <div className="flex flex-wrap gap-2">
+                          <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${lifecycleDisplay.primaryTone}`}>
+                            {lifecycleDisplay.primaryLabel}
+                          </span>
+                          {lifecycleDisplay.secondaryLabel ? (
+                            <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${lifecycleDisplay.secondaryTone}`}>
+                              {lifecycleDisplay.secondaryLabel}
+                            </span>
+                          ) : null}
+                        </div>
+                        {lifecycleDisplay.message ? (
+                          <p className="mt-2 max-w-[240px] text-[12px] text-[#b91c1c]">
+                            {lifecycleDisplay.message}
+                          </p>
+                        ) : null}
                       </td>
                       <td className="px-2 py-3 text-[#3f3f46]">{pluralize(item.counts.quantity, "item")}</td>
                       <td className="max-w-[220px] px-4 py-3 text-[#3f3f46]">

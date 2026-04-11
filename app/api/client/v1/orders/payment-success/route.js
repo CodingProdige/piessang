@@ -583,6 +583,40 @@ export async function POST(req) {
       console.error("order invoice creation failed:", invoiceError);
     });
 
+    const customerEmail =
+      toStr(order?.customer?.email) ||
+      toStr(order?.customer_snapshot?.email) ||
+      toStr(order?.customer_snapshot?.account?.email) ||
+      toStr(order?.customer_snapshot?.personal?.email);
+    const customerName =
+      toStr(order?.customer?.accountName) ||
+      toStr(order?.customer_snapshot?.account?.accountName) ||
+      toStr(order?.customer_snapshot?.business?.companyName) ||
+      toStr(order?.customer_snapshot?.personal?.fullName) ||
+      "Customer";
+
+    if (customerEmail) {
+      fetch(`${originBase}/api/client/v1/notifications/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "order-confirmation",
+          to: customerEmail,
+          data: {
+            order,
+            orderNumber: order?.order?.orderNumber || null,
+            customerName,
+            customerEmail,
+            amount: normalizeMoneyAmount(payment?.amount_incl ?? order?.payment?.amount_incl ?? 0).toFixed(2),
+            currency: toStr(payment?.currency || order?.payment?.currency || "ZAR").toUpperCase(),
+            message: "Your order has been received and your payment was confirmed successfully.",
+          },
+        }),
+      }).catch((notificationError) => {
+        console.error("customer order confirmation email failed:", notificationError);
+      });
+    }
+
     const customerId = toStr(order?.order?.customerId || order?.customer?.customerId || "");
     if (customerId) {
       const windowStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();

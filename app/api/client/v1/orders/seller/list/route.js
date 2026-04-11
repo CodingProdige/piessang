@@ -358,6 +358,8 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const orderStatus = toLower(order?.lifecycle?.orderStatus || order?.order?.status?.order || "");
   const paymentStatus = toLower(order?.lifecycle?.paymentStatus || order?.payment?.status || order?.order?.status?.payment || "");
   const fulfillmentStatus = toLower(order?.lifecycle?.fulfillmentStatus || order?.order?.status?.fulfillment || "");
+  const cancellationStatus = toLower(order?.cancellation?.status || order?.lifecycle?.cancellationStatus || "");
+  const cancellationReason = toStr(order?.cancellation?.reason || "");
   const deliveryProgress = buildOrderDeliveryProgress({ ...order, items: enrichedItems }).progress;
   const deliveryOption = getSellerDeliveryDetails(order, sellerIdentity);
   const customerContact = getSellerCustomerContact(order);
@@ -387,6 +389,20 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
   const unfulfilled = !fulfilled && orderStatus !== "cancelled";
   const deliveryAmountIncl = Number(deliveryOption?.amountIncl || 0);
   const totalIncl = normalizeMoneyAmount(subtotalIncl + deliveryAmountIncl);
+  const fulfilmentBlocked =
+    ["requested", "approved", "cancelled"].includes(cancellationStatus) ||
+    ["cancelled"].includes(orderStatus) ||
+    ["refunded", "partial_refund"].includes(paymentStatus);
+  const fulfilmentBlockMessage =
+    cancellationStatus === "requested"
+      ? "The customer requested cancellation. Fulfilment is paused until this is resolved."
+      : cancellationStatus === "approved"
+        ? "Cancellation has been approved. Do not continue fulfilment."
+        : cancellationStatus === "cancelled" || orderStatus === "cancelled"
+          ? "This order has been cancelled. Do not continue fulfilment."
+          : ["refunded", "partial_refund"].includes(paymentStatus)
+            ? "This order has been refunded. Do not continue fulfilment."
+            : "";
 
   return {
     sellerCode: sellerIdentity.sellerCode || "",
@@ -405,6 +421,14 @@ function buildSellerSlice(orderId, order, items, sellerIdentity) {
     orderStatus,
     paymentStatus,
     fulfillmentStatus,
+    cancellation: {
+      status: cancellationStatus,
+      reason: cancellationReason,
+      requestedAt: toStr(order?.cancellation?.requestedAt || ""),
+      approvedAt: toStr(order?.cancellation?.approvedAt || ""),
+      blocked: fulfilmentBlocked,
+      blockMessage: fulfilmentBlockMessage,
+    },
     deliveryProgress,
     deliveryOption,
     destination: {

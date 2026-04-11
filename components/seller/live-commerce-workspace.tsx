@@ -248,12 +248,13 @@ function WorldPulse({
             <path d="M850 0V520" />
           </g>
           <g fill="url(#world-land)" stroke="#9ed8fb" strokeWidth="2" opacity="0.98">
-            <path d="M84 138c28-30 83-41 125-32 25 5 36 18 57 24 27 7 55 4 81 18 17 9 30 25 35 46-11 17-27 25-47 31-18 5-39 3-58 5-28 2-59 17-82 3-15-9-19-30-39-38-23-8-52 1-68-18-13-16-16-27-4-39z" />
-            <path d="M268 314c18-11 44-13 62-8 10 3 16 12 25 18 13 8 31 12 38 27 7 15 1 31-10 42-13 14-35 19-54 19-22 0-47-8-61-26-14-18-13-56 0-72z" />
-            <path d="M440 132c24-19 70-25 103-20 31 4 57 21 78 44 13 15 29 26 44 37 15 12 31 30 25 50-5 17-25 24-43 29-33 10-69 1-103 3-25 1-46 13-70 16-29 3-62-4-76-28-15-25-10-63 8-88 11-15 19-32 34-43z" />
-            <path d="M508 315c18-12 40-16 59-14 18 2 35 11 47 24 9 10 18 22 18 37 0 18-13 33-29 40-20 9-44 11-64 5-21-7-39-26-41-49-2-18-4-33 10-43z" />
-            <path d="M680 164c38-25 97-29 143-19 30 7 57 23 76 47 18 21 39 35 58 53 13 12 23 31 15 47-9 17-34 21-55 24-39 5-79-3-118-1-25 1-48 10-73 10-24 0-54-5-70-24-17-21-20-53-9-78 7-16 18-32 33-41z" />
-            <path d="M791 374c26-12 56-14 83-10 28 4 52 18 73 36 10 9 25 21 22 37-4 18-27 24-45 26-35 4-71 1-107 2-31 1-68 7-89-17-18-20-10-54 11-74 14-13 33-21 52-25z" />
+            <path d="M110 110l34-19 48-12 66-5 52 9 30 18 22 24 9 22-12 13-28 6-6 20-23 24-39 18-49 6-32-6-15-16-10-24-17-18-28-10-20-17-8-24 7-25 19-24z" />
+            <path d="M250 271l33-7 35 7 22 19 18 31 3 37-11 31-22 21-36 11-35-8-23-19-13-28-2-31 11-33 20-24z" />
+            <path d="M414 108l30-28 46-17 68-10 62 4 43 13 41 29 26 33 8 37-12 26 13 16 31 9 24 23 16 28 1 29-15 22-33 9-53 2-44 1-37 14-34 25-45 12-54-3-40-18-24-31-9-41 4-43 20-49 27-43z" />
+            <path d="M545 290l35-12 41 2 33 17 19 28 7 33-6 28-20 23-34 12-42 1-32-10-24-24-10-32 3-31 15-24 15-11z" />
+            <path d="M671 112l53-18 79-8 68 8 56 22 39 31 12 26-8 17-28 9-17 19 11 16 33 9 33 19 27 27 17 34 0 27-18 19-43 10-66 1-70-4-52 2-38 15-29 4-37-8-18-24-3-37 12-34 24-24 0-24 18-22 45-19z" />
+            <path d="M796 364l40-11 53 1 45 12 35 22 25 28 12 27-1 20-17 14-34 7-47 1-56 0-49 1-39-10-20-20-2-31 16-34 39-27z" />
+            <path d="M835 63l19-11 18 8 5 18-12 12-18-2-13-11 1-14z" />
           </g>
           {mappedLocations.map((entry, index) => {
             const pinX = entry.x * 10;
@@ -306,13 +307,13 @@ function WorldPulse({
               </g>
             );
           })}
-          <g fill="#8aa4ba" fontSize="10" fontWeight="700" letterSpacing="0.16em" opacity="0.8">
-            <text x="92" y="84">NORTH AMERICA</text>
-            <text x="440" y="88">EUROPE</text>
-            <text x="468" y="206">AFRICA</text>
-            <text x="690" y="110">ASIA</text>
-            <text x="794" y="402">AUSTRALIA</text>
-            <text x="230" y="356">SOUTH AMERICA</text>
+          <g fill="#8aa4ba" fontSize="10" fontWeight="700" letterSpacing="0.16em" opacity="0.72">
+            <text x="118" y="70">NORTH AMERICA</text>
+            <text x="495" y="67">EUROPE</text>
+            <text x="524" y="204">AFRICA</text>
+            <text x="733" y="95">ASIA</text>
+            <text x="808" y="421">AUSTRALIA</text>
+            <text x="256" y="347">SOUTH AMERICA</text>
           </g>
           <g stroke="rgba(14,165,233,0.18)" strokeWidth="2" fill="none">
             <path d="M78 244c72 22 138 14 215-6 81-22 150-28 230-12 88 18 151 17 228-4 74-20 131-14 178 3" />
@@ -335,7 +336,7 @@ function WorldPulse({
           <p className="text-[12px] text-[#6b7280]">viewers right now</p>
           <p className="mt-2 text-[14px] font-semibold text-[#202020]">{formatCompactNumber(orders)} orders today</p>
         </div>
-        <div className="absolute right-4 top-4 rounded-[14px] border border-black/6 bg-white/92 px-4 py-3 shadow-[0_10px_24px_rgba(20,24,27,0.08)] backdrop-blur">
+        <div className="absolute right-4 top-4 rounded-[14px] border border-black/6 bg-white/90 px-4 py-3 shadow-[0_10px_24px_rgba(20,24,27,0.08)] backdrop-blur">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7a8594]">Map source</p>
           <p className="mt-2 text-[13px] font-semibold text-[#202020]">Live session + order regions</p>
           <p className="mt-1 max-w-[180px] text-[12px] leading-[1.5] text-[#6b7280]">

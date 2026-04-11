@@ -39,6 +39,9 @@ type CartItem = {
   selected_variant_snapshot?: {
     variant_id?: string | number | null;
     label?: string | null;
+    media?: {
+      images?: Array<{ imageUrl?: string | null; blurHashUrl?: string | null }>;
+    };
     pricing?: {
       selling_price_excl?: number;
       selling_price_incl?: number;
@@ -90,8 +93,8 @@ export function CartItemCard({
   const qty = item.qty ?? item.quantity ?? 0;
   const saleQty = Math.max(0, item.sale_qty ?? 0);
   const regularQty = Math.max(0, item.regular_qty ?? Math.max(qty - saleQty, 0));
-  const imageUrl = snapshot?.media?.images?.[0]?.imageUrl ?? "";
-  const imageBlurHash = snapshot?.media?.images?.[0]?.blurHashUrl ?? "";
+  const imageUrl = variant?.media?.images?.[0]?.imageUrl ?? snapshot?.media?.images?.[0]?.imageUrl ?? "";
+  const imageBlurHash = variant?.media?.images?.[0]?.blurHashUrl ?? snapshot?.media?.images?.[0]?.blurHashUrl ?? "";
   const baseIncl =
     toMoneyNumber(variant?.pricing?.selling_price_incl) ||
     toMoneyNumber(variant?.pricing?.selling_price_excl ? variant.pricing.selling_price_excl * 1.15 : 0);

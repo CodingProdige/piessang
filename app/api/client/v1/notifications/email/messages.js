@@ -174,6 +174,30 @@ export const emailMessages = {
       subjectTemplate: "Order <%= orderNumber || 'your order' %> Dispatched"
     },
 
+    "order-cancelled": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-cancelled.ejs",
+      subjectTemplate: "Order <%= orderNumber || 'your order' %> cancelled"
+    },
+
+    "order-cancellation-requested": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "order-cancellation-requested.ejs",
+      subjectTemplate: "Cancellation request received for order <%= orderNumber || 'your order' %>"
+    },
+
+    "seller-order-cancelled": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-order-cancelled.ejs",
+      subjectTemplate: "Order <%= orderNumber || 'order' %> cancelled"
+    },
+
+    "seller-order-cancellation-requested": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-order-cancellation-requested.ejs",
+      subjectTemplate: "Cancellation requested for order <%= orderNumber || 'order' %>"
+    },
+
     "order-seller-fulfillment-update": {
       wrapper: "corporate-wrapper.ejs",
       template: "order-seller-fulfillment-update.ejs",

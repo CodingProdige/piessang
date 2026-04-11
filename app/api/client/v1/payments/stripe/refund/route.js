@@ -5,9 +5,8 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSessionUser } from "@/lib/api/security";
 import { normalizeMoneyAmount } from "@/lib/money";
-import { stripeRequest } from "@/lib/payments/stripe";
+import { processStripeOrderRefund } from "@/lib/payments/stripe-refunds";
 import { isSystemAdminUser } from "@/lib/seller/settlement-access";
-import { syncOrderSellerSettlements } from "@/lib/seller/settlements";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status: s });
@@ -79,112 +78,24 @@ export async function POST(req) {
     if (!snap.exists) return err(404, "Order Not Found", "Order could not be located.");
     const order = snap.data() || {};
 
-    const paymentProvider = toStr(order?.payment?.provider).toLowerCase();
-    if (paymentProvider !== "stripe") {
-      return err(409, "Invalid Provider", "This order was not paid through Stripe.");
-    }
-
-    const paymentIntentId = toStr(order?.payment?.stripePaymentIntentId || "");
-    if (!paymentIntentId) {
-      return err(409, "Missing Payment", "We could not find the Stripe payment intent for this order.");
-    }
-
-    const paymentStatus = toStr(order?.payment?.status || order?.order?.status?.payment).toLowerCase();
-    if (["refunded"].includes(paymentStatus)) {
-      return err(409, "Already Refunded", "This order has already been fully refunded.");
-    }
-
-    const paidAmount = r2(order?.payment?.paid_amount_incl || order?.payment?.required_amount_incl || 0);
-    const existingRefunded = r2(order?.payment?.refunded_amount_incl || 0);
-    const remainingPaid = r2(Math.max(paidAmount, 0));
-    const refundAmount = amount == null ? remainingPaid : amount;
-    if (refundAmount <= 0) {
-      return err(409, "Nothing To Refund", "No paid balance remains on this order.");
-    }
-    if (refundAmount > remainingPaid) {
-      return err(409, "Invalid Refund Amount", "Refund amount cannot exceed remaining paid amount.", {
-        remaining_paid_amount_incl: remainingPaid,
-      });
-    }
-
-    const existingAttempts = Array.isArray(order?.payment?.attempts) ? order.payment.attempts : [];
-    if (refundRequestId) {
-      const existingByRequestId = existingAttempts.find((attempt) => attempt?.type === "refund" && attempt?.refundRequestId === refundRequestId);
-      if (existingByRequestId) {
-        return ok({
-          orderId: snap.id,
-          status: "already_processed",
-          refundId: existingByRequestId?.stripeRefundId || existingByRequestId?.transactionId || null,
-        });
-      }
-    }
-
-    const form = new URLSearchParams();
-    form.set("payment_intent", paymentIntentId);
-    form.set("amount", String(Math.round(refundAmount * 100)));
-    form.set("metadata[orderId]", snap.id);
-    form.set("metadata[adminUid]", sessionUser.uid);
-    if (refundRequestId) form.set("metadata[refundRequestId]", refundRequestId);
-
-    const refundRes = await stripeRequest("/v1/refunds", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: form.toString(),
-    });
-
-    const nextRefundedTotal = r2(existingRefunded + refundAmount);
-    const nextRemainingPaid = r2(Math.max(remainingPaid - refundAmount, 0));
-    const isFullyRefunded = nextRemainingPaid === 0;
-    const refundAttempt = {
-      type: "refund",
-      provider: "stripe",
-      stripeRefundId: toStr(refundRes?.id || ""),
-      stripePaymentIntentId: paymentIntentId,
-      amount_incl: refundAmount,
-      currency: toStr(order?.payment?.currency || "ZAR"),
-      status: isFullyRefunded ? "refunded" : "partial_refund",
-      createdAt: now(),
-      refundedBy: sessionUser.uid,
-      ...(refundRequestId ? { refundRequestId } : {}),
-      ...(note ? { message: note } : {}),
-    };
-
-    const updatePayload = {
-      "payment.status": isFullyRefunded ? "refunded" : "partial_refund",
-      "payment.paid_amount_incl": nextRemainingPaid,
-      "payment.refunded_amount_incl": nextRefundedTotal,
-      "payment.refunded_currency": toStr(order?.payment?.currency || "ZAR"),
-      "payment.refunded_at": now(),
-      "payment.refund_count": Number(order?.payment?.refund_count || 0) + 1,
-      "payment.attempts": [...existingAttempts, refundAttempt],
-      "order.status.payment": isFullyRefunded ? "refunded" : "partial_refund",
-      "timestamps.updatedAt": now(),
-    };
-
-    if (note) {
-      updatePayload["order.refund_message"] = note;
-      updatePayload["order.refund_message_at"] = now();
-    }
-
-    if (isFullyRefunded) {
-      updatePayload["order.status.order"] = "cancelled";
-      updatePayload["order.editable"] = false;
-      updatePayload["order.editable_reason"] = "Order is locked because it was fully refunded.";
-      updatePayload["timestamps.lockedAt"] = order?.timestamps?.lockedAt || now();
-    }
-
-    await orderRef.set(updatePayload, { merge: true });
-    await syncOrderSellerSettlements({
+    const refundResult = await processStripeOrderRefund({
+      orderRef,
       orderId: snap.id,
-      eventType: isFullyRefunded ? "refund_full" : "refund_partial",
-    }).catch(() => null);
+      order,
+      amount,
+      refundRequestId,
+      message: note,
+      adminUid: sessionUser.uid,
+      markOrderCancelled: true,
+      cancelReason: note || "Order is locked because it was fully refunded.",
+    });
 
     return ok({
       orderId: snap.id,
-      refundId: toStr(refundRes?.id || ""),
-      paymentIntentId,
-      status: isFullyRefunded ? "refunded" : "partial_refund",
-      remainingPaid: nextRemainingPaid,
+      refundId: refundResult.refundId || "",
+      paymentIntentId: refundResult.paymentIntentId || "",
+      status: refundResult.status,
+      remainingPaid: refundResult.remainingPaid,
     });
   } catch (error) {
     return err(error?.status || 500, "Stripe Refund Failed", error?.message || "Unexpected error processing the Stripe refund.", {

@@ -784,7 +784,6 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
         key={section.id}
         eager={eager}
         minHeight={getDeferredSectionMinHeight(section)}
-        rootMargin="500px 0px"
       >
         {block}
       </DeferredSection>

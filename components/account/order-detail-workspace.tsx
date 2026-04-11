@@ -21,6 +21,15 @@ type OrderData = {
     orderStatus?: string;
     paymentStatus?: string;
     fulfillmentStatus?: string;
+    cancellationStatus?: string;
+  };
+  cancellation?: {
+    canSubmit?: boolean;
+    mode?: "cancel" | "request" | null;
+    status?: string | null;
+    title?: string;
+    buttonLabel?: string;
+    message?: string;
   };
   timeline?: {
     events?: Array<{
@@ -338,6 +347,67 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
   const [returnEvidenceUploading, setReturnEvidenceUploading] = useState(false);
   const [returnSelectedLines, setReturnSelectedLines] = useState<string[]>([]);
   const [returnFeedback, setReturnFeedback] = useState<string | null>(null);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelFeedback, setCancelFeedback] = useState<string | null>(null);
+
+  function applyCancellationState(
+    nextStatus: "requested" | "cancelled",
+    refundStarted = false,
+    nextCancellation?: OrderData["cancellation"] | null,
+  ) {
+    setOrder((current) => {
+      if (!current) return current;
+      const cancellationState =
+        nextCancellation ||
+        (nextStatus === "requested"
+          ? {
+              canSubmit: false,
+              mode: null,
+              status: "requested",
+              title: "Cancellation requested",
+              buttonLabel: "",
+              message: "We’ve received your cancellation request and are reviewing it before we stop fulfilment.",
+            }
+          : {
+              canSubmit: false,
+              mode: null,
+              status: "cancelled",
+              title: "Order cancelled",
+              buttonLabel: "",
+              message: refundStarted
+                ? "This order has been cancelled and the refund process has started."
+                : "This order has already been cancelled.",
+            });
+
+      return {
+        ...current,
+        lifecycle: {
+          ...(current.lifecycle || {}),
+          orderStatus: nextStatus === "cancelled" ? "cancelled" : current.lifecycle?.orderStatus,
+          cancellationStatus: nextStatus,
+          paymentStatus:
+            nextStatus === "cancelled" && refundStarted
+              ? "refunded"
+              : current.lifecycle?.paymentStatus,
+        },
+        cancellation: cancellationState,
+      };
+    });
+  }
+
+  async function loadOrderSnapshot() {
+    const response = await fetch("/api/client/v1/orders/get", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ userId: uid, orderId }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) throw new Error(payload?.message || "Unable to load that order.");
+    return payload?.data?.data || payload?.data || null;
+  }
 
   useEffect(() => {
     if (!uid || !orderId) return;
@@ -346,15 +416,8 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
       setLoading(true);
       setError(null);
       try {
-        const response = await fetch("/api/client/v1/orders/get", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({ userId: uid, orderId }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload?.ok === false) throw new Error(payload?.message || "Unable to load that order.");
-        if (!cancelled) setOrder(payload?.data?.data || payload?.data || null);
+        const nextOrder = await loadOrderSnapshot();
+        if (!cancelled) setOrder(nextOrder);
       } catch (cause) {
         if (!cancelled) setError(cause instanceof Error ? cause.message : "Unable to load that order.");
       } finally {
@@ -522,6 +585,51 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
     setReturnEvidence([]);
     setReturnFeedback(null);
     setReturnModalOpen(true);
+  }
+
+  function openCancelModal() {
+    setCancelReason("");
+    setCancelFeedback(null);
+    setCancelModalOpen(true);
+  }
+
+  async function handleSubmitCancellation() {
+    if (cancelSubmitting || !cancelReason.trim()) return;
+    setCancelSubmitting(true);
+    setCancelFeedback(null);
+    try {
+      const response = await fetch("/api/client/v1/orders/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId,
+          reason: cancelReason.trim(),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) throw new Error(payload?.message || "Unable to process your cancellation.");
+      setCancelModalOpen(false);
+      const nextStatus = payload?.data?.status === "requested" ? "requested" : "cancelled";
+      const refundStarted = Boolean(payload?.data?.refundStatus);
+      applyCancellationState(nextStatus, refundStarted, payload?.data?.cancellation || null);
+      setInvoiceSnackbar({
+        tone: "success",
+        message:
+          nextStatus === "requested"
+            ? "Cancellation request submitted."
+            : refundStarted
+              ? "Order cancelled and refund started."
+              : "Order cancelled successfully.",
+      });
+      try {
+        const nextOrder = await loadOrderSnapshot();
+        setOrder(nextOrder);
+      } catch {}
+    } catch (cause) {
+      setCancelFeedback(cause instanceof Error ? cause.message : "Unable to process your cancellation.");
+    } finally {
+      setCancelSubmitting(false);
+    }
   }
 
   async function handleReturnEvidenceSelection(event: React.ChangeEvent<HTMLInputElement>) {
@@ -704,8 +812,8 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
 
   if (!orderId) {
     return (
-      <div className="rounded-[24px] border border-[#f0c7cb] bg-[#fff7f8] px-6 py-4 text-[13px] text-[#b91c1c] shadow-[0_12px_30px_rgba(20,24,27,0.05)]">
-        We couldn’t find that order.
+      <div className="rounded-[24px] border border-black/6 bg-white px-6 py-10 text-[14px] text-[#57636c] shadow-[0_12px_30px_rgba(20,24,27,0.06)]">
+        Loading your order…
       </div>
     );
   }
@@ -961,6 +1069,78 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
             </div>
           ) : null}
 
+          {cancelModalOpen ? (
+            <div
+              className="fixed inset-0 z-[160] flex min-h-dvh items-end justify-center bg-black/35 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 md:items-center md:pb-4"
+              onClick={() => setCancelModalOpen(false)}
+            >
+              <div
+                className="w-full max-w-[620px] rounded-[28px] border border-black/10 bg-white p-6 shadow-[0_24px_80px_rgba(20,24,27,0.24)]"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[24px] font-semibold tracking-[-0.03em] text-[#202020]">{order.cancellation?.title || "Manage cancellation"}</p>
+                    <p className="mt-2 text-[14px] text-[#57636c]">{order.cancellation?.message || "Tell us why you want to cancel this order."}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCancelModalOpen(false)}
+                    className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-black/10 text-[18px] text-[#57636c] transition hover:bg-[#f6f7f8] hover:text-[#202020]"
+                    aria-label="Close cancellation modal"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div className="mt-5 rounded-[18px] border border-black/8 bg-[#fafafa] p-4">
+                  <p className="text-[14px] font-semibold text-[#202020]">What happens next</p>
+                  <p className="mt-2 text-[13px] text-[#57636c]">
+                    {order.cancellation?.mode === "cancel"
+                      ? "This order will be cancelled immediately because fulfilment has not started yet."
+                      : "We’ll submit a cancellation request for review before stopping fulfilment or starting any refund handling."}
+                  </p>
+                </div>
+
+                <div className="mt-4">
+                  <label className="space-y-2">
+                    <span className="text-[13px] font-semibold text-[#202020]">Why are you cancelling?</span>
+                    <textarea
+                      value={cancelReason}
+                      onChange={(event) => setCancelReason(event.target.value)}
+                      placeholder="Give a short reason so the seller and Piessang can review the cancellation properly."
+                      className="min-h-[140px] w-full rounded-[18px] border border-black/10 bg-white px-4 py-3 text-[14px] text-[#202020] outline-none placeholder:text-[#8b94a3]"
+                    />
+                  </label>
+                </div>
+
+                {cancelFeedback ? <p className="mt-3 text-[13px] text-[#b91c1c]">{cancelFeedback}</p> : null}
+
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleSubmitCancellation()}
+                    disabled={cancelSubmitting || !cancelReason.trim()}
+                    className="inline-flex h-11 items-center rounded-[14px] bg-[#202020] px-4 text-[14px] font-semibold text-white disabled:opacity-60"
+                  >
+                    {cancelSubmitting
+                      ? order.cancellation?.mode === "cancel"
+                        ? "Cancelling..."
+                        : "Submitting..."
+                      : order.cancellation?.buttonLabel || "Continue"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCancelModalOpen(false)}
+                    className="inline-flex h-11 items-center rounded-[14px] border border-black/10 bg-white px-4 text-[14px] font-semibold text-[#202020]"
+                  >
+                    Keep order
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <section className="rounded-[24px] border border-black/6 bg-white p-5 shadow-[0_12px_30px_rgba(20,24,27,0.06)]">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div>
@@ -971,6 +1151,15 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
                 <button type="button" onClick={() => setInvoiceDrawerOpen(true)} className="inline-flex h-11 items-center rounded-[14px] border border-black/10 bg-[#f6f7f8] px-4 text-[14px] font-semibold text-[#202020]">
                   View invoice
                 </button>
+                {order.cancellation?.canSubmit ? (
+                  <button
+                    type="button"
+                    onClick={openCancelModal}
+                    className="inline-flex h-11 items-center rounded-[14px] border border-[#f3d2d2] bg-[#fff7f8] px-4 text-[14px] font-semibold text-[#b91c1c]"
+                  >
+                    {order.cancellation?.buttonLabel || "Cancel order"}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={openReturnModal}
@@ -978,6 +1167,11 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
                 >
                   Log return
                 </button>
+                {!order.cancellation?.canSubmit && order.cancellation?.status === "requested" ? (
+                  <span className="inline-flex h-11 items-center rounded-[14px] border border-[#fef3c7] bg-[#fff7ed] px-4 text-[14px] font-semibold text-[#9a3412]">
+                    Cancellation requested
+                  </span>
+                ) : null}
               </div>
             </div>
           </section>

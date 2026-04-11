@@ -71,20 +71,77 @@ function resolveRequestOrigin(requestHeaders: Headers) {
   return "http://localhost:3000";
 }
 
+function stripHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toAbsoluteUrl(origin: string, value: unknown) {
+  const src = String(value ?? "").trim();
+  if (!src) return "";
+  if (/^https?:\/\//i.test(src)) return src;
+  if (src.startsWith("/")) return `${origin}${src}`;
+  return src;
+}
+
+function formatFollowerCount(count: number) {
+  return count === 1 ? "1 follower" : `${count} followers`;
+}
+
 export async function generateMetadata({
   params,
 }: {
   params: Promise<{ sellerSlug: string }>;
 }): Promise<Metadata> {
   const { sellerSlug } = await params;
+  const requestHeaders = await headers();
+  const origin = resolveRequestOrigin(requestHeaders);
   const owner = await findSellerOwnerByIdentifier(sellerSlug);
   const seller = owner?.data?.seller && typeof owner.data.seller === "object" ? owner.data.seller : {};
   const vendorName = String(seller?.vendorName || seller?.groupVendorName || sellerSlug).trim() || sellerSlug;
   const sellerCode = String(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode || sellerSlug).trim() || sellerSlug;
   const unavailable = owner ? isSellerAccountUnavailable(owner.data) : false;
+  const branding = (seller?.branding && typeof seller.branding === "object" ? seller.branding : seller?.media) || {};
+  const followerCount = await getSellerFollowerCount({ sellerCode, sellerSlug });
+  const description = stripHtml(
+    seller?.vendorDescription ||
+      seller?.description ||
+      `${vendorName} on Piessang. ${formatFollowerCount(followerCount)} and a live catalogue of marketplace products.`,
+  ).slice(0, 180);
+  const image =
+    toAbsoluteUrl(origin, branding.bannerImageUrl) ||
+    toAbsoluteUrl(origin, branding.logoImageUrl) ||
+    toAbsoluteUrl(origin, "/icon.png");
+  const canonicalPath = `/vendors/${encodeURIComponent(sellerSlug)}`;
+  const title = unavailable ? `${vendorName} is no longer open on Piessang` : `${vendorName} | Piessang seller`;
 
   return {
-    title: unavailable ? `${vendorName} is no longer open on Piessang` : `${vendorName} | Piessang vendor`,
+    title,
+    description,
+    alternates: { canonical: canonicalPath },
+    openGraph: {
+      type: "profile",
+      title: vendorName,
+      description,
+      url: canonicalPath,
+      siteName: "Piessang",
+      images: image
+        ? [
+            {
+              url: image,
+              alt: `${vendorName} on Piessang`,
+            },
+          ]
+        : undefined,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: vendorName,
+      description,
+      images: image ? [image] : undefined,
+    },
     robots: unavailable ? { index: false, follow: false } : { index: true, follow: true },
   };
 }

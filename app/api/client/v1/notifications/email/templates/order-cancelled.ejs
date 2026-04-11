@@ -1,0 +1,20 @@
+<h2>Order cancelled</h2>
+<p>
+  Hi <strong><%= customerName || "there" %></strong>,
+</p>
+<p>
+  Your order <strong><%= orderNumber %></strong> has been cancelled.
+</p>
+<% if (typeof refundStarted !== "undefined" && refundStarted) { %>
+  <p>
+    Your refund has been started and your payment provider will process it back to your original payment method.
+  </p>
+<% } %>
+<% if (reason) { %>
+  <p>
+    Reason: <strong><%= reason %></strong>
+  </p>
+<% } %>
+<p>
+  You can review the order in your account for the latest status.
+</p>

@@ -21,7 +21,13 @@ export default function AccountOrderDetailPage({ params }: { params: Promise<{ o
 
   return (
     <PageBody className="px-4 py-8">
-      <CustomerOrderDetailWorkspace uid={uid || ""} orderId={resolvedOrderId} />
+      {resolvedOrderId ? (
+        <CustomerOrderDetailWorkspace uid={uid || ""} orderId={resolvedOrderId} />
+      ) : (
+        <div className="rounded-[24px] border border-black/6 bg-white px-6 py-10 text-[14px] text-[#57636c] shadow-[0_12px_30px_rgba(20,24,27,0.06)]">
+          Loading your order…
+        </div>
+      )}
     </PageBody>
   );
 }

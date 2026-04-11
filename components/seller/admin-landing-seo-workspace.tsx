@@ -1,8 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import type { SeoPageKey } from "@/lib/seo/page-overrides";
+import { prepareImageAsset } from "@/lib/client/image-prep";
 
 type SeoPageDefinition = {
   key: SeoPageKey;
@@ -17,6 +19,9 @@ type SeoOverride = {
   path: string;
   title: string;
   description: string;
+  ogTitle?: string;
+  ogDescription?: string;
+  ogImage?: string;
   updatedAt?: string | null;
 };
 
@@ -33,6 +38,10 @@ export function SellerAdminLandingSeoWorkspace() {
   const [selectedKey, setSelectedKey] = useState<SeoPageKey>("home");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [ogTitle, setOgTitle] = useState("");
+  const [ogDescription, setOgDescription] = useState("");
+  const [ogImage, setOgImage] = useState("");
+  const [uploadingOgImage, setUploadingOgImage] = useState(false);
   const [snackbar, setSnackbar] = useState<{ open: boolean; tone: "info" | "success" | "error"; message: string }>({
     open: false,
     tone: "info",
@@ -76,6 +85,9 @@ export function SellerAdminLandingSeoWorkspace() {
     if (!selectedPage) return;
     setTitle(toStr(selectedOverride?.title, selectedPage.defaultTitle));
     setDescription(toStr(selectedOverride?.description, selectedPage.defaultDescription));
+    setOgTitle(toStr(selectedOverride?.ogTitle));
+    setOgDescription(toStr(selectedOverride?.ogDescription));
+    setOgImage(toStr(selectedOverride?.ogImage));
   }, [selectedPage, selectedOverride]);
 
   async function saveSeo() {
@@ -90,6 +102,9 @@ export function SellerAdminLandingSeoWorkspace() {
           pageKey: selectedPage.key,
           title,
           description,
+          ogTitle,
+          ogDescription,
+          ogImage,
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -135,6 +150,36 @@ export function SellerAdminLandingSeoWorkspace() {
       });
     } finally {
       setSuggesting(false);
+    }
+  }
+
+  async function uploadOgImage(file?: File | null) {
+    if (!selectedPage || !file) return;
+    setUploadingOgImage(true);
+    try {
+      const prepared = await prepareImageAsset(file, { maxDimension: 2400, quality: 0.86 });
+      const formData = new FormData();
+      formData.append("action", "upload-og-image");
+      formData.append("pageKey", selectedPage.key);
+      formData.append("file", prepared.file);
+      const response = await fetch("/api/client/v1/admin/seo", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) throw new Error(payload?.message || "Unable to upload OG image.");
+      const nextUrl = toStr(payload?.data?.uploaded?.url);
+      if (!nextUrl) throw new Error("The uploaded image URL was missing.");
+      setOgImage(nextUrl);
+      setSnackbar({ open: true, tone: "success", message: "Open Graph image uploaded." });
+    } catch (error) {
+      setSnackbar({
+        open: true,
+        tone: "error",
+        message: error instanceof Error ? error.message : "Unable to upload OG image.",
+      });
+    } finally {
+      setUploadingOgImage(false);
     }
   }
 
@@ -191,6 +236,9 @@ export function SellerAdminLandingSeoWorkspace() {
                 if (!selectedPage) return;
                 setTitle(selectedPage.defaultTitle);
                 setDescription(selectedPage.defaultDescription);
+                setOgTitle("");
+                setOgDescription("");
+                setOgImage("");
               }}
               className="inline-flex h-11 items-center rounded-[14px] border border-black/10 bg-white px-4 text-[14px] font-semibold text-[#202020]"
             >
@@ -235,6 +283,62 @@ export function SellerAdminLandingSeoWorkspace() {
               />
               <span className="mt-1 block text-[12px] text-[#8b94a3]">{description.length}/320 characters</span>
             </label>
+            <div className="rounded-[18px] border border-black/6 bg-[#fbfbfb] p-4">
+              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Open Graph</p>
+              <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
+                These settings control how this public page looks when it is shared on social platforms and messaging apps. Leave them blank to inherit the page title, description, and default image.
+              </p>
+              <div className="mt-4 space-y-4">
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">OG title</span>
+                  <input
+                    value={ogTitle}
+                    onChange={(event) => setOgTitle(event.target.value)}
+                    placeholder="Falls back to the page title"
+                    className="w-full rounded-[14px] border border-black/10 bg-white px-4 py-3 text-[15px] outline-none"
+                  />
+                  <span className="mt-1 block text-[12px] text-[#8b94a3]">{ogTitle.length}/120 characters</span>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">OG description</span>
+                  <textarea
+                    value={ogDescription}
+                    onChange={(event) => setOgDescription(event.target.value)}
+                    placeholder="Falls back to the page description"
+                    className="min-h-[120px] w-full rounded-[14px] border border-black/10 bg-white px-4 py-3 text-[15px] outline-none"
+                  />
+                  <span className="mt-1 block text-[12px] text-[#8b94a3]">{ogDescription.length}/320 characters</span>
+                </label>
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">OG image URL</span>
+                  <input
+                    value={ogImage}
+                    onChange={(event) => setOgImage(event.target.value)}
+                    placeholder="/backgrounds/monkey-on-beach-wide.png"
+                    className="w-full rounded-[14px] border border-black/10 bg-white px-4 py-3 text-[15px] outline-none"
+                  />
+                  <span className="mt-1 block text-[12px] text-[#8b94a3]">Use a public absolute URL or a site-relative image path.</span>
+                </label>
+                <div className="rounded-[14px] border border-dashed border-black/10 bg-white p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[13px] font-semibold text-[#202020]">Upload OG image</p>
+                      <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">Upload a public share image here and we’ll store the hosted URL for this page automatically.</p>
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center rounded-[12px] border border-black/10 bg-white px-4 py-2.5 text-[13px] font-semibold text-[#202020]">
+                      {uploadingOgImage ? "Uploading..." : "Upload image"}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        disabled={uploadingOgImage}
+                        onChange={(event) => void uploadOgImage(event.target.files?.[0] || null)}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="rounded-[18px] border border-black/6 bg-[#fbfbfb] p-4">
@@ -243,6 +347,36 @@ export function SellerAdminLandingSeoWorkspace() {
               <p className="text-[12px] text-[#1a0dab]">{selectedPage?.path}</p>
               <p className="mt-2 text-[20px] font-medium leading-[1.3] text-[#1a0dab]">{title || selectedPage?.defaultTitle}</p>
               <p className="mt-2 text-[13px] leading-[1.6] text-[#4d5156]">{description || selectedPage?.defaultDescription}</p>
+            </div>
+            <div className="mt-4 rounded-[16px] border border-black/6 bg-white p-4">
+              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Social share preview</p>
+              <div className="mt-3 overflow-hidden rounded-[16px] border border-black/8 bg-white">
+                <div className="aspect-[1.91/1] w-full bg-[#f1f3f7]">
+                  {toStr(ogImage) ? (
+                    <Image
+                      src={ogImage}
+                      alt={ogTitle || title || selectedPage?.defaultTitle || "Open Graph image"}
+                      width={1200}
+                      height={630}
+                      className="h-full w-full object-cover"
+                      unoptimized
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-[12px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">
+                      Default page image
+                    </div>
+                  )}
+                </div>
+                <div className="border-t border-black/6 p-4">
+                  <p className="text-[12px] uppercase tracking-[0.08em] text-[#8b94a3]">piessang.com</p>
+                  <p className="mt-2 text-[18px] font-semibold leading-[1.35] text-[#202020]">
+                    {ogTitle || title || selectedPage?.defaultTitle}
+                  </p>
+                  <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
+                    {ogDescription || description || selectedPage?.defaultDescription}
+                  </p>
+                </div>
+              </div>
             </div>
             <div className="mt-4 rounded-[16px] border border-black/6 bg-white p-4 text-[13px] text-[#57636c]">
               <p className="font-semibold text-[#202020]">Why this is separate</p>

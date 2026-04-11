@@ -58,9 +58,18 @@ type ProductItem = {
     product?: {
       unique_id?: string | number;
       title?: string | null;
+      titleSlug?: string | null;
       overview?: string | null;
       description?: string | null;
       keywords?: string[];
+    };
+    seller?: {
+      vendorName?: string | null;
+      vendorDescription?: string | null;
+      branding?: {
+        bannerImageUrl?: string | null;
+        logoImageUrl?: string | null;
+      };
     };
     brand?: {
       title?: string | null;
@@ -84,6 +93,22 @@ type ProductItem = {
         imageUrl?: string | null;
         blurHashUrl?: string | null;
       }>;
+    };
+    selected_variant?: {
+      pricing?: {
+        selling_price_incl?: number;
+      };
+    };
+    selected_variant_snapshot?: {
+      pricing?: {
+        selling_price_incl?: number;
+      };
+      media?: {
+        images?: Array<{
+          imageUrl?: string | null;
+          blurHashUrl?: string | null;
+        }>;
+      };
     };
     placement?: {
       isFeatured?: boolean;
@@ -266,6 +291,109 @@ async function fetchProducts(searchParams: Record<string, SearchParamValue>, ori
   return (await response.json()) as ProductsPayload;
 }
 
+function stripHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toAbsoluteUrl(origin: string, value: unknown) {
+  const src = String(value ?? "").trim();
+  if (!src) return "";
+  if (/^https?:\/\//i.test(src)) return src;
+  if (src.startsWith("/")) return `${origin}${src}`;
+  return src;
+}
+
+function getProductShareImage(product: Record<string, any> | null | undefined, origin: string) {
+  const selectedVariant =
+    product?.selected_variant_snapshot && typeof product.selected_variant_snapshot === "object"
+      ? product.selected_variant_snapshot
+      : product?.selected_variant && typeof product.selected_variant === "object"
+        ? product.selected_variant
+        : null;
+  const variantImages = Array.isArray(selectedVariant?.media?.images) ? selectedVariant.media.images : [];
+  const productImages = Array.isArray(product?.media?.images) ? product.media.images : [];
+  const sellerBranding = product?.seller?.branding && typeof product.seller.branding === "object" ? product.seller.branding : null;
+  const images = [...variantImages, ...productImages];
+  const primary =
+    images.find((entry) => entry && typeof entry === "object" && String(entry?.imageUrl || entry?.url || entry?.src || "").trim()) ||
+    images[0];
+  return (
+    toAbsoluteUrl(origin, primary?.imageUrl || primary?.url || primary?.src) ||
+    toAbsoluteUrl(origin, sellerBranding?.bannerImageUrl) ||
+    toAbsoluteUrl(origin, sellerBranding?.logoImageUrl) ||
+    toAbsoluteUrl(origin, "/icon.png")
+  );
+}
+
+function buildProductMetadataFromPayload(payload: ProductsPayload, origin: string): Metadata {
+  if (payload?.data?.seller_unavailable) {
+    const title = String(payload?.data?.product?.title ?? "Product").trim();
+    return {
+      title: `${title} is no longer open on Piessang`,
+      robots: { index: false, follow: false },
+    };
+  }
+
+  const product = payload?.data?.product && typeof payload.data.product === "object" ? payload.data.product : null;
+  const seller = payload?.data?.seller && typeof payload.data.seller === "object" ? payload.data.seller : null;
+  if (!product?.title) return {};
+
+  const title = String(product.title).trim();
+  const description = stripHtml(
+    product?.overview ||
+      product?.description ||
+      seller?.vendorDescription ||
+      `Buy ${title} on Piessang.`,
+  ).slice(0, 180);
+  const image = getProductShareImage(payload?.data, origin);
+  const slug = String(product?.titleSlug || title)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  const canonicalPath = product?.unique_id
+    ? `/products/${encodeURIComponent(slug || "product")}?id=${encodeURIComponent(String(product.unique_id))}`
+    : undefined;
+  const priceValue =
+    typeof payload?.data?.selected_variant?.pricing?.selling_price_incl === "number"
+      ? payload.data.selected_variant.pricing.selling_price_incl
+      : typeof payload?.data?.selected_variant_snapshot?.pricing?.selling_price_incl === "number"
+        ? payload.data.selected_variant_snapshot.pricing.selling_price_incl
+        : null;
+
+  return {
+    title: `${title} | Piessang`,
+    description,
+    alternates: canonicalPath ? { canonical: canonicalPath } : undefined,
+    openGraph: {
+      type: "website",
+      title,
+      description,
+      url: canonicalPath,
+      siteName: "Piessang",
+      images: image
+        ? [
+            {
+              url: image,
+              alt: title,
+            },
+          ]
+        : undefined,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description,
+      images: image ? [image] : undefined,
+    },
+    other: priceValue != null ? { "product:price:amount": String(priceValue), "product:price:currency": "ZAR" } : undefined,
+  };
+}
+
 export async function generateMetadata({
   searchParams,
 }: {
@@ -287,30 +415,7 @@ export async function generateMetadata({
 
   try {
     const payload = await fetchProducts(resolvedSearchParams, origin);
-    if (payload?.data?.seller_unavailable) {
-      const title = String(payload?.data?.product?.title ?? "Product").trim();
-      return {
-        title: `${title} is no longer open on Piessang`,
-        robots: { index: false, follow: false },
-      };
-    }
-
-    if (payload?.data?.product?.title) {
-      const title = String(payload.data.product.title).trim();
-      const description = String(
-        payload?.data?.product?.overview ||
-        payload?.data?.product?.description ||
-        `Buy ${title} on Piessang.`,
-      )
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 160);
-      return {
-        title: `${title} | Piessang`,
-        description,
-      };
-    }
+    return buildProductMetadataFromPayload(payload, origin);
   } catch {
     // ignore metadata fetch failures and fall back to default indexing
   }

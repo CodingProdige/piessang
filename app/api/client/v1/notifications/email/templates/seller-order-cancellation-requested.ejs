@@ -1,0 +1,20 @@
+<h2>Cancellation requested</h2>
+<p>
+  Hi <strong><%= vendorName || "Seller" %></strong>,
+</p>
+<p>
+  A customer requested cancellation for order <strong><%= orderNumber %></strong>.
+</p>
+<% if (customerName) { %>
+  <p>
+    Customer: <strong><%= customerName %></strong>
+  </p>
+<% } %>
+<% if (reason) { %>
+  <p>
+    Reason: <strong><%= reason %></strong>
+  </p>
+<% } %>
+<p>
+  Fulfilment should remain paused until this request is resolved.
+</p>

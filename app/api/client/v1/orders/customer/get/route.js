@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { buildOrderDeliveryProgress } from "@/lib/orders/fulfillment-progress";
 import { normalizeMoneyAmount } from "@/lib/money";
+import { getOrderCancellationState } from "@/lib/orders/cancellation";
 
 /* ───────── HELPERS ───────── */
 
@@ -249,6 +250,15 @@ function withDeliveryProgress(order) {
     ...order,
     items,
     delivery_progress: progress
+  };
+}
+
+function withCancellation(order) {
+  const cancellation = getOrderCancellationState(order);
+  return {
+    ...order,
+    can_cancel: cancellation.canSubmit,
+    cancellation,
   };
 }
 
@@ -536,12 +546,14 @@ export async function POST(req) {
 
     const orderSnap = await db.collection("orders_v2").get();
     const orders = orderSnap.docs.map(doc =>
-      withDeliveryProgress(
-        withIndexedPaymentHistory(
-          withFinalPayableTotal({
-            docId: doc.id,
-            ...doc.data()
-          })
+      withCancellation(
+        withDeliveryProgress(
+          withIndexedPaymentHistory(
+            withFinalPayableTotal({
+              docId: doc.id,
+              ...doc.data()
+            })
+          )
         )
       )
     );

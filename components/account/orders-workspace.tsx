@@ -26,6 +26,9 @@ type CustomerOrder = {
     percentageDelivered?: number;
     percentageProgress?: number;
   };
+  cancellation?: {
+    status?: string;
+  };
   timestamps?: {
     createdAt?: string;
     deliveredAt?: string;
@@ -109,6 +112,13 @@ function fulfillmentTone(status?: string) {
   return "border-[#e5e7eb] bg-[#f9fafb] text-[#57636c]";
 }
 
+function cancellationTone(status?: string) {
+  const normalized = toStr(status).toLowerCase();
+  if (normalized === "requested") return "border-[#fef3c7] bg-[#fff7ed] text-[#9a3412]";
+  if (normalized === "cancelled") return "border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]";
+  return "border-[#e5e7eb] bg-[#f9fafb] text-[#57636c]";
+}
+
 function paymentTone(status?: string) {
   const normalized = toStr(status).toLowerCase();
   if (normalized === "paid") return "border-[#d1fae5] bg-[#ecfdf5] text-[#166534]";
@@ -165,6 +175,51 @@ function getOrderProductEntries(order: CustomerOrder) {
 
 function getCombinedFulfillmentProgress(order: CustomerOrder) {
   return Math.max(0, Math.min(100, Number(order.delivery_progress?.percentageProgress || order.delivery_progress?.percentageDelivered || 0)));
+}
+
+function getOrderLifecycleDisplay(order: CustomerOrder) {
+  const orderStatus = toStr(order.lifecycle?.orderStatus).toLowerCase();
+  const paymentStatus = toStr(order.lifecycle?.paymentStatus).toLowerCase();
+  const cancellationStatus = toStr(order.cancellation?.status).toLowerCase();
+  const rawProgress = getCombinedFulfillmentProgress(order);
+
+  if (paymentStatus === "refunded" || paymentStatus === "partial_refund") {
+    return {
+      label: paymentStatus === "partial_refund" ? "Partially refunded" : "Refunded",
+      progress: 100,
+      tone: "refund" as const,
+      showBar: false,
+      pill: paymentStatus === "partial_refund" ? "Partial refund issued" : "Refund issued",
+    };
+  }
+
+  if (orderStatus === "cancelled" || cancellationStatus === "cancelled") {
+    return {
+      label: "Cancelled",
+      progress: 100,
+      tone: "cancelled" as const,
+      showBar: false,
+      pill: "Order cancelled",
+    };
+  }
+
+  if (cancellationStatus === "requested") {
+    return {
+      label: "Cancellation requested",
+      progress: rawProgress,
+      tone: "requested" as const,
+      showBar: true,
+      pill: "Cancellation requested",
+    };
+  }
+
+  return {
+    label: sentenceStatus(order.lifecycle?.fulfillmentStatus || order.lifecycle?.orderStatus),
+    progress: rawProgress,
+    tone: rawProgress >= 100 ? ("complete" as const) : rawProgress >= 50 ? ("active" as const) : ("idle" as const),
+    showBar: true,
+    pill: null,
+  };
 }
 
 function getSellerCount(order: CustomerOrder) {
@@ -401,7 +456,7 @@ export function CustomerOrdersWorkspace({ payload, loading, error }: { uid: stri
                 <tbody>
                   {filteredItems.map((order) => {
                     const href = `/account/orders/${encodeURIComponent(toStr(order.docId))}`;
-                    const progress = getCombinedFulfillmentProgress(order);
+                    const lifecycleDisplay = getOrderLifecycleDisplay(order);
                     return (
                       <tr key={order.docId} className="cursor-pointer border-t border-black/6 text-[#202020] hover:bg-[#fcfcfc]" onClick={() => router.push(href)}>
                         <td className="px-5 py-4 font-semibold">{order.order?.orderNumber || order.docId || "Order"}</td>
@@ -421,15 +476,36 @@ export function CustomerOrdersWorkspace({ payload, loading, error }: { uid: stri
                         <td className="px-2 py-4">
                           <div className="min-w-[170px]">
                             <div className="flex items-center justify-between gap-3 text-[12px] text-[#57636c]">
-                              <span>{sentenceStatus(order.lifecycle?.fulfillmentStatus || order.lifecycle?.orderStatus)}</span>
-                              <span className="font-semibold text-[#202020]">{progress}%</span>
+                              <span>{lifecycleDisplay.label}</span>
+                              <span className="font-semibold text-[#202020]">{lifecycleDisplay.progress}%</span>
                             </div>
-                            <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#eceff3]">
-                              <div
-                                className={`h-full rounded-full ${progress >= 100 ? "bg-[#1f8f55]" : progress >= 50 ? "bg-[#57a6ff]" : "bg-[#202020]"}`}
-                                style={{ width: `${progress}%` }}
-                              />
-                            </div>
+                            {lifecycleDisplay.showBar ? (
+                              <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#eceff3]">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    lifecycleDisplay.tone === "complete"
+                                      ? "bg-[#1f8f55]"
+                                      : lifecycleDisplay.tone === "active"
+                                        ? "bg-[#57a6ff]"
+                                        : "bg-[#202020]"
+                                  }`}
+                                  style={{ width: `${lifecycleDisplay.progress}%` }}
+                                />
+                              </div>
+                            ) : null}
+                            {lifecycleDisplay.pill ? (
+                              <span
+                                className={`mt-2 inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${
+                                  lifecycleDisplay.tone === "refund"
+                                    ? paymentTone(order.lifecycle?.paymentStatus)
+                                    : lifecycleDisplay.tone === "cancelled"
+                                      ? cancellationTone("cancelled")
+                                      : cancellationTone(order.cancellation?.status)
+                                }`}
+                              >
+                                {lifecycleDisplay.pill}
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                         <td className="px-5 py-4 text-[#57636c]">{getOrderItemCount(order)} items</td>
@@ -444,7 +520,7 @@ export function CustomerOrdersWorkspace({ payload, loading, error }: { uid: stri
               {filteredItems.map((order) => {
                 const href = `/account/orders/${encodeURIComponent(toStr(order.docId))}`;
                 const image = getOrderImage(order);
-                const progress = getCombinedFulfillmentProgress(order);
+                const lifecycleDisplay = getOrderLifecycleDisplay(order);
                 return (
                   <button key={order.docId} type="button" onClick={() => router.push(href)} className="w-full rounded-[18px] border border-black/6 bg-white p-4 text-left shadow-[0_6px_18px_rgba(20,24,27,0.04)]">
                     <div className="flex items-start gap-4">
@@ -460,7 +536,20 @@ export function CustomerOrdersWorkspace({ payload, loading, error }: { uid: stri
                     </div>
                     <div className="mt-4 flex flex-wrap gap-2">
                       <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${paymentTone(order.lifecycle?.paymentStatus)}`}>{sentenceStatus(order.lifecycle?.paymentStatus)}</span>
-                      <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${fulfillmentTone(order.lifecycle?.fulfillmentStatus || order.lifecycle?.orderStatus)}`}>{progress}% fulfilment</span>
+                      <span
+                        className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${
+                          lifecycleDisplay.tone === "refund"
+                            ? paymentTone(order.lifecycle?.paymentStatus)
+                            : lifecycleDisplay.tone === "cancelled"
+                              ? cancellationTone("cancelled")
+                              : fulfillmentTone(order.lifecycle?.fulfillmentStatus || order.lifecycle?.orderStatus)
+                        }`}
+                      >
+                        {lifecycleDisplay.showBar ? `${lifecycleDisplay.progress}% fulfilment` : lifecycleDisplay.label}
+                      </span>
+                      {lifecycleDisplay.pill && lifecycleDisplay.tone === "requested" ? (
+                        <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${cancellationTone(order.cancellation?.status)}`}>{lifecycleDisplay.pill}</span>
+                      ) : null}
                     </div>
                     <div className="mt-4 flex items-center justify-between gap-3 text-[14px]">
                       <span className="text-[#57636c]">{getOrderItemCount(order)} items</span>

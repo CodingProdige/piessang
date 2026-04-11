@@ -5,6 +5,7 @@ import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Clarity, ClarityPrivacyBoundary } from "@/components/analytics/clarity";
 import { AppShell } from "@/components/layout/app-shell";
+import { PointerFocusGuard } from "@/components/layout/pointer-focus-guard";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 import "./globals.css";
 
@@ -19,7 +20,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://piessang.co.za"),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL?.trim() || "https://piessang.com"),
   title: {
     default: "Piessang | Marketplace, Delivery, and Seller Tools",
     template: "%s | Piessang",
@@ -90,6 +91,7 @@ export default async function RootLayout({
         suppressHydrationWarning
         className={`${geistSans.variable} ${geistMono.variable} bg-[var(--background)] text-[var(--foreground)] antialiased`}
       >
+        <PointerFocusGuard />
         <Clarity projectId={clarityProjectId} />
         <ClarityPrivacyBoundary>
           <AppShell initialAuthBootstrap={initialAuthBootstrap}>{children}</AppShell>

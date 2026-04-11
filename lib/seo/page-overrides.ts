@@ -28,6 +28,9 @@ export type SeoPageOverride = {
   path: string;
   title: string;
   description: string;
+  ogTitle?: string;
+  ogDescription?: string;
+  ogImage?: string;
   updatedAt?: string | null;
 };
 
@@ -137,6 +140,22 @@ function toIso(value: any) {
   return toStr(value) || null;
 }
 
+function toAbsolutePath(value: string) {
+  const src = toStr(value);
+  if (!src) return "";
+  return src.startsWith("/") ? src : `/${src}`;
+}
+
+function getDefaultSeoImage(pageKey: SeoPageKey) {
+  if (pageKey === "sell_on_piessang") {
+    return "/backgrounds/monkey-on-beach-wide.png";
+  }
+  if (pageKey === "home") {
+    return "/backgrounds/monkey-on-beach-wide.png";
+  }
+  return "/logo/Piessang Logo.png";
+}
+
 export function getSeoPageDefinition(pageKey: string) {
   return SEO_PAGE_DEFINITIONS.find((item) => item.key === pageKey) || null;
 }
@@ -154,6 +173,9 @@ export async function getSeoPageOverride(pageKey: SeoPageKey): Promise<SeoPageOv
     path: toStr(data.path, definition.path),
     title: toStr(data.title),
     description: toStr(data.description),
+    ogTitle: toStr(data.ogTitle),
+    ogDescription: toStr(data.ogDescription),
+    ogImage: toStr(data.ogImage),
     updatedAt: toIso(data.updatedAt),
   };
 }
@@ -161,10 +183,45 @@ export async function getSeoPageOverride(pageKey: SeoPageKey): Promise<SeoPageOv
 export async function buildSeoMetadata(
   pageKey: SeoPageKey,
   fallback: { title: string; description: string },
+  options?: {
+    path?: string;
+    image?: string;
+  },
 ): Promise<Metadata> {
   const override = await getSeoPageOverride(pageKey);
+  const definition = getSeoPageDefinition(pageKey);
+  const title = toStr(override?.title, fallback.title);
+  const description = toStr(override?.description, fallback.description);
+  const ogTitle = toStr(override?.ogTitle, title);
+  const ogDescription = toStr(override?.ogDescription, description);
+  const path = toAbsolutePath(options?.path || override?.path || definition?.path || "/");
+  const image = toAbsolutePath(override?.ogImage || options?.image || getDefaultSeoImage(pageKey));
   return {
-    title: toStr(override?.title, fallback.title),
-    description: toStr(override?.description, fallback.description),
+    title,
+    description,
+    alternates: {
+      canonical: path,
+    },
+    openGraph: {
+      type: "website",
+      title: ogTitle,
+      description: ogDescription,
+      url: path,
+      siteName: "Piessang",
+      images: image
+        ? [
+            {
+              url: image,
+              alt: ogTitle,
+            },
+          ]
+        : undefined,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: ogTitle,
+      description: ogDescription,
+      images: image ? [image] : undefined,
+    },
   };
 }

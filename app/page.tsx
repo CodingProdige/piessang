@@ -3,18 +3,25 @@ import { LandingPageRenderer } from "@/components/cms/landing-page-renderer";
 import { PageBody } from "@/components/layout/page-body";
 import { getLandingPageState, getPublishedLandingPage } from "@/lib/cms/landing-page";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
-import { getSeoPageOverride } from "@/lib/seo/page-overrides";
+import { buildSeoMetadata, getSeoPageOverride } from "@/lib/seo/page-overrides";
 
 export async function generateMetadata(): Promise<Metadata> {
   const page = await getPublishedLandingPage();
   const override = await getSeoPageOverride("home");
-  return {
-    title: override?.title || page.seo.title || "Home",
-    description:
-      override?.description ||
-      page.seo.description ||
-      "Shop Piessang for curated products from trusted sellers, with secure checkout, delivery support, and account tools built for repeat buying.",
-  };
+  return buildSeoMetadata(
+    "home",
+    {
+      title: override?.title || page.seo.title || "Home",
+      description:
+        override?.description ||
+        page.seo.description ||
+        "Shop Piessang for curated products from trusted sellers, with secure checkout, delivery support, and account tools built for repeat buying.",
+    },
+    {
+      path: "/",
+      image: "/backgrounds/monkey-on-beach-wide.png",
+    },
+  );
 }
 
 export default async function Home({

@@ -331,41 +331,19 @@ function DeferredProductCard({
   minHeight: number;
   children: React.ReactNode;
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [active, setActive] = useState(eager);
-
-  useEffect(() => {
-    if (eager) {
-      setActive(true);
-      return;
-    }
-    const node = containerRef.current;
-    if (!node || active) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (entry?.isIntersecting) {
-          setActive(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "500px 0px" },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [active, eager]);
+  if (eager) {
+    return <div className="w-full">{children}</div>;
+  }
 
   return (
-    <div ref={containerRef} className="w-full">
-      {active ? (
-        children
-      ) : (
-        <div
-          className="w-full animate-pulse rounded-[8px] border border-black/6 bg-[linear-gradient(180deg,#f2f3f5,#f7f7f8)] shadow-[0_8px_20px_rgba(20,24,27,0.04)]"
-          style={{ minHeight }}
-          aria-hidden="true"
-        />
-      )}
+    <div
+      className="w-full"
+      style={{
+        contentVisibility: "auto",
+        containIntrinsicSize: `${Math.max(180, Math.round(minHeight))}px`,
+      }}
+    >
+      {children}
     </div>
   );
 }
