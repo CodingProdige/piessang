@@ -15,6 +15,8 @@ import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { getCardBrandFamily, resolveCardTheme } from "@/lib/payments/card-presentation";
 import { resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
+import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
+import { getShopperFacingDeliveryMessage } from "@/lib/shipping/display";
 
 type CartItem = {
   product_unique_id?: string | null;
@@ -48,6 +50,16 @@ type CartItem = {
     label?: string | null;
     variant_id?: string | null;
     id?: string | null;
+    logistics?: {
+      parcel_preset?: string | null;
+      shipping_class?: string | null;
+      weight_kg?: number | null;
+      length_cm?: number | null;
+      width_cm?: number | null;
+      height_cm?: number | null;
+      volumetric_weight_kg?: number | null;
+      billable_weight_kg?: number | null;
+    };
   };
   line_totals?: {
     final_incl?: number;
@@ -80,6 +92,11 @@ type CartPayload = {
       amount_incl?: number;
       amount_excl?: number;
       currency?: string;
+      shipment_summary?: {
+        parcelCount?: number;
+        actualWeightKg?: number;
+        billableWeightKg?: number;
+      } | null;
     }>;
     delivery_fee_incl?: number;
     delivery_fee_excl?: number;
@@ -163,6 +180,13 @@ type PaymentOverlayState = {
   title: string;
   message: string;
   detail?: string;
+};
+
+type CheckoutDeliveryBlockState = {
+  title: string;
+  message: string;
+  sellers: string[];
+  reasons: string[];
 };
 
 let stripeJsPromise: Promise<any> | null = null;
@@ -268,7 +292,7 @@ function getSellerFulfillmentSummary(items: CartItem[]) {
   );
   if (modes.has("bevgo") && modes.has("seller")) return "Some items ship from Piessang and some ship from the seller.";
   if (modes.has("bevgo")) return "Piessang handles shipping for these items.";
-  return "The seller handles shipping for these items.";
+  return "The seller handles local delivery, country shipping, or collection for these items.";
 }
 
 function getSellerDeliverySummary(items: CartItem[], selectedLocation?: DeliveryLocation | null, pickupSelections: string[] = []) {
@@ -296,19 +320,48 @@ function getSellerDeliverySummary(items: CartItem[], selectedLocation?: Delivery
     latitude: selectedLocation?.latitude ?? fallbackArea?.latitude ?? null,
     longitude: selectedLocation?.longitude ?? fallbackArea?.longitude ?? null,
   };
+  const parcels: any[] = [];
+  for (const item of sellerItems) {
+    const parcel = buildShipmentParcelFromVariant(item?.selected_variant_snapshot || null);
+    const quantity = Math.max(0, Number(item?.qty ?? item?.quantity ?? 0));
+    if (!parcel || quantity <= 0) continue;
+    for (let index = 0; index < quantity; index += 1) parcels.push(parcel);
+  }
   const resolved = resolveSellerDeliveryOption({
     profile: deliveryProfile,
     sellerBaseLocation: seller?.baseLocation || "",
     shopperArea: shopperArea as any,
+    parcels,
+  } as any);
+  const shopperFacingMessage = getShopperFacingDeliveryMessage({
+    fulfillmentMode: "seller",
+    profile: deliveryProfile,
+    sellerBaseLocation: seller?.baseLocation || "",
+    shopperArea,
+    variant: sellerItems[0]?.selected_variant_snapshot || null,
+    missingProfileLabel: "Seller shipping settings still need to be confirmed",
   });
   return {
-    label: resolved.label,
+    label: resolved.kind === "unavailable" ? resolved.label : shopperFacingMessage.label,
     amount: Number(resolved.amountIncl || 0),
     isPickup: resolved.kind === "collection",
     isUnavailable: resolved.kind === "unavailable",
     reasons: Array.isArray((resolved as any)?.unavailableReasons) ? (resolved as any).unavailableReasons : [],
     distanceKm: typeof (resolved as any)?.distanceKm === "number" ? Number((resolved as any).distanceKm) : null,
+    shipmentSummary: (resolved as any)?.shipmentSummary || null,
   };
+}
+
+function formatShipmentSummary(summary?: { parcelCount?: number; billableWeightKg?: number; actualWeightKg?: number } | null) {
+  if (!summary) return "";
+  const parcelCount = Math.max(0, Number(summary.parcelCount || 0));
+  const billableWeight = Number(summary.billableWeightKg || 0);
+  const actualWeight = Number(summary.actualWeightKg || 0);
+  const parts: string[] = [];
+  if (parcelCount > 0) parts.push(`${parcelCount} parcel${parcelCount === 1 ? "" : "s"}`);
+  if (billableWeight > 0) parts.push(`${billableWeight.toFixed(2)}kg billable`);
+  else if (actualWeight > 0) parts.push(`${actualWeight.toFixed(2)}kg actual`);
+  return parts.join(" · ");
 }
 
 function getLineIds(item: CartItem) {
@@ -671,6 +724,7 @@ export function CartCheckout() {
   const [checkoutReserveLoading, setCheckoutReserveLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [deliveryBlockError, setDeliveryBlockError] = useState<CheckoutDeliveryBlockState | null>(null);
   const [successState, setSuccessState] = useState<{ orderNumber: string; orderId: string } | null>(null);
 
   useEffect(() => {
@@ -1603,6 +1657,20 @@ export function CartCheckout() {
       const message = deliveryBlocked
         ? "One or more seller-delivered items cannot be delivered to this address. Remove them or change your address before placing your order."
         : "Remove the out-of-stock items from your cart before placing your order.";
+      setDeliveryBlockError(
+        deliveryBlocked
+          ? {
+              title: "Delivery unavailable for this address",
+              message,
+              sellers: unavailableSellerDeliveryGroups
+                .map((entry) => String(entry?.seller_name || "").trim())
+                .filter(Boolean),
+              reasons: unavailableLocalSellerGroups.flatMap((entry) =>
+                Array.isArray(entry.summary?.reasons) ? entry.summary.reasons.filter(Boolean) : [],
+              ),
+            }
+          : null,
+      );
       setErrorMessage(message);
       setSnackbarMessage(message);
       return;
@@ -1610,6 +1678,7 @@ export function CartCheckout() {
     if (stripeCheckout) {
       setSubmitting(true);
       setErrorMessage(null);
+      setDeliveryBlockError(null);
       setPaymentOverlay({
         open: true,
         tone: "processing",
@@ -1623,6 +1692,7 @@ export function CartCheckout() {
 
     setSubmitting(true);
     setErrorMessage(null);
+    setDeliveryBlockError(null);
     setPaymentOverlay({
       open: true,
       tone: "processing",
@@ -1653,6 +1723,34 @@ export function CartCheckout() {
       });
       const createPayload = await createResponse.json().catch(() => ({}));
       if (!createResponse.ok || createPayload?.ok === false) {
+        const sellerList = Array.isArray(createPayload?.sellers)
+          ? createPayload.sellers.map((value: any) => String(value || "").trim()).filter(Boolean)
+          : [];
+        if (String(createPayload?.reasonCode || "").trim().toUpperCase() === "SELLER_DELIVERY_UNAVAILABLE") {
+          const matchingBreakdown = sellerDeliveryBreakdown.filter(
+            (entry) =>
+              String(entry?.delivery_type || "").trim().toLowerCase() === "unavailable"
+              && (
+                !sellerList.length
+                || sellerList.includes(String(entry?.seller_name || "").trim())
+              ),
+          );
+          const reasons = matchingBreakdown.flatMap((entry) => {
+            const sellerGroupMatch = unavailableLocalSellerGroups.find(
+              (group) => String(group?.seller || "").trim() === String(entry?.seller_name || "").trim()
+                || String(group?.sellerKey || "").trim() === String(entry?.seller_key || "").trim(),
+            );
+            return Array.isArray(sellerGroupMatch?.summary?.reasons)
+              ? sellerGroupMatch.summary.reasons.filter(Boolean)
+              : [];
+          });
+          setDeliveryBlockError({
+            title: createPayload?.title || "Delivery unavailable for this address",
+            message: createPayload?.message || "One or more seller-delivered items cannot be delivered to this address.",
+            sellers: sellerList,
+            reasons,
+          });
+        }
         throw new Error(createPayload?.message || "We could not create your order.");
       }
 
@@ -2421,6 +2519,11 @@ export function CartCheckout() {
                             {entry.summary?.label}
                           </span>
                         </div>
+                        {formatShipmentSummary(entry.summary?.shipmentSummary) ? (
+                          <p className="mt-1 text-[11px] text-[#57636c]">
+                            Shipment: {formatShipmentSummary(entry.summary?.shipmentSummary)}
+                          </p>
+                        ) : null}
                         {entry.summary?.isUnavailable ? (
                           <div className="mt-2 flex items-center justify-between gap-3">
                             <p className="text-[12px] leading-[1.5] text-[#991b1b]">
@@ -2483,6 +2586,11 @@ export function CartCheckout() {
                             </div>
                           ) : null}
                           <div className="mt-3">
+                            {formatShipmentSummary(localSummary?.shipmentSummary || backendSummary?.shipment_summary || null) ? (
+                              <p className="mb-3 text-[11px] text-[#7f1d1d]">
+                                Shipment: {formatShipmentSummary(localSummary?.shipmentSummary || backendSummary?.shipment_summary || null)}
+                              </p>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => void removeSellerGroupItems(group.items, group.seller)}
@@ -2496,6 +2604,42 @@ export function CartCheckout() {
                       );
                     })}
                 </div>
+              </div>
+            ) : deliveryBlockError ? (
+              <div className="mt-4 rounded-[10px] border border-[rgba(185,28,28,0.18)] bg-[rgba(185,28,28,0.05)] px-4 py-4 text-[#7f1d1d]">
+                <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">
+                  {deliveryBlockError.title}
+                </p>
+                <p className="mt-2 text-[12px] leading-[1.5] text-[#991b1b]">
+                  {deliveryBlockError.message}
+                </p>
+                {deliveryBlockError.sellers.length ? (
+                  <div className="mt-3">
+                    <p className="text-[11px] font-semibold text-[#7f1d1d]">Affected sellers</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {deliveryBlockError.sellers.map((seller) => (
+                        <span
+                          key={seller}
+                          className="rounded-full border border-[rgba(185,28,28,0.16)] bg-white px-3 py-1 text-[11px] font-semibold text-[#991b1b]"
+                        >
+                          {seller}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {deliveryBlockError.reasons.length ? (
+                  <div className="mt-3 space-y-1.5">
+                    {Array.from(new Set(deliveryBlockError.reasons)).map((reason) => (
+                      <p key={reason} className="text-[11px] leading-[1.45] text-[#7f1d1d]">
+                        {reason}
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
+                <p className="mt-3 text-[11px] leading-[1.45] text-[#7f1d1d]">
+                  Change the delivery address or remove that seller’s items before trying again.
+                </p>
               </div>
             ) : errorMessage ? (
               <div className="mt-4 rounded-[8px] border border-[rgba(185,28,28,0.16)] bg-[rgba(185,28,28,0.05)] px-4 py-3 text-[12px] text-[#b91c1c]">

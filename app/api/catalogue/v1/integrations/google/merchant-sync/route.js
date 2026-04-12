@@ -68,6 +68,31 @@ const prettifyTaxonomyPart = (v) => {
   if (/coca[\s-]?cola/i.test(value)) return "Coca-Cola";
   return toTitleCase(value);
 };
+const getGoogleCondition = (product) => {
+  const category = toStr(product?.grouping?.category).toLowerCase();
+  const condition = toStr(product?.product?.condition).toLowerCase();
+  if (category === "pre-loved" || category === "preloved") return "used";
+  if (condition && condition !== "new") return "used";
+  return "new";
+};
+const getGoogleAgeGroup = (variant) => {
+  const ageRange = toStr(variant?.ageRange).toLowerCase();
+  if (!ageRange) return undefined;
+  if (ageRange.includes("month") || ageRange.startsWith("0-") || ageRange.startsWith("3-")) return "infant";
+  if (ageRange.includes("2-4") || ageRange.includes("toddler")) return "toddler";
+  return undefined;
+};
+const getGoogleShippingWeight = (variant) => {
+  const weight = Number(variant?.logistics?.billable_weight_kg ?? variant?.logistics?.weight_kg);
+  return Number.isFinite(weight) && weight > 0 ? `${weight.toFixed(2)} kg` : undefined;
+};
+const getGoogleOptionalAttributes = (variant) => ({
+  color: toStr(variant?.color || variant?.shade, undefined),
+  size: toStr(variant?.size, undefined),
+  material: toStr(variant?.material, undefined),
+  ageGroup: getGoogleAgeGroup(variant),
+  shippingWeight: getGoogleShippingWeight(variant),
+});
 const escBase64Url = (v) =>
   Buffer.from(v)
     .toString("base64")
@@ -377,7 +402,7 @@ function buildContentApiProduct(product, variant, targetCountry = GOOGLE_FEED_TA
     channel: "online",
     externalSellerId: marketplaceSeller.externalSellerId,
     availability: availabilityForVariant(variant),
-    condition: "new",
+    condition: getGoogleCondition(product),
     brand,
     gtin: String(variant?.barcode || "").trim() || undefined,
     mpn: String(variant?.sku || "").trim() || undefined,
@@ -395,6 +420,16 @@ function buildContentApiProduct(product, variant, targetCountry = GOOGLE_FEED_TA
       currency: GOOGLE_FEED_CURRENCY,
     };
   }
+
+  const optionalAttributes = getGoogleOptionalAttributes(variant);
+  if (optionalAttributes.color) payload.color = optionalAttributes.color;
+  if (optionalAttributes.size) payload.sizes = [optionalAttributes.size];
+  if (optionalAttributes.material) payload.material = optionalAttributes.material;
+  if (optionalAttributes.ageGroup) payload.ageGroup = optionalAttributes.ageGroup;
+  if (optionalAttributes.shippingWeight) payload.shippingWeight = {
+    value: optionalAttributes.shippingWeight.replace(" kg", ""),
+    unit: "kg",
+  };
 
   return payload;
 }

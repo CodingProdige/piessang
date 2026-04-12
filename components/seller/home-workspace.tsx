@@ -141,7 +141,7 @@ function buildAssistantReply(input: string) {
     return "Piessang pays sellers out through Wise payout setup in your seller settings. Connect your payout profile first, then your settlements move from gross sales to fees, refund adjustments, and finally net due.";
   }
   if (query.includes("delivery") || query.includes("shipping") || query.includes("courier") || query.includes("pickup")) {
-    return "Your delivery rules tell Piessang whether an order should go out by direct delivery, shipping, or collection. Set those up in Seller settings so orders can calculate the right delivery method and lead time automatically.";
+    return "Your delivery rules tell Piessang whether an order should go out by local delivery, country shipping, or collection. Set those up in Seller settings so orders can calculate the right delivery method and lead time automatically.";
   }
   if (query.includes("publish") || query.includes("product") || query.includes("catalogue")) {
     return "A product is ready to publish once its details, variants, fulfilment setup, pricing, and stock are complete. Start in Products, add your first item, then publish it once moderation and availability are in a good state.";
@@ -167,7 +167,7 @@ const FAQ_ITEMS = [
   {
     question: "How do orders flow on Piessang?",
     answer:
-      "Orders move from newly placed into processing, dispatch, and delivered states depending on your fulfilment method. Shipping orders should capture courier details, while direct delivery and collection follow their own seller actions.",
+      "Orders move from newly placed into processing, dispatch, and delivered states depending on your fulfilment method. Shipping orders should capture courier details, while local delivery and collection follow their own seller actions.",
   },
   {
     question: "How do payouts and settlements work?",
@@ -338,7 +338,7 @@ export function SellerHomeWorkspace({
       {
         id: "delivery",
         title: "Configure delivery rules",
-        description: "Set direct delivery, shipping zones, or collection so Piessang can route orders correctly.",
+        description: "Set local delivery, country shipping, or collection so Piessang can route orders correctly.",
         complete: deliveryReady,
         actionLabel: deliveryReady ? "Review delivery setup" : "Set delivery rules",
         action: () => onNavigate("settings"),

@@ -49,6 +49,24 @@ const prettifyTaxonomyPart = (v) => {
   if (/coca[\s-]?cola/i.test(value)) return "Coca-Cola";
   return toTitleCase(value);
 };
+const getGoogleCondition = (product) => {
+  const category = toStr(product?.grouping?.category).toLowerCase();
+  const condition = toStr(product?.product?.condition).toLowerCase();
+  if (category === "pre-loved" || category === "preloved") return "used";
+  if (condition && condition !== "new") return "used";
+  return "new";
+};
+const getGoogleAgeGroup = (variant) => {
+  const ageRange = toStr(variant?.ageRange).toLowerCase();
+  if (!ageRange) return "";
+  if (ageRange.includes("month") || ageRange.startsWith("0-") || ageRange.startsWith("3-")) return "infant";
+  if (ageRange.includes("2-4") || ageRange.includes("toddler")) return "toddler";
+  return "";
+};
+const getGoogleShippingWeight = (variant) => {
+  const weight = Number(variant?.logistics?.billable_weight_kg ?? variant?.logistics?.weight_kg);
+  return Number.isFinite(weight) && weight > 0 ? `${weight.toFixed(2)} kg` : "";
+};
 const hasNumber = (v) => typeof v === "number" && Number.isFinite(v);
 const slugify = (v) =>
   String(v ?? "")
@@ -434,6 +452,12 @@ export async function GET(req) {
         const itemTitle = vLabel ? `${title} - ${vLabel}` : title;
         const sku = String(v?.sku || "").trim();
         const gtin = String(v?.barcode || "").trim();
+        const googleCondition = getGoogleCondition(p);
+        const googleColor = toStr(v?.color || v?.shade);
+        const googleSize = toStr(v?.size);
+        const googleMaterial = toStr(v?.material);
+        const googleAgeGroup = getGoogleAgeGroup(v);
+        const googleShippingWeight = getGoogleShippingWeight(v);
         const availability = availabilityForVariant(v);
         const targetCountries = await resolveGoogleTargetCountries({
           seller: p?.seller,
@@ -456,12 +480,17 @@ export async function GET(req) {
             image ? `<g:image_link>${esc(image)}</g:image_link>` : "",
             `<g:brand>${esc(brand)}</g:brand>`,
             `<g:external_seller_id>${esc(marketplaceSeller.externalSellerId)}</g:external_seller_id>`,
-            `<g:condition>new</g:condition>`,
+            `<g:condition>${esc(googleCondition)}</g:condition>`,
             `<g:availability>${esc(availability)}</g:availability>`,
             `<g:price>${esc(priceFields.price)}</g:price>`,
             priceFields.salePrice ? `<g:sale_price>${esc(priceFields.salePrice)}</g:sale_price>` : "",
             gtin ? `<g:gtin>${esc(gtin)}</g:gtin>` : "",
             sku ? `<g:mpn>${esc(sku)}</g:mpn>` : "",
+            googleColor ? `<g:color>${esc(googleColor)}</g:color>` : "",
+            googleSize ? `<g:size>${esc(googleSize)}</g:size>` : "",
+            googleMaterial ? `<g:material>${esc(googleMaterial)}</g:material>` : "",
+            googleAgeGroup ? `<g:age_group>${esc(googleAgeGroup)}</g:age_group>` : "",
+            googleShippingWeight ? `<g:shipping_weight>${esc(googleShippingWeight)}</g:shipping_weight>` : "",
             `<g:google_product_category>${esc(googleCategory)}</g:google_product_category>`,
             `<g:product_type>${esc([category, subCategory].filter(Boolean).join(" > "))}</g:product_type>`,
             `<g:target_country>${esc(normalizedTargetCountry)}</g:target_country>`,

@@ -225,6 +225,22 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
       cutoffTime: toStr(entry?.cutoff_time || entry?.cutoffTime || ""),
     };
   }
+  if (deliveryType === "courier_live_rate" || deliveryType === "platform_courier_live_rate") {
+    return {
+      type: deliveryType,
+      label: toStr(entry?.label || "Platform courier shipping"),
+      amountIncl: Number(entry?.amountIncl ?? entry?.amount_incl ?? 0) || 0,
+      leadTimeDays: entry?.lead_time_days ?? null,
+      matchedRuleLabel: toStr(entry?.matched_rule_label || ""),
+      destination,
+      instructions: "Piessang is managing this courier shipment. Pack the order and wait for the Piessang tracking and handoff instructions instead of adding your own courier details.",
+      trackingMode: "platform",
+      cutoffTime: toStr(entry?.cutoff_time || entry?.cutoffTime || ""),
+      trackingOwner: toStr(entry?.tracking_owner || entry?.trackingOwner || "piessang"),
+      courierService: toStr(entry?.courier_service || entry?.courierService || ""),
+      courierCarrier: toStr(entry?.courier_carrier || entry?.courierCarrier || ""),
+    };
+  }
 
   return {
     type: deliveryType || "unknown",
@@ -235,6 +251,7 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
     destination,
     instructions: "Use the delivery method saved on this order when you fulfil it.",
     trackingMode: "hidden",
+    trackingOwner: toStr(entry?.tracking_owner || entry?.trackingOwner || ""),
     cutoffTime: toStr(entry?.cutoff_time || entry?.cutoffTime || ""),
   };
 }

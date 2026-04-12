@@ -9,12 +9,13 @@ import { DisplayCurrencySelector } from "@/components/currency/display-currency-
 import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import {
+  detectShopperCountryFromBrowser,
   readShopperDeliveryArea,
   saveShopperDeliveryArea,
+  SHOPPER_COUNTRY_OPTIONS,
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
-import { GooglePlacePickerModal, reverseGeocodeCoordinates } from "@/components/shared/google-place-picker-modal";
 
 const CATEGORIES_ENDPOINT = "/api/catalogue/v1/categories/list";
 const SUBCATEGORIES_ENDPOINT = "/api/catalogue/v1/subCategories/list";
@@ -22,7 +23,6 @@ const BRANDS_ENDPOINT = "/api/catalogue/v1/brands/get";
 const PRODUCTS_ENDPOINT = "/api/catalogue/v1/products/product/get";
 const PRODUCTS_PAGE = "/products";
 const MENU_HEIGHT = 430;
-const DELIVERY_PROMPT_DISMISSED_KEY = "piessang-delivery-prompt-dismissed";
 const LANDING_PAGE_ENDPOINT = "/api/client/v1/landing-page/get";
 const SearchBar = dynamic(() => import("@/components/header/header-search").then((mod) => mod.HeaderSearch), {
   ssr: false,
@@ -166,8 +166,8 @@ type FixedHeroConfig = {
 };
 
 function formatDeliveryAreaLabel(area: ShopperDeliveryArea | null) {
-  if (!area) return "Set your location";
-  return [area.suburb, area.city, area.province, area.country].filter(Boolean)[0] || "Delivery location";
+  if (!area?.country) return "All delivery countries";
+  return area.country;
 }
 
 function HeaderDeliveryLocationControl({
@@ -177,178 +177,82 @@ function HeaderDeliveryLocationControl({
   triggerId?: string;
   className?: string;
 }) {
-  const { isAuthenticated } = useAuth();
   const [area, setArea] = useState<ShopperDeliveryArea | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [geoLoading, setGeoLoading] = useState(false);
-  const [geoError, setGeoError] = useState<string | null>(null);
-  const [areaReady, setAreaReady] = useState(false);
-  const geoRequestInFlightRef = useRef(false);
 
   useEffect(() => {
-    setArea(readShopperDeliveryArea());
-    setAreaReady(true);
+    const stored = readShopperDeliveryArea();
+    if (stored?.country) {
+      setArea(stored);
+    } else {
+      const detectedCountry = detectShopperCountryFromBrowser();
+      if (detectedCountry) {
+        const nextArea = {
+          city: "",
+          province: "",
+          suburb: "",
+          postalCode: "",
+          country: detectedCountry,
+          latitude: null,
+          longitude: null,
+        };
+        saveShopperDeliveryArea(nextArea);
+        setArea(nextArea);
+      } else {
+        setArea(stored);
+      }
+    }
     return subscribeToShopperDeliveryArea(setArea);
   }, []);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!areaReady) return;
-    if (area) return;
-    if (isAuthenticated) return;
-    if (!navigator.geolocation) return;
-
-    let cancelled = false;
-
-    async function detectCurrentArea() {
-      if (cancelled || geoRequestInFlightRef.current) return;
-      geoRequestInFlightRef.current = true;
-      setGeoError(null);
-      setGeoLoading(true);
-
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          if (cancelled) {
-            geoRequestInFlightRef.current = false;
-            return;
-          }
-          try {
-            const place = await reverseGeocodeCoordinates(position.coords.latitude, position.coords.longitude);
-            if (cancelled) return;
-            const nextArea = {
-              city: String(place.city || "").trim(),
-              province: String(place.region || "").trim(),
-              suburb: String(place.suburb || "").trim(),
-              postalCode: String(place.postalCode || "").trim(),
-              country: String(place.country || "").trim(),
-              latitude: typeof place.latitude === "number" ? place.latitude : null,
-              longitude: typeof place.longitude === "number" ? place.longitude : null,
-            };
-            if (nextArea.city || nextArea.province) {
-              saveShopperDeliveryArea(nextArea);
-              setArea(nextArea);
-              setGeoError(null);
-            } else {
-              setGeoError("Unable to match your current location.");
-            }
-          } catch (error) {
-            if (!cancelled) {
-              setGeoError(error instanceof Error ? error.message : "Unable to detect your location.");
-              setPickerOpen(true);
-            }
-          } finally {
-            geoRequestInFlightRef.current = false;
-            if (!cancelled) setGeoLoading(false);
-          }
-        },
-        (error) => {
-          geoRequestInFlightRef.current = false;
-          if (cancelled) return;
-          setGeoLoading(false);
-          if (error?.code !== error.PERMISSION_DENIED) {
-            setGeoError("Unable to detect your location right now.");
-          }
-        },
-        {
-          enableHighAccuracy: false,
-          timeout: 20000,
-          maximumAge: 300000,
-        },
-      );
-    }
-
-    void detectCurrentArea();
-
-    let permissionStatus: PermissionStatus | null = null;
-    const handlePermissionChange = () => {
-      if (cancelled) return;
-      if (permissionStatus?.state === "granted" && !readShopperDeliveryArea()) {
-        void detectCurrentArea();
-      }
-    };
-
-    if (typeof navigator !== "undefined" && navigator.permissions?.query) {
-      navigator.permissions
-        .query({ name: "geolocation" })
-        .then((status) => {
-          if (cancelled) return;
-          permissionStatus = status;
-          permissionStatus.addEventListener("change", handlePermissionChange);
-        })
-        .catch(() => {});
-    }
-
-    return () => {
-      cancelled = true;
-      permissionStatus?.removeEventListener("change", handlePermissionChange);
-    };
-  }, [area, areaReady, isAuthenticated]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!areaReady) return;
-    if (area) return;
-
-    if (isAuthenticated) {
-      const dismissed = window.sessionStorage.getItem(DELIVERY_PROMPT_DISMISSED_KEY) === "1";
-      if (!dismissed) {
-        setPickerOpen(true);
-        window.sessionStorage.setItem(DELIVERY_PROMPT_DISMISSED_KEY, "1");
-      }
-      return;
-    }
-
-    if (!navigator.geolocation) return;
-  }, [area, areaReady, isAuthenticated]);
-
   return (
-    <>
-      <button
-        id={triggerId}
-        type="button"
-        onClick={() => setPickerOpen(true)}
-        className={`inline-flex items-center gap-2 border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] hover:text-[#2f343b] ${className}`}
-        title={area ? `${area.city}${area.province ? `, ${area.province}` : ""}` : "Set your location"}
-      >
+    <label
+      className={`inline-flex items-center gap-2 border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] ${className}`}
+    >
+      <span className="inline-flex items-center gap-2">
         <svg viewBox="0 0 20 20" className="h-4 w-4 fill-current" aria-hidden="true">
           <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
         </svg>
-        <span>{geoLoading ? "Checking location..." : formatDeliveryAreaLabel(area)}</span>
-      </button>
-      {geoError ? <span className="hidden text-[11px] text-[#8b94a3] lg:inline">{geoError}</span> : null}
-      <GooglePlacePickerModal
-        open={pickerOpen}
-        title="Choose your delivery location"
-        initialValue={
-          area
-            ? {
-                city: area.city,
-                region: area.province,
-                suburb: area.suburb,
-                postalCode: area.postalCode,
-                country: area.country,
-                latitude: area.latitude,
-                longitude: area.longitude,
-              }
-            : null
-        }
-        onClose={() => setPickerOpen(false)}
-        onSelect={(value) => {
+        <span className="hidden lg:inline">Deliver to</span>
+      </span>
+      <div className="relative">
+        <select
+          id={triggerId}
+          value={area?.country || ""}
+          onChange={(event) => {
+            const nextCountry = String(event.target.value || "").trim();
+            if (!nextCountry) {
+              saveShopperDeliveryArea(null);
+              setArea(null);
+              return;
+            }
           const nextArea = {
-            city: String(value.city || "").trim(),
-            province: String(value.region || "").trim(),
-            suburb: String(value.suburb || "").trim(),
-            postalCode: String(value.postalCode || "").trim(),
-            country: String(value.country || "").trim(),
-            latitude: typeof value.latitude === "number" ? value.latitude : null,
-            longitude: typeof value.longitude === "number" ? value.longitude : null,
+            city: area?.city || "",
+            province: area?.province || "",
+            suburb: area?.suburb || "",
+            postalCode: area?.postalCode || "",
+            country: nextCountry,
+            latitude: area?.latitude ?? null,
+            longitude: area?.longitude ?? null,
           };
           saveShopperDeliveryArea(nextArea);
           setArea(nextArea);
-          setPickerOpen(false);
         }}
-      />
-    </>
+          className="appearance-none rounded-[8px] border border-black/10 bg-white py-2 pl-3 pr-8 text-[12px] font-semibold text-[#202020] outline-none"
+          aria-label="Choose delivery country"
+          title={formatDeliveryAreaLabel(area)}
+        >
+          <option value="">All delivery countries</option>
+          {SHOPPER_COUNTRY_OPTIONS.map((country) => (
+            <option key={country.code} value={country.label}>
+              {country.displayLabel}
+            </option>
+          ))}
+        </select>
+        <svg viewBox="0 0 20 20" className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 fill-current text-[#6b7280]" aria-hidden="true">
+          <path d="M5.5 7.5 10 12l4.5-4.5" />
+        </svg>
+      </div>
+    </label>
   );
 }
 

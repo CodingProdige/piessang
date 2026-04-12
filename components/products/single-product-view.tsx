@@ -14,11 +14,32 @@ import {
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
-import { formatCurrency as formatDeliveryCurrency, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
+import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
 
 type ProductVariant = {
   variant_id?: string | number;
   label?: string | null;
+  size?: string | null;
+  color?: string | null;
+  shade?: string | null;
+  scent?: string | null;
+  skinType?: string | null;
+  hairType?: string | null;
+  flavor?: string | null;
+  abv?: string | null;
+  containerType?: string | null;
+  storageCapacity?: string | null;
+  memoryRam?: string | null;
+  connectivity?: string | null;
+  compatibility?: string | null;
+  sizeSystem?: string | null;
+  material?: string | null;
+  ringSize?: string | null;
+  strapLength?: string | null;
+  bookFormat?: string | null;
+  language?: string | null;
+  ageRange?: string | null;
+  modelFitment?: string | null;
   pack?: {
     unit_count?: number;
     volume?: number;
@@ -56,6 +77,16 @@ type ProductVariant = {
     total_units_sold?: number;
   };
   total_in_stock_items_available?: number;
+  logistics?: {
+    parcel_preset?: string | null;
+    shipping_class?: string | null;
+    weight_kg?: number | null;
+    length_cm?: number | null;
+    width_cm?: number | null;
+    height_cm?: number | null;
+    volumetric_weight_kg?: number | null;
+    billable_weight_kg?: number | null;
+  };
 };
 
 type ProductItem = {
@@ -451,6 +482,40 @@ function getVariantSummary(variant?: ProductVariant | null) {
   return parts.join(" • ") || null;
 }
 
+function getVariantExtraDetails(variant?: ProductVariant | null) {
+  if (!variant) return [];
+  const entries: Array<{ label: string; value: string }> = [];
+  const push = (label: string, value?: string | number | null, suffix = "") => {
+    const text = String(value ?? "").trim();
+    if (!text) return;
+    entries.push({ label, value: `${text}${suffix}` });
+  };
+
+  push("Color", variant.color);
+  push("Size", variant.size);
+  push("Size system", variant.sizeSystem);
+  push("Shade", variant.shade);
+  push("Scent", variant.scent);
+  push("Skin type", variant.skinType);
+  push("Hair type", variant.hairType);
+  push("Flavour", variant.flavor);
+  push("ABV", variant.abv, "%");
+  push("Container", variant.containerType);
+  push("Storage", variant.storageCapacity);
+  push("Memory", variant.memoryRam);
+  push("Connectivity", variant.connectivity);
+  push("Compatibility", variant.compatibility);
+  push("Material", variant.material);
+  push("Ring size", variant.ringSize);
+  push("Strap length", variant.strapLength);
+  push("Format", variant.bookFormat);
+  push("Language", variant.language);
+  push("Age range", variant.ageRange);
+  push("Fitment", variant.modelFitment);
+
+  return entries;
+}
+
 function HeartIcon({ filled = false }: { filled?: boolean }) {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className={`h-4 w-4 ${filled ? "text-white" : "text-[#4a4545]"}`}>
@@ -500,109 +565,28 @@ function getRecommendationCardImageCount(item: ProductItem | null | undefined) {
 
 function noopCartPreviewHandler() {}
 
-function parseCutoffMinutes(cutoff?: string | null) {
-  if (!cutoff) return null;
-  const [hoursRaw, minutesRaw] = String(cutoff).split(":");
-  const hours = Number(hoursRaw);
-  const minutes = Number(minutesRaw);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  return hours * 60 + minutes;
-}
-
-function getZonedNow(offsetMinutes?: number | null) {
-  const now = new Date();
-  if (!Number.isFinite(Number(offsetMinutes))) return now;
-  return new Date(now.getTime() + Number(offsetMinutes) * 60_000 + now.getTimezoneOffset() * 60_000);
-}
-
-function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function getDeliveryPromise(item: ProductItem, shopperArea: ShopperDeliveryArea | null) {
-  const fulfillment = item.data?.fulfillment;
-  if (String(fulfillment?.mode ?? "").toLowerCase() !== "seller") return null;
-
-  const profile = item.data?.seller?.deliveryProfile;
-  if (!profile) return null;
-
-  const resolved = resolveSellerDeliveryOption({
-    profile,
+function getDeliveryPromise(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
+  return getShopperFacingDeliveryPromise({
+    fulfillmentMode: item.data?.fulfillment?.mode,
+    profile: item.data?.seller?.deliveryProfile,
     sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea: shopperArea as any,
+    shopperArea,
+    variant,
   });
-  if (!resolved.available || typeof resolved.leadTimeDays !== "number") return null;
-
-  const leadTimeDays = Number(resolved.leadTimeDays);
-  if (!Number.isFinite(leadTimeDays) || leadTimeDays < 0) return null;
-
-  const now = getZonedNow((resolved as any)?.utcOffsetMinutes);
-  const cutoffValue = (resolved as any)?.cutoffTime || null;
-  const cutoffMinutes = parseCutoffMinutes(cutoffValue);
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  const afterCutoff = cutoffMinutes == null ? false : nowMinutes >= cutoffMinutes;
-  const promisedDate = new Date(now);
-  promisedDate.setDate(promisedDate.getDate() + leadTimeDays + (afterCutoff ? 1 : 0));
-  const daysUntilDelivery = Math.max(
-    0,
-    Math.round((startOfDay(promisedDate).getTime() - startOfDay(now).getTime()) / 86_400_000),
-  );
-
-  const cutoffText = cutoffValue ? `Order by ${cutoffValue}` : null;
-  const formatDate = new Intl.DateTimeFormat("en-ZA", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
-
-  if (daysUntilDelivery <= 1) {
-    return {
-      label: daysUntilDelivery === 0 ? "Delivered today" : "Delivered tomorrow",
-      cutoffText: afterCutoff ? null : cutoffText,
-    };
-  }
-
-  return {
-    label: `Get it by ${formatDate.format(promisedDate)}`,
-    cutoffText: null,
-  };
 }
 
-function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliveryArea | null) {
-  const fulfillmentMode = String(item.data?.fulfillment?.mode || "").trim().toLowerCase();
-  if (fulfillmentMode !== "seller") {
-    return { label: "Piessang handles shipping for this item", tone: "neutral" as const };
-  }
-  const profile = item.data?.seller?.deliveryProfile;
-  if (!profile) {
-    return shopperArea
-      ? { label: "Check delivery with this seller", tone: "neutral" as const }
-      : { label: "Set your shipping location to check availability", tone: "neutral" as const };
-  }
-
-  const resolved = resolveSellerDeliveryOption({
-    profile,
+function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
+  return getShopperFacingDeliveryMessage({
+    fulfillmentMode: item.data?.fulfillment?.mode,
+    profile: item.data?.seller?.deliveryProfile,
     sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea: shopperArea as any,
+    shopperArea,
+    variant,
+    platformLabel: "Piessang handles shipping for this item",
+    missingProfileLabel: shopperArea
+      ? "Check delivery with this seller"
+      : "Set your shipping location to check availability",
   });
-  if (resolved.kind === "collection") {
-    return { label: "Pickup available from seller", tone: "neutral" as const };
-  }
-  if (resolved.kind === "direct") {
-    return {
-      label: resolved.amountIncl > 0 ? `Direct delivery ${formatDeliveryCurrency(resolved.amountIncl)}` : "Direct delivery available",
-      tone: "success" as const,
-    };
-  }
-  if (resolved.kind === "shipping") {
-    return {
-      label: resolved.amountIncl > 0 ? `Shipping ${formatDeliveryCurrency(resolved.amountIncl)}` : "Shipping available",
-      tone: "success" as const,
-    };
-  }
-  return shopperArea
-    ? { label: resolved.label, tone: "danger" as const }
-    : { label: resolved.label, tone: "neutral" as const };
 }
 
 export function SingleProductView({
@@ -661,8 +645,9 @@ export function SingleProductView({
   const soldCountLabel = formatSoldCount(totalUnitsSold);
   const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
   const stock = getStockLabel(activeVariant, item);
-  const deliveryPromise = getDeliveryPromise(item, shopperArea);
-  const sellerDeliveryMessage = getSellerDeliveryMessage(item, shopperArea);
+  const deliveryPromise = getDeliveryPromise(item, shopperArea, activeVariant);
+  const sellerDeliveryMessage = getSellerDeliveryMessage(item, shopperArea, activeVariant);
+  const activeVariantExtraDetails = getVariantExtraDetails(activeVariant);
   const overview = item.data?.product?.overview ?? null;
   const description = item.data?.product?.description ?? "No description available.";
   const brandLabel = getBrandLabel(item);
@@ -1226,6 +1211,20 @@ export function SingleProductView({
               <p className="mt-1 text-[11px] text-[#57636c]">{getVariantSummary(activeVariant)}</p>
             ) : null}
           </div>
+
+          {activeVariantExtraDetails.length ? (
+            <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Extra details</p>
+              <div className="mt-2 grid gap-x-4 gap-y-2 sm:grid-cols-2">
+                {activeVariantExtraDetails.map((entry) => (
+                  <div key={`${entry.label}:${entry.value}`} className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#8b94a3]">{entry.label}</p>
+                    <p className="mt-0.5 text-[12px] text-[#202020]">{entry.value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="space-y-2">
             <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Select variant</p>

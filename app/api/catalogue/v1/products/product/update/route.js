@@ -13,6 +13,7 @@ import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
 import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
+import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
 import { ensureCatalogueTaxonomySeed } from "@/lib/marketplace/fees-store";
@@ -195,6 +196,7 @@ function hasReviewSensitiveProductChanges(patch, { changeRequestOnly = false } =
       "title",
       "overview",
       "description",
+      "condition",
       "keywords",
       "brand",
       "brandTitle",
@@ -487,6 +489,7 @@ function sanitizePatch(patch){
     if ("brandTitle" in pr)  out.product.brandTitle = toStr(pr.brandTitle, null) || null;
     if ("overview" in pr)    out.product.overview  = toStr(pr.overview, null) || null;
     if ("description" in pr) out.product.description = toStr(pr.description, null) || null;
+    if ("condition" in pr)   out.product.condition = toStr(pr.condition, null) || null;
     if ("keywords" in pr)    out.product.keywords    = parseKeywords(pr.keywords);
     if ("vendorName" in pr)  out.product.vendorName   = toStr(pr.vendorName, null) || null;
     if ("vendorDescription" in pr) out.product.vendorDescription = toStr(pr.vendorDescription, null) || null;
@@ -658,6 +661,9 @@ export async function POST(req){
       ("placement" in patch) &&
       Object.prototype.hasOwnProperty.call(patch.placement || {}, "isActive") &&
       patch?.placement?.isActive === true;
+    const submittingForReview =
+      toStr(patch?.moderation?.status).toLowerCase() === "in_review" ||
+      toStr(next?.moderation?.status).toLowerCase() === "published";
 
     /* ============================================================
        1. Duplicate title check using titleSlug (case-insensitive,
@@ -772,6 +778,20 @@ export async function POST(req){
         current?.product?.vendorDescription ||
         "",
     ) || null;
+    const sellerDeliveryProfile =
+      sellerOwner?.data?.seller?.deliveryProfile && typeof sellerOwner.data.seller.deliveryProfile === "object"
+        ? sellerOwner.data.seller.deliveryProfile
+        : {};
+    if (toStr(nextFulfillmentMode).toLowerCase() === "seller" && sellerHasWeightBasedShipping(sellerDeliveryProfile) && (activatingProduct || submittingForReview)) {
+      const weightIssues = collectProductWeightRequirementIssues(next);
+      if (weightIssues.includes("Variant weight")) {
+        return err(
+          409,
+          "Variant Weight Required",
+          "This seller uses per-kg shipping zones, so every variant must include a weight before the product can be submitted for review or activated.",
+        );
+      }
+    }
     // Product can be activated only when all linked parent groupings are active.
     if (activatingProduct) {
       const parentState = await ensureParentsActive(db, next);

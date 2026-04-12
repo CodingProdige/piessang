@@ -28,6 +28,7 @@ import { SellerProductReportsWorkspace } from "@/components/seller/product-repor
 import { SellerProductReviewsWorkspace } from "@/components/seller/product-reviews-workspace";
 import { SellerProductsWorkspace } from "@/components/seller/products-workspace";
 import { SellerReturnsWorkspace } from "@/components/seller/returns-workspace";
+import { SellerIntegrationsWorkspace } from "@/components/seller/integrations-workspace";
 import { SellerSettlementsWorkspace } from "@/components/seller/settlements-workspace";
 import { SellerAnalyticsWorkspace } from "@/components/seller/analytics-workspace";
 import { SellerAdminAnalyticsWorkspace } from "@/components/seller/admin-analytics-workspace";
@@ -85,6 +86,7 @@ type SidebarSection =
   | "fulfilled"
   | "analytics"
   | "notifications"
+  | "integrations"
   | "team"
   | "settings";
 
@@ -235,6 +237,7 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   fulfilled: ["admin", "manager", "orders"],
   analytics: ["admin", "manager", "analytics"],
   notifications: ["admin", "manager", "catalogue", "orders", "analytics"],
+  integrations: ["admin", "manager", "catalogue", "orders", "analytics"],
   team: ["admin"],
   settings: ["admin", "manager", "catalogue", "orders", "analytics"],
 };
@@ -410,6 +413,16 @@ function SidebarIcon({ icon }: { icon: string }) {
         <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="12" cy="12" r="3.5" />
           <path d="M19.4 15a1.2 1.2 0 0 0 .24 1.32l.05.05a1.5 1.5 0 0 1 0 2.12l-1.06 1.06a1.5 1.5 0 0 1-2.12 0l-.05-.05A1.2 1.2 0 0 0 15 19.4a1.2 1.2 0 0 0-.72.18 1.2 1.2 0 0 0-.58 1.1V21a1.5 1.5 0 0 1-1.5 1.5h-1.5A1.5 1.5 0 0 1 9.2 21v-.32a1.2 1.2 0 0 0-.58-1.1 1.2 1.2 0 0 0-.72-.18 1.2 1.2 0 0 0-1.32.24l-.05.05a1.5 1.5 0 0 1-2.12 0L3.35 18.6a1.5 1.5 0 0 1 0-2.12l.05-.05A1.2 1.2 0 0 0 3.64 15a1.2 1.2 0 0 0-.18-.72 1.2 1.2 0 0 0-1.1-.58H2A1.5 1.5 0 0 1 .5 12.2v-1.5A1.5 1.5 0 0 1 2 9.2h.32a1.2 1.2 0 0 0 1.1-.58 1.2 1.2 0 0 0 .18-.72 1.2 1.2 0 0 0-.24-1.32l-.05-.05a1.5 1.5 0 0 1 0-2.12L4.37 3.35a1.5 1.5 0 0 1 2.12 0l.05.05A1.2 1.2 0 0 0 8 3.64c.23 0 .48-.07.72-.18a1.2 1.2 0 0 0 .58-1.1V2A1.5 1.5 0 0 1 10.8.5h1.5A1.5 1.5 0 0 1 13.8 2v.32c0 .44.24.84.58 1.1.24.11.49.18.72.18a1.2 1.2 0 0 0 1.32-.24l.05-.05a1.5 1.5 0 0 1 2.12 0l1.06 1.06a1.5 1.5 0 0 1 0 2.12l-.05.05A1.2 1.2 0 0 0 19.36 9c.34.26.58.66.64 1.1H21a1.5 1.5 0 0 1 1.5 1.5v1.5A1.5 1.5 0 0 1 21 14.6h-.32c-.44 0-.84.24-1.1.58Z" />
+        </svg>
+      );
+    case "plug":
+      return (
+        <svg viewBox="0 0 24 24" className={common} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 7V4" />
+          <path d="M15 7V4" />
+          <path d="M8 10h8" />
+          <path d="M8 7h8v4a4 4 0 0 1-4 4h0a4 4 0 0 1-4-4V7Z" />
+          <path d="M12 15v5" />
         </svg>
       );
     case "shield":
@@ -664,7 +677,7 @@ function SidebarMenu({
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-google-analytics", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-google-merchant-countries", "admin-google-merchant", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "integrations", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-google-analytics", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-google-merchant-countries", "admin-google-merchant", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -804,6 +817,14 @@ function SidebarMenu({
               collapsed={compactDesktop}
               locked={sellerBlocked || !canAccessSellerSection(sellerRole, "notifications")}
               onClick={() => handleNavigate("notifications")}
+            />
+            <SidebarButton
+              label="Integrations"
+              icon="plug"
+              active={activeSection === "integrations"}
+              collapsed={compactDesktop}
+              locked={sellerBlocked || !canAccessSellerSection(sellerRole, "integrations")}
+              onClick={() => handleNavigate("integrations")}
             />
             <SidebarButton
               label="Team"
@@ -1158,6 +1179,8 @@ function SellerDashboardContent() {
         return "analytics";
       case "notifications":
         return "notifications";
+      case "integrations":
+        return "integrations";
       case "team":
         return "team";
       case "settings":
@@ -1642,6 +1665,8 @@ function SellerDashboardContent() {
         return "Analytics";
       case "notifications":
         return "Notifications";
+      case "integrations":
+        return "Integrations";
       case "team":
         return "Team";
       case "settings":
@@ -1694,7 +1719,7 @@ function SellerDashboardContent() {
       case "admin-orders":
         return "See every marketplace order in one place, including payment, fulfilment, and delivery progress.";
       case "admin-platform-delivery":
-        return "Manage the Piessang fulfilment shipping origin, direct-delivery radius, shipping zones, and pickup rules.";
+        return "Manage the Piessang fulfilment shipping origin, local-delivery radius, country shipping rates, and pickup rules.";
       case "admin-google-merchant-countries":
         return "Manage which countries Google Merchant product ads are allowed to target.";
       case "admin-google-merchant":
@@ -1733,6 +1758,8 @@ function SellerDashboardContent() {
         return "Review seller performance and reporting.";
       case "notifications":
         return "Track followers, seller activity, and important product or account events from one inbox.";
+      case "integrations":
+        return "Connect Shopify, preview imported products, and control how catalogue sync should work for this seller account.";
       case "team":
         return "Manage teammate access and roles for this seller account.";
       case "settings":
@@ -2044,6 +2071,12 @@ function SellerDashboardContent() {
               <SellerNotificationsWorkspace
                 sellerSlug={resolvedSellerSlug}
                 sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+              />
+            ) : activeSection === "integrations" ? (
+              <SellerIntegrationsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
+                vendorName={activeVendorName}
               />
             ) : activeSection === "settlements" ? (
               <SellerSettlementsWorkspace

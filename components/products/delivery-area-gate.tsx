@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
+import { getFlagEmoji } from "@/lib/currency/display-currency";
+import { STRIPE_SUPPORTED_SHOPPER_COUNTRIES } from "@/lib/marketplace/country-config";
 
 export type ShopperDeliveryArea = {
   city: string;
@@ -15,6 +17,13 @@ export type ShopperDeliveryArea = {
 
 const STORAGE_KEY = "piessang-shopper-delivery-area";
 const STORAGE_EVENT = "piessang-shopper-delivery-area-change";
+const COOKIE_KEY = "piessang_shopper_country";
+export const SHOPPER_COUNTRY_OPTIONS = STRIPE_SUPPORTED_SHOPPER_COUNTRIES.map((entry) => ({
+  code: entry.code,
+  label: entry.label,
+  flag: getFlagEmoji(entry.code),
+  displayLabel: `${getFlagEmoji(entry.code)} ${entry.label}`.trim(),
+}));
 
 function normalizeText(value: string) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -24,19 +33,37 @@ export function readShopperDeliveryArea(): ShopperDeliveryArea | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
+    const cookieCountry = document.cookie
+      .split(";")
+      .map((entry) => entry.trim())
+      .find((entry) => entry.startsWith(`${COOKIE_KEY}=`))
+      ?.split("=")
+      .slice(1)
+      .join("=");
+    if (!raw) {
+      const country = normalizeText(cookieCountry || "");
+      return country ? { city: "", province: "", suburb: "", postalCode: "", country, latitude: null, longitude: null } : null;
+    }
     const parsed = JSON.parse(raw);
     const city = normalizeText(parsed?.city || "");
     const province = normalizeText(parsed?.province || "");
     const suburb = normalizeText(parsed?.suburb || "");
     const postalCode = normalizeText(parsed?.postalCode || "");
-    const country = normalizeText(parsed?.country || "");
+    const country = normalizeText(parsed?.country || cookieCountry || "");
     const latitude = typeof parsed?.latitude === "number" ? parsed.latitude : null;
     const longitude = typeof parsed?.longitude === "number" ? parsed.longitude : null;
-    if (!city && !province) return null;
+    if (!city && !province && !country) return null;
     return { city, province, suburb, postalCode, country, latitude, longitude };
   } catch {
-    return null;
+    const cookieCountry = document.cookie
+      .split(";")
+      .map((entry) => entry.trim())
+      .find((entry) => entry.startsWith(`${COOKIE_KEY}=`))
+      ?.split("=")
+      .slice(1)
+      .join("=");
+    const country = normalizeText(cookieCountry || "");
+    return country ? { city: "", province: "", suburb: "", postalCode: "", country, latitude: null, longitude: null } : null;
   }
 }
 
@@ -44,6 +71,7 @@ export function saveShopperDeliveryArea(area: ShopperDeliveryArea | null) {
   if (typeof window === "undefined") return;
   if (!area) {
     window.localStorage.removeItem(STORAGE_KEY);
+    document.cookie = `${COOKIE_KEY}=; path=/; max-age=0; SameSite=Lax`;
     window.dispatchEvent(new CustomEvent(STORAGE_EVENT, { detail: null }));
     return;
   }
@@ -57,7 +85,27 @@ export function saveShopperDeliveryArea(area: ShopperDeliveryArea | null) {
     longitude: typeof area.longitude === "number" ? area.longitude : null,
   };
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextArea));
+  if (nextArea.country) {
+    document.cookie = `${COOKIE_KEY}=${encodeURIComponent(nextArea.country)}; path=/; max-age=31536000; SameSite=Lax`;
+  }
   window.dispatchEvent(new CustomEvent(STORAGE_EVENT, { detail: nextArea }));
+}
+
+export function detectShopperCountryFromBrowser() {
+  if (typeof window === "undefined") return "";
+  const languages = Array.isArray(navigator.languages) && navigator.languages.length
+    ? navigator.languages
+    : [navigator.language];
+  for (const entry of languages) {
+    const locale = String(entry || "").trim();
+    if (!locale) continue;
+    const parts = locale.replace("_", "-").split("-");
+    const region = String(parts[1] || "").trim().toUpperCase();
+    if (!region) continue;
+    const match = SHOPPER_COUNTRY_OPTIONS.find((country) => country.code === region);
+    if (match?.label) return match.label;
+  }
+  return "";
 }
 
 export function subscribeToShopperDeliveryArea(listener: (area: ShopperDeliveryArea | null) => void) {

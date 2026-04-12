@@ -336,6 +336,7 @@ export async function POST(req){
         sellerCode,
         overview: toStr(data?.product?.overview, null) || null,
         description: toStr(data?.product?.description,null) || null,
+        condition: toStr(data?.product?.condition, null) || null,
         vendorDescription,
         keywords: parseKeywords(data?.product?.keywords),
         ...(vendorName ? { vendorName } : {})

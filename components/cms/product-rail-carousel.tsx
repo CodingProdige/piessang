@@ -9,6 +9,7 @@ import {
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
+import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
 
 export type ProductRailItem = ProductItem;
 
@@ -31,7 +32,13 @@ export function ProductRailCarousel({
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
-  const visibleProducts = useMemo(() => products.filter(hasShopperFacingProductImage), [products]);
+  const visibleProducts = useMemo(
+    () =>
+      products
+        .filter(hasShopperFacingProductImage)
+        .filter((product) => isProductEligibleForShopperCountry(product, shopperArea?.country || "")),
+    [products, shopperArea?.country],
+  );
 
   useEffect(() => {
     if (shopperAreaProp) {

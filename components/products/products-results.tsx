@@ -7,13 +7,16 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import {
   readShopperDeliveryArea,
+  saveShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement, useProductImpressionTracker } from "@/lib/analytics/product-engagement-client";
-import { formatCurrency, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
+import { formatCurrency } from "@/lib/seller/delivery-profile";
+import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
+import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
 
 export const PRODUCT_CARD_LIST_IMAGE_SIZES = "(max-width: 640px) calc(100vw - 2rem), 180px";
 export const PRODUCT_CARD_GRID_IMAGE_SIZES = "(max-width: 640px) 72vw, (max-width: 1024px) 40vw, 280px";
@@ -21,6 +24,16 @@ export const PRODUCT_CARD_GRID_IMAGE_SIZES = "(max-width: 640px) 72vw, (max-widt
 type ProductVariant = {
   variant_id?: string | number;
   label?: string | null;
+  logistics?: {
+    parcel_preset?: string | null;
+    shipping_class?: string | null;
+    weight_kg?: number | null;
+    length_cm?: number | null;
+    width_cm?: number | null;
+    height_cm?: number | null;
+    volumetric_weight_kg?: number | null;
+    billable_weight_kg?: number | null;
+  };
   pack?: {
     unit_count?: number;
     volume?: number;
@@ -437,112 +450,26 @@ export function hasShopperFacingProductImage(item: ProductItem | null | undefine
   return getDisplayImages(item).length > 0;
 }
 
-function parseCutoffMinutes(cutoff?: string | null) {
-  if (!cutoff) return null;
-  const [hoursRaw, minutesRaw] = String(cutoff).split(":");
-  const hours = Number(hoursRaw);
-  const minutes = Number(minutesRaw);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  return hours * 60 + minutes;
-}
-
-function getZonedNow(offsetMinutes?: number | null) {
-  const now = new Date();
-  if (!Number.isFinite(Number(offsetMinutes))) return now;
-  return new Date(now.getTime() + Number(offsetMinutes) * 60_000 + now.getTimezoneOffset() * 60_000);
-}
-
-function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function getDeliveryPromise(item: ProductItem, shopperArea: ShopperDeliveryArea | null) {
-  const fulfillment = item.data?.fulfillment;
-  if (String(fulfillment?.mode ?? "").toLowerCase() !== "seller") return null;
-
-  const profile = item.data?.seller?.deliveryProfile;
-  if (!profile) return null;
-
-  const resolved = resolveSellerDeliveryOption({
-    profile,
+function getDeliveryPromise(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
+  return getShopperFacingDeliveryPromise({
+    fulfillmentMode: item.data?.fulfillment?.mode,
+    profile: item.data?.seller?.deliveryProfile,
     sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea: shopperArea as any,
+    shopperArea,
+    variant,
   });
-  if (!resolved.available || typeof resolved.leadTimeDays !== "number") return null;
-
-  const leadTimeDays = Number(resolved.leadTimeDays);
-  if (!Number.isFinite(leadTimeDays) || leadTimeDays < 0) return null;
-
-  const now = getZonedNow((resolved as any)?.utcOffsetMinutes);
-  const cutoffValue = (resolved as any)?.cutoffTime || null;
-  const cutoffMinutes = parseCutoffMinutes(cutoffValue);
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  const afterCutoff = cutoffMinutes == null ? false : nowMinutes >= cutoffMinutes;
-  const promisedDate = new Date(now);
-  promisedDate.setDate(promisedDate.getDate() + leadTimeDays + (afterCutoff ? 1 : 0));
-  const daysUntilDelivery = Math.max(
-    0,
-    Math.round((startOfDay(promisedDate).getTime() - startOfDay(now).getTime()) / 86_400_000),
-  );
-
-  const cutoffText = cutoffValue ? `Order by ${cutoffValue}` : null;
-  const formatDate = new Intl.DateTimeFormat("en-ZA", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
-
-  if (daysUntilDelivery <= 1) {
-    return {
-      label: daysUntilDelivery === 0 ? "Delivered today" : "Delivered tomorrow",
-      cutoffText: afterCutoff ? null : cutoffText,
-    };
-  }
-
-  return {
-    label: `Get it by ${formatDate.format(promisedDate)}`,
-    cutoffText: null,
-  };
 }
 
-function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliveryArea | null) {
-  const fulfillmentMode = String(item.data?.fulfillment?.mode || "").trim().toLowerCase();
-  if (fulfillmentMode !== "seller") {
-    return { label: "Piessang shipping available", tone: "neutral" as const };
-  }
-
-  const profile = item.data?.seller?.deliveryProfile;
-  if (!profile) {
-    return shopperArea
-      ? { label: "Check delivery with seller", tone: "neutral" as const }
-      : { label: "Set your shipping location", tone: "neutral" as const };
-  }
-
-  const resolved = resolveSellerDeliveryOption({
-    profile,
+function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
+  return getShopperFacingDeliveryMessage({
+    fulfillmentMode: item.data?.fulfillment?.mode,
+    profile: item.data?.seller?.deliveryProfile,
     sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea: shopperArea as any,
+    shopperArea,
+    variant,
+    platformLabel: "Piessang shipping available",
+    missingProfileLabel: shopperArea ? "Check delivery with seller" : "Set your shipping location",
   });
-
-  if (resolved.kind === "collection") {
-    return { label: "Pickup available from seller", tone: "neutral" as const };
-  }
-  if (resolved.kind === "direct") {
-    return {
-      label: "Direct delivery available",
-      tone: "success" as const,
-    };
-  }
-  if (resolved.kind === "shipping") {
-    return {
-      label: "Shipping available",
-      tone: "success" as const,
-    };
-  }
-  return {
-    label: resolved.label,
-    tone: shopperArea ? ("danger" as const) : ("neutral" as const),
-  };
 }
 
 function HeartIcon({ filled = false }: { filled?: boolean }) {
@@ -832,6 +759,11 @@ function getStockState(variant?: ProductVariant, item?: ProductItem) {
   return { label: "Stock unknown", tone: "neutral" as const, hideQuantity: false };
 }
 
+function isPreLovedProduct(item: ProductItem) {
+  const category = String(item.data?.grouping?.category || "").trim().toLowerCase();
+  return category === "pre-loved" || category === "preloved";
+}
+
 function getReviewState(item: ProductItem) {
   const average = item.data?.ratings?.average;
   const count = item.data?.ratings?.count;
@@ -1001,12 +933,15 @@ export function BrowseProductCard({
   const soldCountLabel = formatSoldCount(totalUnitsSold);
   const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
   const isNewArrival = item.data?.is_new_arrival === true;
+  const isPreLoved = isPreLovedProduct(item);
   const isSponsored = item.ad?.sponsored === true;
   const resolvedShopperArea = shopperArea ?? null;
-  const deliveryPromise = getDeliveryPromise(item, resolvedShopperArea);
-  const deliveryLabel = deliveryPromise?.label ?? null;
+  const deliveryPromise = getDeliveryPromise(item, resolvedShopperArea, defaultVariant);
+  const sellerDeliveryMessage = getSellerDeliveryMessage(item, resolvedShopperArea, defaultVariant);
+  const deliveryLabel = deliveryPromise?.label ?? sellerDeliveryMessage?.label ?? null;
   const deliveryCutoffText = deliveryPromise?.cutoffText ?? null;
-  const deliveryTone: "success" | "danger" | "warning" | "neutral" = deliveryPromise ? "success" : "neutral";
+  const deliveryTone: "success" | "danger" | "warning" | "neutral" =
+    deliveryPromise ? "success" : (sellerDeliveryMessage?.tone ?? "neutral");
   const deliveryToneClass =
     {
       success: "inline-flex items-center gap-1 rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]",
@@ -1224,13 +1159,18 @@ export function BrowseProductCard({
           {salePercent}% off
         </span>
       ) : null}
+      {isPreLoved ? (
+        <span className={`absolute left-2 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)] ${salePercent ? "top-10" : "top-2"}`}>
+          Pre-Loved
+        </span>
+      ) : null}
       {isSponsored ? (
         <span className="absolute right-10 top-2 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
           {item.ad?.label || "Sponsored"}
         </span>
       ) : null}
       {isNewArrival ? (
-        <span className="absolute left-2 top-10 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
+        <span className={`absolute left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)] ${salePercent || isPreLoved ? "top-[4.5rem]" : "top-10"}`}>
           <SparkIcon />
           New
         </span>
@@ -1766,8 +1706,15 @@ export function ProductsResults({
   }, []);
 
   const filteredItems = useMemo(
-    () => filterByPriceRange(filterByMinRating(items, minRating), priceRange?.min, priceRange?.max),
-    [items, minRating, priceRange?.min, priceRange?.max],
+    () =>
+      filterByPriceRange(
+        filterByMinRating(items, minRating).filter((item) =>
+          isProductEligibleForShopperCountry(item, shopperArea?.country || ""),
+        ),
+        priceRange?.min,
+        priceRange?.max,
+      ),
+    [items, minRating, priceRange?.min, priceRange?.max, shopperArea?.country],
   );
   const displayItems = useMemo(() => {
     if (!filteredItems.length || !sponsoredItems.length || !sponsoredPlacement) return filteredItems;
@@ -1787,6 +1734,8 @@ export function ProductsResults({
     });
     return next;
   }, [filteredItems, sponsoredItems, sponsoredPlacement]);
+  const shopperCountryLabel = String(shopperArea?.country || "").trim();
+  const showingCountryFilter = Boolean(shopperCountryLabel);
   const sortedItems = useMemo(() => sortProducts(displayItems, currentSort), [displayItems, currentSort]);
   const clearCatalogFilters = {
     id: undefined,
@@ -1947,6 +1896,23 @@ export function ProductsResults({
     const hasFavorites = favoriteCount > 0;
     return (
       <div className="space-y-4">
+        {showingCountryFilter ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/6 bg-[#fffdfa] px-4 py-3 text-[13px] text-[#57636c] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+              <p>
+              Showing products deliverable to <span className="font-semibold text-[#202020]">{shopperCountryLabel}</span>.
+              </p>
+            <button
+              type="button"
+              onClick={() => {
+                saveShopperDeliveryArea(null);
+                setShopperArea(null);
+              }}
+              className="text-[12px] font-semibold text-[#145af2]"
+            >
+              Change country in header
+            </button>
+          </div>
+        ) : null}
         <div className="rounded-[8px] bg-white px-5 py-10 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
           {favoritesOnly ? "Favourites" : "No results"}
@@ -1988,6 +1954,23 @@ export function ProductsResults({
 
   return (
       <div className="space-y-4">
+          {showingCountryFilter ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/6 bg-[#fffdfa] px-4 py-3 text-[13px] text-[#57636c] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+              <p>
+                Showing products deliverable to <span className="font-semibold text-[#202020]">{shopperCountryLabel}</span>.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  saveShopperDeliveryArea(null);
+                  setShopperArea(null);
+                }}
+                className="text-[12px] font-semibold text-[#145af2]"
+              >
+                Change country in header
+              </button>
+            </div>
+          ) : null}
           {currentView === "list" ? (
         <div className="space-y-4">
           {sortedItems.map((item, index) => (

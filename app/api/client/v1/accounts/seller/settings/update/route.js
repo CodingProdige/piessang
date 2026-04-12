@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
-import { SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES, normalizeCountryLabel } from "@/lib/marketplace/country-config";
+import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
@@ -95,10 +95,6 @@ function resolveCutoffTime(value, fallback = "10:00") {
 function sanitizeEnum(value, allowed, fallback) {
   const normalized = toStr(value).toLowerCase();
   return allowed.includes(normalized) ? normalized : fallback;
-}
-
-function normalizeSupportedCountryLabel(value, fallback = "") {
-  return normalizeCountryLabel(value, SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES, fallback);
 }
 
 function sanitizeBankAccountNumber(value) {
@@ -199,7 +195,7 @@ function parseDeliveryProfile(payload) {
   const normalized = normalizeSellerDeliveryProfile(payload && typeof payload === "object" ? payload : {});
   return {
     origin: {
-      country: normalizeSupportedCountryLabel(normalized.origin?.country, ""),
+      country: sanitizeText(normalized.origin?.country),
       region: sanitizeText(normalized.origin?.region),
       city: sanitizeText(normalized.origin?.city),
       suburb: sanitizeText(normalized.origin?.suburb),
@@ -214,53 +210,118 @@ function parseDeliveryProfile(payload) {
       radiusKm: sanitizePositiveInt(normalized.directDelivery?.radiusKm, 0),
       leadTimeDays: sanitizePositiveInt(normalized.directDelivery?.leadTimeDays, 1),
       cutoffTime: resolveCutoffTime(normalized.directDelivery?.cutoffTime),
-      pricingRules: Array.isArray(normalized.directDelivery?.pricingRules)
-        ? normalized.directDelivery.pricingRules.map((rule) => ({
-            id: toStr(rule.id),
-            label: sanitizeText(rule.label),
-            minDistanceKm: rule.minDistanceKm == null ? null : sanitizePositiveInt(rule.minDistanceKm, 0),
-            maxDistanceKm: rule.maxDistanceKm == null ? null : sanitizePositiveInt(rule.maxDistanceKm, 0),
-            minOrderValue: rule.minOrderValue == null ? null : sanitizeMoney(rule.minOrderValue),
-            maxOrderValue: rule.maxOrderValue == null ? null : sanitizeMoney(rule.maxOrderValue),
-            fee: sanitizeMoney(rule.fee),
-            freeAboveOrderValue: rule.freeAboveOrderValue == null ? null : sanitizeMoney(rule.freeAboveOrderValue),
-            isActive: rule.isActive !== false,
-          }))
-        : [],
+      pricingRules: [
+        {
+          id: toStr(normalized.directDelivery?.pricingRules?.[0]?.id || "direct-flat"),
+          label: sanitizeText(normalized.directDelivery?.pricingRules?.[0]?.label || "Direct delivery"),
+          minDistanceKm: null,
+          maxDistanceKm: null,
+          minOrderValue: null,
+          maxOrderValue: null,
+          fee: sanitizeMoney(normalized.directDelivery?.pricingRules?.[0]?.fee),
+          freeAboveOrderValue:
+            normalized.directDelivery?.pricingRules?.[0]?.freeAboveOrderValue == null
+              ? null
+              : sanitizeMoney(normalized.directDelivery.pricingRules[0].freeAboveOrderValue),
+          isActive: normalized.directDelivery?.enabled === true,
+        },
+      ],
     },
     shippingZones: Array.isArray(normalized.shippingZones)
-      ? normalized.shippingZones.map((zone) => ({
+      ? (normalized.shippingZones.map((zone) => ({
           id: toStr(zone.id),
-          label: sanitizeText(zone.label),
-          scopeType: sanitizeText(zone.scopeType || "country"),
-          country: normalizeSupportedCountryLabel(zone.country, ""),
-          region: sanitizeText(zone.region),
-          city: sanitizeText(zone.city),
-          postalCodes: Array.isArray(zone.postalCodes) ? zone.postalCodes.map((code) => sanitizeText(code)).filter(Boolean) : [],
+          label: sanitizeText(zone.label || zone.country),
+          scopeType: "country",
+          country: sanitizeText(zone.country),
+          region: "",
+          city: "",
+          postalCodes: [],
           leadTimeDays: sanitizePositiveInt(zone.leadTimeDays, 2),
           cutoffTime: resolveCutoffTime(zone.cutoffTime),
-          pricingRules: Array.isArray(zone.pricingRules)
-            ? zone.pricingRules.map((rule) => ({
-                id: toStr(rule.id),
-                label: sanitizeText(rule.label),
-                minDistanceKm: rule.minDistanceKm == null ? null : sanitizePositiveInt(rule.minDistanceKm, 0),
-                maxDistanceKm: rule.maxDistanceKm == null ? null : sanitizePositiveInt(rule.maxDistanceKm, 0),
-                minOrderValue: rule.minOrderValue == null ? null : sanitizeMoney(rule.minOrderValue),
-                maxOrderValue: rule.maxOrderValue == null ? null : sanitizeMoney(rule.maxOrderValue),
-                fee: sanitizeMoney(rule.fee),
-                freeAboveOrderValue: rule.freeAboveOrderValue == null ? null : sanitizeMoney(rule.freeAboveOrderValue),
-                isActive: rule.isActive !== false,
-              }))
-            : [],
-          isFallback: zone.isFallback === true,
+          rateMode: "flat",
+          pricingBasis: ["per_order", "per_item", "per_kg"].includes(toStr(zone.pricingBasis || zone.pricing_basis || "per_order"))
+            ? toStr(zone.pricingBasis || zone.pricing_basis || "per_order")
+            : "per_order",
+          courierKey: "",
+          courierServiceLabel: "",
+          pricingRules: [
+            {
+              id: toStr(zone.pricingRules?.[0]?.id || `${toStr(zone.id || "zone")}-standard`),
+              label: sanitizeText(zone.pricingRules?.[0]?.label || zone.country || "Standard shipping"),
+              pricingBasis: ["per_order", "per_item", "per_kg"].includes(toStr(zone.pricingBasis || zone.pricing_basis || "per_order"))
+                ? toStr(zone.pricingBasis || zone.pricing_basis || "per_order")
+                : "per_order",
+              minDistanceKm: null,
+              maxDistanceKm: null,
+              minOrderValue: null,
+              maxOrderValue: null,
+              fee: sanitizeMoney(zone.pricingRules?.[0]?.fee),
+              freeAboveOrderValue:
+                zone.pricingRules?.[0]?.freeAboveOrderValue == null
+                  ? null
+                  : sanitizeMoney(zone.pricingRules[0].freeAboveOrderValue),
+              isActive: zone.isActive !== false,
+            },
+          ],
+          isFallback: false,
           isActive: zone.isActive !== false,
         }))
+          .filter((zone) => zone.country))
       : [],
     pickup: {
       enabled: normalized.pickup?.enabled === true,
       leadTimeDays: sanitizePositiveInt(normalized.pickup?.leadTimeDays, 0),
     },
     notes: sanitizeLongText(normalized.notes || ""),
+  };
+}
+
+async function enforceSellerWeightShippingRequirements(db, sellerSlug, deliveryProfile) {
+  if (!sellerSlug || !sellerHasWeightBasedShipping(deliveryProfile)) {
+    return { hasWeightBasedShipping: false, missingWeightCount: 0, affectedTitles: [], deactivatedCount: 0 };
+  }
+
+  const hasLocalFallback = deliveryProfile?.directDelivery?.enabled === true;
+  const snap = await db.collection("products_v2").where("product.sellerSlug", "==", sellerSlug).get();
+  const affectedTitles = [];
+  let deactivatedCount = 0;
+  const writes = [];
+
+  for (const docSnap of snap.docs) {
+    const product = docSnap.data() || {};
+    const issues = collectProductWeightRequirementIssues(product);
+    if (!issues.includes("Variant weight")) continue;
+    affectedTitles.push(toStr(product?.product?.title || docSnap.id));
+    if (!hasLocalFallback && product?.placement?.isActive === true) {
+      deactivatedCount += 1;
+      writes.push(
+        docSnap.ref.set(
+          {
+            placement: {
+              ...(product?.placement || {}),
+              isActive: false,
+            },
+            listing_block_reason_code: "missing_variant_weight_for_shipping",
+            listing_block_reason:
+              "This product needs variant weight details before it can be published with per-kg shipping zones.",
+            timestamps: {
+              ...(product?.timestamps || {}),
+              updatedAt: new Date(),
+            },
+          },
+          { merge: true },
+        ),
+      );
+    }
+  }
+
+  if (writes.length) await Promise.all(writes);
+
+  return {
+    hasWeightBasedShipping: true,
+    missingWeightCount: affectedTitles.length,
+    affectedTitles: affectedTitles.slice(0, 8),
+    deactivatedCount,
   };
 }
 
@@ -314,6 +375,7 @@ export async function POST(req) {
       vendorDescription || currentSeller.vendorDescription || currentSeller.description || "",
     );
     const sellerCode = ensureSellerCode(currentSeller.sellerCode, owner.id);
+    const shippingWeightRequirements = await enforceSellerWeightShippingRequirements(db, sellerSlug, deliveryProfile);
 
     await db.collection("users").doc(owner.id).update({
       "account.accountName": nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
@@ -350,6 +412,7 @@ export async function POST(req) {
       },
       branding,
       deliveryProfile,
+      shippingWeightRequirements,
       payoutProfile,
       payoutProvider,
       businessDetails,

@@ -13,6 +13,8 @@ import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { buildPlatformOrderDocument } from "@/lib/orders/platform-order";
+import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
+import { resolveDeliveryQuote } from "@/lib/shipping/rating";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -28,6 +30,41 @@ const err = (status, title, message, extra = {}) =>
 const now = () => new Date().toISOString();
 const VAT_RATE = 0.15;
 const r2 = v => normalizeMoneyAmount(Number(v) || 0);
+
+function buildDeliveryOwnershipMeta(resolved = null) {
+  const kind = String(resolved?.kind || "").trim().toLowerCase();
+  if (kind === "shipping") {
+    return {
+      delivery_owner: "seller",
+      tracking_owner: "seller",
+      tracking_mode: "courier",
+      rate_mode: "flat",
+      courier_key: null,
+      courier_carrier: null,
+      courier_service: null,
+    };
+  }
+  if (kind === "direct_delivery") {
+    return {
+      delivery_owner: "seller",
+      tracking_owner: "seller",
+      tracking_mode: "direct",
+      rate_mode: "seller_direct",
+      courier_key: null,
+      courier_carrier: null,
+      courier_service: null,
+    };
+  }
+  return {
+    delivery_owner: "seller",
+    tracking_owner: "seller",
+    tracking_mode: "hidden",
+    rate_mode: "manual",
+    courier_key: null,
+    courier_carrier: null,
+    courier_service: null,
+  };
+}
 
 function buildShopperArea(address = null) {
   if (!address || typeof address !== "object") return null;
@@ -316,6 +353,139 @@ function getLineQty(item) {
   return Math.max(0, Number(item?.quantity || 0));
 }
 
+function computeLineFinalIncl(item) {
+  const lineTotal = Number(item?.line_totals?.final_incl);
+  if (Number.isFinite(lineTotal) && lineTotal >= 0) return r2(lineTotal);
+  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+  const quantity = getLineQty(item);
+  const activeSale = Boolean(variant?.sale?.is_on_sale) && Number(variant?.sale?.discount_percent || 0) > 0;
+  const saleIncl = Number(variant?.sale?.sale_price_incl);
+  const regularIncl = Number(variant?.pricing?.selling_price_incl);
+  const unitIncl = activeSale && Number.isFinite(saleIncl) && saleIncl > 0
+    ? saleIncl
+    : Number.isFinite(regularIncl) && regularIncl > 0
+      ? regularIncl
+      : 0;
+  return r2(unitIncl * quantity);
+}
+
+function collectLineShipmentParcels(item) {
+  const parcel = buildShipmentParcelFromVariant(item?.selected_variant_snapshot || item?.selected_variant || item?.variant || null);
+  const quantity = getLineQty(item);
+  if (!parcel || quantity <= 0) return [];
+  return Array.from({ length: quantity }, () => parcel);
+}
+
+async function resolveLiveSellerDeliveryBreakdown({
+  items = [],
+  pickupSelections = [],
+  resolvedDeliveryAddress = null,
+}) {
+  const shopperArea = buildShopperArea(resolvedDeliveryAddress);
+  const pickupSet = new Set(
+    (Array.isArray(pickupSelections) ? pickupSelections : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  );
+  const groups = new Map();
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const product = item?.product_snapshot || item?.product || {};
+    const seller = product?.seller || {};
+    const fulfillmentMode = String(product?.fulfillment?.mode || "").trim().toLowerCase();
+    if (fulfillmentMode !== "seller") continue;
+
+    const sellerCode = String(product?.product?.sellerCode || seller?.sellerCode || "").trim();
+    const sellerSlug = String(product?.product?.sellerSlug || seller?.sellerSlug || "").trim();
+    const sellerKey = sellerCode || sellerSlug;
+    if (!sellerKey) continue;
+
+    const existing = groups.get(sellerKey) || {
+      sellerKey,
+      sellerCode,
+      sellerSlug,
+      sellerName: String(seller?.vendorName || product?.product?.vendorName || "Seller").trim(),
+      sellerBaseLocation: String(seller?.baseLocation || "").trim(),
+      subtotalIncl: 0,
+      deliveryProfile: seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : null,
+      parcels: [],
+    };
+    existing.subtotalIncl = r2(existing.subtotalIncl + computeLineFinalIncl(item));
+    existing.parcels.push(...collectLineShipmentParcels(item));
+    groups.set(sellerKey, existing);
+  }
+
+  const breakdown = [];
+  for (const group of groups.values()) {
+    let profile = group.deliveryProfile;
+    let sellerBaseLocation = group.sellerBaseLocation;
+
+    if (!profile) {
+      const ownerDoc =
+        (group.sellerCode ? await findSellerOwnerByCode(group.sellerCode) : null) ??
+        (group.sellerSlug ? await findSellerOwnerBySlug(group.sellerSlug) : null);
+      const sellerData = ownerDoc?.data?.seller && typeof ownerDoc.data.seller === "object" ? ownerDoc.data.seller : {};
+      profile = sellerData?.deliveryProfile && typeof sellerData.deliveryProfile === "object" ? sellerData.deliveryProfile : {};
+      sellerBaseLocation = sellerBaseLocation || String(sellerData?.baseLocation || "").trim();
+    }
+
+    if (pickupSet.has(group.sellerKey) && profile?.pickup?.enabled === true) {
+      breakdown.push({
+        seller_key: group.sellerKey,
+        seller_name: group.sellerName,
+        label: "Collection from seller",
+        applicable: true,
+        delivery_type: "collection",
+        lead_time_days: profile?.pickup?.leadTimeDays ?? null,
+        matched_rule_id: null,
+        matched_rule_label: "pickup",
+        amount_incl: 0,
+        amount_excl: 0,
+        currency: "ZAR",
+        delivery_owner: "seller",
+        tracking_owner: "seller",
+        tracking_mode: "hidden",
+        rate_mode: "collection",
+      });
+      continue;
+    }
+
+    const resolved = await resolveDeliveryQuote({
+      profile: profile || {},
+      sellerBaseLocation,
+      shopperArea,
+      subtotalIncl: group.subtotalIncl,
+      parcels: group.parcels,
+      currency: "ZAR",
+    });
+    const amount = r2(Number(resolved?.amountIncl || 0));
+    breakdown.push({
+      seller_key: group.sellerKey,
+      seller_name: group.sellerName,
+      label: String(resolved?.label || "Seller delivery unavailable for this address"),
+      applicable: resolved?.available === true,
+      delivery_type: resolved?.kind || "unavailable",
+      lead_time_days: resolved?.leadTimeDays ?? null,
+      matched_rule_id: resolved?.matchedRule?.id || null,
+      matched_rule_label: resolved?.matchedRule?.label || null,
+      amount_incl: amount,
+      amount_excl: amount,
+      currency: "ZAR",
+      reason: Array.isArray(resolved?.unavailableReasons) ? resolved.unavailableReasons : [],
+      distance_km: Number.isFinite(Number(resolved?.distanceKm)) ? Number(resolved.distanceKm) : null,
+      shipment_summary: resolved?.shipmentSummary || null,
+      ...buildDeliveryOwnershipMeta(resolved),
+    });
+  }
+
+  const totalIncl = r2(breakdown.reduce((sum, entry) => sum + r2(entry?.amount_incl || 0), 0));
+  return {
+    total_incl: totalIncl,
+    total_excl: totalIncl,
+    breakdown,
+  };
+}
+
 function getUserEmail(user = {}) {
   return (
     String(user?.email || "").trim() ||
@@ -493,8 +663,13 @@ export async function POST(req) {
       return err(400, "Empty Cart", "Cannot create order from empty cart.");
     }
 
-    const sellerDeliveryBreakdown = Array.isArray(cart?.totals?.seller_delivery_breakdown)
-      ? cart.totals.seller_delivery_breakdown
+    const liveSellerDelivery = await resolveLiveSellerDeliveryBreakdown({
+      items: Array.isArray(cart?.items) ? cart.items : [],
+      pickupSelections,
+      resolvedDeliveryAddress,
+    });
+    const sellerDeliveryBreakdown = Array.isArray(liveSellerDelivery?.breakdown)
+      ? liveSellerDelivery.breakdown
       : [];
     const unavailableSellerDeliveries = sellerDeliveryBreakdown.filter(
       (entry) => entry?.applicable === false && String(entry?.delivery_type || "").trim().toLowerCase() === "unavailable",
@@ -567,6 +742,13 @@ export async function POST(req) {
         cart?.totals?.seller_delivery_fee_excl ??
         0
     );
+    const liveSellerDeliveryAmount = r2(
+      liveSellerDelivery?.total_incl ??
+        cart?.totals?.seller_delivery_fee_incl ??
+        cart?.totals?.seller_delivery_fee_excl ??
+        0
+    );
+
     const deliveryFeeData = {
       amountIncl: platformDeliveryAmount,
       amountExcl: platformDeliveryAmount,
@@ -577,11 +759,31 @@ export async function POST(req) {
       durationMinutes: null,
       reason: "distance_band",
       raw: deliveryFee || null,
-      sellerAmountIncl: sellerDeliveryAmount,
-      sellerBreakdown: Array.isArray(cart?.totals?.seller_delivery_breakdown) ? cart.totals.seller_delivery_breakdown : [],
+      sellerAmountIncl: liveSellerDeliveryAmount,
+      sellerBreakdown: sellerDeliveryBreakdown,
     };
 
     const totals = { ...(cart.totals || {}) };
+    const previousSellerDeliveryAmount = r2(
+      totals?.seller_delivery_fee_incl ??
+        totals?.seller_delivery_fee_excl ??
+        cart?.totals?.seller_delivery_fee_incl ??
+        cart?.totals?.seller_delivery_fee_excl ??
+        0
+    );
+    const sellerDeliveryDelta = r2(liveSellerDeliveryAmount - previousSellerDeliveryAmount);
+    totals.seller_delivery_fee_excl = liveSellerDeliveryAmount;
+    totals.seller_delivery_fee_incl = liveSellerDeliveryAmount;
+    totals.seller_delivery_breakdown = sellerDeliveryBreakdown;
+    if (Number.isFinite(Number(totals?.final_excl))) {
+      totals.final_excl = r2(Number(totals.final_excl) + sellerDeliveryDelta);
+    }
+    if (Number.isFinite(Number(totals?.final_incl))) {
+      totals.final_incl = r2(Number(totals.final_incl) + sellerDeliveryDelta);
+    }
+    if (Number.isFinite(Number(totals?.final_payable_incl))) {
+      totals.final_payable_incl = r2(Math.max(Number(totals.final_payable_incl) + sellerDeliveryDelta, 0));
+    }
     const finalInclForValidation = r2(
       totals?.final_incl ??
         cart?.totals?.final_incl ??

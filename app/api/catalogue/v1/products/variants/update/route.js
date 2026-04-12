@@ -13,6 +13,8 @@ import {
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
 import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
+import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { buildShippingVisibilityPatch } from "@/lib/seller/shipping-product-visibility";
 
 /* ---------- helpers ---------- */
 const ok = (p = {}, s = 200) =>
@@ -167,6 +169,26 @@ function hasVariantReviewSensitiveChanges(patch = {}) {
 
   if ("variant_id" in patch) return true;
   if ("label" in patch) return true;
+  if ("size" in patch) return true;
+  if ("shade" in patch) return true;
+  if ("scent" in patch) return true;
+  if ("skinType" in patch) return true;
+  if ("hairType" in patch) return true;
+  if ("flavor" in patch) return true;
+  if ("abv" in patch) return true;
+  if ("containerType" in patch) return true;
+  if ("storageCapacity" in patch) return true;
+  if ("memoryRam" in patch) return true;
+  if ("connectivity" in patch) return true;
+  if ("compatibility" in patch) return true;
+  if ("sizeSystem" in patch) return true;
+  if ("material" in patch) return true;
+  if ("ringSize" in patch) return true;
+  if ("strapLength" in patch) return true;
+  if ("bookFormat" in patch) return true;
+  if ("language" in patch) return true;
+  if ("ageRange" in patch) return true;
+  if ("modelFitment" in patch) return true;
   if ("sku" in patch) return true;
   if ("barcode" in patch) return true;
   if ("barcodeImageUrl" in patch) return true;
@@ -235,6 +257,26 @@ function sanitizePatch(patch) {
 
   if ("sku" in patch) out.sku = toStr(patch.sku);
   if ("label" in patch) out.label = toStr(patch.label);
+  if ("size" in patch) out.size = toStr(patch.size, null) || null;
+  if ("shade" in patch) out.shade = toStr(patch.shade, null) || null;
+  if ("scent" in patch) out.scent = toStr(patch.scent, null) || null;
+  if ("skinType" in patch) out.skinType = toStr(patch.skinType, null) || null;
+  if ("hairType" in patch) out.hairType = toStr(patch.hairType, null) || null;
+  if ("flavor" in patch) out.flavor = toStr(patch.flavor, null) || null;
+  if ("abv" in patch) out.abv = toStr(patch.abv, null) || null;
+  if ("containerType" in patch) out.containerType = toStr(patch.containerType, null) || null;
+  if ("storageCapacity" in patch) out.storageCapacity = toStr(patch.storageCapacity, null) || null;
+  if ("memoryRam" in patch) out.memoryRam = toStr(patch.memoryRam, null) || null;
+  if ("connectivity" in patch) out.connectivity = toStr(patch.connectivity, null) || null;
+  if ("compatibility" in patch) out.compatibility = toStr(patch.compatibility, null) || null;
+  if ("sizeSystem" in patch) out.sizeSystem = toStr(patch.sizeSystem, null) || null;
+  if ("material" in patch) out.material = toStr(patch.material, null) || null;
+  if ("ringSize" in patch) out.ringSize = toStr(patch.ringSize, null) || null;
+  if ("strapLength" in patch) out.strapLength = toStr(patch.strapLength, null) || null;
+  if ("bookFormat" in patch) out.bookFormat = toStr(patch.bookFormat, null) || null;
+  if ("language" in patch) out.language = toStr(patch.language, null) || null;
+  if ("ageRange" in patch) out.ageRange = toStr(patch.ageRange, null) || null;
+  if ("modelFitment" in patch) out.modelFitment = toStr(patch.modelFitment, null) || null;
   if ("barcode" in patch) out.barcode = toStr(patch.barcode);
   if ("barcodeImageUrl" in patch)
     out.barcodeImageUrl =
@@ -546,10 +588,22 @@ export async function POST(req) {
     }
 
     updated.logistics = {
+      parcel_preset: toStr(patch?.logistics?.parcelPreset ?? patch?.logistics?.parcel_preset ?? updated?.logistics?.parcel_preset, null) || null,
+      shipping_class: toStr(patch?.logistics?.shippingClass ?? patch?.logistics?.shipping_class ?? updated?.logistics?.shipping_class, null) || null,
       weight_kg: logistics.weightKg,
       length_cm: logistics.lengthCm,
       width_cm: logistics.widthCm,
       height_cm: logistics.heightCm,
+      volumetric_weight_kg: Number.isFinite(+patch?.logistics?.volumetricWeightKg)
+        ? money2(patch.logistics.volumetricWeightKg)
+        : (Number.isFinite(+patch?.logistics?.volumetric_weight_kg)
+          ? money2(patch.logistics.volumetric_weight_kg)
+          : (Number.isFinite(+updated?.logistics?.volumetric_weight_kg) ? money2(updated.logistics.volumetric_weight_kg) : null)),
+      billable_weight_kg: Number.isFinite(+patch?.logistics?.billableWeightKg)
+        ? money2(patch.logistics.billableWeightKg)
+        : (Number.isFinite(+patch?.logistics?.billable_weight_kg)
+          ? money2(patch.logistics.billable_weight_kg)
+          : (Number.isFinite(+updated?.logistics?.billable_weight_kg) ? money2(updated.logistics.billable_weight_kg) : null)),
       monthly_sales_30d: logistics.monthlySales30d,
       stock_qty: getVariantInventoryTotal({ inventory: incomingInventory }),
       warehouse_id: logistics.warehouseId,
@@ -632,6 +686,31 @@ export async function POST(req) {
       },
       "timestamps.updatedAt": FieldValue.serverTimestamp(),
     };
+    const sellerIdentifier = toStr(
+      docData?.product?.sellerSlug ||
+      docData?.seller?.sellerSlug ||
+      docData?.product?.sellerCode ||
+      docData?.seller?.sellerCode
+    );
+    const sellerOwner = sellerIdentifier ? await findSellerOwnerByIdentifier(sellerIdentifier) : null;
+    const sellerDeliveryProfile =
+      sellerOwner?.data?.seller?.deliveryProfile && typeof sellerOwner.data.seller.deliveryProfile === "object"
+        ? sellerOwner.data.seller.deliveryProfile
+        : {};
+    const visibilityPatch = buildShippingVisibilityPatch({
+      currentProduct: docData,
+      nextProduct: {
+        ...docData,
+        variants: list,
+        placement: updatePayload.placement,
+      },
+      sellerDeliveryProfile,
+    });
+    if (visibilityPatch) {
+      updatePayload.placement = visibilityPatch.placement;
+      updatePayload.listing_block_reason_code = visibilityPatch.listing_block_reason_code;
+      updatePayload.listing_block_reason_message = visibilityPatch.listing_block_reason_message;
+    }
     if (reviewSensitiveVariantChange && preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(docData)) {
       updatePayload.live_snapshot = docData;
     }

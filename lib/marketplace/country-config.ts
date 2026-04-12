@@ -4,7 +4,7 @@ type CountryEntry = {
   currency: string;
 };
 
-const COUNTRY_CATALOG: CountryEntry[] = [
+export const COUNTRY_CATALOG: CountryEntry[] = [
   { code: "AE", label: "United Arab Emirates", currency: "AED" },
   { code: "AG", label: "Antigua and Barbuda", currency: "XCD" },
   { code: "AL", label: "Albania", currency: "ALL" },
@@ -95,6 +95,11 @@ function pickCountries(codes: string[]) {
   return COUNTRY_CATALOG.filter((entry) => codeSet.has(entry.code));
 }
 
+function pickCountriesByLabel(labels: string[]) {
+  const normalizedLabels = new Set(labels.map((value) => value.trim().toLowerCase()).filter(Boolean));
+  return COUNTRY_CATALOG.filter((entry) => normalizedLabels.has(entry.label.trim().toLowerCase()));
+}
+
 export const SUPPORTED_SELLER_PAYOUT_COUNTRIES = pickCountries([
   "AE", "AG", "AL", "AM", "AT", "AU", "BE", "BH", "BG", "BN", "BR", "BW",
   "CA", "CH", "HR", "CZ", "DE", "DK", "DZ", "EE", "ES", "FI", "FR", "GB",
@@ -114,6 +119,60 @@ export const SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES = pickCountries([
 export const SUPPORTED_GOOGLE_MERCHANT_COUNTRIES = pickCountries(["ZA"]);
 
 export const SUPPORTED_PAYOUT_COUNTRIES = SUPPORTED_SELLER_PAYOUT_COUNTRIES;
+
+export const STRIPE_SUPPORTED_SHOPPER_COUNTRIES = pickCountriesByLabel([
+  "Australia",
+  "Austria",
+  "Belgium",
+  "Brazil",
+  "Bulgaria",
+  "Canada",
+  "Côte d'Ivoire",
+  "Croatia",
+  "Cyprus",
+  "Czech Republic",
+  "Denmark",
+  "Estonia",
+  "Finland",
+  "France",
+  "Germany",
+  "Ghana",
+  "Gibraltar",
+  "Greece",
+  "Hong Kong",
+  "Hungary",
+  "India",
+  "Indonesia",
+  "Ireland",
+  "Italy",
+  "Japan",
+  "Kenya",
+  "Latvia",
+  "Liechtenstein",
+  "Lithuania",
+  "Luxembourg",
+  "Malaysia",
+  "Malta",
+  "Mexico",
+  "Netherlands",
+  "New Zealand",
+  "Nigeria",
+  "Norway",
+  "Poland",
+  "Portugal",
+  "Romania",
+  "Singapore",
+  "Slovakia",
+  "Slovenia",
+  "South Africa",
+  "Spain",
+  "Sweden",
+  "Switzerland",
+  "Thailand",
+  "United Arab Emirates",
+  "United Kingdom",
+  "United States",
+]);
 
 const CURRENCY_LABELS: Record<string, string> = {
   AED: "UAE dirham",

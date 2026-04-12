@@ -38,6 +38,9 @@ type SellerOrderSlice = {
     destination?: string;
     instructions?: string;
     trackingMode?: string;
+    trackingOwner?: string;
+    courierService?: string;
+    courierCarrier?: string;
     cutoffTime?: string;
   };
   fulfilmentDeadline?: {
@@ -138,7 +141,7 @@ type LatePopoverState = {
 
 type SellerFulfillmentAction = "processing" | "dispatched" | "delivered" | "cancelled";
 type SellerMetricPeriod = "today" | "7d" | "30d";
-type SellerViewFilter = "all" | "unfulfilled" | "unpaid" | "open" | "fulfilled" | "cancelled" | "local_delivery";
+type SellerViewFilter = "all" | "unfulfilled" | "unpaid" | "open" | "fulfilled" | "cancelled" | "refunded" | "local_delivery";
 
 type SellerOrdersWorkspaceProps = {
   sellerSlug?: string;
@@ -298,14 +301,20 @@ function isCourierTracked(item?: SellerOrderSlice | null) {
   return toStr(item?.deliveryOption?.trackingMode).toLowerCase() === "courier";
 }
 
+function isPlatformTracked(item?: SellerOrderSlice | null) {
+  return toStr(item?.deliveryOption?.trackingMode).toLowerCase() === "platform";
+}
+
 function getSellerActionLabels(item: SellerOrderSlice, nextStatus: SellerFulfillmentAction): SellerActionLabels {
   if (nextStatus === "processing") {
-    return { primary: isCourierTracked(item) ? "Prepare shipment" : "Prepare delivery" };
+    return { primary: isCourierTracked(item) || isPlatformTracked(item) ? "Prepare shipment" : "Prepare delivery" };
   }
   if (nextStatus === "dispatched") {
     return {
-      primary: isCourierTracked(item) ? "With courier" : "Out for delivery",
-      secondary: isCourierTracked(item)
+      primary: isPlatformTracked(item) ? "Ready for Piessang courier" : isCourierTracked(item) ? "With courier" : "Out for delivery",
+      secondary: isPlatformTracked(item)
+        ? "Piessang will attach the courier tracking and keep the customer updated by email and SMS."
+        : isCourierTracked(item)
         ? "Add courier and tracking details before notifying the customer."
         : "Mark this order as on the way to the customer.",
     };
@@ -879,6 +888,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                 orderStatus: nextStatus === "delivered" ? "completed" : nextStatus,
                 fulfillmentStatus: nextStatus === "delivered" ? "delivered" : nextStatus,
                 deliveryProgress: payload?.deliveryProgress || entry.deliveryProgress,
+                deliveryOption: entry.deliveryOption,
                 lines: {
                   selfFulfilment: entry.lines.selfFulfilment.map((line) => ({
                     ...line,
@@ -887,6 +897,8 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                       status: nextStatus,
                       label: statusLabelText(nextStatus),
                       delivered: nextStatus === "delivered",
+                      courierName: trackingMode === "courier" ? draft.courierName : line?.fulfillment_tracking?.courierName,
+                      trackingNumber: trackingMode === "courier" ? draft.trackingNumber : line?.fulfillment_tracking?.trackingNumber,
                       cancellationReason: nextStatus === "cancelled" ? draft.cancellationReason : line?.fulfillment_tracking?.cancellationReason,
                     },
                   })),
@@ -1036,6 +1048,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       if (viewFilter === "open" && ["completed", "cancelled", "delivered"].includes(orderStatus)) return false;
       if (viewFilter === "fulfilled" && fulfillmentStatus !== "delivered" && !item.deliveryProgress?.isComplete) return false;
       if (viewFilter === "cancelled" && orderStatus !== "cancelled" && toStr(item.cancellation?.status).toLowerCase() !== "cancelled") return false;
+      if (viewFilter === "refunded" && paymentStatus !== "refunded" && paymentStatus !== "partial_refund") return false;
       if (viewFilter === "local_delivery" && !["direct_delivery", "collection"].includes(deliveryType)) return false;
 
       if (!needle) return true;
@@ -1452,7 +1465,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               </div>
 
               <div className="mt-5 rounded-[18px] border border-[#dbeafe] bg-[#eff6ff] px-4 py-3 text-[13px] text-[#1e3a8a]">
-                The customer will receive this delivery update as soon as you save it.
+                The customer will receive this delivery update by email and SMS as soon as you save it.
               </div>
 
               <div className="mt-5 grid gap-4">
@@ -1478,16 +1491,29 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                     </label>
                   </>
                 ) : null}
+                {isPlatformTracked(dispatchModalItem) ? (
+                  <div className="rounded-[16px] border border-[#e5e7eb] bg-[#fafafa] px-4 py-4 text-[13px] text-[#57636c]">
+                    <p className="font-semibold text-[#202020]">Piessang-managed courier tracking</p>
+                    <p className="mt-2">
+                      Save this update once the parcel is packed and ready. Piessang will attach the courier tracking number, fire all customer notifications, and keep the order updated with courier events automatically.
+                    </p>
+                    {(dispatchModalItem.deliveryOption?.courierCarrier || dispatchModalItem.deliveryOption?.courierService) ? (
+                      <p className="mt-2 text-[#202020]">
+                        {[toStr(dispatchModalItem.deliveryOption?.courierCarrier), toStr(dispatchModalItem.deliveryOption?.courierService)].filter(Boolean).join(" • ")}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <label className="block">
                   <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                    {isCourierTracked(dispatchModalItem) ? "Dispatch note" : "Delivery note"}
+                    {isCourierTracked(dispatchModalItem) || isPlatformTracked(dispatchModalItem) ? "Dispatch note" : "Delivery note"}
                   </span>
                   <textarea
                     value={getDraft(dispatchModalItem.orderId).notes}
                     onChange={(event) => updateDraft(dispatchModalItem.orderId, { notes: event.target.value })}
                     rows={4}
                     className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-3 text-[14px] outline-none"
-                    placeholder={isCourierTracked(dispatchModalItem) ? "Optional note for this courier handoff." : "Optional note for this delivery update."}
+                    placeholder={isCourierTracked(dispatchModalItem) || isPlatformTracked(dispatchModalItem) ? "Optional note for this courier handoff." : "Optional note for this delivery update."}
                   />
                 </label>
               </div>
@@ -1673,7 +1699,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
 
       <section className="rounded-[24px] border border-black/6 bg-white shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
         <div className="border-b border-black/6 px-4 py-4">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
             {([
               { id: "all" as const, label: "All" },
               { id: "unfulfilled" as const, label: "Unfulfilled" },
@@ -1681,13 +1707,14 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               { id: "open" as const, label: "Open" },
               { id: "fulfilled" as const, label: "Fulfilled" },
               { id: "cancelled" as const, label: "Cancelled" },
+              { id: "refunded" as const, label: "Refunded" },
               { id: "local_delivery" as const, label: "Local Delivery" },
             ]).map((filter) => (
               <button
                 key={filter.id}
                 type="button"
                 onClick={() => setViewFilter(filter.id)}
-                className={`rounded-[12px] px-4 py-2 text-[14px] font-semibold ${viewFilter === filter.id ? "bg-[#f1f3f5] text-[#202020]" : "text-[#57636c] hover:bg-[#fafafa]"}`}
+                className={`rounded-[12px] px-4 py-2 text-left text-[14px] font-semibold sm:text-center ${viewFilter === filter.id ? "bg-[#f1f3f5] text-[#202020]" : "text-[#57636c] hover:bg-[#fafafa]"}`}
               >
                 {filter.label}
               </button>

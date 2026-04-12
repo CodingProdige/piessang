@@ -7,6 +7,7 @@ import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
 import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
+import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
 
 type ProductItem = {
   id: string;
@@ -178,6 +179,7 @@ function isRowEditIgnored(target: EventTarget | null) {
 export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateProduct, onEditProduct, onOpenSettings }: SellerProductsWorkspaceProps) {
   const [items, setItems] = useState<ProductItem[]>([]);
   const [deliverySettingsReady, setDeliverySettingsReady] = useState(true);
+  const [weightBasedShippingRequired, setWeightBasedShippingRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -244,9 +246,13 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
         if (!mounted) return;
         const profile = payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {};
         setDeliverySettingsReady(hasSellerDeliverySettings(profile));
+        setWeightBasedShippingRequired(sellerHasWeightBasedShipping(profile));
       })
       .catch(() => {
-        if (mounted) setDeliverySettingsReady(false);
+        if (mounted) {
+          setDeliverySettingsReady(false);
+          setWeightBasedShippingRequired(false);
+        }
       });
     return () => {
       mounted = false;
@@ -312,6 +318,10 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
     () => items.filter((item) => item?.data?.listing_block_reason_code === "missing_delivery_settings").length,
     [items],
   );
+  const hiddenByWeightShippingCount = useMemo(
+    () => items.filter((item) => item?.data?.listing_block_reason_code === "missing_variant_weight_for_shipping").length,
+    [items],
+  );
 
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedIds.includes(row.id)),
@@ -355,6 +365,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
     if (variants.length === 0) reasons.push("At least one variant");
     if (fulfillmentMode === "seller") {
       if (!deliverySettingsReady) reasons.push("Delivery settings");
+      if (weightBasedShippingRequired && collectProductWeightRequirementIssues(item.data).includes("Variant weight")) reasons.push("Variant weight");
     }
     return reasons;
   }
@@ -577,7 +588,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Delivery settings required</p>
               <p className="mt-1 leading-[1.6] text-[#57636c]">
-                You have self-fulfilled products. Add your direct delivery, shipping, or pickup settings before submitting them for review.
+                You have self-fulfilled products. Add your local delivery, country shipping, or pickup settings before submitting them for review.
                 {hiddenByDeliverySettingsCount > 0 ? ` ${hiddenByDeliverySettingsCount} product${hiddenByDeliverySettingsCount === 1 ? " is" : "s are"} currently hidden from the storefront until this is fixed.` : ""}
               </p>
             </div>
@@ -587,6 +598,26 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
               className="inline-flex min-h-9 items-center justify-center rounded-[8px] bg-[#202020] px-4 py-2 text-[12px] font-semibold text-white"
             >
               Delivery settings
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {hiddenByWeightShippingCount > 0 ? (
+        <section className="rounded-[8px] border border-[rgba(245,158,11,0.18)] bg-[rgba(245,158,11,0.08)] px-4 py-4 text-[13px] text-[#202020]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b45309]">Variant weights required</p>
+              <p className="mt-1 leading-[1.6] text-[#57636c]">
+                {hiddenByWeightShippingCount} product{hiddenByWeightShippingCount === 1 ? " is" : "s are"} hidden from the storefront because your per-kg shipping zones need variant weights and there is no local-delivery fallback for those listings.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onOpenSettings?.()}
+              className="inline-flex min-h-9 items-center justify-center rounded-[8px] bg-[#202020] px-4 py-2 text-[12px] font-semibold text-white"
+            >
+              Shipping settings
             </button>
           </div>
         </section>
@@ -855,6 +886,15 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                       Hidden from storefront
                                     </span>
                                   ) : null}
+                                  {item.data?.listing_block_reason_code === "missing_variant_weight_for_shipping" ? (
+                                    <span
+                                      className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(245,158,11,0.12)] px-2 py-1 text-[10px] font-semibold text-[#b45309]"
+                                      title={item.data?.listing_block_reason_message || "This listing is hidden until every variant has a weight required by your per-kg shipping zones."}
+                                    >
+                                      <WarningIcon className="h-3.5 w-3.5" />
+                                      Weight required
+                                    </span>
+                                  ) : null}
                                   <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">
                                     {product.brandTitle || grouping.brand || "Brand not set"} • {product.vendorName || "Piessang"}
                                   </p>
@@ -1051,6 +1091,15 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                 >
                                   <WarningIcon className="h-3.5 w-3.5" />
                                   Hidden from storefront
+                                </div>
+                              ) : null}
+                              {item.data?.listing_block_reason_code === "missing_variant_weight_for_shipping" ? (
+                                <div
+                                  className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(245,158,11,0.12)] px-2 py-1 text-[10px] font-semibold text-[#b45309]"
+                                  title={item.data?.listing_block_reason_message || "This listing is hidden until every variant has a weight required by your per-kg shipping zones."}
+                                >
+                                  <WarningIcon className="h-3.5 w-3.5" />
+                                  Weight required
                                 </div>
                               ) : null}
                               <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">

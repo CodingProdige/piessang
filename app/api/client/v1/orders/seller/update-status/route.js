@@ -9,6 +9,7 @@ import { canAccessSellerSettlement, isSystemAdminUser } from "@/lib/seller/settl
 import { buildOrderDeliveryProgress, deriveAggregateOrderStatuses, enrichOrderItemFulfillment } from "@/lib/orders/fulfillment-progress";
 import { canTransitionSellerFulfillment, getSellerFulfillmentStatusLabel, normalizeSellerFulfillmentStatus, requiresCancellationReason } from "@/lib/orders/status-lifecycle";
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
+import { sendTrackingUpdateNotifications } from "@/lib/orders/tracking-notifications";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
@@ -88,91 +89,6 @@ function getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug) {
   );
 }
 
-function buildCustomerUpdateCopy({ deliveryType, status, courierName, trackingNumber, sellerVendorName, cancellationReason }) {
-  const normalizedDeliveryType = toLower(deliveryType);
-  const normalizedStatus = normalizeSellerFulfillmentStatus(status);
-  const vendorLabel = toStr(sellerVendorName || "your seller");
-
-  if (normalizedStatus === "cancelled") {
-    const reasonText = toStr(cancellationReason);
-    return {
-      statusLabel: "Cancelled",
-      statusHeadline: "Your order has been cancelled",
-      statusMessage: `${vendorLabel} cancelled this order${reasonText ? ` for the following reason: ${reasonText}` : "."}`,
-    };
-  }
-
-  if (normalizedDeliveryType === "collection") {
-    if (normalizedStatus === "processing") {
-      return {
-        statusLabel: "Preparing for collection",
-        statusHeadline: "Your order is being prepared for collection",
-        statusMessage: `${vendorLabel} is preparing your items for pickup.`,
-      };
-    }
-    if (normalizedStatus === "delivered") {
-      return {
-        statusLabel: "Collected",
-        statusHeadline: "Your collection is complete",
-        statusMessage: `Your items from ${vendorLabel} have been handed over to you.`,
-      };
-    }
-    return {
-      statusLabel: "Ready for collection",
-      statusHeadline: "Your order is ready for collection",
-      statusMessage: `${vendorLabel} has marked your items as ready for pickup.`,
-    };
-  }
-
-  if (normalizedDeliveryType === "direct_delivery") {
-    if (normalizedStatus === "processing") {
-      return {
-        statusLabel: "Preparing for delivery",
-        statusHeadline: "Your order is being prepared for delivery",
-        statusMessage: `${vendorLabel} is preparing your items for direct delivery.`,
-      };
-    }
-    if (normalizedStatus === "dispatched") {
-      return {
-        statusLabel: "Out for direct delivery",
-        statusHeadline: "Your order is out for delivery",
-        statusMessage: `${vendorLabel} is on the way with your order.`,
-      };
-    }
-    return {
-      statusLabel: getSellerFulfillmentStatusLabel(status),
-      statusHeadline: "Your order has a delivery update",
-      statusMessage: `${vendorLabel} updated the delivery status for your order.`,
-    };
-  }
-
-  if (normalizedDeliveryType === "shipping") {
-    if (normalizedStatus === "processing") {
-      return {
-        statusLabel: "Preparing for shipment",
-        statusHeadline: "Your order is being prepared for shipment",
-        statusMessage: `${vendorLabel} is preparing your items for courier dispatch.`,
-      };
-    }
-    if (normalizedStatus === "dispatched") {
-      const courierSummary = [courierName ? `Courier: ${courierName}.` : "", trackingNumber ? `Tracking number: ${trackingNumber}.` : ""]
-        .filter(Boolean)
-        .join(" ");
-      return {
-        statusLabel: "Shipped with courier",
-        statusHeadline: "Your order has been shipped",
-        statusMessage: `${vendorLabel} handed your order to the courier.${courierSummary ? ` ${courierSummary}` : ""}`.trim(),
-      };
-    }
-  }
-
-  return {
-    statusLabel: getSellerFulfillmentStatusLabel(status),
-    statusHeadline: "Your order has a new update",
-    statusMessage: `${vendorLabel} updated the status of your order.`,
-  };
-}
-
 async function resolveOrderId(db, orderId, orderNumber) {
   if (orderId) return orderId;
   if (!orderNumber) return null;
@@ -232,6 +148,7 @@ export async function POST(req) {
     const sourceItems = Array.isArray(order?.items) ? order.items : [];
     const touchedItems = [];
     const sellerDeliveryEntry = getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug);
+    const trackingOwner = toLower(sellerDeliveryEntry?.tracking_owner || sellerDeliveryEntry?.trackingOwner || "");
     const previousOrderStatus = toLower(order?.lifecycle?.orderStatus || order?.order?.status?.order || "");
     const cancellationStatus = toLower(order?.cancellation?.status || order?.lifecycle?.cancellationStatus || "");
     const paymentStatus = toLower(order?.payment?.status || order?.lifecycle?.paymentStatus || order?.order?.status?.payment || "");
@@ -274,6 +191,9 @@ export async function POST(req) {
       })
     ) {
       return err(409, "Invalid Status Change", `You cannot move this order from ${getSellerFulfillmentStatusLabel(currentSellerStatus)} to ${getSellerFulfillmentStatusLabel(status)}.`);
+    }
+    if (trackingOwner === "piessang" && (trackingNumber || courierName)) {
+      return err(409, "Tracking Managed By Piessang", "This shipping method is tracked by Piessang, so sellers cannot add courier details manually.");
     }
 
     const nextItems = sourceItems.map((item) => {
@@ -426,58 +346,26 @@ export async function POST(req) {
     const customerPhone = getCustomerPhone(order);
     const customerName = getCustomerName(order);
     const origin = new URL(req.url).origin;
-    const copy = buildCustomerUpdateCopy({
+    await sendTrackingUpdateNotifications({
+      origin,
+      customerEmail,
+      customerPhone,
+      customerName,
+      orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || resolvedOrderId),
       deliveryType: sellerDeliveryEntry?.delivery_type || sellerDeliveryEntry?.method || "",
       status,
       courierName: courierName || touchedItems[0]?.fulfillment_tracking?.courierName || "",
       trackingNumber: trackingNumber || touchedItems[0]?.fulfillment_tracking?.trackingNumber || "",
       sellerVendorName,
       cancellationReason,
+      itemCount: touchedItems.length,
+      items: touchedItems.map((item) => ({
+        title: toStr(item?.product_snapshot?.product?.title || item?.product_snapshot?.title || "Product"),
+        variant: toStr(item?.selected_variant_snapshot?.label || item?.selected_variant_snapshot?.variant_id || ""),
+        quantity: Number(item?.quantity || 0),
+        statusLabel: getSellerFulfillmentStatusLabel(status),
+      })),
     });
-    if (customerEmail) {
-      await fetch(`${origin}/api/client/v1/notifications/email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "order-seller-fulfillment-update",
-          to: customerEmail,
-          data: {
-            customerName,
-            orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || resolvedOrderId),
-            statusLabel: copy.statusLabel,
-            statusHeadline: copy.statusHeadline,
-            statusMessage: copy.statusMessage,
-            cancellationReason,
-            sellerVendorName,
-            itemCount: touchedItems.length,
-            items: touchedItems.map((item) => ({
-              title: toStr(item?.product_snapshot?.product?.title || item?.product_snapshot?.title || "Product"),
-              variant: toStr(item?.selected_variant_snapshot?.label || item?.selected_variant_snapshot?.variant_id || ""),
-              quantity: Number(item?.quantity || 0),
-              statusLabel: copy.statusLabel,
-            })),
-          },
-        }),
-      }).catch(() => null);
-    }
-    if (customerPhone) {
-      await fetch(`${origin}/api/client/v1/notifications/sms`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "order-seller-fulfillment-update",
-          to: customerPhone,
-          data: {
-            customerName,
-            orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || resolvedOrderId),
-            vendorName: sellerVendorName || "your seller",
-            statusLabel: copy.statusLabel,
-            statusMessage: copy.statusMessage,
-            cancellationReason,
-          },
-        }),
-      }).catch(() => null);
-    }
 
     if (status === "delivered" && currentSellerStatus !== "delivered" && customerEmail) {
       const reviewSellerSlug =

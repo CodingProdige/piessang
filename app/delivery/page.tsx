@@ -78,7 +78,7 @@ export default function DeliveryPage() {
             number="1"
             title="Scope of this policy"
             paragraphs={[
-              "1.1 This policy applies to all delivery, shipping, direct-delivery, courier, and collection arrangements made through the Piessang marketplace, whether the relevant order is fulfilled by Piessang or by an independent seller using Piessang.",
+              "1.1 This policy applies to all delivery, shipping, local-delivery, courier, and collection arrangements made through the Piessang marketplace, whether the relevant order is fulfilled by Piessang or by an independent seller using Piessang.",
               "1.2 This policy applies to customers, sellers, and seller team members to the extent that their conduct, fulfilment duties, order information, and delivery choices affect marketplace delivery performance, delivery liability, and customer support outcomes.",
               "1.3 This policy supplements, and does not replace, any mandatory legal rights that may apply under the laws governing the customer, seller, order, or delivery destination.",
             ]}
@@ -100,7 +100,7 @@ export default function DeliveryPage() {
             number="3"
             title="Delivery, shipping, and collection options"
             paragraphs={[
-              "3.1 Depending on the product, seller configuration, and destination, Piessang may present one or more of the following fulfilment paths: Piessang-managed delivery, seller direct delivery, seller-managed shipping, or customer collection.",
+              "3.1 Depending on the product, seller configuration, and destination, Piessang may present one or more of the following fulfilment paths: Piessang-managed delivery, seller local delivery, seller-managed shipping, or customer collection.",
               "3.2 The options shown on the product page, in the cart, or during checkout are determined dynamically from the fulfilment model, seller delivery settings, destination matching, and other operational conditions known to Piessang at that time.",
               "3.3 Piessang may remove, limit, or prevent a delivery or collection option where the platform determines that the destination is unsupported, seller settings are incomplete, the product is unavailable, the address is invalid, payment has not been confirmed, or the selected option is otherwise not operationally viable.",
             ]}
@@ -112,7 +112,7 @@ export default function DeliveryPage() {
             title="Delivery eligibility and customer location"
             paragraphs={[
               "4.1 Delivery eligibility depends on the customer location selected or supplied through the Piessang storefront, account settings, delivery address selection, or checkout process. Piessang may use the customer’s chosen delivery area, saved address, or other delivery-location signals to determine whether delivery is available.",
-              "4.2 Seller-managed delivery and shipping options are matched against the seller’s configured delivery origin, direct-delivery rules, shipping zones, collection availability, and any applicable delivery radius, distance band, order-value band, or location-specific rule.",
+              "4.2 Seller-managed delivery and shipping options are matched against the seller’s configured delivery origin, local-delivery radius and fee, country shipping settings, collection availability, and any applicable order-value or operational rule.",
               "4.3 It is the customer’s responsibility to ensure that the delivery location, contact details, collection preference, and any delivery notes submitted through Piessang are accurate, complete, and suitable for successful fulfilment. Piessang is not responsible for errors caused by inaccurate or incomplete customer-supplied delivery information.",
             ]}
           />
@@ -122,7 +122,7 @@ export default function DeliveryPage() {
             number="5"
             title="Delivery fees and fee calculation"
             paragraphs={[
-              "5.1 Delivery fees may differ depending on whether the order is fulfilled by Piessang or by a seller, the destination, the applicable delivery rule or shipping zone, the customer’s chosen fulfilment option, distance-based rules, order-value thresholds, and any seller-configured direct-delivery or shipping pricing bands.",
+              "5.1 Delivery fees may differ depending on whether the order is fulfilled by Piessang or by a seller, the destination, the applicable local-delivery or country-shipping setting, the customer’s chosen fulfilment option, and any seller-configured order-value or operational rule.",
               "5.2 Where a seller fulfils an order directly, Piessang may display seller-specific delivery or shipping fees separately from the item subtotal so that the customer can see which seller fee applies to which part of the order. If collection is selected for a seller’s items, the seller’s delivery fee for those collected items will ordinarily not be charged.",
               "5.3 Delivery fees shown before payment are intended to reflect the applicable fulfilment configuration at checkout. Piessang may correct obvious fee, rule, or configuration errors before final payment confirmation or where a technical or operational inconsistency is detected.",
             ]}
@@ -134,7 +134,7 @@ export default function DeliveryPage() {
             title="Delivery estimates, lead times, and order cutoff times"
             paragraphs={[
               "6.1 Delivery estimates shown on Piessang, including messaging such as expected delivery day, delivery promise wording, or order cutoff prompts, are operational estimates only and do not constitute an absolute guarantee unless mandatory law states otherwise.",
-              "6.2 Estimated timing may depend on the fulfilment owner, the seller’s configured lead time, the applicable direct-delivery rule or shipping zone, the seller’s origin timezone, any applicable order cutoff time, stock validation timing, payment confirmation, and operational availability.",
+              "6.2 Estimated timing may depend on the fulfilment owner, the seller’s configured lead time, the applicable local-delivery or country-shipping setting, the seller’s origin timezone, any applicable order cutoff time, stock validation timing, payment confirmation, and operational availability.",
               "6.3 If a displayed delivery estimate is affected by a cutoff time, the estimate may change once that cutoff has passed. Piessang may update product-page messaging, cart messaging, or checkout messaging dynamically to reflect the best available estimate at the relevant time.",
             ]}
           />
@@ -144,7 +144,7 @@ export default function DeliveryPage() {
             number="7"
             title="Seller fulfilment obligations"
             paragraphs={[
-              "7.1 Sellers using Piessang are responsible for maintaining accurate delivery and shipping settings, including their shipping origin, direct-delivery rules, shipping zones, collection rules, cutoff times, delivery fees, and any related fulfilment information required for customers to make informed checkout decisions.",
+              "7.1 Sellers using Piessang are responsible for maintaining accurate delivery and shipping settings, including their shipping origin, local-delivery radius and fee, country shipping rates, collection rules, cutoff times, delivery fees, and any related fulfilment information required for customers to make informed checkout decisions.",
               "7.2 If a seller chooses to fulfil items directly, that seller must deliver, ship, or prepare collection for those items in accordance with the fulfilment option selected by the customer at checkout and in accordance with the seller’s own published fulfilment settings.",
               "7.3 Sellers must provide accurate fulfilment updates, courier details, collection readiness updates, or other operational confirmations through Piessang when required. Piessang may take marketplace action where a seller repeatedly fails to fulfil seller-managed orders in accordance with platform standards.",
             ]}

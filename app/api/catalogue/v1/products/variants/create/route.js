@@ -13,6 +13,8 @@ import {
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
 import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
+import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { buildShippingVisibilityPatch } from "@/lib/seller/shipping-product-visibility";
 
 const ok  =(p={},s=200)=>NextResponse.json({ok:true,...p},{status:s});
 const err =(s,t,m,e={})=>NextResponse.json({ok:false,title:t,message:m,...e},{status:s});
@@ -198,10 +200,30 @@ export async function POST(req){
     const discountPercent = Math.max(0, Math.min(100, toNum(data?.sale?.discount_percent, 0)));
     const saleEnabled = toBool(data?.sale?.is_on_sale,false) || discountPercent > 0 || Number.isFinite(+data?.sale?.sale_price_incl);
     const sellingPriceIncl = money2(sellingPriceInclRaw);
-  const variant={
+    const variant={
       variant_id:vId,
       sku:toStr(data?.sku),
       label:toStr(data?.label),
+      size:toStr(data?.size, null) || null,
+      shade:toStr(data?.shade, null) || null,
+      scent:toStr(data?.scent, null) || null,
+      skinType:toStr(data?.skinType, null) || null,
+      hairType:toStr(data?.hairType, null) || null,
+      flavor:toStr(data?.flavor, null) || null,
+      abv:toStr(data?.abv, null) || null,
+      containerType:toStr(data?.containerType, null) || null,
+      storageCapacity:toStr(data?.storageCapacity, null) || null,
+      memoryRam:toStr(data?.memoryRam, null) || null,
+      connectivity:toStr(data?.connectivity, null) || null,
+      compatibility:toStr(data?.compatibility, null) || null,
+      sizeSystem:toStr(data?.sizeSystem, null) || null,
+      material:toStr(data?.material, null) || null,
+      ringSize:toStr(data?.ringSize, null) || null,
+      strapLength:toStr(data?.strapLength, null) || null,
+      bookFormat:toStr(data?.bookFormat, null) || null,
+      language:toStr(data?.language, null) || null,
+      ageRange:toStr(data?.ageRange, null) || null,
+      modelFitment:toStr(data?.modelFitment, null) || null,
       barcode:barcode,
       barcodeImageUrl: toStr(data?.barcodeImageUrl, null) || null,
       color: toStr(data?.color, null) || null,
@@ -262,10 +284,18 @@ export async function POST(req){
         volume_unit: ALLOWED_VOLUME_UNITS.has(normalizeVolumeUnit(data?.pack?.volume_unit)) ? normalizeVolumeUnit(data?.pack?.volume_unit) : "each",
       },
       logistics: {
+        parcel_preset: toStr(data?.logistics?.parcelPreset ?? data?.logistics?.parcel_preset, null) || null,
+        shipping_class: toStr(data?.logistics?.shippingClass ?? data?.logistics?.shipping_class, null) || null,
         weight_kg: logistics.weightKg,
         length_cm: logistics.lengthCm,
         width_cm: logistics.widthCm,
         height_cm: logistics.heightCm,
+        volumetric_weight_kg: Number.isFinite(+data?.logistics?.volumetricWeightKg)
+          ? money2(data.logistics.volumetricWeightKg)
+          : (Number.isFinite(+data?.logistics?.volumetric_weight_kg) ? money2(data.logistics.volumetric_weight_kg) : null),
+        billable_weight_kg: Number.isFinite(+data?.logistics?.billableWeightKg)
+          ? money2(data.logistics.billableWeightKg)
+          : (Number.isFinite(+data?.logistics?.billable_weight_kg) ? money2(data.logistics.billable_weight_kg) : null),
         monthly_sales_30d: logistics.monthlySales30d,
         stock_qty: getVariantInventoryTotal({ inventory: inventoryRows }),
         warehouse_id: logistics.warehouseId,
@@ -312,6 +342,31 @@ export async function POST(req){
       },
       "timestamps.updatedAt":FieldValue.serverTimestamp()
     };
+    const sellerIdentifier = toStr(
+      current?.product?.sellerSlug ||
+      current?.seller?.sellerSlug ||
+      current?.product?.sellerCode ||
+      current?.seller?.sellerCode
+    );
+    const sellerOwner = sellerIdentifier ? await findSellerOwnerByIdentifier(sellerIdentifier) : null;
+    const sellerDeliveryProfile =
+      sellerOwner?.data?.seller?.deliveryProfile && typeof sellerOwner.data.seller.deliveryProfile === "object"
+        ? sellerOwner.data.seller.deliveryProfile
+        : {};
+    const visibilityPatch = buildShippingVisibilityPatch({
+      currentProduct: current,
+      nextProduct: {
+        ...current,
+        variants,
+        placement: updatePayload.placement,
+      },
+      sellerDeliveryProfile,
+    });
+    if (visibilityPatch) {
+      updatePayload.placement = visibilityPatch.placement;
+      updatePayload.listing_block_reason_code = visibilityPatch.listing_block_reason_code;
+      updatePayload.listing_block_reason_message = visibilityPatch.listing_block_reason_message;
+    }
     if (preserveLiveVersionDuringReview && !hasLiveSnapshotRecord(current)) {
       updatePayload.live_snapshot = current;
     }

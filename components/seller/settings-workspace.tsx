@@ -10,11 +10,11 @@ import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-
 import { PhoneInput, combinePhoneNumber, sanitizePhoneLocalNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
+import { SHOPPER_COUNTRY_OPTIONS } from "@/components/products/delivery-area-gate";
 import { clientStorage } from "@/lib/firebase";
 import { prepareImageAsset } from "@/lib/client/image-prep";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
-import { SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES } from "@/lib/marketplace/country-config";
 
 type SellerBranding = {
   bannerImageUrl: string;
@@ -36,6 +36,7 @@ type PricingRule = {
   maxOrderValue: string;
   fee: string;
   freeAboveOrderValue: string;
+  pricingBasis?: string;
 };
 
 type ShippingZone = {
@@ -48,6 +49,10 @@ type ShippingZone = {
   postalCodes: string;
   leadTimeDays: string;
   cutoffTime: string;
+  rateMode: string;
+  pricingBasis: string;
+  courierKey: string;
+  courierServiceLabel: string;
   pricingRules: PricingRule[];
   isFallback: boolean;
 };
@@ -359,7 +364,7 @@ function getWiseFieldGroupTitle(fieldKey: unknown) {
 function makePricingRule(seed = Date.now()) {
   return {
     id: `pricing-${seed}`,
-    label: "",
+    label: "Standard shipping",
     minDistanceKm: "",
     maxDistanceKm: "",
     minOrderValue: "",
@@ -380,9 +385,57 @@ function makeShippingZone(seed = Date.now()) {
     postalCodes: "",
     leadTimeDays: "2",
     cutoffTime: "",
+    rateMode: "flat",
+    pricingBasis: "per_order",
+    courierKey: "",
+    courierServiceLabel: "",
     pricingRules: [makePricingRule(seed + 1)],
     isFallback: false,
   };
+}
+
+function normalizeCountryKey(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getUnusedShippingZoneCountry(defaultCountry: string, zones: ShippingZone[], currentIndex = -1) {
+  const used = new Set(
+    zones
+      .map((zone, index) => (index === currentIndex ? "" : normalizeCountryKey(zone.country)))
+      .filter(Boolean),
+  );
+  return (
+    SHOPPER_COUNTRY_OPTIONS.find((option) => !used.has(normalizeCountryKey(option.label)))?.label ||
+    defaultCountry ||
+    ""
+  );
+}
+
+function ensureFlatDirectDeliveryRule(profile: SellerDeliveryProfile) {
+  const existing = Array.isArray(profile.directDelivery.pricingRules) ? profile.directDelivery.pricingRules[0] : null;
+  return {
+    ...profile,
+    directDelivery: {
+      ...profile.directDelivery,
+      pricingRules: [
+        existing || {
+          ...makePricingRule(Date.now()),
+          id: "direct-flat",
+          label: "Direct delivery",
+        },
+      ],
+    },
+  };
+}
+
+function getDirectDeliveryRule(profile: SellerDeliveryProfile) {
+  return Array.isArray(profile.directDelivery.pricingRules) && profile.directDelivery.pricingRules.length
+    ? profile.directDelivery.pricingRules[0]
+    : {
+        ...makePricingRule(Date.now()),
+        id: "direct-flat",
+        label: "Direct delivery",
+      };
 }
 
 function mapPricingRules(rules: any[] = []) {
@@ -396,6 +449,7 @@ function mapPricingRules(rules: any[] = []) {
         maxOrderValue: toStr(rule.maxOrderValue),
         fee: toStr(rule.fee),
         freeAboveOrderValue: toStr(rule.freeAboveOrderValue),
+        pricingBasis: toStr((rule as any).pricingBasis),
       }))
     : [];
 }
@@ -418,21 +472,25 @@ function mapDeliveryProfile(profile: any): SellerDeliveryProfile {
       radiusKm: toStr(normalized?.directDelivery?.radiusKm),
       leadTimeDays: toStr(normalized?.directDelivery?.leadTimeDays),
       cutoffTime: toStr(normalized?.directDelivery?.cutoffTime),
-      pricingRules: mapPricingRules(normalized?.directDelivery?.pricingRules || []),
+      pricingRules: mapPricingRules(normalized?.directDelivery?.pricingRules || []).slice(0, 1),
     },
     shippingZones: Array.isArray(normalized?.shippingZones)
       ? normalized.shippingZones.map((zone) => ({
           id: toStr(zone.id),
-          label: toStr(zone.label),
-          scopeType: toStr(zone.scopeType || "country"),
+          label: toStr(zone.label || zone.country),
+          scopeType: "country",
           country: toStr(zone.country),
-          region: toStr(zone.region),
-          city: toStr(zone.city),
-          postalCodes: Array.isArray(zone.postalCodes) ? zone.postalCodes.join(", ") : "",
+          region: "",
+          city: "",
+          postalCodes: "",
           leadTimeDays: toStr(zone.leadTimeDays),
           cutoffTime: toStr(zone.cutoffTime),
-          pricingRules: mapPricingRules(zone.pricingRules || []),
-          isFallback: zone.isFallback === true,
+          rateMode: toStr((zone as any).rateMode || "flat"),
+          pricingBasis: toStr((zone as any).pricingBasis || "per_order"),
+          courierKey: toStr((zone as any).courierKey),
+          courierServiceLabel: toStr((zone as any).courierServiceLabel),
+          pricingRules: mapPricingRules(zone.pricingRules || []).slice(0, 1),
+          isFallback: false,
         }))
       : [],
     pickup: {
@@ -999,6 +1057,11 @@ export function SellerSettingsWorkspace({
   }, []);
 
   const payoutProvider = toStr(payoutProfile.provider || "wise").toLowerCase();
+  const selectedShippingZoneCountries = useMemo(
+    () => deliveryProfile.shippingZones.map((zone) => normalizeCountryKey(zone.country)).filter(Boolean),
+    [deliveryProfile.shippingZones],
+  );
+  const hasDuplicateShippingZoneCountries = selectedShippingZoneCountries.length !== new Set(selectedShippingZoneCountries).size;
   const recipientId = payoutProvider === "wise" ? payoutProfile.wiseRecipientId : payoutProfile.stripeRecipientAccountId;
   const payoutRecipientReady = Boolean(payoutStatus?.connected || recipientId);
   const payoutSummaryBank = payoutStatus?.bankName
@@ -1250,6 +1313,10 @@ export function SellerSettingsWorkspace({
       setError("Choose a unique vendor name before saving.");
       return false;
     }
+    if (hasDuplicateShippingZoneCountries) {
+      setError("Each shipping zone must use a unique country before saving.");
+      return false;
+    }
     setSaving(true);
     setError(null);
     setMessage(null);
@@ -1279,6 +1346,7 @@ export function SellerSettingsWorkspace({
       const nextSeller = payload?.seller || {};
       const nextPayoutProfile = payload?.payoutProfile || payoutProfile;
       const nextBusinessDetails = payload?.businessDetails || businessDetails;
+      const weightRequirementState = payload?.shippingWeightRequirements || null;
       setBranding({
         bannerImageUrl: toStr(nextBranding?.bannerImageUrl),
         bannerBlurHashUrl: toStr(nextBranding?.bannerBlurHashUrl),
@@ -1408,7 +1476,13 @@ export function SellerSettingsWorkspace({
         }),
       );
       if (showSuccessMessage) {
-        setMessage("Seller settings saved.");
+        setMessage(
+          weightRequirementState?.hasWeightBasedShipping && weightRequirementState?.missingWeightCount > 0
+            ? weightRequirementState?.deactivatedCount > 0
+              ? `Seller settings saved. ${weightRequirementState.missingWeightCount} product${weightRequirementState.missingWeightCount === 1 ? "" : "s"} still need variant weights, and ${weightRequirementState.deactivatedCount} active listing${weightRequirementState.deactivatedCount === 1 ? "" : "s"} were moved out of active status because there is no local-delivery fallback.`
+              : `Seller settings saved. ${weightRequirementState.missingWeightCount} product${weightRequirementState.missingWeightCount === 1 ? "" : "s"} still need variant weights before per-kg country shipping can apply.`
+            : "Seller settings saved."
+        );
       }
       await refreshProfile();
       void loadPayoutStatus();
@@ -1766,7 +1840,7 @@ export function SellerSettingsWorkspace({
       <SettingsSection
         eyebrow="Shipping preferences"
         title="How you ship orders"
-        description="Add direct delivery rules and shipping zones so shoppers only see options and fees that match their location."
+        description="Keep this simple: set one local delivery radius and fee, then add country shipping rates for everywhere else you ship."
         expanded={sectionOpen.shipping}
         onToggle={() => setSectionOpen((current) => ({ ...current, shipping: !current.shipping }))}
       >
@@ -1775,7 +1849,7 @@ export function SellerSettingsWorkspace({
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-[13px] font-semibold text-[#202020]">Your shipping origin</p>
-                <p className="mt-1 text-[12px] text-[#57636c]">This is the location your direct delivery radius and shipping zones are measured from.</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">This is the location your local delivery radius is measured from.</p>
               </div>
             </div>
             <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-white px-4 py-4 text-[12px] text-[#57636c]">
@@ -1809,58 +1883,79 @@ export function SellerSettingsWorkspace({
           <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-[13px] font-semibold text-[#202020]">Direct delivery</p>
-                <p className="mt-1 text-[12px] text-[#57636c]">Use this when you deliver orders yourself around your shipping origin. Add pricing bands based on order value and optional distance ranges.</p>
+                <p className="text-[13px] font-semibold text-[#202020]">Local delivery</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">Use this when you deliver nearby orders yourself. Set one radius and one flat delivery fee.</p>
               </div>
             </div>
             <div className="mt-4 space-y-3">
               <label className="inline-flex items-center gap-2 text-[12px] text-[#57636c]">
-                <input type="checkbox" checked={deliveryProfile.directDelivery.enabled} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, enabled: event.target.checked, pricingRules: event.target.checked && current.directDelivery.pricingRules.length === 0 ? [makePricingRule(Date.now())] : current.directDelivery.pricingRules } }))} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
-                Enable direct delivery from your shipping origin
+                <input type="checkbox" checked={deliveryProfile.directDelivery.enabled} onChange={(event) => setDeliveryProfile((current) => {
+                  const next = event.target.checked ? ensureFlatDirectDeliveryRule(current) : current;
+                  return {
+                    ...next,
+                    directDelivery: {
+                      ...next.directDelivery,
+                      enabled: event.target.checked,
+                    },
+                  };
+                })} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
+                Enable local delivery from your business location
               </label>
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="block">
-                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Delivery radius (km)</span>
-                  <input value={deliveryProfile.directDelivery.radiusKm} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, radiusKm: event.target.value.replace(/[^\d]/g, "").slice(0, 4) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="15" />
-                </label>
-                <label className="block">
-                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span>
-                  <input value={deliveryProfile.directDelivery.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="1" />
-                </label>
-                <label className="block">
-                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Order cutoff time</span>
-                  <input type="time" value={deliveryProfile.directDelivery.cutoffTime} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, cutoffTime: event.target.value } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" />
-                  <p className="mt-1 text-[11px] text-[#7d7d7d]">Leave this blank to use the default cutoff of 10:00.</p>
-                </label>
-              </div>
-              <div className="flex justify-end">
-                <button type="button" disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} onClick={() => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: [...current.directDelivery.pricingRules, makePricingRule(Date.now())] } }))} className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
-                  Add direct pricing rule
-                </button>
-              </div>
-              <p className="text-[12px] text-[#57636c]">
-                Leave a minimum empty to start from 0. Leave a maximum empty to allow any value above that range.
-              </p>
-              <div className="space-y-3">
-                {deliveryProfile.directDelivery.pricingRules.length ? deliveryProfile.directDelivery.pricingRules.map((rule, index) => (
-                  <div key={rule.id || index} className="rounded-[8px] border border-black/10 bg-white p-4">
-                    <div className="grid gap-3 md:grid-cols-4">
-                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Rule label</span><input value={rule.label} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, label: event.target.value.slice(0, 120) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Nearby orders" /></label>
-                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Min distance (km)</span><input value={rule.minDistanceKm} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, minDistanceKm: event.target.value.replace(/[^\d]/g, "").slice(0, 4) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" /></label>
-                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Max distance (km)</span><input value={rule.maxDistanceKm} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, maxDistanceKm: event.target.value.replace(/[^\d]/g, "").slice(0, 4) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="5" /></label>
-                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Fee (R)</span><input value={rule.fee} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, fee: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="60" /></label>
-                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Min order value</span><input value={rule.minOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, minOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" /></label>
-                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Max order value</span><input value={rule.maxOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, maxOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="500" /></label>
-                      <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Free above order value</span><input value={rule.freeAboveOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.map((entry, entryIndex) => entryIndex === index ? { ...entry, freeAboveOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entry) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="750" /></label>
+              {(() => {
+                const directRule = getDirectDeliveryRule(deliveryProfile);
+                return (
+                  <>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Delivery radius (km)</span>
+                        <input value={deliveryProfile.directDelivery.radiusKm} onChange={(event) => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, radiusKm: event.target.value.replace(/[^\d]/g, "").slice(0, 4) } }))} disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="15" />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span>
+                        <input
+                          value={deliveryProfile.directDelivery.leadTimeDays}
+                          onChange={(event) => setDeliveryProfile((current) => ({
+                            ...current,
+                            directDelivery: {
+                              ...current.directDelivery,
+                              leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2),
+                            },
+                          }))}
+                          disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                          placeholder="1"
+                        />
+                      </label>
                     </div>
-                    <div className="mt-3 flex justify-end">
-                      <button type="button" disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled} onClick={() => setDeliveryProfile((current) => ({ ...current, directDelivery: { ...current.directDelivery, pricingRules: current.directDelivery.pricingRules.filter((_, entryIndex) => entryIndex !== index) } }))} className="text-[12px] font-semibold text-[#b91c1c] disabled:opacity-60">Remove rule</button>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Delivery fee (R)</span>
+                        <input
+                          value={directRule.fee}
+                          onChange={(event) => setDeliveryProfile((current) => ({
+                            ...ensureFlatDirectDeliveryRule(current),
+                            directDelivery: {
+                              ...ensureFlatDirectDeliveryRule(current).directDelivery,
+                              pricingRules: [
+                                {
+                                  ...getDirectDeliveryRule(current),
+                                  fee: event.target.value.replace(/[^\d.]/g, "").slice(0, 8),
+                                },
+                              ],
+                            },
+                          }))}
+                          disabled={!canEditSettings || !deliveryProfile.directDelivery.enabled}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                          placeholder="60"
+                        />
+                      </label>
                     </div>
-                  </div>
-                )) : (
-                  <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-4 py-5 text-[12px] text-[#57636c]">No direct delivery pricing rules yet.</div>
-                )}
-              </div>
+                    <p className="text-[12px] text-[#57636c]">
+                      Shoppers outside this radius will not be able to place seller-delivered orders for your items.
+                    </p>
+                  </>
+                );
+              })()}
             </div>
           </div>
 
@@ -1868,54 +1963,159 @@ export function SellerSettingsWorkspace({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-[13px] font-semibold text-[#202020]">Shipping zones</p>
-                <p className="mt-1 text-[12px] text-[#57636c]">Add country, region, city, or postal-code based shipping zones for national and international delivery.</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">Add one row per country you ship to, just like a simple Shopify-style shipping zone list.</p>
               </div>
-              <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: [...current.shippingZones, makeShippingZone(Date.now())] }))} className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
+              <button
+                type="button"
+                disabled={!canEditSettings || deliveryProfile.shippingZones.length >= SHOPPER_COUNTRY_OPTIONS.length}
+                onClick={() =>
+                  setDeliveryProfile((current) => ({
+                    ...current,
+                    shippingZones: [
+                      ...current.shippingZones,
+                      {
+                        ...makeShippingZone(Date.now()),
+                        country: getUnusedShippingZoneCountry("", current.shippingZones),
+                        label: getUnusedShippingZoneCountry("", current.shippingZones),
+                      },
+                    ],
+                  }))
+                }
+                className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
+              >
                 Add Zone
               </button>
             </div>
             <div className="mt-4 space-y-3">
+              {hasDuplicateShippingZoneCountries ? (
+                <div className="rounded-[8px] border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-[12px] text-[#991b1b]">
+                  Each shipping zone must use a unique country. Remove or change duplicate country rows before saving.
+                </div>
+              ) : null}
               {deliveryProfile.shippingZones.length ? deliveryProfile.shippingZones.map((zone, index) => (
                 <div key={zone.id || index} className="rounded-[8px] border border-black/10 bg-white p-4">
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Zone label</span><input value={zone.label} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, label: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Western Cape courier" /></label>
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Scope</span><select value={zone.scopeType} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, scopeType: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"><option value="country">Country</option><option value="region">Region / state</option><option value="city">City</option><option value="postal">Postal code</option></select></label>
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span><input value={zone.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="2" /></label>
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Order cutoff time</span><input type="time" value={zone.cutoffTime} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, cutoffTime: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" /><p className="mt-1 text-[11px] text-[#7d7d7d]">Leave this blank to use the default cutoff of 10:00.</p></label>
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Country</span><select value={zone.country} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, country: event.target.value } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"><option value="">Select supported checkout country</option>{SUPPORTED_MARKETPLACE_CHECKOUT_COUNTRIES.map((country) => (<option key={country.code} value={country.label}>{country.label}</option>))}</select><p className="mt-1 text-[11px] text-[#7d7d7d]">Only countries supported by Piessang checkout can be targeted in shipping zones.</p></label>
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Region / state</span><input value={zone.region} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, region: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Western Cape" /></label>
-                    <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">City</span><input value={zone.city} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, city: event.target.value.slice(0, 120) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Paarl" /></label>
-                    <label className="block md:col-span-3"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Postal codes</span><input value={zone.postalCodes} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, postalCodes: event.target.value.slice(0, 160) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="7646, 7647" /></label>
-                  </div>
-                  <div className="mt-4 flex justify-end">
-                    <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, pricingRules: [...entry.pricingRules, makePricingRule(Date.now())] } : entry) }))} className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
-                      Add pricing rule
-                    </button>
-                  </div>
-                  <p className="text-[12px] text-[#57636c]">
-                    Leave a minimum empty to start from 0. Leave a maximum empty to allow any value above that range.
-                  </p>
-                  <div className="mt-3 space-y-3">
-                    {zone.pricingRules.map((rule, ruleIndex) => (
-                      <div key={rule.id || ruleIndex} className="rounded-[8px] border border-black/10 bg-[#fafafa] p-3">
-                        <div className="grid gap-3 md:grid-cols-4">
-                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Rule label</span><input value={rule.label} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, label: event.target.value.slice(0, 120) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Standard shipping" /></label>
-                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Min order value</span><input value={rule.minOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, minOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" /></label>
-                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Max order value</span><input value={rule.maxOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, maxOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="9999" /></label>
-                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Fee (R)</span><input value={rule.fee} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, fee: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="120" /></label>
-                          <label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Free above order value</span><input value={rule.freeAboveOrderValue} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.map((pricingEntry, pricingIndex) => pricingIndex === ruleIndex ? { ...pricingEntry, freeAboveOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : pricingEntry) } : zoneEntry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="1500" /></label>
-                        </div>
-                        <div className="mt-3 flex justify-end">
-                          <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((zoneEntry, zoneIndex) => zoneIndex === index ? { ...zoneEntry, pricingRules: zoneEntry.pricingRules.filter((_, pricingIndex) => pricingIndex !== ruleIndex) } : zoneEntry) }))} className="text-[12px] font-semibold text-[#b91c1c] disabled:opacity-60">Remove pricing rule</button>
-                        </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Country</span>
+                      <div className="relative">
+                        <select
+                          value={zone.country}
+                          onChange={(event) => setDeliveryProfile((current) => ({
+                            ...current,
+                            shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
+                              ...entry,
+                              country: event.target.value,
+                              label: event.target.value,
+                              scopeType: "country",
+                              region: "",
+                              city: "",
+                              postalCodes: "",
+                            } : entry),
+                          }))}
+                          disabled={!canEditSettings}
+                          className="appearance-none w-full rounded-[8px] border border-black/10 bg-white py-2.5 pl-3 pr-8 text-[13px] font-semibold text-[#202020] outline-none disabled:bg-[#f7f7f7]"
+                        >
+                          <option value="">Select country</option>
+                          {SHOPPER_COUNTRY_OPTIONS.filter((option) => {
+                            const normalizedLabel = normalizeCountryKey(option.label);
+                            return !deliveryProfile.shippingZones.some(
+                              (entry, entryIndex) => entryIndex !== index && normalizeCountryKey(entry.country) === normalizedLabel,
+                            );
+                          }).map((option) => (
+                            <option key={option.code} value={option.label}>
+                              {option.displayLabel}
+                            </option>
+                          ))}
+                        </select>
+                        <svg viewBox="0 0 20 20" className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 fill-current text-[#6b7280]" aria-hidden="true">
+                          <path d="M5.5 7.5 10 12l4.5-4.5" />
+                        </svg>
                       </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-3">
-                    <label className="inline-flex items-center gap-2 text-[12px] text-[#57636c]">
-                      <input type="checkbox" checked={zone.isFallback} onChange={(event) => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? { ...entry, isFallback: event.target.checked } : entry) }))} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
-                      Use as fallback when no exact zone matches
                     </label>
+                    <div className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Shipping type</span>
+                      <div className="flex h-[42px] items-center rounded-[8px] border border-black/10 bg-[#f7f7f7] px-3 text-[13px] font-semibold text-[#202020]">
+                        Seller-managed flat rate
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-3">
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Rate calculation</span>
+                      <select
+                        value={zone.pricingBasis || "per_order"}
+                        onChange={(event) => setDeliveryProfile((current) => ({
+                          ...current,
+                          shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
+                            ...entry,
+                            pricingBasis: event.target.value,
+                            pricingRules: [
+                              {
+                                ...(entry.pricingRules[0] || makePricingRule(Date.now())),
+                                pricingBasis: event.target.value,
+                              },
+                            ],
+                          } : entry),
+                        }))}
+                        disabled={!canEditSettings}
+                        className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                      >
+                        <option value="per_order">Flat per order</option>
+                        <option value="per_item">Flat per item</option>
+                        <option value="per_kg">Per kg</option>
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span>
+                      <input
+                          value={zone.leadTimeDays || ""}
+                          onChange={(event) => setDeliveryProfile((current) => ({
+                            ...current,
+                            shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
+                              ...entry,
+                              leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2),
+                            } : entry),
+                          }))}
+                          disabled={!canEditSettings}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                          placeholder="2"
+                        />
+                      </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                        {zone.pricingBasis === "per_item" ? "Shipping cost per item (R)" : zone.pricingBasis === "per_kg" ? "Shipping cost per kg (R)" : "Shipping cost (R)"}
+                      </span>
+                      <input
+                          value={zone.pricingRules[0]?.fee || ""}
+                          onChange={(event) => setDeliveryProfile((current) => ({
+                            ...current,
+                            shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
+                              ...entry,
+                              pricingRules: [
+                                {
+                                  ...(entry.pricingRules[0] || makePricingRule(Date.now())),
+                                  label: entry.country || entry.label || "Standard shipping",
+                                  pricingBasis: entry.pricingBasis || "per_order",
+                                  fee: event.target.value.replace(/[^\d.]/g, "").slice(0, 8),
+                                  minOrderValue: "",
+                                  maxOrderValue: "",
+                                  minDistanceKm: "",
+                                  maxDistanceKm: "",
+                                },
+                              ],
+                            } : entry),
+                          }))}
+                          disabled={!canEditSettings}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                          placeholder="120"
+                        />
+                      </label>
+                    </div>
+                  <p className="mt-3 text-[12px] text-[#57636c]">
+                    If a shopper’s delivery country does not match one of your rows here, seller-managed shipping will not be offered.
+                    {zone.pricingBasis === "per_kg" ? " Per-kg shipping requires every variant on the listing to have a weight." : ""}
+                  </p>
+                  <div className="mt-3 flex items-center justify-between gap-3">
                     <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.filter((_, entryIndex) => entryIndex !== index) }))} className="text-[12px] font-semibold text-[#b91c1c] disabled:opacity-60">Remove zone</button>
                   </div>
                 </div>
@@ -1929,10 +2129,10 @@ export function SellerSettingsWorkspace({
             <div className="grid gap-3 md:grid-cols-2">
               <label className="inline-flex items-center gap-2 text-[12px] text-[#57636c]">
                 <input type="checkbox" checked={deliveryProfile.pickup.enabled} onChange={(event) => setDeliveryProfile((current) => ({ ...current, pickup: { ...current.pickup, enabled: event.target.checked } }))} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
-                Allow customer pickup
+                Allow customer collection
               </label>
               <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Pickup ready time (days)</span>
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Collection ready time (days)</span>
                 <input value={deliveryProfile.pickup.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, pickup: { ...current.pickup, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } }))} disabled={!canEditSettings || !deliveryProfile.pickup.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" />
               </label>
             </div>

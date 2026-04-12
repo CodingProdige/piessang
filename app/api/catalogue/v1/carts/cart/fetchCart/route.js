@@ -6,9 +6,11 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } from "@/lib/marketplace/fees";
 import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
-import { normalizeSellerDeliveryProfile, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
+import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
+import { resolveDeliveryQuote } from "@/lib/shipping/rating";
 
 /* ------------------ HELPERS ------------------- */
 
@@ -21,6 +23,41 @@ const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 const REBATE_TIER_MAX_CAP = 5;
 const CREDIT_NOTE_OPEN_STATUSES = new Set(["open", "partially_used"]);
 const sellerOwnerCache = new Map();
+
+function buildDeliveryOwnershipMeta(resolved = null) {
+  const kind = String(resolved?.kind || "").trim().toLowerCase();
+  if (kind === "shipping") {
+    return {
+      delivery_owner: "seller",
+      tracking_owner: "seller",
+      tracking_mode: "courier",
+      rate_mode: "flat",
+      courier_key: null,
+      courier_carrier: null,
+      courier_service: null,
+    };
+  }
+  if (kind === "direct_delivery") {
+    return {
+      delivery_owner: "seller",
+      tracking_owner: "seller",
+      tracking_mode: "direct",
+      rate_mode: "seller_direct",
+      courier_key: null,
+      courier_carrier: null,
+      courier_service: null,
+    };
+  }
+  return {
+    delivery_owner: "seller",
+    tracking_owner: "seller",
+    tracking_mode: "hidden",
+    rate_mode: "manual",
+    courier_key: null,
+    courier_carrier: null,
+    courier_service: null,
+  };
+}
 
 function getVariantInventoryTotal(variant){
   const rows = Array.isArray(variant?.inventory) ? variant.inventory : [];
@@ -166,7 +203,7 @@ function computeLineTotals(v, qty){
   };
 }
 
-function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelections = []){
+async function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelections = []){
   const groups = new Map();
   const pickupSet = new Set(
     (Array.isArray(pickupSelections) ? pickupSelections : [])
@@ -201,9 +238,15 @@ function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelectio
       deliveryProfile: seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
       items: [],
       subtotalIncl: 0,
+      parcels: [],
     };
     existing.items.push(item);
     existing.subtotalIncl = r2(existing.subtotalIncl + Number(item?.line_totals?.final_incl || 0));
+    const parcel = buildShipmentParcelFromVariant(item?.selected_variant_snapshot || item?.selected_variant || item?.variant || null);
+    const quantity = Math.max(0, Number(item?.qty ?? item?.quantity ?? 0));
+    if (parcel && quantity > 0) {
+      for (let index = 0; index < quantity; index += 1) existing.parcels.push(parcel);
+    }
     groups.set(sellerKey, existing);
   }
 
@@ -224,15 +267,21 @@ function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelectio
         amount_incl: 0,
         amount_excl: 0,
         currency: "ZAR",
+        delivery_owner: "seller",
+        tracking_owner: "seller",
+        tracking_mode: "hidden",
+        rate_mode: "collection",
       });
       continue;
     }
 
-    const resolved = resolveSellerDeliveryOption({
+    const resolved = await resolveDeliveryQuote({
       profile: group.deliveryProfile || {},
       sellerBaseLocation: group.sellerBase,
       shopperArea,
       subtotalIncl: group.subtotalIncl,
+      parcels: group.parcels,
+      currency: "ZAR",
     });
     const amount = r2(Number(resolved?.amountIncl || 0));
     const label = String(resolved?.label || "Seller delivery unavailable for this address");
@@ -251,6 +300,8 @@ function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelectio
       amount_incl: amount,
       amount_excl: amount,
       currency: "ZAR",
+      shipment_summary: resolved?.shipmentSummary || null,
+      ...buildDeliveryOwnershipMeta(resolved),
     });
   }
 
@@ -559,7 +610,7 @@ export async function POST(req){
         }
       };
 
-      const sellerDelivery = computeSellerDeliveryFees([], deliveryAddress, pickupSelections);
+      const sellerDelivery = await computeSellerDeliveryFees([], deliveryAddress, pickupSelections);
       const emptyTotals = computeCartTotals([], deliveryFee, sellerDelivery);
       const adjust = computePricingAdjustments(emptyTotals.subtotal_excl, userData?.pricing);
       const rebateNextTier = (
@@ -783,7 +834,7 @@ export async function POST(req){
     /* ------------------------------------------
        🔄 RECOMPUTE CART TOTALS
     ------------------------------------------- */
-    const sellerDelivery = computeSellerDeliveryFees(kept, deliveryAddress, pickupSelections);
+    const sellerDelivery = await computeSellerDeliveryFees(kept, deliveryAddress, pickupSelections);
     const totals = computeCartTotals(kept, deliveryFee, sellerDelivery);
     const adjust = computePricingAdjustments(totals.subtotal_excl, userData?.pricing);
     const rebateNextTier = (

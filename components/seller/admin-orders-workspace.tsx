@@ -27,6 +27,28 @@ type AdminOrder = {
     accountName?: string;
     email?: string;
   };
+  customer_snapshot?: {
+    account?: {
+      accountName?: string;
+      type?: string;
+    };
+    email?: string;
+    phone?: string;
+  };
+  delivery_snapshot?: {
+    address?: {
+      recipientName?: string;
+      phone?: string;
+      addressLine1?: string;
+      addressLine2?: string;
+      suburb?: string;
+      city?: string;
+      province?: string;
+      postalCode?: string;
+      country?: string;
+      notes?: string;
+    };
+  };
   timestamps?: {
     createdAt?: string;
   };
@@ -38,6 +60,15 @@ type AdminOrder = {
     paid_amount_incl?: number;
     refunded_amount_incl?: number;
     currency?: string;
+    method?: string;
+    attempts?: Array<{
+      type?: string;
+      status?: string;
+      createdAt?: string;
+      amount_incl?: number;
+      provider?: string;
+      transactionId?: string;
+    }>;
   };
   refund_summary?: {
     has_refund?: boolean;
@@ -65,9 +96,59 @@ type AdminOrder = {
     sellerSlug?: string;
     vendorName?: string;
     quantity?: number;
+    subtotalIncl?: number;
+    totalIncl?: number;
   }>;
   delivery_progress?: {
     percentageDelivered?: number;
+  };
+  items?: Array<{
+    quantity?: number;
+    line_totals?: {
+      final_incl?: number;
+      unit_price_incl?: number;
+    };
+    fulfillment_tracking?: {
+      label?: string;
+      status?: string;
+    };
+    product_snapshot?: {
+      product?: {
+        title?: string;
+        sellerCode?: string;
+        sellerSlug?: string;
+        vendorName?: string;
+      };
+      media?: {
+        images?: Array<{ imageUrl?: string }>;
+      };
+    };
+    selected_variant_snapshot?: {
+      label?: string;
+      variant_id?: string;
+      sku?: string;
+      barcode?: string;
+      media?: {
+        images?: Array<{ imageUrl?: string }>;
+      };
+    };
+  }>;
+  cancellation?: {
+    status?: string;
+    reason?: string;
+    requestedAt?: string;
+    approvedAt?: string;
+  };
+  returns?: {
+    totals?: {
+      incl?: number;
+    };
+  };
+  order_summary?: {
+    subtotal_excl?: number;
+    delivery_fee_excl?: number;
+    vat_total?: number;
+    final_incl?: number;
   };
 };
 
@@ -189,6 +270,39 @@ function getAdminCreditNotes(order: AdminOrder) {
   return Object.values(notesMap)
     .filter((entry) => entry && typeof entry === "object")
     .sort((left, right) => toStr(right?.issuedAt).localeCompare(toStr(left?.issuedAt)));
+}
+
+function getAdminLineTitle(item: NonNullable<AdminOrder["items"]>[number]) {
+  return toStr(item?.product_snapshot?.product?.title || item?.selected_variant_snapshot?.label || "Product");
+}
+
+function getAdminLineSubtitle(item: NonNullable<AdminOrder["items"]>[number]) {
+  const variant = item?.selected_variant_snapshot || {};
+  const bits = [toStr(variant?.label), toStr(variant?.sku), toStr(variant?.barcode)].filter(Boolean);
+  return bits.join(" • ");
+}
+
+function getAdminLineImage(item: NonNullable<AdminOrder["items"]>[number]) {
+  return (
+    toStr(item?.selected_variant_snapshot?.media?.images?.find?.((entry) => Boolean(entry?.imageUrl))?.imageUrl) ||
+    toStr(item?.product_snapshot?.media?.images?.find?.((entry) => Boolean(entry?.imageUrl))?.imageUrl) ||
+    ""
+  );
+}
+
+function formatAddress(order: AdminOrder) {
+  const address = order?.delivery_snapshot?.address || {};
+  return [
+    toStr(address?.recipientName),
+    toStr(address?.phone),
+    toStr(address?.addressLine1),
+    toStr(address?.addressLine2),
+    toStr(address?.suburb),
+    toStr(address?.city),
+    toStr(address?.province),
+    toStr(address?.postalCode),
+    toStr(address?.country),
+  ].filter(Boolean);
 }
 
 function Sparkline({ values }: { values: number[] }) {
@@ -623,8 +737,9 @@ export function SellerAdminOrdersWorkspace({ userId }: { userId: string }) {
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <div className="rounded-[16px] border border-black/6 bg-[#fafafa] p-4">
                   <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Customer</p>
-                  <p className="mt-2 text-[18px] font-semibold text-[#202020]">{activeOrder.customer?.accountName || "Customer"}</p>
-                  <p className="mt-1 text-[14px] text-[#57636c]">{activeOrder.customer?.email || "No email"}</p>
+                  <p className="mt-2 text-[18px] font-semibold text-[#202020]">{activeOrder.customer?.accountName || activeOrder.customer_snapshot?.account?.accountName || "Customer"}</p>
+                  <p className="mt-1 text-[14px] text-[#57636c]">{activeOrder.customer?.email || activeOrder.customer_snapshot?.email || "No email"}</p>
+                  {activeOrder.customer_snapshot?.phone ? <p className="mt-1 text-[14px] text-[#57636c]">{activeOrder.customer_snapshot.phone}</p> : null}
                 </div>
                 <div className="rounded-[16px] border border-black/6 bg-[#fafafa] p-4">
                   <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Sellers</p>
@@ -635,17 +750,105 @@ export function SellerAdminOrdersWorkspace({ userId }: { userId: string }) {
             </section>
 
             <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[16px] font-semibold text-[#202020]">Ordered items</p>
+                <p className="text-[13px] text-[#57636c]">{Array.isArray(activeOrder.items) ? activeOrder.items.length : 0} lines</p>
+              </div>
+              {Array.isArray(activeOrder.items) && activeOrder.items.length ? (
+                <div className="mt-4 space-y-3">
+                  {activeOrder.items.map((item, index) => {
+                    const imageUrl = getAdminLineImage(item);
+                    return (
+                      <article key={`${getAdminLineTitle(item)}-${index}`} className="grid gap-4 rounded-[18px] border border-black/6 bg-[#fafafa] p-4 md:grid-cols-[72px_minmax(0,1fr)_auto] md:items-center">
+                        <div className="h-[72px] w-[72px] overflow-hidden rounded-[14px] bg-white">
+                          {imageUrl ? <img src={imageUrl} alt={getAdminLineTitle(item)} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[11px] text-[#8b94a3]">No image</div>}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-[15px] font-semibold text-[#202020]">{getAdminLineTitle(item)}</p>
+                          <p className="mt-1 text-[13px] text-[#57636c]">{getAdminLineSubtitle(item) || "Variant details unavailable"}</p>
+                          <p className="mt-2 text-[12px] text-[#8b94a3]">{sentenceStatus(item?.fulfillment_tracking?.label || item?.fulfillment_tracking?.status || "pending")}</p>
+                        </div>
+                        <div className="text-left md:text-right">
+                          <p className="text-[13px] text-[#57636c]">Qty {Number(item?.quantity || 0)}</p>
+                          <p className="mt-1 text-[15px] font-semibold text-[#202020]">{formatMoney(Number(item?.line_totals?.final_incl || 0), toStr(activeOrder.payment?.currency || "ZAR"))}</p>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-4 text-[13px] text-[#57636c]">No line-item detail is available on this order.</p>
+              )}
+            </section>
+
+            <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
+              <p className="text-[16px] font-semibold text-[#202020]">Seller slices</p>
+              {Array.isArray(activeOrder.seller_slices) && activeOrder.seller_slices.length ? (
+                <div className="mt-4 space-y-3">
+                  {activeOrder.seller_slices.map((slice, index) => (
+                    <div key={`${slice?.sellerCode || slice?.sellerSlug || "slice"}-${index}`} className="flex items-center justify-between rounded-[16px] border border-black/6 bg-[#fafafa] px-4 py-3 text-[13px]">
+                      <div>
+                        <p className="font-semibold text-[#202020]">{slice?.vendorName || slice?.sellerSlug || slice?.sellerCode || "Seller"}</p>
+                        <p className="mt-1 text-[#57636c]">{pluralize(Number(slice?.quantity || 0), "item")}</p>
+                      </div>
+                      <div className="text-right">
+                        {Number.isFinite(Number(slice?.totalIncl)) ? <p className="font-semibold text-[#202020]">{formatMoney(Number(slice?.totalIncl || 0), toStr(activeOrder.payment?.currency || "ZAR"))}</p> : null}
+                        <p className="mt-1 text-[#57636c]">{slice?.sellerCode || slice?.sellerSlug || "No seller key"}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 text-[13px] text-[#57636c]">No seller slice data is available on this order.</p>
+              )}
+            </section>
+
+            <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
               <p className="text-[16px] font-semibold text-[#202020]">Payment and delivery</p>
               <div className="mt-4 divide-y divide-black/6 rounded-[16px] border border-black/6">
                 <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[14px]"><span className="text-[#57636c]">Order total</span><span className="font-semibold text-[#202020]">{formatMoney(Number(activeOrder.totals?.final_incl || 0), toStr(activeOrder.payment?.currency || "ZAR"))}</span></div>
                 <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[14px]"><span className="text-[#57636c]">Paid amount</span><span className="font-semibold text-[#202020]">{formatMoney(Number(activeOrder.payment?.paid_amount_incl || 0), toStr(activeOrder.payment?.currency || "ZAR"))}</span></div>
                 <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[14px]"><span className="text-[#57636c]">Refunded so far</span><span className="font-semibold text-[#202020]">{formatMoney(Number(activeOrder.payment?.refunded_amount_incl || activeOrder.refund_summary?.total_amount_incl || 0), toStr(activeOrder.payment?.currency || "ZAR"))}</span></div>
+                <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[14px]"><span className="text-[#57636c]">Payment method</span><span className="font-semibold text-[#202020]">{sentenceStatus(activeOrder.payment?.method || activeOrder.payment?.provider || "unknown")}</span></div>
                 <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[14px]"><span className="text-[#57636c]">Delivery progress</span><span className="font-semibold text-[#202020]">{progress}%</span></div>
               </div>
               <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-black/8">
                 <div className={`h-full rounded-full ${progressTone(progress)}`} style={{ width: `${Math.max(6, progress)}%` }} />
               </div>
+              <div className="mt-4 rounded-[16px] border border-black/6 bg-[#fafafa] p-4">
+                <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Delivery address</p>
+                {formatAddress(activeOrder).length ? (
+                  <div className="mt-2 space-y-1 text-[13px] text-[#202020]">
+                    {formatAddress(activeOrder).map((line, index) => (
+                      <p key={`${line}-${index}`}>{line}</p>
+                    ))}
+                    {activeOrder.delivery_snapshot?.address?.notes ? <p className="pt-1 text-[#57636c]">Notes: {activeOrder.delivery_snapshot.address.notes}</p> : null}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-[13px] text-[#57636c]">No delivery address snapshot is available.</p>
+                )}
+              </div>
             </section>
+
+            {Array.isArray(activeOrder.payment?.attempts) && activeOrder.payment.attempts.length ? (
+              <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
+                <p className="text-[16px] font-semibold text-[#202020]">Payment history</p>
+                <div className="mt-4 space-y-3">
+                  {activeOrder.payment.attempts.map((attempt, index) => (
+                    <div key={`${attempt?.createdAt || "attempt"}-${index}`} className="flex items-center justify-between rounded-[16px] border border-black/6 bg-[#fafafa] px-4 py-3 text-[13px]">
+                      <div>
+                        <p className="font-semibold text-[#202020]">{sentenceStatus(attempt?.type || attempt?.status || "payment event")}</p>
+                        <p className="mt-1 text-[#57636c]">{formatDateTime(attempt?.createdAt)} • {sentenceStatus(attempt?.provider || activeOrder.payment?.provider || "provider")}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-semibold text-[#202020]">{formatMoney(Number(attempt?.amount_incl || 0), toStr(activeOrder.payment?.currency || "ZAR"))}</p>
+                        <p className="mt-1 text-[#57636c]">{attempt?.transactionId || "No reference"}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
             <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
               <p className="text-[16px] font-semibold text-[#202020]">Refund history</p>
@@ -685,6 +888,28 @@ export function SellerAdminOrdersWorkspace({ userId }: { userId: string }) {
                       </div>
                     </div>
                   ))}
+                </div>
+              </section>
+            ) : null}
+
+            {activeOrder.cancellation?.status ? (
+              <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
+                <p className="text-[16px] font-semibold text-[#202020]">Cancellation</p>
+                <div className="mt-4 rounded-[16px] border border-black/6 bg-[#fafafa] p-4 text-[13px] text-[#202020]">
+                  <p><span className="font-semibold">Status:</span> {sentenceStatus(activeOrder.cancellation.status)}</p>
+                  {activeOrder.cancellation.reason ? <p className="mt-2"><span className="font-semibold">Reason:</span> {activeOrder.cancellation.reason}</p> : null}
+                  {activeOrder.cancellation.requestedAt ? <p className="mt-2 text-[#57636c]">Requested {formatDateTime(activeOrder.cancellation.requestedAt)}</p> : null}
+                  {activeOrder.cancellation.approvedAt ? <p className="mt-1 text-[#57636c]">Approved {formatDateTime(activeOrder.cancellation.approvedAt)}</p> : null}
+                </div>
+              </section>
+            ) : null}
+
+            {Number(activeOrder.returns?.totals?.incl || 0) > 0 ? (
+              <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
+                <p className="text-[16px] font-semibold text-[#202020]">Returns</p>
+                <div className="mt-4 rounded-[16px] border border-black/6 bg-[#fafafa] p-4 text-[13px]">
+                  <p className="font-semibold text-[#202020]">{formatMoney(Number(activeOrder.returns?.totals?.incl || 0), toStr(activeOrder.payment?.currency || "ZAR"))}</p>
+                  <p className="mt-1 text-[#57636c]">Total returns collected on this order.</p>
                 </div>
               </section>
             ) : null}
