@@ -2,24 +2,25 @@ export const runtime = "nodejs";
 export const preferredRegion = "fra1";
 
 /**
- * NAME: Delete Product (hard delete)
+ * NAME: Delete Product (soft delete)
  * PATH: /api/products_v2/delete
  * METHOD: POST
  *
  * PURPOSE:
- *   - Permanently delete a product document from Firestore.
- *   - No cascading deletes/updates are performed here.
+ *   - Soft delete a product document from Firestore.
+ *   - Preserve the document for linked orders, reports, and audit history.
  *
  * INPUTS (Body JSON):
  *   - unique_id (string, required): 8-digit product id (Firestore doc id)
  *
  * RESPONSE:
- *   - 200: { ok: true, unique_id, message: "Product permanently deleted." }
+ *   - 200: { ok: true, unique_id, message: "Product archived." }
  *   - 404: { ok: false, title: "Product Not Found", message: "..." }
  *   - 400/500: { ok: false, title, message }
  */
 
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 import { findOrderReferencesForProduct } from "@/lib/orders/product-usage";
@@ -108,20 +109,49 @@ export async function POST(req) {
     }
 
     const orderRefs = await findOrderReferencesForProduct(db, pid);
-    if (orderRefs.length) {
-      return err(
-        409,
-        "Product In Use",
-        "This product cannot be deleted because it is already part of an order history.",
-        { orders: orderRefs },
-      );
-    }
 
-    await ref.delete();
+    await ref.set(
+      {
+        placement: {
+          ...(current?.placement && typeof current.placement === "object" ? current.placement : {}),
+          isActive: false,
+          isFeatured: false,
+          in_stock: false,
+          supplier_out_of_stock: true,
+        },
+        moderation: {
+          ...(current?.moderation && typeof current.moderation === "object" ? current.moderation : {}),
+          status: "archived",
+          reason: "deleted",
+          notes: "This product was soft deleted and archived to preserve linked records.",
+          reviewedAt: null,
+          reviewedBy: null,
+        },
+        timestamps: {
+          ...(current?.timestamps && typeof current.timestamps === "object" ? current.timestamps : {}),
+          updatedAt: FieldValue.serverTimestamp(),
+          deletedAt: FieldValue.serverTimestamp(),
+        },
+        deletedAt: FieldValue.serverTimestamp(),
+        deletedBy: toStr(profile?.uid),
+        deletedReason: orderRefs.length
+          ? "soft_deleted_with_linked_orders"
+          : "soft_deleted",
+        live_snapshot: current?.live_snapshot && typeof current.live_snapshot === "object"
+          ? current.live_snapshot
+          : current,
+      },
+      { merge: true },
+    );
 
-    return ok({ unique_id: pid, message: "Product permanently deleted." });
+    return ok({
+      unique_id: pid,
+      archived: true,
+      linkedOrders: orderRefs,
+      message: "Product archived.",
+    });
   } catch (e) {
-    console.error("products_v2/delete (hard) failed:", e);
+    console.error("products_v2/delete (soft) failed:", e);
     return err(500, "Unexpected Error", "Something went wrong while deleting the product.");
   }
 }

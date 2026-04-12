@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
 import { getFlagEmoji } from "@/lib/currency/display-currency";
 import { STRIPE_SUPPORTED_SHOPPER_COUNTRIES } from "@/lib/marketplace/country-config";
@@ -27,6 +27,23 @@ export const SHOPPER_COUNTRY_OPTIONS = STRIPE_SUPPORTED_SHOPPER_COUNTRIES.map((e
 
 function normalizeText(value: string) {
   return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+export function hasPreciseShopperDeliveryArea(area: ShopperDeliveryArea | null | undefined) {
+  if (!area) return false;
+  return Boolean(
+    normalizeText(area.city) ||
+      normalizeText(area.province) ||
+      normalizeText(area.suburb || "") ||
+      normalizeText(area.postalCode || "") ||
+      typeof area.latitude === "number" ||
+      typeof area.longitude === "number",
+  );
+}
+
+export function formatPreciseShopperDeliveryArea(area: ShopperDeliveryArea | null | undefined) {
+  if (!area) return "";
+  return [area.suburb, area.city, area.province].map((entry) => normalizeText(entry || "")).filter(Boolean).join(", ");
 }
 
 export function readShopperDeliveryArea(): ShopperDeliveryArea | null {
@@ -133,6 +150,7 @@ export function DeliveryAreaGate({
   onChange?: (area: ShopperDeliveryArea | null) => void;
   compact?: boolean;
 }) {
+  const onChangeRef = useRef(onChange);
   const [area, setArea] = useState<ShopperDeliveryArea | null>(null);
   const [editing, setEditing] = useState(false);
   const [city, setCity] = useState("");
@@ -143,6 +161,10 @@ export function DeliveryAreaGate({
   const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
     const stored = readShopperDeliveryArea();
     setArea(stored);
     setCity(stored?.city || "");
@@ -150,8 +172,8 @@ export function DeliveryAreaGate({
     setSuburb(stored?.suburb || "");
     setPostalCode(stored?.postalCode || "");
     setCountry(stored?.country || "South Africa");
-    onChange?.(stored);
-  }, [onChange]);
+    onChangeRef.current?.(stored);
+  }, []);
 
   function applyArea() {
     const next = {
@@ -163,11 +185,11 @@ export function DeliveryAreaGate({
       latitude: area?.latitude ?? null,
       longitude: area?.longitude ?? null,
     };
-    const hasValue = Boolean(next.city || next.province);
+    const hasValue = Boolean(next.city || next.province || next.suburb || next.postalCode || next.country);
     const finalValue = hasValue ? next : null;
     setArea(finalValue);
     saveShopperDeliveryArea(finalValue);
-    onChange?.(finalValue);
+    onChangeRef.current?.(finalValue);
     setEditing(false);
   }
 
@@ -255,7 +277,7 @@ export function DeliveryAreaGate({
                   setPostalCode("");
                   setCountry("South Africa");
                   saveShopperDeliveryArea(null);
-                  onChange?.(null);
+                  onChangeRef.current?.(null);
                   setEditing(false);
                 }}
                 className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020]"
@@ -289,7 +311,7 @@ export function DeliveryAreaGate({
         setPostalCode(nextArea.postalCode);
         setCountry(nextArea.country || "South Africa");
         saveShopperDeliveryArea(nextArea);
-        onChange?.(nextArea);
+        onChangeRef.current?.(nextArea);
         setPickerOpen(false);
         setEditing(false);
       }}

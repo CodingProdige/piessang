@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { PiessangHeader } from "@/components/header/mega-menu";
 import { ClientTitleSync } from "@/components/layout/client-title-sync";
@@ -13,7 +14,23 @@ export function AppShell({
   initialAuthBootstrap,
 }: {
   children: React.ReactNode;
-  initialAuthBootstrap: AuthBootstrap;
+  initialAuthBootstrap?: AuthBootstrap;
+}) {
+  return (
+    <AuthProvider initialAuthBootstrap={initialAuthBootstrap}>
+      <DisplayCurrencyProvider>
+        <Suspense fallback={children}>
+          <AppShellFrame>{children}</AppShellFrame>
+        </Suspense>
+      </DisplayCurrencyProvider>
+    </AuthProvider>
+  );
+}
+
+function AppShellFrame({
+  children,
+}: {
+  children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -26,13 +43,11 @@ export function AppShell({
   const hideHeader = isLandingPreview;
 
   return (
-    <AuthProvider initialAuthBootstrap={initialAuthBootstrap}>
-      <DisplayCurrencyProvider>
-        <ClientTitleSync />
-        {!hideHeader ? <PiessangHeader showMegaMenu={isHome} /> : null}
-        {children}
-        {!hideFooter ? <PiessangFooter /> : null}
-      </DisplayCurrencyProvider>
-    </AuthProvider>
+    <>
+      <ClientTitleSync />
+      {!hideHeader ? <PiessangHeader showMegaMenu={isHome} /> : null}
+      {children}
+      {!hideFooter ? <PiessangFooter /> : null}
+    </>
   );
 }

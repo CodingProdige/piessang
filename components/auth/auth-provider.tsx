@@ -168,6 +168,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const DEFAULT_MODAL_MESSAGE = "Sign in to continue.";
 const DEFAULT_SELLER_MESSAGE = "Register your seller account to unlock catalogue tools.";
+const AUTH_CACHE_KEY = "piessang_auth_bootstrap_cache_v1";
 
 function inferAccountName(user: FirebaseUser | null) {
   return user?.displayName ?? user?.email?.split("@")[0] ?? "Piessang user";
@@ -229,6 +230,50 @@ function buildSellerRegistrationDefaults(profile: AuthProfile | null): SellerReg
   };
 }
 
+function readCachedAuthBootstrap(): AuthBootstrap | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(AUTH_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return {
+      user: parsed?.user ?? null,
+      profile: parsed?.profile ?? null,
+      itemCount: Number(parsed?.itemCount ?? 0),
+      productCounts:
+        parsed?.productCounts && typeof parsed.productCounts === "object" ? parsed.productCounts : {},
+      variantCounts:
+        parsed?.variantCounts && typeof parsed.variantCounts === "object" ? parsed.variantCounts : {},
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedAuthBootstrap(bootstrap: AuthBootstrap | null | undefined) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!bootstrap?.user?.uid && !bootstrap?.profile?.uid) {
+      window.localStorage.removeItem(AUTH_CACHE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      AUTH_CACHE_KEY,
+      JSON.stringify({
+        user: bootstrap.user ?? null,
+        profile: bootstrap.profile ?? null,
+        itemCount: Number(bootstrap.itemCount ?? 0),
+        productCounts:
+          bootstrap.productCounts && typeof bootstrap.productCounts === "object" ? bootstrap.productCounts : {},
+        variantCounts:
+          bootstrap.variantCounts && typeof bootstrap.variantCounts === "object" ? bootstrap.variantCounts : {},
+      }),
+    );
+  } catch {
+    // Ignore local cache write failures.
+  }
+}
+
 async function loadAuthBootstrap(): Promise<AuthBootstrap> {
   try {
     const response = await fetch("/api/auth/bootstrap", {
@@ -256,6 +301,10 @@ async function loadAuthBootstrap(): Promise<AuthBootstrap> {
   } catch {
     return EMPTY_AUTH_BOOTSTRAP;
   }
+}
+
+function hasAuthBootstrapData(bootstrap: AuthBootstrap | null | undefined) {
+  return Boolean(bootstrap?.user?.uid || bootstrap?.profile?.uid);
 }
 
 function buildClientProfile(user: FirebaseUser, data: Record<string, any>): AuthProfile {
@@ -482,9 +531,11 @@ export function AuthProvider({
   children: React.ReactNode;
   initialAuthBootstrap?: AuthBootstrap;
 }) {
+  const cachedBootstrap =
+    hasAuthBootstrapData(initialAuthBootstrap) ? initialAuthBootstrap : readCachedAuthBootstrap() ?? initialAuthBootstrap;
   const router = useRouter();
   const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [profile, setProfile] = useState<AuthProfile | null>(initialAuthBootstrap.profile);
+  const [profile, setProfile] = useState<AuthProfile | null>(cachedBootstrap.profile);
   const [modal, setModal] = useState<AuthModalState>({ open: false, message: DEFAULT_MODAL_MESSAGE });
   const [mode, setMode] = useState<AuthMode>("sign-in");
   const [email, setEmail] = useState("");
@@ -492,12 +543,12 @@ export function AuthProvider({
   const [displayName, setDisplayName] = useState("");
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [cartState, setCartState] = useState<CartState>({
-    itemCount: initialAuthBootstrap.itemCount ?? 0,
-    productCounts: initialAuthBootstrap.productCounts ?? {},
-    variantCounts: initialAuthBootstrap.variantCounts ?? {},
+    itemCount: cachedBootstrap.itemCount ?? 0,
+    productCounts: cachedBootstrap.productCounts ?? {},
+    variantCounts: cachedBootstrap.variantCounts ?? {},
   });
   const [busy, setBusy] = useState(false);
-  const [authReady, setAuthReady] = useState(false);
+  const [authReady, setAuthReady] = useState(hasAuthBootstrapData(cachedBootstrap));
   const [pendingSellerRegistration, setPendingSellerRegistration] = useState(false);
   const [sellerModal, setSellerModal] = useState<SellerRegistrationState>(() =>
     buildSellerRegistrationDefaults(null),
@@ -514,12 +565,55 @@ export function AuthProvider({
   const sellerHasTeamMemberships = useMemo(() => hasSellerTeamMemberships(profile), [profile]);
   const activeSellerTeamMembership = useMemo(() => getActiveSellerManagedAccount(profile), [profile]);
   const sellerOwnsSellerAccount = useMemo(() => ownsSellerAccount(profile), [profile]);
-  const lastAuthUidRef = useRef<string | null>(initialAuthBootstrap.user?.uid ?? null);
-  const authReadyRef = useRef(Boolean(initialAuthBootstrap.user || initialAuthBootstrap.profile));
+  const lastAuthUidRef = useRef<string | null>(cachedBootstrap.user?.uid ?? null);
+  const authReadyRef = useRef(Boolean(cachedBootstrap.user || cachedBootstrap.profile));
 
   useEffect(() => {
     authReadyRef.current = authReady;
   }, [authReady]);
+
+  useEffect(() => {
+    writeCachedAuthBootstrap({
+      user: profile?.uid
+        ? {
+            uid: profile.uid,
+            email: profile.email ?? null,
+            displayName: profile.displayName ?? null,
+            photoURL: profile.photoURL ?? null,
+          }
+        : null,
+      profile,
+      itemCount: cartState.itemCount,
+      productCounts: cartState.productCounts,
+      variantCounts: cartState.variantCounts,
+    });
+  }, [cartState.itemCount, cartState.productCounts, cartState.variantCounts, profile]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (hasAuthBootstrapData(initialAuthBootstrap)) {
+      setAuthReady(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async () => {
+      const bootstrap = await loadAuthBootstrap();
+      if (cancelled || !hasAuthBootstrapData(bootstrap)) return;
+      setProfile(bootstrap.profile);
+      setCartState({
+        itemCount: bootstrap.itemCount ?? 0,
+        productCounts: bootstrap.productCounts ?? {},
+        variantCounts: bootstrap.variantCounts ?? {},
+      });
+      setAuthReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialAuthBootstrap]);
 
   const refreshProfile = useCallback(async () => {
     const activeUser = clientAuth.currentUser ?? user;
@@ -576,6 +670,17 @@ export function AuthProvider({
       setUser(nextUser);
 
       if (!nextUser) {
+        const bootstrap = await loadAuthBootstrap();
+        if (hasAuthBootstrapData(bootstrap)) {
+          setProfile(bootstrap.profile);
+          setCartState({
+            itemCount: bootstrap.itemCount ?? 0,
+            productCounts: bootstrap.productCounts ?? {},
+            variantCounts: bootstrap.variantCounts ?? {},
+          });
+          setAuthReady(true);
+          return;
+        }
         setProfile(null);
         setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
         setAuthReady(true);
@@ -700,6 +805,7 @@ export function AuthProvider({
       }
       await signOut(clientAuth);
       await syncServerSession(null);
+      writeCachedAuthBootstrap(null);
       setProfile(null);
       setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
       closeAuthModal();
@@ -1171,13 +1277,14 @@ export function AuthProvider({
 
               <form
                 className="mt-5 space-y-3"
+                suppressHydrationWarning
                 onSubmit={(event) => {
                   event.preventDefault();
                   void handleEmailAuth();
                 }}
               >
                 {mode === "sign-up" ? (
-                  <div className="block">
+                  <div className="block" suppressHydrationWarning>
                     <label htmlFor="auth-display-name" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                       Display name <span className="text-[#d11c1c]">*</span>
                     </label>
@@ -1192,7 +1299,7 @@ export function AuthProvider({
                   </div>
                 ) : null}
 
-                <div className="block">
+                <div className="block" suppressHydrationWarning>
                   <label htmlFor="auth-email" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                     Email address <span className="text-[#d11c1c]">*</span>
                   </label>
@@ -1209,7 +1316,7 @@ export function AuthProvider({
                   />
                 </div>
 
-                <div className="block">
+                <div className="block" suppressHydrationWarning>
                   <label htmlFor="auth-password" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
                     Password <span className="text-[#d11c1c]">*</span>
                   </label>
@@ -1386,7 +1493,7 @@ export function AuthProvider({
                       type="button"
                       onClick={() => {
                         closeSellerRegistrationModal();
-                        window.location.href = "/seller/dashboard";
+                        router.push("/seller/dashboard");
                       }}
                       className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b]"
                     >
@@ -1426,7 +1533,7 @@ export function AuthProvider({
                           type="button"
                           onClick={() => {
                             closeSellerRegistrationModal();
-                            window.location.href = "/seller/dashboard";
+                            router.push("/seller/dashboard");
                           }}
                           className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b]"
                         >
@@ -1445,7 +1552,7 @@ export function AuthProvider({
                         type="button"
                         onClick={() => {
                           closeSellerRegistrationModal();
-                          window.location.href = "/seller/dashboard";
+                          router.push("/seller/dashboard");
                         }}
                         className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b]"
                       >

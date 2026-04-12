@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { decode } from "blurhash";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
@@ -664,6 +665,7 @@ export function SellerSettingsWorkspace({
   sellerRole,
   isSystemAdmin = false,
 }: SellerSettingsWorkspaceProps) {
+  const router = useRouter();
   const { profile, refreshProfile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1517,7 +1519,7 @@ export function SellerSettingsWorkspace({
         throw new Error(payload?.message || "Unable to delete seller account.");
       }
       await refreshProfile();
-      window.location.href = "/seller/dashboard";
+      router.push("/seller/dashboard");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to delete seller account.");
     } finally {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CartCheckout } from "@/components/cart/cart-checkout";
@@ -136,7 +136,7 @@ function CheckoutResult({
   );
 }
 
-export default function CartPage() {
+function CartPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const step = String(searchParams.get("step") || "").trim().toLowerCase();
@@ -180,5 +180,19 @@ export default function CartPage() {
     <PageBody className="px-4 py-10">
       {isCheckout ? <CartCheckout /> : <LiveCart />}
     </PageBody>
+  );
+}
+
+export default function CartPage() {
+  return (
+    <Suspense
+      fallback={
+        <PageBody className="px-4 py-10">
+          <LiveCart />
+        </PageBody>
+      }
+    >
+      <CartPageContent />
+    </Suspense>
   );
 }

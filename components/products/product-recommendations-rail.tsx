@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
+import type { ShopperDeliveryArea } from "@/components/products/delivery-area-gate";
 
 type ProductItem = {
   id?: string;
@@ -46,6 +47,7 @@ export function ProductRecommendationsRail({
   hideWhenEmpty = false,
   desktopOnly = false,
   mobileOnly = false,
+  shopperArea = null,
 }: {
   productId: string;
   endpoint: "often-bought-together" | "similar";
@@ -56,6 +58,7 @@ export function ProductRecommendationsRail({
   hideWhenEmpty?: boolean;
   desktopOnly?: boolean;
   mobileOnly?: boolean;
+  shopperArea?: ShopperDeliveryArea | null;
 }) {
   const [items, setItems] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -124,6 +127,7 @@ export function ProductRecommendationsRail({
           emptyMessage={emptyTitle}
           mobileLeadingSpacer={false}
           viewAllHref={viewAllHref}
+          shopperArea={shopperArea}
         />
       ) : (
         <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-4 py-5">

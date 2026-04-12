@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import { ProductPageRecommendations } from "@/components/products/product-page-recommendations";
 import {
   readShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
@@ -215,24 +216,6 @@ const VAT_MULTIPLIER = 1.15;
 const LOW_STOCK_THRESHOLD = 13;
 const LIVE_VIEWER_FLAME_THRESHOLD = 5;
 const HOT_SALES_FIRE_THRESHOLD = 100;
-
-const ProductRecommendationsRail = dynamic(
-  () =>
-    import("@/components/products/product-recommendations-rail").then((mod) => mod.ProductRecommendationsRail),
-  {
-    ssr: false,
-    loading: () => (
-      <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-        <div className="h-6 w-48 rounded bg-[#f3f3f0] animate-pulse" />
-        <div className="mt-4 flex gap-4 overflow-hidden pb-2">
-          {Array.from({ length: 3 }).map((_, index) => (
-            <div key={index} className="h-[360px] min-w-[220px] max-w-[220px] rounded-[8px] bg-[#f3f3f0] animate-pulse" />
-          ))}
-        </div>
-      </section>
-    ),
-  },
-);
 
 const ProductReviewsSection = dynamic(
   () => import("@/components/products/product-reviews-section").then((mod) => mod.ProductReviewsSection),
@@ -516,6 +499,11 @@ function getVariantExtraDetails(variant?: ProductVariant | null) {
   return entries;
 }
 
+function isPreLovedCategory(category?: string | null) {
+  const normalized = String(category ?? "").trim().toLowerCase();
+  return normalized === "pre-loved" || normalized === "preloved";
+}
+
 function HeartIcon({ filled = false }: { filled?: boolean }) {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className={`h-4 w-4 ${filled ? "text-white" : "text-[#4a4545]"}`}>
@@ -592,10 +580,23 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
 export function SingleProductView({
   item,
   selectedVariantId,
+  recommendationRails,
 }: {
   item: ProductItem;
   backHref?: string;
   selectedVariantId?: string | null;
+  recommendationRails?: {
+    oftenBought?: {
+      items?: ProductItem[];
+      source?: "co_purchase" | "catalog_pairing" | "none";
+      message?: string | null;
+    };
+    similar?: {
+      items?: ProductItem[];
+      source?: "co_purchase" | "catalog_pairing" | "none";
+      message?: string | null;
+    };
+  };
 }) {
   const { profile, isAuthenticated, openAuthModal, favoriteIds, refreshProfile, syncFavoriteState, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
@@ -650,6 +651,18 @@ export function SingleProductView({
   const activeVariantExtraDetails = getVariantExtraDetails(activeVariant);
   const overview = item.data?.product?.overview ?? null;
   const description = item.data?.product?.description ?? "No description available.";
+  const oftenBoughtItems = Array.isArray(recommendationRails?.oftenBought?.items)
+    ? recommendationRails.oftenBought.items
+    : [];
+  const similarItems = Array.isArray(recommendationRails?.similar?.items)
+    ? recommendationRails.similar.items
+    : [];
+  const oftenBoughtSubtitle =
+    recommendationRails?.oftenBought?.source === "co_purchase"
+      ? "Based on previous orders"
+      : recommendationRails?.oftenBought?.source === "catalog_pairing"
+        ? "Suggested from matching products in our catalog"
+        : "Suggested from matching products in our catalog";
   const brandLabel = getBrandLabel(item);
   const vendorLabel = getVendorLabel(item);
   const productId = String(item.data?.product?.unique_id ?? item.id ?? "").trim();
@@ -684,6 +697,7 @@ export function SingleProductView({
 
   const categoryLabel = item.data?.grouping?.category ? String(item.data.grouping.category).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Products";
   const subCategoryLabel = item.data?.grouping?.subCategory ? String(item.data.grouping.subCategory).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "";
+  const isPreLoved = isPreLovedCategory(item.data?.grouping?.category);
   const hasThumbnailRail = activeImages.length > 1;
 
   useEffect(() => {
@@ -985,6 +999,11 @@ export function SingleProductView({
                 >
                   {activeImages[activeImageIndex] ? (
                     <>
+                      {isPreLoved ? (
+                        <span className="absolute left-3 top-3 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
+                          Pre-Loved
+                        </span>
+                      ) : null}
                       <BlurhashImage
                         src={activeImages[activeImageIndex].imageUrl}
                         blurHash={activeImages[activeImageIndex].blurHashUrl}
@@ -1048,11 +1067,17 @@ export function SingleProductView({
             </div>
           </div>
 
-          <ProductRecommendationsRail
-            productId={productId}
-            endpoint="often-bought-together"
+          <ProductPageRecommendations
             title="Pairs well with"
-            desktopOnly
+            subtitle={oftenBoughtSubtitle}
+            products={oftenBoughtItems}
+            viewAllHref={`/products?recommendation=${encodeURIComponent(
+              recommendationRails?.oftenBought?.source === "co_purchase"
+                ? "often-bought-together"
+                : "catalog-pairing",
+            )}&productId=${encodeURIComponent(productId)}`}
+            shopperArea={shopperArea}
+            className="hidden lg:block"
           />
         </div>
 
@@ -1428,20 +1453,25 @@ export function SingleProductView({
 
       <ProductReviewsSection item={item as any} productId={productId} />
 
-      <ProductRecommendationsRail
-        productId={productId}
-        endpoint="often-bought-together"
+      <ProductPageRecommendations
         title="Frequently bought together"
-        mobileOnly
+        subtitle={oftenBoughtSubtitle}
+        products={oftenBoughtItems}
+        viewAllHref={`/products?recommendation=${encodeURIComponent(
+          recommendationRails?.oftenBought?.source === "co_purchase"
+            ? "often-bought-together"
+            : "catalog-pairing",
+        )}&productId=${encodeURIComponent(productId)}`}
+        shopperArea={shopperArea}
+        className="lg:hidden"
       />
 
-      <ProductRecommendationsRail
-        productId={productId}
-        endpoint="similar"
+      <ProductPageRecommendations
         title="You may also like"
-        fallbackContext="More from this category"
-        emptyTitle="No similar products yet."
-        hideWhenEmpty
+        subtitle="More from this category"
+        products={similarItems}
+        viewAllHref="/products"
+        shopperArea={shopperArea}
       />
 
       {reportModalOpen ? (

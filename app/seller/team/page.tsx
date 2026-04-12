@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { PageBody } from "@/components/layout/page-body";
@@ -79,7 +79,7 @@ type SellerTeamPageProps = {
   showIntro?: boolean;
 };
 
-export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps = {}) {
+function SellerTeamPageContent({ showIntro = true }: SellerTeamPageProps = {}) {
   const {
     authReady,
     isAuthenticated,
@@ -884,5 +884,24 @@ export default function SellerTeamPage({ showIntro = true }: SellerTeamPageProps
       ) : null}
 
     </PageBody>
+  );
+}
+
+export default function SellerTeamPage(props: SellerTeamPageProps = {}) {
+  return (
+    <Suspense
+      fallback={
+        <PageBody className="px-4 py-6 lg:px-6">
+          <div className="mx-auto w-full max-w-[1200px]">
+            <SellerPageIntro
+              title="Seller team"
+              description="Loading your team workspace..."
+            />
+          </div>
+        </PageBody>
+      }
+    >
+      <SellerTeamPageContent {...props} />
+    </Suspense>
   );
 }

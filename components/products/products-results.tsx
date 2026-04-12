@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
@@ -24,6 +24,27 @@ export const PRODUCT_CARD_GRID_IMAGE_SIZES = "(max-width: 640px) 72vw, (max-widt
 type ProductVariant = {
   variant_id?: string | number;
   label?: string | null;
+  size?: string | null;
+  color?: string | null;
+  shade?: string | null;
+  scent?: string | null;
+  skinType?: string | null;
+  hairType?: string | null;
+  flavor?: string | null;
+  abv?: string | null;
+  containerType?: string | null;
+  storageCapacity?: string | null;
+  memoryRam?: string | null;
+  connectivity?: string | null;
+  compatibility?: string | null;
+  sizeSystem?: string | null;
+  material?: string | null;
+  ringSize?: string | null;
+  strapLength?: string | null;
+  bookFormat?: string | null;
+  language?: string | null;
+  ageRange?: string | null;
+  modelFitment?: string | null;
   logistics?: {
     parcel_preset?: string | null;
     shipping_class?: string | null;
@@ -199,6 +220,42 @@ export type ProductItem = {
     label?: string | null;
   };
 };
+
+const ATTRIBUTE_FILTER_KEYS = [
+  "size",
+  "color",
+  "material",
+  "shade",
+  "scent",
+  "skinType",
+  "hairType",
+  "flavor",
+  "abv",
+  "containerType",
+  "storageCapacity",
+  "memoryRam",
+  "connectivity",
+  "compatibility",
+  "ringSize",
+  "strapLength",
+  "bookFormat",
+  "language",
+  "ageRange",
+  "modelFitment",
+] as const;
+
+type AttributeFilterKey = (typeof ATTRIBUTE_FILTER_KEYS)[number];
+
+function normalizeAttributeValue(value: unknown) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function itemMatchesAttributeFilter(item: ProductItem, key: AttributeFilterKey, expectedValue: string) {
+  const normalizedExpected = normalizeAttributeValue(expectedValue);
+  if (!normalizedExpected) return true;
+  const variants = Array.isArray(item.data?.variants) ? item.data.variants : [];
+  return variants.some((variant) => normalizeAttributeValue(variant?.[key]) === normalizedExpected);
+}
 
 type CartPreviewItem = {
   product_unique_id?: string;
@@ -468,7 +525,7 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
     shopperArea,
     variant,
     platformLabel: "Piessang shipping available",
-    missingProfileLabel: shopperArea ? "Check delivery with seller" : "Set your shipping location",
+    missingProfileLabel: shopperArea ? "Delivery availability confirmed at checkout" : "Set your shipping location",
   });
 }
 
@@ -880,6 +937,7 @@ export function BrowseProductCard({
   cartBurstKey?: number;
   shopperArea?: ShopperDeliveryArea | null;
 }) {
+  const router = useRouter();
   const { formatMoney } = useDisplayCurrency();
   const displayImages = getDisplayImages(item);
   const [hoveredImageIndex, setHoveredImageIndex] = useState(0);
@@ -1124,7 +1182,7 @@ export function BrowseProductCard({
       return;
     }
 
-    window.location.assign(href);
+    router.push(href, { scroll: true });
   };
   const shouldIgnoreCardOpen = (target: EventTarget | null) =>
     target instanceof HTMLElement && Boolean(target.closest("[data-ignore-card-open='true']"));
@@ -1283,7 +1341,6 @@ export function BrowseProductCard({
                   href={resolvedBrandHref}
                   target={linkTarget}
                   rel={linkRel}
-                  prefetch={false}
                   scroll={false}
                   onClick={(event) => event.stopPropagation()}
                   className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
@@ -1301,7 +1358,6 @@ export function BrowseProductCard({
                   href={resolvedVendorHref}
                   target={linkTarget}
                   rel={linkRel}
-                  prefetch={false}
                   scroll={false}
                   onClick={(event) => event.stopPropagation()}
                   className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
@@ -1464,7 +1520,6 @@ export function BrowseProductCard({
                       href={resolvedBrandHref}
                       target={linkTarget}
                       rel={linkRel}
-                      prefetch={false}
                       scroll={false}
                       onClick={(event) => event.stopPropagation()}
                       className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
@@ -1482,7 +1537,6 @@ export function BrowseProductCard({
                       href={resolvedVendorHref}
                       target={linkTarget}
                       rel={linkRel}
-                      prefetch={false}
                       scroll={false}
                       onClick={(event) => event.stopPropagation()}
                       className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]"
@@ -1616,6 +1670,7 @@ export function ProductsResults({
   sponsoredPlacement?: string;
   sponsoredContext?: { category?: string; subCategory?: string; search?: string };
 }) {
+  const router = useRouter();
   const [items, setItems] = useState(() => initialItems.filter(hasShopperFacingProductImage));
   const [sponsoredItems, setSponsoredItems] = useState<ProductItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1638,6 +1693,11 @@ export function ProductsResults({
   const minRatingParam = filterParams.get("minRating");
   const minRating = minRatingParam ? Number(minRatingParam) : undefined;
   const favoritesOnly = filterParams.get("favoritesOnly") === "true";
+  const activeAttributeFilters = ATTRIBUTE_FILTER_KEYS.reduce<Record<string, string>>((acc, key) => {
+    const value = String(filterParams.get(key) || "").trim();
+    if (value) acc[key] = value;
+    return acc;
+  }, {});
 
   useEffect(() => {
     setShopperArea(readShopperDeliveryArea());
@@ -1709,12 +1769,15 @@ export function ProductsResults({
     () =>
       filterByPriceRange(
         filterByMinRating(items, minRating).filter((item) =>
-          isProductEligibleForShopperCountry(item, shopperArea?.country || ""),
+          isProductEligibleForShopperCountry(item, shopperArea?.country || "") &&
+          Object.entries(activeAttributeFilters).every(([key, value]) =>
+            itemMatchesAttributeFilter(item, key as AttributeFilterKey, value),
+          ),
         ),
         priceRange?.min,
         priceRange?.max,
       ),
-    [items, minRating, priceRange?.min, priceRange?.max, shopperArea?.country],
+    [activeAttributeFilters, items, minRating, priceRange?.min, priceRange?.max, shopperArea?.country],
   );
   const displayItems = useMemo(() => {
     if (!filteredItems.length || !sponsoredItems.length || !sponsoredPlacement) return filteredItems;
@@ -1746,6 +1809,7 @@ export function ProductsResults({
     vendor: undefined,
     kind: undefined,
     packUnit: undefined,
+    ...Object.fromEntries(ATTRIBUTE_FILTER_KEYS.map((key) => [key, undefined])),
     inStock: undefined,
     onSale: undefined,
     isFeatured: undefined,
@@ -1886,7 +1950,7 @@ export function ProductsResults({
         body: JSON.stringify({ uid }),
       });
       await refreshProfile();
-      window.location.assign("/products");
+      router.push("/products");
     } catch {
       openAuthModal("We could not clear your favourites right now.");
     }

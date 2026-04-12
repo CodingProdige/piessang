@@ -107,16 +107,16 @@ export function DisplayCurrencySelector({ className = "" }: { className?: string
   const { currency, setCurrency } = useDisplayCurrency();
 
   return (
-    <label className={`inline-flex items-center gap-2 text-[12px] font-semibold text-[#4b5563] ${className}`}>
+    <label className={`inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#4b5563] sm:gap-2 ${className}`}>
       <span className="hidden lg:inline">Currency</span>
-      <div className="relative">
+      <div className="relative min-w-0">
         <select
           value={currency}
           onChange={(event) => {
             const next = event.target.value;
             if (isSupportedDisplayCurrency(next)) setCurrency(next);
           }}
-          className="appearance-none rounded-[8px] border border-black/10 bg-white py-2 pl-9 pr-8 text-[12px] font-semibold text-[#202020] outline-none"
+          className="max-w-[88px] appearance-none rounded-[8px] border border-black/10 bg-white py-2 pl-8 pr-7 text-[11px] font-semibold text-[#202020] outline-none sm:max-w-none sm:pl-9 sm:pr-8 sm:text-[12px]"
           aria-label="Choose display currency"
         >
           {SUPPORTED_DISPLAY_CURRENCIES.map((option) => (

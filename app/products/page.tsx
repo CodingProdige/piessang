@@ -24,6 +24,27 @@ type SearchParamsInput = Record<string, SearchParamValue> | Promise<Record<strin
 type ProductVariant = {
   variant_id?: string | number;
   label?: string | null;
+  size?: string | null;
+  color?: string | null;
+  shade?: string | null;
+  scent?: string | null;
+  skinType?: string | null;
+  hairType?: string | null;
+  flavor?: string | null;
+  abv?: string | null;
+  containerType?: string | null;
+  storageCapacity?: string | null;
+  memoryRam?: string | null;
+  connectivity?: string | null;
+  compatibility?: string | null;
+  sizeSystem?: string | null;
+  material?: string | null;
+  ringSize?: string | null;
+  strapLength?: string | null;
+  bookFormat?: string | null;
+  language?: string | null;
+  ageRange?: string | null;
+  modelFitment?: string | null;
   pack?: {
     unit_count?: number;
     volume?: number;
@@ -165,6 +186,11 @@ type BrandBanner = {
 };
 
 type FilterCountMap = Record<string, number>;
+type AttributeFilterConfig = {
+  key: string;
+  title: string;
+  variantKey: keyof ProductVariant;
+};
 
 type ProductsPayload = {
   ok?: boolean;
@@ -189,11 +215,23 @@ type ProductsPayload = {
     packUnits?: string[];
     packUnitCounts?: number[];
     packUnitVolumes?: number[];
+    attributeFilters?: Array<{
+      key: string;
+      title: string;
+      items: string[];
+    }>;
     priceRange?: {
       min?: number;
       max?: number;
     };
   };
+  message?: string;
+};
+
+type RecommendationPayload = {
+  ok?: boolean;
+  items?: ProductItem[];
+  source?: "co_purchase" | "catalog_pairing" | "none";
   message?: string;
 };
 
@@ -221,6 +259,28 @@ type CatalogueBrandItem = {
 
 const VAT_MULTIPLIER = 1.15;
 const VAT_DIVISOR = 1.15;
+const ATTRIBUTE_FILTERS: AttributeFilterConfig[] = [
+  { key: "size", title: "Size", variantKey: "size" },
+  { key: "color", title: "Color", variantKey: "color" },
+  { key: "material", title: "Material", variantKey: "material" },
+  { key: "shade", title: "Shade", variantKey: "shade" },
+  { key: "scent", title: "Scent", variantKey: "scent" },
+  { key: "skinType", title: "Skin type", variantKey: "skinType" },
+  { key: "hairType", title: "Hair type", variantKey: "hairType" },
+  { key: "flavor", title: "Flavour", variantKey: "flavor" },
+  { key: "abv", title: "ABV", variantKey: "abv" },
+  { key: "containerType", title: "Container", variantKey: "containerType" },
+  { key: "storageCapacity", title: "Storage", variantKey: "storageCapacity" },
+  { key: "memoryRam", title: "Memory", variantKey: "memoryRam" },
+  { key: "connectivity", title: "Connectivity", variantKey: "connectivity" },
+  { key: "compatibility", title: "Compatibility", variantKey: "compatibility" },
+  { key: "ringSize", title: "Ring size", variantKey: "ringSize" },
+  { key: "strapLength", title: "Strap length", variantKey: "strapLength" },
+  { key: "bookFormat", title: "Format", variantKey: "bookFormat" },
+  { key: "language", title: "Language", variantKey: "language" },
+  { key: "ageRange", title: "Age range", variantKey: "ageRange" },
+  { key: "modelFitment", title: "Fitment", variantKey: "modelFitment" },
+];
 
 function humanizeSlug(value: string) {
   return value
@@ -229,6 +289,16 @@ function humanizeSlug(value: string) {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
+}
+
+function normalizeFilterValue(value: unknown) {
+  return String(value ?? "").trim();
+}
+
+function sortFilterValues(values: string[]) {
+  return [...values].sort((left, right) =>
+    left.localeCompare(right, "en", { numeric: true, sensitivity: "base" }),
+  );
 }
 
 function currentParam(searchParams: Record<string, SearchParamValue>, key: string) {
@@ -289,6 +359,74 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
 async function fetchProducts(searchParams: Record<string, SearchParamValue>, origin: string) {
   const response = await fetch(new URL(buildProductsUrl(searchParams), origin), { cache: "no-store" });
   return (await response.json()) as ProductsPayload;
+}
+
+async function fetchRecommendationRail(
+  origin: string,
+  endpoint: "often-bought-together" | "similar",
+  productId: string,
+): Promise<{
+  items: ProductItem[];
+  source: "co_purchase" | "catalog_pairing" | "none";
+  message: string | null;
+}> {
+  if (!productId) {
+    return { items: [], source: "none", message: null };
+  }
+
+  try {
+    const response = await fetch(
+      new URL(`/api/client/v1/products/${endpoint}?productId=${encodeURIComponent(productId)}`, origin),
+      { cache: "no-store" },
+    );
+    const payload = (await response.json().catch(() => ({}))) as RecommendationPayload;
+    if (!response.ok || payload?.ok === false) {
+      return { items: [], source: "none", message: payload?.message ?? null };
+    }
+
+    const rawItems = Array.isArray(payload?.items) ? payload.items : [];
+    const productIds = rawItems
+      .map((item) => String(item?.data?.product?.unique_id ?? item?.id ?? "").trim())
+      .filter((value, index, array) => /^\d{8}$/.test(value) && array.indexOf(value) === index)
+      .slice(0, 12);
+
+    let hydratedItems = rawItems;
+    if (productIds.length) {
+      try {
+        const hydrateResponse = await fetch(
+          new URL(
+            `/api/catalogue/v1/products/product/get?ids=${encodeURIComponent(productIds.join(","))}&isActive=true`,
+            origin,
+          ),
+          { cache: "no-store" },
+        );
+        const hydratePayload = (await hydrateResponse.json().catch(() => ({}))) as ProductsPayload;
+        if (hydrateResponse.ok && hydratePayload?.ok !== false) {
+          const candidates = Array.isArray(hydratePayload?.items)
+            ? hydratePayload.items
+            : Array.isArray(hydratePayload?.groups)
+              ? hydratePayload.groups.flatMap((group) => group.items ?? [])
+              : [];
+          const candidatesById = new Map(
+            candidates.map((item) => [String(item?.data?.product?.unique_id ?? item?.id ?? "").trim(), item]),
+          );
+          hydratedItems = productIds
+            .map((id) => candidatesById.get(id))
+            .filter((item): item is ProductItem => Boolean(item));
+        }
+      } catch {
+        // Keep the initial recommendation payload if hydration fails.
+      }
+    }
+
+    return {
+      items: hydratedItems,
+      source: payload?.source ?? "none",
+      message: payload?.message ?? null,
+    };
+  } catch {
+    return { items: [], source: "none", message: null };
+  }
 }
 
 function stripHtml(value: unknown) {
@@ -645,6 +783,37 @@ function countBy(items: ProductItem[], getter: (item: ProductItem) => string) {
   }, {});
 }
 
+function getVariantAttributeValues(item: ProductItem, key: keyof ProductVariant) {
+  const values = Array.isArray(item.data?.variants) ? item.data.variants : [];
+  return Array.from(
+    new Set(
+      values
+        .map((variant) => normalizeFilterValue(variant?.[key]))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function buildAttributeFilterData(items: ProductItem[]) {
+  return ATTRIBUTE_FILTERS
+    .map((config) => {
+      const counts = items.reduce<FilterCountMap>((acc, item) => {
+        for (const value of getVariantAttributeValues(item, config.variantKey)) {
+          acc[value] = (acc[value] ?? 0) + 1;
+        }
+        return acc;
+      }, {});
+      const entries = sortFilterValues(Object.keys(counts));
+      if (!entries.length) return null;
+      return {
+        ...config,
+        items: entries,
+        counts,
+      };
+    })
+    .filter(Boolean) as Array<AttributeFilterConfig & { items: string[]; counts: FilterCountMap }>;
+}
+
 function countRatings(items: ProductItem[], threshold: number) {
   return items.reduce((acc, item) => acc + ((getRatingAverage(item) ?? 0) >= threshold ? 1 : 0), 0);
 }
@@ -756,15 +925,17 @@ function FilterGroup({
   counts,
   scroll = false,
   defaultOpen = true,
+  formatItemLabel = humanizeSlug,
 }: {
   title: string;
   items: string[];
   currentValue?: string;
   baseParams: Record<string, SearchParamValue>;
-  paramKey: "category" | "subCategory" | "brand" | "kind" | "packUnit";
+  paramKey: string;
   counts?: FilterCountMap;
   scroll?: boolean;
   defaultOpen?: boolean;
+  formatItemLabel?: (value: string) => string;
 }) {
   if (!items.length) return null;
 
@@ -802,7 +973,7 @@ function FilterGroup({
               >
                 ✓
               </span>
-              <span className="truncate">{humanizeSlug(item)}</span>
+              <span className="truncate">{formatItemLabel(item)}</span>
               <span className="ml-auto text-[10px] font-semibold text-[#8b94a3]">
                 {counts?.[item] ?? 0}
               </span>
@@ -1139,9 +1310,23 @@ export async function ProductsPage({
         );
       }
 
+      const productId = String(singleItem.data?.product?.unique_id ?? singleItem.id ?? "").trim();
+      const [oftenBoughtRail, similarRail] = await Promise.all([
+        fetchRecommendationRail(origin, "often-bought-together", productId),
+        fetchRecommendationRail(origin, "similar", productId),
+      ]);
+
       return (
         <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
-          <SingleProductView item={singleItem} backHref={singleProductBackHref} selectedVariantId={currentVariantId} />
+          <SingleProductView
+            item={singleItem}
+            backHref={singleProductBackHref}
+            selectedVariantId={currentVariantId}
+            recommendationRails={{
+              oftenBought: oftenBoughtRail,
+              similar: similarRail,
+            }}
+          />
         </PageBody>
       );
     }
@@ -1168,6 +1353,7 @@ export async function ProductsPage({
   const brandCounts = countBy(countItems, (item) => item.data?.grouping?.brand ?? item.data?.brand?.slug ?? "");
   const kindCounts = countBy(countItems, (item) => item.data?.grouping?.kind ?? "");
   const packUnitCounts = countBy(countItems, (item) => getPackUnit(item));
+  const attributeFilters = buildAttributeFilterData(countItems);
   const ratingCounts: FilterCountMap = {
     4: countRatings(countItems, 4),
     3: countRatings(countItems, 3),
@@ -1180,6 +1366,9 @@ export async function ProductsPage({
   const currentBrand = currentParam(resolvedSearchParams, "brand");
   const currentKind = currentParam(resolvedSearchParams, "kind");
   const currentPackUnit = currentParam(resolvedSearchParams, "packUnit");
+  const currentAttributeFilters = Object.fromEntries(
+    ATTRIBUTE_FILTERS.map((config) => [config.key, currentParam(resolvedSearchParams, config.key) ?? ""]),
+  ) as Record<string, string>;
   const currentInStock = currentParam(resolvedSearchParams, "inStock") === "true";
   const currentOnSale = currentParam(resolvedSearchParams, "onSale") === "true";
   const currentNewArrivals = currentParam(resolvedSearchParams, "newArrivals") === "true";
@@ -1204,7 +1393,7 @@ export async function ProductsPage({
   const priceHistogram = activePriceRange
     ? buildPriceHistogram(displayItems, activePriceRange.min, activePriceRange.max)
     : [];
-  const filterOptions = { ...options, priceRange: activePriceRange ?? undefined };
+  const filterOptions = { ...options, attributeFilters, priceRange: activePriceRange ?? undefined };
   const brandBannerBase = getBrandBanner(countItems, currentBrand ?? undefined);
   const brandBannerRemote = await fetchBrandBannerImage(currentBrand ?? undefined, origin);
   const brandBanner = brandBannerBase
@@ -1229,6 +1418,7 @@ export async function ProductsPage({
     Boolean(currentBrand) ||
     Boolean(currentKind) ||
     Boolean(currentPackUnit) ||
+    attributeFilters.some((config) => Boolean(currentAttributeFilters[config.key])) ||
     currentInStock ||
     currentOnSale ||
     currentNewArrivals ||
@@ -1306,12 +1496,24 @@ export async function ProductsPage({
           ) : null}
           {currentPackUnit ? (
             <ToggleFilter
-              title={humanizeSlug(currentPackUnit)}
+              title={currentPackUnit}
               enabled
               href={buildProductsHref(baseParams, { packUnit: undefined })}
               scroll={false}
             />
           ) : null}
+          {attributeFilters.map((config) => {
+            const activeValue = currentAttributeFilters[config.key];
+            return activeValue ? (
+              <ToggleFilter
+                key={`active-${config.key}`}
+                title={activeValue}
+                enabled
+                href={buildProductsHref(baseParams, { [config.key]: undefined })}
+                scroll={false}
+              />
+            ) : null;
+          })}
           {currentMinRating != null ? (
             <ToggleFilter
               title={`${currentMinRating} ★ and up`}
@@ -1368,6 +1570,7 @@ export async function ProductsPage({
         currentBrand={currentBrand ?? ""}
         currentKind={currentKind ?? ""}
         currentPackUnit={currentPackUnit ?? ""}
+        currentAttributeFilters={currentAttributeFilters}
         currentMinRating={currentMinRating}
         currentInStock={currentInStock}
         currentOnSale={currentOnSale}
@@ -1382,6 +1585,7 @@ export async function ProductsPage({
           brands: brandCounts,
           kinds: kindCounts,
           packUnits: packUnitCounts,
+          attributes: Object.fromEntries(attributeFilters.map((config) => [config.key, config.counts])),
           ratings: ratingCounts,
         }}
       />
@@ -1435,7 +1639,20 @@ export async function ProductsPage({
               baseParams={baseParams}
               paramKey="packUnit"
               counts={packUnitCounts}
+              formatItemLabel={(value) => value}
             />
+            {attributeFilters.map((config) => (
+              <FilterGroup
+                key={config.key}
+                title={config.title}
+                items={config.items}
+                currentValue={currentAttributeFilters[config.key]}
+                baseParams={baseParams}
+                paramKey={config.key}
+                counts={config.counts}
+                formatItemLabel={(value) => value}
+              />
+            ))}
             <RatingFilterGroup
               baseParams={baseParams}
               currentMinRating={currentMinRating}

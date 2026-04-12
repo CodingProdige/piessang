@@ -13,6 +13,11 @@ type MobileFilterOptions = {
   brands?: string[];
   kinds?: string[];
   packUnits?: string[];
+  attributeFilters?: Array<{
+    key: string;
+    title: string;
+    items: string[];
+  }>;
   priceRange?: {
     min?: number;
     max?: number;
@@ -63,6 +68,7 @@ function FilterSection({
   paramKey,
   onClose,
   defaultOpen = true,
+  formatItemLabel = humanizeSlug,
 }: {
   title: string;
   items: string[];
@@ -70,9 +76,10 @@ function FilterSection({
   counts?: FilterCountMap;
   pathname: string;
   params: URLSearchParams;
-  paramKey: "category" | "subCategory" | "brand" | "kind" | "packUnit";
+  paramKey: string;
   onClose: () => void;
   defaultOpen?: boolean;
+  formatItemLabel?: (value: string) => string;
 }) {
   if (!items.length) return null;
 
@@ -111,7 +118,7 @@ function FilterSection({
               >
                 ✓
               </span>
-              <span className="truncate">{humanizeSlug(item)}</span>
+              <span className="truncate">{formatItemLabel(item)}</span>
               <span className="ml-auto text-[10px] font-semibold text-[#8b94a3]">
                 {counts?.[item] ?? 0}
               </span>
@@ -200,6 +207,7 @@ export function MobileProductFilters({
   currentBrand,
   currentKind,
   currentPackUnit,
+  currentAttributeFilters,
   currentMinRating,
   currentInStock,
   currentOnSale,
@@ -216,6 +224,7 @@ export function MobileProductFilters({
   currentBrand: string;
   currentKind: string;
   currentPackUnit: string;
+  currentAttributeFilters: Record<string, string>;
   currentMinRating?: number;
   currentInStock: boolean;
   currentOnSale: boolean;
@@ -224,14 +233,15 @@ export function MobileProductFilters({
   currentMinPrice?: number;
   currentMaxPrice?: number;
   histogram?: HistogramBucket[];
-  counts?: {
-    categories?: FilterCountMap;
-    subCategories?: FilterCountMap;
-    brands?: FilterCountMap;
-    kinds?: FilterCountMap;
-    packUnits?: FilterCountMap;
-    ratings?: FilterCountMap;
-  };
+    counts?: {
+      categories?: FilterCountMap;
+      subCategories?: FilterCountMap;
+      brands?: FilterCountMap;
+      kinds?: FilterCountMap;
+      packUnits?: FilterCountMap;
+      attributes?: Record<string, FilterCountMap>;
+      ratings?: FilterCountMap;
+    };
 }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
@@ -324,7 +334,22 @@ export function MobileProductFilters({
               params={params}
               paramKey="packUnit"
               onClose={() => setOpen(false)}
+              formatItemLabel={(value) => value}
             />
+            {(options.attributeFilters ?? []).map((filter) => (
+              <FilterSection
+                key={filter.key}
+                title={filter.title}
+                items={filter.items}
+                currentValue={currentAttributeFilters[filter.key] ?? ""}
+                counts={counts?.attributes?.[filter.key]}
+                pathname={pathname}
+                params={params}
+                paramKey={filter.key}
+                onClose={() => setOpen(false)}
+                formatItemLabel={(value) => value}
+              />
+            ))}
             <RatingSection
               title="Rating"
               currentMinRating={currentMinRating}

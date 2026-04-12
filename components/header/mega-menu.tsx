@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -10,6 +11,9 @@ import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import {
   detectShopperCountryFromBrowser,
+  DeliveryAreaGate,
+  formatPreciseShopperDeliveryArea,
+  hasPreciseShopperDeliveryArea,
   readShopperDeliveryArea,
   saveShopperDeliveryArea,
   SHOPPER_COUNTRY_OPTIONS,
@@ -178,6 +182,7 @@ function HeaderDeliveryLocationControl({
   className?: string;
 }) {
   const [area, setArea] = useState<ShopperDeliveryArea | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
     const stored = readShopperDeliveryArea();
@@ -204,55 +209,99 @@ function HeaderDeliveryLocationControl({
     return subscribeToShopperDeliveryArea(setArea);
   }, []);
 
+  const preciseLabel = formatPreciseShopperDeliveryArea(area);
+  const hasPreciseArea = hasPreciseShopperDeliveryArea(area);
+
   return (
-    <label
-      className={`inline-flex items-center gap-2 border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] ${className}`}
-    >
-      <span className="inline-flex items-center gap-2">
+    <div className={`relative inline-flex min-w-0 items-center gap-1.5 border-r border-black/10 px-2 text-[12px] font-semibold text-[#4b5563] sm:gap-2 sm:px-5 ${className}`}>
+      <span className="inline-flex shrink-0 items-center gap-2">
         <svg viewBox="0 0 20 20" className="h-4 w-4 fill-current" aria-hidden="true">
           <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
         </svg>
         <span className="hidden lg:inline">Deliver to</span>
       </span>
-      <div className="relative">
-        <select
-          id={triggerId}
-          value={area?.country || ""}
-          onChange={(event) => {
-            const nextCountry = String(event.target.value || "").trim();
-            if (!nextCountry) {
-              saveShopperDeliveryArea(null);
-              setArea(null);
-              return;
-            }
-          const nextArea = {
-            city: area?.city || "",
-            province: area?.province || "",
-            suburb: area?.suburb || "",
-            postalCode: area?.postalCode || "",
-            country: nextCountry,
-            latitude: area?.latitude ?? null,
-            longitude: area?.longitude ?? null,
-          };
-          saveShopperDeliveryArea(nextArea);
-          setArea(nextArea);
-        }}
-          className="appearance-none rounded-[8px] border border-black/10 bg-white py-2 pl-3 pr-8 text-[12px] font-semibold text-[#202020] outline-none"
-          aria-label="Choose delivery country"
-          title={formatDeliveryAreaLabel(area)}
+      <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+        <div className="relative min-w-0">
+          <select
+            id={triggerId}
+            value={area?.country || ""}
+            onChange={(event) => {
+              const nextCountry = String(event.target.value || "").trim();
+              if (!nextCountry) {
+                saveShopperDeliveryArea(null);
+                setArea(null);
+                return;
+              }
+              const nextArea = {
+                city: area?.city || "",
+                province: area?.province || "",
+                suburb: area?.suburb || "",
+                postalCode: area?.postalCode || "",
+                country: nextCountry,
+                latitude: area?.latitude ?? null,
+                longitude: area?.longitude ?? null,
+              };
+              saveShopperDeliveryArea(nextArea);
+              setArea(nextArea);
+            }}
+            className="max-w-[120px] appearance-none rounded-[8px] border border-black/10 bg-white py-2 pl-2 pr-7 text-[11px] font-semibold text-[#202020] outline-none sm:max-w-none sm:pl-3 sm:pr-8 sm:text-[12px]"
+            aria-label="Choose delivery country"
+            title={formatDeliveryAreaLabel(area)}
+          >
+            <option value="">All delivery countries</option>
+            {SHOPPER_COUNTRY_OPTIONS.map((country) => (
+              <option key={country.code} value={country.label}>
+                {country.displayLabel}
+              </option>
+            ))}
+          </select>
+          <svg viewBox="0 0 20 20" className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 fill-current text-[#6b7280]" aria-hidden="true">
+            <path d="M5.5 7.5 10 12l4.5-4.5" />
+          </svg>
+        </div>
+        <button
+          type="button"
+          onClick={() => setDetailsOpen((open) => !open)}
+          className="inline-flex shrink-0 items-center rounded-[8px] border border-black/10 bg-white px-2.5 py-2 text-[10px] font-semibold text-[#4b5563] hover:text-[#202020] sm:px-3 sm:text-[11px]"
+          aria-label={hasPreciseArea ? "Update delivery location" : "Improve delivery accuracy"}
         >
-          <option value="">All delivery countries</option>
-          {SHOPPER_COUNTRY_OPTIONS.map((country) => (
-            <option key={country.code} value={country.label}>
-              {country.displayLabel}
-            </option>
-          ))}
-        </select>
-        <svg viewBox="0 0 20 20" className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 fill-current text-[#6b7280]" aria-hidden="true">
-          <path d="M5.5 7.5 10 12l4.5-4.5" />
-        </svg>
+          <span className="hidden sm:inline">{hasPreciseArea ? "Update location" : "Improve accuracy"}</span>
+          <span className="sm:hidden">{hasPreciseArea ? "Update" : "Locate"}</span>
+        </button>
       </div>
-    </label>
+      {detailsOpen ? (
+        <div className="fixed inset-x-3 top-[56px] z-40 md:absolute md:inset-x-auto md:right-0 md:top-[calc(100%+10px)] md:w-[min(92vw,440px)]">
+          <div className="max-h-[calc(100vh-88px)] overflow-y-auto rounded-[12px] border border-black/10 bg-white p-4 shadow-[0_18px_50px_rgba(20,24,27,0.16)]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Improve delivery accuracy</p>
+                <p className="mt-1 text-[13px] leading-[1.55] text-[#57636c]">
+                  Add your suburb or postal code for more accurate delivery availability and ETA before checkout.
+                </p>
+                {hasPreciseArea && preciseLabel ? (
+                  <p className="mt-2 text-[12px] font-semibold text-[#202020]">{preciseLabel}</p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => setDetailsOpen(false)}
+                className="text-[12px] font-semibold text-[#57636c]"
+              >
+                Close
+              </button>
+            </div>
+            <div className="mt-4">
+              <DeliveryAreaGate
+                compact
+                onChange={(nextArea) => {
+                  setArea(nextArea);
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1392,6 +1441,7 @@ function MobileDrawer({
 }
 
 export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean }) {
+  const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
@@ -1515,12 +1565,12 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
       body: JSON.stringify({ uid }),
     });
     await refreshProfile();
-    window.location.assign("/products");
+    router.push("/products");
   };
 
   return (
     <header id="bevgo-site-header" className="bg-white shadow-[0_2px_16px_rgba(20,24,27,0.08)]">
-      <div className="relative overflow-hidden border-b border-black/5 bg-white">
+      <div className="relative overflow-visible border-b border-black/5 bg-white">
         <div
           className="pointer-events-none absolute inset-0 bg-center bg-cover bg-no-repeat opacity-[0.13]"
           style={{ backgroundImage: "url('/backgrounds/piessang-repeat-background.png')" }}
@@ -1691,7 +1741,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                 onClick={
                   showAuthenticatedActions
                     ? () => {
-                        window.location.assign(notificationsHref);
+                        router.push(notificationsHref);
                       }
                     : () => openAuthModal("Sign in to view your notifications.")
                 }

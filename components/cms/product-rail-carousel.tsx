@@ -83,7 +83,7 @@ export function ProductRailCarousel({
               <button
                 type="button"
                 onClick={() => scrollByCard(-1)}
-                className="absolute left-3 top-1/2 z-10 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-black/8 bg-white text-[#202020] shadow-[0_10px_24px_rgba(20,24,27,0.12)] transition-all duration-150 hover:-translate-y-1/2 hover:border-black/12 hover:shadow-[0_14px_30px_rgba(20,24,27,0.16)] active:scale-[0.94] active:bg-[#f5f6f7] active:shadow-[0_6px_14px_rgba(20,24,27,0.14)] md:inline-flex"
+                className="absolute left-2 top-1/2 z-10 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-black/8 bg-white text-[#202020] shadow-[0_10px_24px_rgba(20,24,27,0.12)] transition-all duration-150 hover:border-black/12 hover:shadow-[0_14px_30px_rgba(20,24,27,0.16)] active:scale-[0.94] active:bg-[#f5f6f7] active:shadow-[0_6px_14px_rgba(20,24,27,0.14)] md:inline-flex"
                 aria-label="Scroll products left"
               >
                 <ArrowLeftIcon />
@@ -91,7 +91,7 @@ export function ProductRailCarousel({
               <button
                 type="button"
                 onClick={() => scrollByCard(1)}
-                className="absolute right-3 top-1/2 z-10 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-black/8 bg-white text-[#202020] shadow-[0_10px_24px_rgba(20,24,27,0.12)] transition-all duration-150 hover:-translate-y-1/2 hover:border-black/12 hover:shadow-[0_14px_30px_rgba(20,24,27,0.16)] active:scale-[0.94] active:bg-[#f5f6f7] active:shadow-[0_6px_14px_rgba(20,24,27,0.14)] md:inline-flex"
+                className="absolute right-2 top-1/2 z-10 hidden h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-black/8 bg-white text-[#202020] shadow-[0_10px_24px_rgba(20,24,27,0.12)] transition-all duration-150 hover:border-black/12 hover:shadow-[0_14px_30px_rgba(20,24,27,0.16)] active:scale-[0.94] active:bg-[#f5f6f7] active:shadow-[0_6px_14px_rgba(20,24,27,0.14)] md:inline-flex"
                 aria-label="Scroll products right"
               >
                 <ArrowRightIcon />
@@ -101,8 +101,8 @@ export function ProductRailCarousel({
           <div
             ref={trackRef}
             className={[
-              "flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] after:block after:h-px after:w-4 after:flex-none sm:gap-4 sm:after:hidden [&::-webkit-scrollbar]:hidden",
-              mobileLeadingSpacer ? "before:block before:h-px before:w-4 before:flex-none sm:before:hidden" : "before:hidden",
+              "flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-2 [scrollbar-width:none] after:block after:h-px after:w-4 after:flex-none md:px-14 md:after:w-1 [&::-webkit-scrollbar]:hidden",
+              mobileLeadingSpacer ? "before:block before:h-px before:w-4 before:flex-none md:before:w-1" : "before:hidden",
             ].join(" ")}
           >
             {visibleProducts.map((product, index) => {

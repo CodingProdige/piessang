@@ -161,7 +161,36 @@ export async function POST(req) {
       await restoreMarketplaceProductStock(db, Array.isArray(order?.items) ? order.items : []);
     }
 
-    await ref.delete();
+    await ref.set(
+      {
+        order: {
+          ...(order?.order && typeof order.order === "object" ? order.order : {}),
+          status: paid ? "archived" : "cancelled",
+        },
+        payment: {
+          ...(order?.payment && typeof order.payment === "object" ? order.payment : {}),
+          deleted: true,
+        },
+        deletion: {
+          requestedAt: new Date().toISOString(),
+          restoredStock: !paid,
+          createIntentKey: createIntentKey || null,
+          mode: "soft_delete",
+        },
+        meta: {
+          ...(order?.meta && typeof order.meta === "object" ? order.meta : {}),
+          deleted: true,
+          deletedAt: new Date().toISOString(),
+          active: false,
+        },
+        timestamps: {
+          ...(order?.timestamps && typeof order.timestamps === "object" ? order.timestamps : {}),
+          updatedAt: new Date().toISOString(),
+          deletedAt: new Date().toISOString(),
+        },
+      },
+      { merge: true },
+    );
 
     if (createIntentKey) {
       await db.collection("idempotency_order_create_v2").doc(createIntentKey).delete().catch(() => null);
@@ -171,7 +200,8 @@ export async function POST(req) {
       orderId: snap.id,
       orderNumber: order?.order?.orderNumber || null,
       merchantTransactionId: order?.order?.merchantTransactionId || null,
-      deleted: true
+      deleted: true,
+      softDeleted: true,
     });
   } catch (e) {
     if (e?.message === "multiple_orders") {

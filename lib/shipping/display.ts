@@ -74,6 +74,19 @@ function resolveShopperDelivery(
   } as any);
 }
 
+function hasPreciseShopperArea(shopperArea: ShopperDeliveryAreaLike | null) {
+  if (!shopperArea) return false;
+  return Boolean(
+    shopperArea.city ||
+      shopperArea.suburb ||
+      shopperArea.province ||
+      shopperArea.stateProvinceRegion ||
+      shopperArea.postalCode ||
+      Number.isFinite(Number(shopperArea.latitude)) ||
+      Number.isFinite(Number(shopperArea.longitude)),
+  );
+}
+
 export function getShopperFacingDeliveryPromise({
   fulfillmentMode,
   profile,
@@ -183,6 +196,13 @@ export function getShopperFacingDeliveryMessage({
             ? `Ships to ${shopperArea.country}`
             : "Shipping available",
       tone: "success",
+    };
+  }
+
+  if (shopperArea?.country && !hasPreciseShopperArea(shopperArea)) {
+    return {
+      label: "Delivery availability confirmed at checkout",
+      tone: "warning",
     };
   }
 

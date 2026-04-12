@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { PageBody } from "@/components/layout/page-body";
@@ -1313,8 +1313,27 @@ function RichTextEditor({
   );
 }
 
-export default function SellerCatalogueNewPage() {
+function SellerCatalogueNewPageContent() {
   return <SellerCatalogueEditor />;
+}
+
+export default function SellerCatalogueNewPage() {
+  return (
+    <Suspense
+      fallback={
+        <PageBody className="px-4 py-6 lg:px-6">
+          <div className="mx-auto w-full max-w-[1200px]">
+            <SellerPageIntro
+              title="Create product"
+              description="Loading your product editor..."
+            />
+          </div>
+        </PageBody>
+      }
+    >
+      <SellerCatalogueNewPageContent />
+    </Suspense>
+  );
 }
 
 type SellerCatalogueEditorProps = {
