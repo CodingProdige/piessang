@@ -282,7 +282,7 @@ export default async function VendorPage({
             initialItems={products}
             currentSort={currentParam(resolvedSearchParams, "sort") || "featured"}
             currentView="grid"
-            openInNewTab={false}
+            openInNewTab={true}
             searchParams={{ vendor: sellerCode }}
             totalCount={totalCount}
           />

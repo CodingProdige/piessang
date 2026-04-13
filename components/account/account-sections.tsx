@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ProductLink } from "@/components/products/product-link";
 import { useEffect, useMemo, useState } from "react";
 import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
@@ -1059,7 +1060,7 @@ export function AccountListsWorkspace({ uid, favoriteCount }: { uid: string; fav
         ) : items.length ? (
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {items.slice(0, 8).map((item) => (
-              <Link
+              <ProductLink
                 key={String(item?.id || item?.data?.product?.unique_id || Math.random())}
                 href={productHref(item)}
                 className="rounded-[8px] border border-black/5 px-4 py-4 transition-colors hover:bg-[#fcfcfc]"
@@ -1069,7 +1070,7 @@ export function AccountListsWorkspace({ uid, favoriteCount }: { uid: string; fav
                 <p className="mt-3 text-[14px] font-semibold text-[#202020]">
                   {firstVariantPrice(item) != null ? formatCurrency(firstVariantPrice(item)) : "View product"}
                 </p>
-              </Link>
+              </ProductLink>
             ))}
           </div>
         ) : (

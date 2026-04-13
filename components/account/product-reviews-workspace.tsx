@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { ProductLink } from "@/components/products/product-link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
@@ -205,9 +206,9 @@ export function AccountProductReviewsWorkspace() {
                     )}
                   </div>
                   <div className="min-w-0">
-                    <Link href={item.productSlug ? `/products/${item.productSlug}` : "#"} className="text-[18px] font-semibold text-[#202020]">
+                    <ProductLink href={item.productSlug ? `/products/${item.productSlug}` : "#"} className="text-[18px] font-semibold text-[#202020]">
                       {item.productTitle}
-                    </Link>
+                    </ProductLink>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <div className="flex items-center gap-1">
                         {renderStars(Number(item.review.stars || 0)).map((filled, index) => (

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { clientStorage } from "@/lib/firebase";
+import { prepareImageAsset } from "@/lib/client/image-prep";
 import { CustomerSellerInvoiceDrawer } from "@/components/account/customer-seller-invoice-drawer";
 import { DocumentSnackbar } from "@/components/ui/document-snackbar";
 import { collectCustomerSellerInvoiceGroups, getCustomerBusinessDetails } from "@/lib/orders/customer-seller-invoices";
@@ -544,9 +545,10 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
       const uploads: string[] = [];
       for (const file of files) {
         if (!file.type.startsWith("image/")) continue;
-        const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+        const prepared = await prepareImageAsset(file, { maxDimension: 1800, quality: 0.82 });
+        const safeName = prepared.file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
         const fileRef = storageRef(clientStorage, `users/${uid}/seller-reviews/${orderId}/${Date.now()}-${safeName}`);
-        await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
+        await uploadBytes(fileRef, prepared.file, { contentType: prepared.file.type });
         uploads.push(await getDownloadURL(fileRef));
       }
       setReviewImages((current) => [...current, ...uploads].slice(0, 6));
@@ -642,9 +644,10 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
       const uploads: string[] = [];
       for (const file of files) {
         if (!file.type.startsWith("image/")) continue;
-        const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+        const prepared = await prepareImageAsset(file, { maxDimension: 1800, quality: 0.82 });
+        const safeName = prepared.file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
         const fileRef = storageRef(clientStorage, `users/${uid}/returns/${orderId}/${Date.now()}-${safeName}`);
-        await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
+        await uploadBytes(fileRef, prepared.file, { contentType: prepared.file.type });
         uploads.push(await getDownloadURL(fileRef));
       }
       setReturnEvidence((current) => [...current, ...uploads].slice(0, 6));

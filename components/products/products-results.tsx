@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type TouchEvent, type FocusEvent } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import {
@@ -1031,16 +1031,55 @@ export function BrowseProductCard({
     productUniqueId && defaultVariantId ? cartVariantCounts[`${productUniqueId}::${defaultVariantId}`] ?? 0 : 0;
   const cartCount = cartProductCount || cartVariantCount;
   const handleCartSuccess = onAddToCartSuccess ?? (() => {});
+  const hasPrefetchedHrefRef = useRef(false);
+
+  const prefetchProductHref = () => {
+    if (hasPrefetchedHrefRef.current || !href) return;
+    hasPrefetchedHrefRef.current = true;
+    void router.prefetch(href);
+  };
+
   useEffect(() => {
     const favoriteMatch = favoriteIds?.includes(productUniqueId);
     setIsFavorite(Boolean(item.data?.is_favorite) || Boolean(favoriteMatch));
   }, [favoriteIds, item.data?.is_favorite, productUniqueId]);
+
+  useEffect(() => {
+    hasPrefetchedHrefRef.current = false;
+  }, [href]);
+
+  useEffect(() => {
+    if (!href || typeof window === "undefined") return;
+    let idleId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const schedulePrefetch = () => {
+      prefetchProductHref();
+    };
+
+    if ("requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(schedulePrefetch, { timeout: 1500 });
+    } else {
+      timeoutId = setTimeout(schedulePrefetch, 250);
+    }
+
+    return () => {
+      if (idleId !== null && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [href]);
+
   useEffect(() => {
     setHoveredImageIndex(0);
   }, [productUniqueId]);
   const favoriteVisible = isAuthenticated;
 
   const handleImagePointerMove = (event: MouseEvent<HTMLElement>) => {
+    prefetchProductHref();
     if (displayImages.length <= 1) return;
     trackProductEngagement({
       action: "hover",
@@ -1064,6 +1103,18 @@ export function BrowseProductCard({
 
   const handleImagePointerLeave = () => {
     if (hoveredImageIndex !== 0) setHoveredImageIndex(0);
+  };
+
+  const handleCardMouseEnter = () => {
+    prefetchProductHref();
+  };
+
+  const handleCardTouchStart = (_event: TouchEvent<HTMLElement>) => {
+    prefetchProductHref();
+  };
+
+  const handleCardFocus = (_event: FocusEvent<HTMLElement>) => {
+    prefetchProductHref();
   };
 
   const handleFavoriteToggle = async (event: MouseEvent<HTMLButtonElement>) => {
@@ -1299,6 +1350,9 @@ export function BrowseProductCard({
         role="link"
         tabIndex={0}
         onClick={openCardIfAllowed}
+        onMouseEnter={handleCardMouseEnter}
+        onTouchStart={handleCardTouchStart}
+        onFocus={handleCardFocus}
         onKeyDown={onCardKeyDown}
         data-clickable-container="true"
     className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
@@ -1480,6 +1534,9 @@ export function BrowseProductCard({
         role="link"
         tabIndex={0}
         onClick={openCardIfAllowed}
+        onMouseEnter={handleCardMouseEnter}
+        onTouchStart={handleCardTouchStart}
+        onFocus={handleCardFocus}
         onKeyDown={onCardKeyDown}
         data-clickable-container="true"
         className="flex h-full flex-col overflow-hidden rounded-[8px] bg-white shadow-[0_8px_20px_rgba(20,24,27,0.06)]"

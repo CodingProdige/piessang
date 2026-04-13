@@ -566,7 +566,7 @@ export function AuthProvider({
   const activeSellerTeamMembership = useMemo(() => getActiveSellerManagedAccount(profile), [profile]);
   const sellerOwnsSellerAccount = useMemo(() => ownsSellerAccount(profile), [profile]);
   const lastAuthUidRef = useRef<string | null>(cachedBootstrap.user?.uid ?? null);
-  const authReadyRef = useRef(Boolean(cachedBootstrap.user || cachedBootstrap.profile));
+  const authReadyRef = useRef(hasAuthBootstrapData(cachedBootstrap));
 
   useEffect(() => {
     authReadyRef.current = authReady;
@@ -662,11 +662,7 @@ export function AuthProvider({
     const unsubscribe = onIdTokenChanged(clientAuth, async (nextUser) => {
       const nextUid = nextUser?.uid ?? null;
       const previousUid = lastAuthUidRef.current;
-      const authIdentityChanged = previousUid !== nextUid;
       lastAuthUidRef.current = nextUid;
-      if (authIdentityChanged || !authReadyRef.current) {
-        setAuthReady(false);
-      }
       setUser(nextUser);
 
       if (!nextUser) {

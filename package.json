@@ -6,7 +6,8 @@
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "backfill:images": "node scripts/backfill-image-assets.mjs"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",

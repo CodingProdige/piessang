@@ -31,6 +31,7 @@ export function BlurhashImage({
   imageStyle,
 }: BlurhashImageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const [loadState, setLoadState] = useState<"loading" | "loaded" | "error">("loading");
   const hasBlurHash = Boolean(blurHash);
   const showLoadingFallback = Boolean(src) && !hasBlurHash && loadState === "loading";
@@ -39,6 +40,14 @@ export function BlurhashImage({
   useEffect(() => {
     setLoadState(src ? "loading" : "error");
   }, [src, blurHash]);
+
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!src || !image) return;
+    if (image.complete && image.naturalWidth > 0) {
+      setLoadState("loaded");
+    }
+  }, [src]);
 
   useEffect(() => {
     if (!blurHash || !canvasRef.current) return;
@@ -98,6 +107,7 @@ export function BlurhashImage({
       {src ? (
         <>
           <Image
+            ref={imageRef}
             src={src}
             alt={alt}
             fill

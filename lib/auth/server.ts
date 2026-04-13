@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { getAdminAuth } from "@/lib/firebase/admin";
 import { SELLER_CATALOGUE_CATEGORIES, getSellerCatalogueSubCategories } from "@/lib/seller/catalogue-categories";
 import { EMPTY_AUTH_BOOTSTRAP, type AuthBootstrap, type AuthBootstrapProfile } from "@/lib/auth/bootstrap";
 import { SESSION_COOKIE } from "@/lib/auth/session";
@@ -121,6 +122,21 @@ function normalizeCartState(items: unknown) {
 }
 
 export async function verifyFirebaseIdToken(idToken: string) {
+  const adminAuth = getAdminAuth();
+  if (adminAuth) {
+    try {
+      const decoded = await adminAuth.verifyIdToken(idToken);
+      return {
+        uid: String(decoded.uid),
+        email: typeof decoded.email === "string" ? decoded.email : null,
+        displayName: typeof decoded.name === "string" ? decoded.name : null,
+        photoURL: typeof decoded.picture === "string" ? decoded.picture : null,
+      };
+    } catch {
+      // Fall back to the identity toolkit lookup below if admin verification fails.
+    }
+  }
+
   const apiKey = process.env.NEXT_PUBLIC_PIESSANG_FIREBASE_API_KEY;
   if (!apiKey) return null;
 

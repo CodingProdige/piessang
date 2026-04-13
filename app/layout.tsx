@@ -6,6 +6,7 @@ import { SpeedInsights } from "@vercel/speed-insights/next";
 import { Clarity, ClarityPrivacyBoundary } from "@/components/analytics/clarity";
 import { AppShell } from "@/components/layout/app-shell";
 import { PointerFocusGuard } from "@/components/layout/pointer-focus-guard";
+import { getServerAuthBootstrap } from "@/lib/auth/server";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -54,11 +55,12 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const initialAuthBootstrap = await getServerAuthBootstrap();
   const googleAnalyticsId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim();
   const googleAdsId = "AW-18066581333";
   const primaryGoogleTagId = googleAnalyticsId || googleAdsId;
@@ -92,7 +94,7 @@ export default function RootLayout({
         <PointerFocusGuard />
         <Clarity projectId={clarityProjectId} />
         <ClarityPrivacyBoundary>
-          <AppShell>{children}</AppShell>
+          <AppShell initialAuthBootstrap={initialAuthBootstrap}>{children}</AppShell>
         </ClarityPrivacyBoundary>
         <Analytics />
         <SpeedInsights />

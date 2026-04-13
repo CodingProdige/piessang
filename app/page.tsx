@@ -5,6 +5,8 @@ import { getLandingPageState, getPublishedLandingPage } from "@/lib/cms/landing-
 import { getServerAuthBootstrap } from "@/lib/auth/server";
 import { buildSeoMetadata, getSeoPageOverride } from "@/lib/seo/page-overrides";
 
+export const revalidate = 300;
+
 export async function generateMetadata(): Promise<Metadata> {
   const page = await getPublishedLandingPage();
   const override = await getSeoPageOverride("home");
@@ -31,9 +33,15 @@ export default async function Home({
 }) {
   const params = (await searchParams) || {};
   const preview = typeof params.preview === "string" ? params.preview : "";
-  const auth = await getServerAuthBootstrap();
-  const isAdmin = String(auth?.profile?.systemAccessType || "").trim().toLowerCase() === "admin";
-  const page = preview === "draft" && isAdmin ? await getLandingPageState() : await getPublishedLandingPage();
+  const wantsDraftPreview = preview === "draft";
+  let isAdmin = false;
+
+  if (wantsDraftPreview) {
+    const auth = await getServerAuthBootstrap();
+    isAdmin = String(auth?.profile?.systemAccessType || "").trim().toLowerCase() === "admin";
+  }
+
+  const page = wantsDraftPreview && isAdmin ? await getLandingPageState() : await getPublishedLandingPage();
   const sections = preview === "draft" && isAdmin ? page.draftSections : page.publishedSections;
 
   return (

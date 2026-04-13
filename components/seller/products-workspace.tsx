@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ProductLink } from "@/components/products/product-link";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
@@ -948,7 +949,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                             </td>
                             <td className="border-b border-black/5 px-3 py-2.5 align-middle">
                               <div className="flex justify-center">
-                                <Link
+                                <ProductLink
                                   href={`/products/${toSlug(product.title || product.unique_id || "product")}?id=${product.unique_id || item.id}`}
                                   data-ignore-row-edit="true"
                                   className="group inline-flex h-8 w-8 items-center justify-center rounded-[8px] border border-black/10 bg-white text-[#57636c] transition-colors hover:border-[#cbb26b]/60 hover:text-[#202020]"
@@ -956,7 +957,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                   aria-label="Preview product"
                                 >
                                   <EyeIcon className="h-4 w-4" />
-                                </Link>
+                                </ProductLink>
                               </div>
                             </td>
                           </tr>
@@ -1116,7 +1117,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                 </p>
                               ) : null}
                             </div>
-                            <Link
+                            <ProductLink
                               href={`/products/${toSlug(product.title || product.unique_id || "product")}?id=${product.unique_id || item.id}`}
                               data-ignore-row-edit="true"
                               className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border border-black/10 bg-white text-[#57636c]"
@@ -1124,7 +1125,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                               aria-label="Preview product"
                             >
                               <EyeIcon className="h-4 w-4" />
-                            </Link>
+                            </ProductLink>
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             {status === "rejected" ? (

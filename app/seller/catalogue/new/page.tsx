@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { PageBody } from "@/components/layout/page-body";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { SellerPageIntro } from "@/components/seller/page-intro";
+import { prepareImageAsset } from "@/lib/client/image-prep";
 import { clientStorage } from "@/lib/firebase";
 import { getSellerBlockReasonFix, getSellerBlockReasonLabel } from "@/lib/seller/account-status";
 import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
@@ -27,7 +28,7 @@ import {
   type ParcelPresetKey,
 } from "@/lib/shipping/contracts";
 import { SELLER_CATALOGUE_CATEGORIES } from "@/lib/seller/catalogue-categories";
-import { decode, encode } from "blurhash";
+import { decode } from "blurhash";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 
 type BrandSuggestion = {
@@ -3181,20 +3182,6 @@ export function SellerCatalogueEditor({
     }
   }
 
-  async function fileToBlurHash(file: File) {
-    const bitmap = await createImageBitmap(file);
-    const width = 32;
-    const height = Math.max(1, Math.round((bitmap.height / bitmap.width) * width));
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("Unable to process image preview.");
-    context.drawImage(bitmap, 0, 0, width, height);
-    const imageData = context.getImageData(0, 0, width, height);
-    return encode(imageData.data, imageData.width, imageData.height, 4, 3);
-  }
-
   async function uploadFiles(files: FileList | File[]) {
     if (!files.length) return;
     if (!profile?.uid) {
@@ -3208,17 +3195,20 @@ export function SellerCatalogueEditor({
       const nextImages: ProductImage[] = [];
       for (const file of Array.from(files)) {
         if (!file.type.startsWith("image/")) continue;
-        const blurHashUrl = await fileToBlurHash(file);
-        const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+        const prepared = await prepareImageAsset(file, {
+          maxDimension: 2200,
+          quality: 0.84,
+        });
+        const safeName = prepared.file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
         const path = `users/${profile.uid}/uploads/${Date.now()}-${safeName}`;
         const fileRef = storageRef(clientStorage, path);
-        await uploadBytes(fileRef, file, { contentType: file.type });
+        await uploadBytes(fileRef, prepared.file, { contentType: prepared.file.type });
         const imageUrl = await getDownloadURL(fileRef);
         nextImages.push({
           imageUrl,
-          blurHashUrl,
-          fileName: file.name,
-          altText: file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim(),
+          blurHashUrl: prepared.blurHashUrl,
+          fileName: prepared.file.name,
+          altText: prepared.altText,
         });
       }
       if (nextImages.length) {
@@ -3245,17 +3235,20 @@ export function SellerCatalogueEditor({
       const nextImages: ProductImage[] = [];
       for (const file of Array.from(files)) {
         if (!file.type.startsWith("image/")) continue;
-        const blurHashUrl = await fileToBlurHash(file);
-        const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+        const prepared = await prepareImageAsset(file, {
+          maxDimension: 2200,
+          quality: 0.84,
+        });
+        const safeName = prepared.file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
         const path = `users/${profile.uid}/uploads/${Date.now()}-${safeName}`;
         const fileRef = storageRef(clientStorage, path);
-        await uploadBytes(fileRef, file, { contentType: file.type });
+        await uploadBytes(fileRef, prepared.file, { contentType: prepared.file.type });
         const imageUrl = await getDownloadURL(fileRef);
         nextImages.push({
           imageUrl,
-          blurHashUrl,
-          fileName: file.name,
-          altText: file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim(),
+          blurHashUrl: prepared.blurHashUrl,
+          fileName: prepared.file.name,
+          altText: prepared.altText,
         });
       }
       if (nextImages.length) {

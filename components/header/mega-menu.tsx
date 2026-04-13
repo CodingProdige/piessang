@@ -181,6 +181,7 @@ function HeaderDeliveryLocationControl({
   triggerId?: string;
   className?: string;
 }) {
+  const router = useRouter();
   const [area, setArea] = useState<ShopperDeliveryArea | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -504,7 +505,7 @@ async function fetchProductAvailabilitySummary(): Promise<ProductAvailabilitySum
 }
 
 function useCatalogueMenu(enabled = true): MenuState {
-  const [departments, setDepartments] = useState<Department[]>([]);
+  const [allDepartments, setAllDepartments] = useState<Department[]>([]);
   const [hoveredSlug, setHoveredSlug] = useState("");
   const [hoveredSubcategorySlug, setHoveredSubcategorySlug] = useState("");
   const [subcategoriesByCategory, setSubcategoriesByCategory] = useState<Record<string, SubCategory[]>>(
@@ -513,8 +514,10 @@ function useCatalogueMenu(enabled = true): MenuState {
   const [brandsByKey, setBrandsByKey] = useState<Record<string, Brand[]>>({});
   const [subcategoriesLoading, setSubcategoriesLoading] = useState(false);
   const [brandsLoading, setBrandsLoading] = useState(false);
+  const [productCountsByCategory, setProductCountsByCategory] = useState<Record<string, number>>({});
   const [productCountsBySubCategory, setProductCountsBySubCategory] = useState<Record<string, number>>({});
   const [productCountsByBrand, setProductCountsByBrand] = useState<Record<string, number>>({});
+  const [availabilityReady, setAvailabilityReady] = useState(false);
   const subcategoryRequestId = useRef(0);
   const brandRequestId = useRef(0);
 
@@ -522,17 +525,52 @@ function useCatalogueMenu(enabled = true): MenuState {
     if (!enabled) return;
     let cancelled = false;
 
-    void Promise.all([fetchDepartments(), fetchProductAvailabilitySummary()]).then(([items, summary]) => {
+    void fetchDepartments().then((items) => {
       if (cancelled) return;
-      setDepartments(items.filter((item) => (summary.categoryCounts[item.slug] ?? 0) > 0));
-      setProductCountsBySubCategory(summary.subCategoryCounts);
-      setProductCountsByBrand(summary.brandCounts);
+      setAllDepartments(items);
     });
 
     return () => {
       cancelled = true;
     };
   }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    let idleId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const loadAvailability = () => {
+      void fetchProductAvailabilitySummary().then((summary) => {
+        if (cancelled) return;
+        setProductCountsByCategory(summary.categoryCounts);
+        setProductCountsBySubCategory(summary.subCategoryCounts);
+        setProductCountsByBrand(summary.brandCounts);
+        setAvailabilityReady(true);
+      });
+    };
+
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(() => loadAvailability(), { timeout: 1500 });
+    } else {
+      timeoutId = setTimeout(loadAvailability, 350);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [enabled]);
+
+  const departments = availabilityReady
+    ? allDepartments.filter((item) => (productCountsByCategory[item.slug] ?? 0) > 0)
+    : [];
 
   useEffect(() => {
     if (!enabled) return;
@@ -554,14 +592,16 @@ function useCatalogueMenu(enabled = true): MenuState {
       if (subcategoryRequestId.current !== requestId) return;
       setSubcategoriesByCategory((current) => ({
         ...current,
-        [categorySlug]: items.filter((item) => {
-          const key = `${categorySlug}::${item.slug}`;
-          return (productCountsBySubCategory[key] ?? 0) > 0;
-        }),
+        [categorySlug]: availabilityReady
+          ? items.filter((item) => {
+              const key = `${categorySlug}::${item.slug}`;
+              return (productCountsBySubCategory[key] ?? 0) > 0;
+            })
+          : items,
       }));
       setSubcategoriesLoading(false);
     });
-  }, [hoveredSlug, productCountsBySubCategory, enabled]);
+  }, [availabilityReady, hoveredSlug, productCountsBySubCategory, enabled]);
 
   const displayCategorySlug = hoveredSlug;
   const activeSubcategories = displayCategorySlug ? subcategoriesByCategory[displayCategorySlug] ?? [] : [];
@@ -593,6 +633,7 @@ function useCatalogueMenu(enabled = true): MenuState {
 
   const activeBrands = displayCategorySlug
     ? (brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? []).filter((brand) => {
+        if (!availabilityReady) return true;
         const brandKeys = [normalizeKey(brand.slug), normalizeKey(brand.title)].filter(Boolean);
         return brandKeys.some((brandKey) => {
           const availabilityKey = displaySubcategorySlug
@@ -1493,6 +1534,35 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   const notificationsHref = "/account/notifications";
 
   useEffect(() => {
+    let idleId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const prefetchCommonRoutes = () => {
+      void router.prefetch("/");
+      void router.prefetch("/products");
+      void router.prefetch("/account");
+      if (isSeller) {
+        void router.prefetch("/seller/dashboard");
+      }
+    };
+
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = window.requestIdleCallback(() => prefetchCommonRoutes(), { timeout: 1500 });
+    } else {
+      timeoutId = setTimeout(prefetchCommonRoutes, 300);
+    }
+
+    return () => {
+      if (idleId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [isSeller, router]);
+
+  useEffect(() => {
     let cancelled = false;
     let idleCallbackId: number | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1851,7 +1921,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                   </div>
 
                   <div className="flex h-[calc(100%-48px)] flex-col">
-                    <div className="flex-1 overflow-hidden">
+                    <div className="flex-1 overflow-y-auto">
                       {departments.length ? (
                         departments.map((department) => (
                           <Link

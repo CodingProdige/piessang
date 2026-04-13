@@ -16,7 +16,7 @@ import { SingleProductView } from "@/components/products/single-product-view";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 300;
 
 type SearchParamValue = string | string[] | undefined;
 type SearchParamsInput = Record<string, SearchParamValue> | Promise<Record<string, SearchParamValue>>;
@@ -228,6 +228,19 @@ type ProductsPayload = {
   message?: string;
 };
 
+type RecommendationRailsState = {
+  oftenBought?: {
+    items?: ProductItem[];
+    source?: "co_purchase" | "catalog_pairing" | "none";
+    message?: string | null;
+  };
+  similar?: {
+    items?: ProductItem[];
+    source?: "co_purchase" | "catalog_pairing" | "none";
+    message?: string | null;
+  };
+};
+
 type RecommendationPayload = {
   ok?: boolean;
   items?: ProductItem[];
@@ -301,7 +314,7 @@ function sortFilterValues(values: string[]) {
   );
 }
 
-function currentParam(searchParams: Record<string, SearchParamValue>, key: string) {
+export function currentParam(searchParams: Record<string, SearchParamValue>, key: string) {
   const value = searchParams[key];
   return typeof value === "string" ? value : Array.isArray(value) ? value[0] : undefined;
 }
@@ -356,15 +369,17 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
   return `/api/catalogue/v1/products/product/get?${params.toString()}`;
 }
 
-async function fetchProducts(searchParams: Record<string, SearchParamValue>, origin: string) {
-  const response = await fetch(new URL(buildProductsUrl(searchParams), origin), { cache: "no-store" });
+export async function fetchProducts(searchParams: Record<string, SearchParamValue>, origin: string) {
+  const response = await fetch(new URL(buildProductsUrl(searchParams), origin), {
+    next: { revalidate },
+  });
   return (await response.json()) as ProductsPayload;
 }
 
-async function fetchRecommendationRail(
-  origin: string,
+export async function fetchRecommendationRail(
   endpoint: "often-bought-together" | "similar",
   productId: string,
+  origin: string,
 ): Promise<{
   items: ProductItem[];
   source: "co_purchase" | "catalog_pairing" | "none";
@@ -377,7 +392,7 @@ async function fetchRecommendationRail(
   try {
     const response = await fetch(
       new URL(`/api/client/v1/products/${endpoint}?productId=${encodeURIComponent(productId)}`, origin),
-      { cache: "no-store" },
+      { next: { revalidate } },
     );
     const payload = (await response.json().catch(() => ({}))) as RecommendationPayload;
     if (!response.ok || payload?.ok === false) {
@@ -398,9 +413,13 @@ async function fetchRecommendationRail(
             `/api/catalogue/v1/products/product/get?ids=${encodeURIComponent(productIds.join(","))}&isActive=true`,
             origin,
           ),
-          { cache: "no-store" },
+          { next: { revalidate } },
         );
-        const hydratePayload = (await hydrateResponse.json().catch(() => ({}))) as ProductsPayload;
+        const hydratePayload = (await hydrateResponse.json().catch(() => ({}))) as {
+          ok?: boolean;
+          items?: ProductItem[];
+          groups?: Array<{ items?: ProductItem[] }>;
+        };
         if (hydrateResponse.ok && hydratePayload?.ok !== false) {
           const candidates = Array.isArray(hydratePayload?.items)
             ? hydratePayload.items
@@ -863,7 +882,7 @@ async function fetchBrandBannerImage(currentBrand?: string, origin?: string): Pr
       params.set("limit", "1");
       attempt(params);
 
-      const response = await fetch(url.toString(), { cache: "no-store" });
+      const response = await fetch(url.toString(), { next: { revalidate } });
       if (!response.ok) continue;
 
       const payload = (await response.json()) as {
@@ -1089,7 +1108,7 @@ function ToggleFilter({
 function ProductCard({
   item,
   view,
-  openInNewTab = true,
+  openInNewTab = false,
 }: {
   item: ProductItem;
   view: "grid" | "list";
@@ -1310,22 +1329,12 @@ export async function ProductsPage({
         );
       }
 
-      const productId = String(singleItem.data?.product?.unique_id ?? singleItem.id ?? "").trim();
-      const [oftenBoughtRail, similarRail] = await Promise.all([
-        fetchRecommendationRail(origin, "often-bought-together", productId),
-        fetchRecommendationRail(origin, "similar", productId),
-      ]);
-
       return (
         <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
           <SingleProductView
             item={singleItem}
             backHref={singleProductBackHref}
             selectedVariantId={currentVariantId}
-            recommendationRails={{
-              oftenBought: oftenBoughtRail,
-              similar: similarRail,
-            }}
           />
         </PageBody>
       );
@@ -1426,7 +1435,7 @@ export async function ProductsPage({
     currentMinRating != null;
 
   const clearHref = "/products";
-  const openInNewTab = currentParam(resolvedSearchParams, "openInNewTab") !== "false";
+  const openInNewTab = currentParam(resolvedSearchParams, "openInNewTab") === "true";
 
   return (
     <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">

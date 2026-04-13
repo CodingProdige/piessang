@@ -101,8 +101,8 @@ export function ProductRailCarousel({
           <div
             ref={trackRef}
             className={[
-              "flex snap-x snap-mandatory gap-3 overflow-x-auto px-1 pb-2 [scrollbar-width:none] after:block after:h-px after:w-4 after:flex-none md:px-14 md:after:w-1 [&::-webkit-scrollbar]:hidden",
-              mobileLeadingSpacer ? "before:block before:h-px before:w-4 before:flex-none md:before:w-1" : "before:hidden",
+              "flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] after:block after:h-px after:w-4 after:flex-none md:px-14 md:after:w-1 [&::-webkit-scrollbar]:hidden",
+              mobileLeadingSpacer ? "before:block before:h-px before:w-4 before:flex-none md:before:w-1" : "before:hidden md:before:hidden",
             ].join(" ")}
           >
             {visibleProducts.map((product, index) => {
@@ -127,7 +127,7 @@ export function ProductRailCarousel({
                   <BrowseProductCard
                     item={product}
                     view="grid"
-                    openInNewTab={false}
+                    openInNewTab={true}
                     brandHref={brandHref}
                     vendorHref={vendorHref}
                     brandLabel={brandLabel || undefined}

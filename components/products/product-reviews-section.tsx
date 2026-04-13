@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { prepareImageAsset } from "@/lib/client/image-prep";
 import { clientStorage } from "@/lib/firebase";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 
@@ -122,11 +123,14 @@ export function ProductReviewsSection({
     try {
       const uploads: string[] = [];
       for (const file of Array.from(files).slice(0, Math.max(0, 6 - reviewImages.length))) {
+        if (!file.type.startsWith("image/")) continue;
+        const prepared = await prepareImageAsset(file, { maxDimension: 1800, quality: 0.82 });
+        const safeName = prepared.file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
         const fileRef = storageRef(
           clientStorage,
-          `users/${profile.uid}/product-reviews/${productId}/${Date.now()}-${file.name}`,
+          `users/${profile.uid}/product-reviews/${productId}/${Date.now()}-${safeName}`,
         );
-        await uploadBytes(fileRef, file, { contentType: file.type || "image/jpeg" });
+        await uploadBytes(fileRef, prepared.file, { contentType: prepared.file.type });
         uploads.push(await getDownloadURL(fileRef));
       }
       setReviewImages((current) => [...current, ...uploads].slice(0, 6));

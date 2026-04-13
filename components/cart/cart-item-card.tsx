@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import { ProductLink } from "@/components/products/product-link";
 import { normalizeMoneyAmount } from "@/lib/money";
 
 type CartItem = {
@@ -141,13 +141,13 @@ export function CartItemCard({
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <Link
+            <ProductLink
               href={productHref}
               className="block truncate text-[13px] font-semibold leading-[1.25] text-[#202020] transition-colors hover:text-[#907d4c]"
               title={title}
             >
               {title}
-            </Link>
+            </ProductLink>
             <p className="mt-1 truncate text-[11px] leading-[1.2] text-[#57636c]" title={sellerLabel}>
               Sold by {sellerLabel}
             </p>

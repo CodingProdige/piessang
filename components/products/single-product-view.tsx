@@ -13,6 +13,7 @@ import {
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { RenderWhenVisible } from "@/components/shared/render-when-visible";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
 import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
@@ -212,6 +213,89 @@ type ProductItem = {
   };
 };
 
+type RecommendationRailsState = {
+  oftenBought?: {
+    items?: ProductItem[];
+    source?: "co_purchase" | "catalog_pairing" | "none";
+    message?: string | null;
+  };
+  similar?: {
+    items?: ProductItem[];
+    source?: "co_purchase" | "catalog_pairing" | "none";
+    message?: string | null;
+  };
+};
+
+type RecommendationPayload = {
+  ok?: boolean;
+  items?: ProductItem[];
+  source?: "co_purchase" | "catalog_pairing" | "none";
+  message?: string;
+};
+
+async function fetchRecommendationRail(
+  endpoint: "often-bought-together" | "similar",
+  productId: string,
+): Promise<{
+  items: ProductItem[];
+  source: "co_purchase" | "catalog_pairing" | "none";
+  message: string | null;
+}> {
+  if (!productId) {
+    return { items: [], source: "none", message: null };
+  }
+
+  try {
+    const response = await fetch(`/api/client/v1/products/${endpoint}?productId=${encodeURIComponent(productId)}`, {
+      cache: "no-store",
+    });
+    const payload = (await response.json().catch(() => ({}))) as RecommendationPayload;
+    if (!response.ok || payload?.ok === false) {
+      return { items: [], source: "none", message: payload?.message ?? null };
+    }
+
+    const rawItems = Array.isArray(payload?.items) ? payload.items : [];
+    const productIds = rawItems
+      .map((item) => String(item?.data?.product?.unique_id ?? item?.id ?? "").trim())
+      .filter((value, index, array) => /^\d{8}$/.test(value) && array.indexOf(value) === index)
+      .slice(0, 12);
+
+    let hydratedItems = rawItems;
+    if (productIds.length) {
+      try {
+        const hydrateResponse = await fetch(
+          `/api/catalogue/v1/products/product/get?ids=${encodeURIComponent(productIds.join(","))}&isActive=true`,
+          { cache: "no-store" },
+        );
+        const hydratePayload = (await hydrateResponse.json().catch(() => ({}))) as { ok?: boolean; items?: ProductItem[]; groups?: Array<{ items?: ProductItem[] }> };
+        if (hydrateResponse.ok && hydratePayload?.ok !== false) {
+          const candidates = Array.isArray(hydratePayload?.items)
+            ? hydratePayload.items
+            : Array.isArray(hydratePayload?.groups)
+              ? hydratePayload.groups.flatMap((group) => group.items ?? [])
+              : [];
+          const candidatesById = new Map(
+            candidates.map((item) => [String(item?.data?.product?.unique_id ?? item?.id ?? "").trim(), item]),
+          );
+          hydratedItems = productIds
+            .map((id) => candidatesById.get(id))
+            .filter((item): item is ProductItem => Boolean(item));
+        }
+      } catch {
+        // Keep the initial recommendation payload if hydration fails.
+      }
+    }
+
+    return {
+      items: hydratedItems,
+      source: payload?.source ?? "none",
+      message: payload?.message ?? null,
+    };
+  } catch {
+    return { items: [], source: "none", message: null };
+  }
+}
+
 const VAT_MULTIPLIER = 1.15;
 const LOW_STOCK_THRESHOLD = 13;
 const LIVE_VIEWER_FLAME_THRESHOLD = 5;
@@ -234,6 +318,18 @@ const ProductReviewsSection = dynamic(
     ),
   },
 );
+
+function scheduleWhenIdle(task: () => void, timeout = 1500) {
+  if (typeof window === "undefined") return () => {};
+
+  if ("requestIdleCallback" in window) {
+    const idleId = window.requestIdleCallback(() => task(), { timeout });
+    return () => window.cancelIdleCallback(idleId);
+  }
+
+  const timer = globalThis.setTimeout(task, timeout);
+  return () => globalThis.clearTimeout(timer);
+}
 
 function splitCurrencyParts(formattedValue?: string | null) {
   if (!formattedValue) return null;
@@ -585,18 +681,7 @@ export function SingleProductView({
   item: ProductItem;
   backHref?: string;
   selectedVariantId?: string | null;
-  recommendationRails?: {
-    oftenBought?: {
-      items?: ProductItem[];
-      source?: "co_purchase" | "catalog_pairing" | "none";
-      message?: string | null;
-    };
-    similar?: {
-      items?: ProductItem[];
-      source?: "co_purchase" | "catalog_pairing" | "none";
-      message?: string | null;
-    };
-  };
+  recommendationRails?: RecommendationRailsState;
 }) {
   const { profile, isAuthenticated, openAuthModal, favoriteIds, refreshProfile, syncFavoriteState, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
@@ -617,6 +702,12 @@ export function SingleProductView({
   const [zoomPoint, setZoomPoint] = useState<{ x: number; y: number } | null>(null);
   const [favoriteState, setFavoriteState] = useState(false);
   const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
+  const [resolvedRecommendationRails, setResolvedRecommendationRails] = useState<RecommendationRailsState | undefined>(
+    recommendationRails,
+  );
+  const [recommendationsActivated, setRecommendationsActivated] = useState(
+    Boolean(recommendationRails?.oftenBought?.items?.length) || Boolean(recommendationRails?.similar?.items?.length),
+  );
 
   useEffect(() => {
     setActiveIndex(initialIndex);
@@ -651,16 +742,16 @@ export function SingleProductView({
   const activeVariantExtraDetails = getVariantExtraDetails(activeVariant);
   const overview = item.data?.product?.overview ?? null;
   const description = item.data?.product?.description ?? "No description available.";
-  const oftenBoughtItems = Array.isArray(recommendationRails?.oftenBought?.items)
-    ? recommendationRails.oftenBought.items
+  const oftenBoughtItems = Array.isArray(resolvedRecommendationRails?.oftenBought?.items)
+    ? resolvedRecommendationRails.oftenBought.items
     : [];
-  const similarItems = Array.isArray(recommendationRails?.similar?.items)
-    ? recommendationRails.similar.items
+  const similarItems = Array.isArray(resolvedRecommendationRails?.similar?.items)
+    ? resolvedRecommendationRails.similar.items
     : [];
   const oftenBoughtSubtitle =
-    recommendationRails?.oftenBought?.source === "co_purchase"
+    resolvedRecommendationRails?.oftenBought?.source === "co_purchase"
       ? "Based on previous orders"
-      : recommendationRails?.oftenBought?.source === "catalog_pairing"
+      : resolvedRecommendationRails?.oftenBought?.source === "catalog_pairing"
         ? "Suggested from matching products in our catalog"
         : "Suggested from matching products in our catalog";
   const brandLabel = getBrandLabel(item);
@@ -706,6 +797,37 @@ export function SingleProductView({
   }, []);
 
   useEffect(() => {
+    setResolvedRecommendationRails(recommendationRails);
+  }, [recommendationRails]);
+
+  useEffect(() => {
+    if (!recommendationsActivated) return;
+    if (!productId) return;
+    const hasServerRecommendations =
+      Boolean(recommendationRails?.oftenBought?.items?.length) || Boolean(recommendationRails?.similar?.items?.length);
+    if (hasServerRecommendations) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const [oftenBought, similar] = await Promise.all([
+        fetchRecommendationRail("often-bought-together", productId),
+        fetchRecommendationRail("similar", productId),
+      ]);
+      if (!cancelled) {
+        setResolvedRecommendationRails({
+          oftenBought,
+          similar,
+        });
+      }
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [productId, recommendationRails, recommendationsActivated]);
+
+  useEffect(() => {
     if (typeof document === "undefined") return;
     document.title = `${item.data?.product?.title || "Product"} | Piessang`;
   }, [item.data?.product?.title]);
@@ -725,6 +847,7 @@ export function SingleProductView({
     }
 
     let cancelled = false;
+    let interval: number | null = null;
     const heartbeat = async () => {
       try {
         const response = await fetch("/api/client/v1/products/live-viewers", {
@@ -739,28 +862,32 @@ export function SingleProductView({
       } catch {}
     };
 
-    void heartbeat();
-    trackProductEngagement({
-      action: "product_view",
-      productId,
-      productTitle: item.data?.product?.title || null,
-      sellerCode: item.data?.product?.sellerCode ?? item.data?.seller?.sellerCode ?? null,
-      sellerSlug: item.data?.seller?.sellerSlug ?? item.data?.product?.sellerSlug ?? null,
-      vendorName:
-        item.data?.seller?.vendorName ??
-        item.data?.product?.vendorName ??
-        item.data?.shopify?.vendorName ??
-        null,
-      source: "product_page",
-      pageType: "product_detail",
-      href: typeof window !== "undefined" ? window.location.href : null,
-      userId: profile?.uid || null,
-      dedupeKey: `piessang_product_view:${productId}`,
-    });
-    const interval = window.setInterval(heartbeat, 30000);
+    const cancelIdle = scheduleWhenIdle(() => {
+      void heartbeat();
+      trackProductEngagement({
+        action: "product_view",
+        productId,
+        productTitle: item.data?.product?.title || null,
+        sellerCode: item.data?.product?.sellerCode ?? item.data?.seller?.sellerCode ?? null,
+        sellerSlug: item.data?.seller?.sellerSlug ?? item.data?.product?.sellerSlug ?? null,
+        vendorName:
+          item.data?.seller?.vendorName ??
+          item.data?.product?.vendorName ??
+          item.data?.shopify?.vendorName ??
+          null,
+        source: "product_page",
+        pageType: "product_detail",
+        href: typeof window !== "undefined" ? window.location.href : null,
+        userId: profile?.uid || null,
+        dedupeKey: `piessang_product_view:${productId}`,
+      });
+      interval = window.setInterval(heartbeat, 30000);
+    }, 2000);
+
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      cancelIdle();
+      if (interval != null) window.clearInterval(interval);
     };
   }, [item.data?.product?.sellerCode, item.data?.product?.sellerSlug, item.data?.product?.title, item.data?.product?.vendorName, item.data?.seller?.sellerCode, item.data?.seller?.sellerSlug, item.data?.seller?.vendorName, item.data?.shopify?.vendorName, productId, profile?.uid]);
 
@@ -1009,6 +1136,7 @@ export function SingleProductView({
                         blurHash={activeImages[activeImageIndex].blurHashUrl}
                         alt={item.data?.product?.title ?? "Product image"}
                         sizes="(max-width: 768px) 100vw, 60vw"
+                        priority={activeImageIndex === 0}
                         className="h-full w-full"
                         imageClassName="object-cover"
                       />
@@ -1067,18 +1195,24 @@ export function SingleProductView({
             </div>
           </div>
 
-          <ProductPageRecommendations
-            title="Pairs well with"
-            subtitle={oftenBoughtSubtitle}
-            products={oftenBoughtItems}
-            viewAllHref={`/products?recommendation=${encodeURIComponent(
-              recommendationRails?.oftenBought?.source === "co_purchase"
-                ? "often-bought-together"
-                : "catalog-pairing",
-            )}&productId=${encodeURIComponent(productId)}`}
-            shopperArea={shopperArea}
+          <RenderWhenVisible
             className="hidden lg:block"
-          />
+            rootMargin="320px 0px"
+            fallback={<div className="h-0" aria-hidden="true" />}
+            onVisible={() => setRecommendationsActivated(true)}
+          >
+            <ProductPageRecommendations
+              title="Pairs well with"
+              subtitle={oftenBoughtSubtitle}
+              products={oftenBoughtItems}
+              viewAllHref={`/products?recommendation=${encodeURIComponent(
+                resolvedRecommendationRails?.oftenBought?.source === "co_purchase"
+                  ? "often-bought-together"
+                  : "catalog-pairing",
+              )}&productId=${encodeURIComponent(productId)}`}
+              shopperArea={shopperArea}
+            />
+          </RenderWhenVisible>
         </div>
 
         <div className="space-y-4 overflow-hidden rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -1451,28 +1585,50 @@ export function SingleProductView({
         />
       </section>
 
-      <ProductReviewsSection item={item as any} productId={productId} />
+      <RenderWhenVisible
+        rootMargin="320px 0px"
+        fallback={
+          <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <div className="h-6 w-40 rounded bg-[#f3f3f0] animate-pulse" />
+            <div className="mt-4 h-28 rounded-[8px] bg-[#f3f3f0] animate-pulse" />
+          </section>
+        }
+      >
+        <ProductReviewsSection item={item as any} productId={productId} />
+      </RenderWhenVisible>
 
-      <ProductPageRecommendations
-        title="Frequently bought together"
-        subtitle={oftenBoughtSubtitle}
-        products={oftenBoughtItems}
-        viewAllHref={`/products?recommendation=${encodeURIComponent(
-          recommendationRails?.oftenBought?.source === "co_purchase"
-            ? "often-bought-together"
-            : "catalog-pairing",
-        )}&productId=${encodeURIComponent(productId)}`}
-        shopperArea={shopperArea}
+      <RenderWhenVisible
         className="lg:hidden"
-      />
+        rootMargin="320px 0px"
+        fallback={<div className="h-0" aria-hidden="true" />}
+        onVisible={() => setRecommendationsActivated(true)}
+      >
+        <ProductPageRecommendations
+          title="Frequently bought together"
+          subtitle={oftenBoughtSubtitle}
+          products={oftenBoughtItems}
+          viewAllHref={`/products?recommendation=${encodeURIComponent(
+            resolvedRecommendationRails?.oftenBought?.source === "co_purchase"
+              ? "often-bought-together"
+              : "catalog-pairing",
+          )}&productId=${encodeURIComponent(productId)}`}
+          shopperArea={shopperArea}
+        />
+      </RenderWhenVisible>
 
-      <ProductPageRecommendations
-        title="You may also like"
-        subtitle="More from this category"
-        products={similarItems}
-        viewAllHref="/products"
-        shopperArea={shopperArea}
-      />
+      <RenderWhenVisible
+        rootMargin="320px 0px"
+        fallback={<div className="h-0" aria-hidden="true" />}
+        onVisible={() => setRecommendationsActivated(true)}
+      >
+        <ProductPageRecommendations
+          title="You may also like"
+          subtitle="More from this category"
+          products={similarItems}
+          viewAllHref="/products"
+          shopperArea={shopperArea}
+        />
+      </RenderWhenVisible>
 
       {reportModalOpen ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(20,24,27,0.48)] px-4">

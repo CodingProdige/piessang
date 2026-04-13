@@ -445,14 +445,34 @@ async function buildAlternateOffersForBarcode(db, barcode, includeUnavailable = 
   const normalizedBarcode = normStr(barcode).toUpperCase();
   if (!normalizedBarcode) return [];
 
-  const rs = await db.collection("products_v2").get();
-  const items = rs.docs.map((d) => ({
-    id: d.id,
-    rawData: normalizeTimestamps(d.data() || {}),
-    data: includeUnavailable
-      ? normalizeTimestamps(d.data() || {})
-      : getPublicMarketplaceSource(normalizeTimestamps(d.data() || {})),
-  }));
+  let docs = [];
+  try {
+    const constrainedSnap = await db
+      .collection("products_v2")
+      .where("marketplace.canonical_offer_barcode", "==", normalizedBarcode)
+      .limit(24)
+      .get();
+    docs = constrainedSnap.docs;
+  } catch {
+    docs = [];
+  }
+
+  if (!docs.length) {
+    const fallbackSnap = await db.collection("products_v2").get();
+    docs = fallbackSnap.docs.filter((docSnap) => {
+      const source = normalizeTimestamps(docSnap.data() || {});
+      return getCanonicalOfferBarcode(source) === normalizedBarcode;
+    });
+  }
+
+  const items = docs.map((d) => {
+    const rawData = normalizeTimestamps(d.data() || {});
+    return {
+      id: d.id,
+      rawData,
+      data: includeUnavailable ? rawData : getPublicMarketplaceSource(rawData),
+    };
+  });
 
   const sellerIdentifierSet = new Set();
   for (const item of items) {

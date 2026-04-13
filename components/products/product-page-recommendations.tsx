@@ -160,7 +160,7 @@ export function ProductPageRecommendations({
               <BrowseProductCard
                 item={product}
                 view="grid"
-                openInNewTab={false}
+                openInNewTab={true}
                 brandHref={brandHref}
                 vendorHref={vendorHref}
                 brandLabel={brandLabel || undefined}

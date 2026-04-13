@@ -1,8 +1,10 @@
 import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
+import { getAuth, type Auth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 
 let cachedApp: App | null = null;
 let cachedDatabaseId: string | null = null;
+let cachedAuth: Auth | null = null;
 
 function normalizePrivateKey(value: string | undefined): string {
   return String(value ?? "").replace(/\\n/g, "\n").trim();
@@ -70,6 +72,19 @@ export function getAdminDb(): Firestore | null {
     return getFirestore(app, getRequiredAdminDatabaseId());
   } catch (error) {
     console.error("Firebase admin database config missing:", error);
+    return null;
+  }
+}
+
+export function getAdminAuth(): Auth | null {
+  if (cachedAuth) return cachedAuth;
+  const app = getAdminApp();
+  if (!app) return null;
+  try {
+    cachedAuth = getAuth(app);
+    return cachedAuth;
+  } catch (error) {
+    console.error("Firebase admin auth init failed:", error);
     return null;
   }
 }
