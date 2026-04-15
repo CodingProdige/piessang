@@ -10,6 +10,14 @@ import { findOrderReferencesForProduct } from "@/lib/orders/product-usage";
 const ok  = (p = {}, s = 200) => NextResponse.json({ ok: true,  ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 const is8 = (s) => /^\d{8}$/.test(String(s ?? "").trim());
+const toBool = (v, f = false) =>
+  typeof v === "boolean"
+    ? v
+    : typeof v === "number"
+    ? v !== 0
+    : typeof v === "string"
+    ? ["true", "1", "yes", "y"].includes(v.toLowerCase())
+    : f;
 
 function hasLiveSnapshotRecord(product) {
   return Boolean(product?.live_snapshot && typeof product.live_snapshot === "object");
@@ -22,7 +30,7 @@ export async function POST(req) {
       return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     }
 
-    const { unique_id, variant_id } = await req.json();
+    const { unique_id, variant_id, adminReviewEdit } = await req.json();
 
     // Validate product id (8-digit)
     const pid = String(unique_id ?? "").trim();
@@ -62,14 +70,22 @@ export async function POST(req) {
 
     const preserveLiveVersionDuringReview =
       String(data?.moderation?.status ?? "").trim().toLowerCase() === "published" || hasLiveSnapshotRecord(data);
+    const keepAdminEditedReviewInQueue =
+      toBool(adminReviewEdit) &&
+      String(data?.moderation?.status ?? "").trim().toLowerCase() === "in_review";
 
     const updatePayload = {
       variants: list,
       moderation: {
         ...(data?.moderation || {}),
-        status: preserveLiveVersionDuringReview ? "in_review" : "draft",
+        status:
+          preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue
+            ? "in_review"
+            : "draft",
         reason: "variant_changed",
-        notes: preserveLiveVersionDuringReview
+        notes: keepAdminEditedReviewInQueue
+          ? "Updated by Piessang during review. The listing remains in the review queue until approval or rejection."
+          : preserveLiveVersionDuringReview
           ? "Variant deletion is in review. The current live version stays visible until the changes are approved."
           : "Variant deletion requires the listing to be reviewed again before it goes live.",
         reviewedAt: null,
@@ -77,7 +93,10 @@ export async function POST(req) {
       },
       placement: {
         ...(data?.placement || {}),
-        isActive: preserveLiveVersionDuringReview ? Boolean(data?.placement?.isActive) : false,
+        isActive:
+          preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue
+            ? Boolean(data?.placement?.isActive)
+            : false,
       },
       "timestamps.updatedAt": FieldValue.serverTimestamp()
     };
@@ -92,7 +111,10 @@ export async function POST(req) {
       remaining: list.length,
       message: preserveLiveVersionDuringReview
         ? "Variant deleted from the pending update. The current live version stays visible while the change is reviewed."
-        : "Variant deleted. The product has been moved back to draft for review.",
+        : keepAdminEditedReviewInQueue
+        ? "Variant deleted. The product stays in the review queue while you continue reviewing it."
+        :
+          "Variant deleted. The product has been moved back to draft for review.",
       resubmissionRequired: true
     });
   } catch (e) {

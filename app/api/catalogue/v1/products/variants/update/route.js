@@ -29,7 +29,7 @@ const toInt = (v, f = 0) =>
 const toNum = (v, f = 0) =>
   Number.isFinite(+v) ? +v : f;
 const toStr = (v, f = "") =>
-  (v == null ? f : String(v)).trim();
+  String(v == null ? (f ?? "") : v).trim();
 const toBool = (v, f = false) =>
   typeof v === "boolean"
     ? v
@@ -164,43 +164,79 @@ function hasLiveSnapshotRecord(product) {
   return Boolean(product?.live_snapshot && typeof product.live_snapshot === "object");
 }
 
-function hasVariantReviewSensitiveChanges(patch = {}) {
-  if (!patch || typeof patch !== "object") return false;
+function normalizeImagesForReviewCompare(images) {
+  return Array.isArray(images)
+    ? images
+        .map((item) => ({
+          imageUrl: toStr(item?.imageUrl, null) || null,
+          blurHashUrl: toStr(item?.blurHashUrl, null) || null,
+          altText: toStr(item?.altText, null) || null,
+          position: Number.isFinite(+item?.position) ? toInt(item.position) : null,
+        }))
+        .filter((item) => item.imageUrl || item.blurHashUrl || item.altText)
+    : [];
+}
 
-  if ("variant_id" in patch) return true;
-  if ("label" in patch) return true;
-  if ("size" in patch) return true;
-  if ("shade" in patch) return true;
-  if ("scent" in patch) return true;
-  if ("skinType" in patch) return true;
-  if ("hairType" in patch) return true;
-  if ("flavor" in patch) return true;
-  if ("abv" in patch) return true;
-  if ("containerType" in patch) return true;
-  if ("storageCapacity" in patch) return true;
-  if ("memoryRam" in patch) return true;
-  if ("connectivity" in patch) return true;
-  if ("compatibility" in patch) return true;
-  if ("sizeSystem" in patch) return true;
-  if ("material" in patch) return true;
-  if ("ringSize" in patch) return true;
-  if ("strapLength" in patch) return true;
-  if ("bookFormat" in patch) return true;
-  if ("language" in patch) return true;
-  if ("ageRange" in patch) return true;
-  if ("modelFitment" in patch) return true;
-  if ("sku" in patch) return true;
-  if ("barcode" in patch) return true;
-  if ("barcodeImageUrl" in patch) return true;
-  if ("color" in patch) return true;
-  if ("media" in patch) return true;
-  if ("pack" in patch) return true;
+function hasVariantReviewSensitiveChanges(beforeVariant = {}, afterVariant = {}) {
+  const before = beforeVariant && typeof beforeVariant === "object" ? beforeVariant : {};
+  const after = afterVariant && typeof afterVariant === "object" ? afterVariant : {};
 
-  if (patch?.placement && typeof patch.placement === "object") {
-    const placementKeys = Object.keys(patch.placement || {});
-    if (placementKeys.some((key) => !["continue_selling_out_of_stock", "track_inventory"].includes(String(key)))) {
-      return true;
-    }
+  const fieldsToCompare = [
+    "variant_id",
+    "label",
+    "size",
+    "shade",
+    "scent",
+    "skinType",
+    "hairType",
+    "flavor",
+    "abv",
+    "containerType",
+    "storageCapacity",
+    "memoryRam",
+    "connectivity",
+    "compatibility",
+    "sizeSystem",
+    "material",
+    "ringSize",
+    "strapLength",
+    "bookFormat",
+    "language",
+    "ageRange",
+    "modelFitment",
+    "sku",
+    "barcode",
+    "barcodeImageUrl",
+    "color",
+  ];
+
+  if (
+    fieldsToCompare.some((field) => toStr(before?.[field], null) !== toStr(after?.[field], null))
+  ) {
+    return true;
+  }
+
+  const beforePack = before?.pack && typeof before.pack === "object" ? before.pack : {};
+  const afterPack = after?.pack && typeof after.pack === "object" ? after.pack : {};
+  if (
+    toInt(beforePack?.unit_count, 0) !== toInt(afterPack?.unit_count, 0) ||
+    toNum(beforePack?.volume, 0) !== toNum(afterPack?.volume, 0) ||
+    normalizeVolumeUnit(beforePack?.volume_unit) !== normalizeVolumeUnit(afterPack?.volume_unit)
+  ) {
+    return true;
+  }
+
+  const beforePlacement = before?.placement && typeof before.placement === "object" ? before.placement : {};
+  const afterPlacement = after?.placement && typeof after.placement === "object" ? after.placement : {};
+  if (toBool(beforePlacement?.isActive) !== toBool(afterPlacement?.isActive)) return true;
+  if (normalizeImagesForReviewCompare(before?.media?.images).length !== normalizeImagesForReviewCompare(after?.media?.images).length) {
+    return true;
+  }
+  if (
+    JSON.stringify(normalizeImagesForReviewCompare(before?.media?.images)) !==
+    JSON.stringify(normalizeImagesForReviewCompare(after?.media?.images))
+  ) {
+    return true;
   }
 
   return false;
@@ -401,12 +437,13 @@ function isLowStockQty(qty) {
 /* ---------- MAIN ---------- */
 export async function POST(req) {
   try {
+    const body = await req.json();
     const db = getAdminDb();
     if (!db) {
       return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     }
 
-    const { unique_id, variant_id, data } = await req.json();
+    const { unique_id, variant_id, data, adminReviewEdit } = body;
     const pid = toStr(unique_id);
     if (!is8(pid))
       return err(
@@ -464,7 +501,7 @@ export async function POST(req) {
     if (incomingBC) {
       const allBCs = await collectAllBarcodes(db);
       const normalized = incomingBC.toUpperCase();
-      const currentSellerCode = getProductSellerCode(current).toUpperCase();
+      const currentSellerCode = getProductSellerCode(docData).toUpperCase();
       const conflict = allBCs.find(
         (b) =>
           b.barcode === normalized &&
@@ -647,7 +684,10 @@ export async function POST(req) {
 
     const preserveLiveVersionDuringReview =
       toStr(docData?.moderation?.status).toLowerCase() === "published" || hasLiveSnapshotRecord(docData);
-    const reviewSensitiveVariantChange = hasVariantReviewSensitiveChanges(patch);
+    const reviewSensitiveVariantChange = hasVariantReviewSensitiveChanges(beforeVariant, list[idx]);
+    const keepAdminEditedReviewInQueue =
+      toBool(adminReviewEdit) &&
+      toStr(docData?.moderation?.status).toLowerCase() === "in_review";
 
     const updatePayload = {
       variants: list,
@@ -663,8 +703,14 @@ export async function POST(req) {
         ...(reviewSensitiveVariantChange
           ? {
               status: preserveLiveVersionDuringReview ? "in_review" : "draft",
+              status:
+                preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue
+                  ? "in_review"
+                  : "draft",
               reason: "variant_changed",
-              notes: preserveLiveVersionDuringReview
+              notes: keepAdminEditedReviewInQueue
+                ? "Updated by Piessang during review. The listing remains in the review queue until approval or rejection."
+                : preserveLiveVersionDuringReview
                 ? "Variant updates are in review. The current live version stays visible until the changes are approved."
                 : "Variant updates require the listing to be reviewed again before it goes live.",
               reviewedAt: null,
@@ -675,7 +721,7 @@ export async function POST(req) {
       placement: {
         ...(docData?.placement || {}),
         isActive: reviewSensitiveVariantChange
-          ? preserveLiveVersionDuringReview
+          ? preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue
             ? Boolean(docData?.placement?.isActive)
             : false
           : Boolean(docData?.placement?.isActive),
@@ -743,23 +789,27 @@ export async function POST(req) {
       isLowStockQty(nextStock) &&
       process.env.SENDGRID_API_KEY?.startsWith("SG.")
     ) {
-      const recipients = await collectSellerNotificationEmails({
-        sellerSlug,
-        fallbackEmails: [docData?.seller?.contactEmail, docData?.email, docData?.product?.vendorEmail].filter(Boolean),
-      });
-
-      if (recipients.length) {
-        await sendSellerNotificationEmails({
-          origin: new URL(req.url).origin,
-          type: "seller-low-stock",
-          to: recipients,
-          data: {
-            vendorName: docData?.product?.vendorName || docData?.seller?.vendorName || "Piessang seller",
-            productTitle: docData?.product?.title || "your product",
-            variantLabel: list[idx]?.label || "variant",
-            currentStock: String(nextStock),
-          },
+      try {
+        const recipients = await collectSellerNotificationEmails({
+          sellerSlug,
+          fallbackEmails: [docData?.seller?.contactEmail, docData?.email, docData?.product?.vendorEmail].filter(Boolean),
         });
+
+        if (recipients.length) {
+          await sendSellerNotificationEmails({
+            origin: new URL(req.url).origin,
+            type: "seller-low-stock",
+            to: recipients,
+            data: {
+              vendorName: docData?.product?.vendorName || docData?.seller?.vendorName || "Piessang seller",
+              productTitle: docData?.product?.title || "your product",
+              variantLabel: list[idx]?.label || "variant",
+              currentStock: String(nextStock),
+            },
+          });
+        }
+      } catch (notificationError) {
+        console.warn("variant update low-stock notification failed:", notificationError);
       }
     }
 
@@ -769,15 +819,15 @@ export async function POST(req) {
       variant_id: vid,
       default_variant_id,
       resubmissionRequired: reviewSensitiveVariantChange,
-      liveVersionKept: reviewSensitiveVariantChange && preserveLiveVersionDuringReview,
+      liveVersionKept: reviewSensitiveVariantChange && (preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue),
       variant: list[idx],
     });
   } catch (e) {
     console.error("variant update failed:", e);
     return err(
-      500,
-      "Unexpected Error",
-      "Failed to update variant.",
+      Number.isFinite(Number(e?.status)) ? Number(e.status) : 500,
+      Number.isFinite(Number(e?.status)) ? "Variant Update Failed" : "Unexpected Error",
+      e?.message || "Failed to update variant.",
       {
         error: e.message,
         stack: e.stack,

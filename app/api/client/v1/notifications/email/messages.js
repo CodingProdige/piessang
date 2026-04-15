@@ -282,6 +282,12 @@ export const emailMessages = {
       subjectTemplate: "New from <%= vendorName %> — <%= productTitle %>"
     },
 
+    "seller-new-follower": {
+      wrapper: "corporate-wrapper.ejs",
+      template: "seller-new-follower.ejs",
+      subjectTemplate: "You gained a new follower — <%= vendorName %>"
+    },
+
     "favorite-on-sale": {
       wrapper: "corporate-wrapper.ejs",
       template: "favorite-on-sale.ejs",

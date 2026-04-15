@@ -98,19 +98,20 @@ async function loadCatalogueTaxonomy(db: any) {
       return left.title.localeCompare(right.title);
     });
 
-  const subCategoriesByCategory = new Map<string, Array<{ slug: string; title: string; position: number }>>();
+  const subCategoriesByCategory = new Map<string, Array<{ taxonomyDocId: string; slug: string; title: string; position: number; isActive: boolean }>>();
   for (const doc of subCategorySnap.docs) {
     const item = doc.data() || {};
-    if (item?.placement?.isActive === false) continue;
     const categorySlug = String(item?.grouping?.category || "").trim().toLowerCase();
     const slug = String(item?.subCategory?.slug || "").trim().toLowerCase();
     const title = String(item?.subCategory?.title || "").trim();
     if (!categorySlug || !slug || !title) continue;
     const current = subCategoriesByCategory.get(categorySlug) || [];
     current.push({
+      taxonomyDocId: String(doc.id || ""),
       slug,
       title,
       position: Number(item?.placement?.position ?? Number.POSITIVE_INFINITY),
+      isActive: item?.placement?.isActive !== false,
     });
     subCategoriesByCategory.set(categorySlug, current);
   }
@@ -408,6 +409,7 @@ export async function loadMarketplaceFeeConfig() {
       null,
     subCategories: (taxonomy.subCategoriesByCategory.get(category.slug) || []).map((subCategory) => ({
       slug: subCategory.slug,
+      taxonomyDocId: subCategory.taxonomyDocId,
       title: subCategory.title,
       feeRule:
         subCategoryRuleMap.get(`${category.slug}::${subCategory.slug}`) ||
@@ -416,6 +418,7 @@ export async function loadMarketplaceFeeConfig() {
           ?.subCategories?.find((item) => item.slug === subCategory.slug)?.feeRule ||
         categoryRuleMap.get(category.slug) ||
         null,
+      isActive: categoryDocs.find((item: any) => item?.categorySlug === category.slug && item?.subCategorySlug === subCategory.slug)?.isActive !== false,
     })),
   }));
 

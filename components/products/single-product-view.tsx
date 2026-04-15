@@ -6,7 +6,6 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
-import { ProductPageRecommendations } from "@/components/products/product-page-recommendations";
 import {
   readShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
@@ -16,6 +15,7 @@ import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { RenderWhenVisible } from "@/components/shared/render-when-visible";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
+import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
 import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
 
 type ProductVariant = {
@@ -62,6 +62,7 @@ type ProductVariant = {
   };
   placement?: {
     is_default?: boolean;
+    track_inventory?: boolean;
     continue_selling_out_of_stock?: boolean;
   };
   inventory?: Array<{
@@ -319,6 +320,19 @@ const ProductReviewsSection = dynamic(
   },
 );
 
+const ProductPageRecommendations = dynamic(
+  () => import("@/components/products/product-page-recommendations").then((mod) => mod.ProductPageRecommendations),
+  {
+    ssr: false,
+    loading: () => (
+      <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+        <div className="h-6 w-40 rounded bg-[#f3f3f0] animate-pulse" />
+        <div className="mt-4 h-28 rounded-[8px] bg-[#f3f3f0] animate-pulse" />
+      </section>
+    ),
+  },
+);
+
 function scheduleWhenIdle(task: () => void, timeout = 1500) {
   if (typeof window === "undefined") return () => {};
 
@@ -329,6 +343,21 @@ function scheduleWhenIdle(task: () => void, timeout = 1500) {
 
   const timer = globalThis.setTimeout(task, timeout);
   return () => globalThis.clearTimeout(timer);
+}
+
+function prefersLiteProductExperience() {
+  if (typeof navigator === "undefined") return false;
+  const connection = (navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string };
+    mozConnection?: { saveData?: boolean; effectiveType?: string };
+    webkitConnection?: { saveData?: boolean; effectiveType?: string };
+  }).connection
+    ?? (navigator as Navigator & { mozConnection?: { saveData?: boolean; effectiveType?: string } }).mozConnection
+    ?? (navigator as Navigator & { webkitConnection?: { saveData?: boolean; effectiveType?: string } }).webkitConnection;
+  if (!connection) return false;
+  if (connection.saveData) return true;
+  const effectiveType = String(connection.effectiveType || "").toLowerCase();
+  return effectiveType === "slow-2g" || effectiveType === "2g" || effectiveType === "3g";
 }
 
 function splitCurrencyParts(formattedValue?: string | null) {
@@ -454,11 +483,11 @@ function pickDisplayVariant(variants?: ProductVariant[]) {
 }
 
 function getBrandLabel(item: ProductItem) {
-  return item.data?.brand?.title ?? item.data?.grouping?.brand ?? "Piessang";
+  return resolveBrandLabel(item.data);
 }
 
 function getBrandSlug(item: ProductItem) {
-  return item.data?.brand?.slug ?? item.data?.grouping?.brand ?? "";
+  return resolveBrandKey(item.data);
 }
 
 function getVendorLabel(item: ProductItem) {
@@ -528,7 +557,7 @@ function getStockLabel(variant?: ProductVariant | null, item?: ProductItem) {
   if (item?.data?.placement?.supplier_out_of_stock) {
     return { label: "Supplier out of stock", tone: "neutral" as const, hideQty: true };
   }
-  if (variant?.placement?.continue_selling_out_of_stock) {
+  if (variant?.placement?.track_inventory !== true || variant?.placement?.continue_selling_out_of_stock) {
     return { label: "In stock", tone: "success" as const, hideQty: true };
   }
   if (typeof variant?.total_in_stock_items_available === "number") {
@@ -705,6 +734,7 @@ export function SingleProductView({
   const [resolvedRecommendationRails, setResolvedRecommendationRails] = useState<RecommendationRailsState | undefined>(
     recommendationRails,
   );
+  const [liteExperience, setLiteExperience] = useState(false);
   const [recommendationsActivated, setRecommendationsActivated] = useState(
     Boolean(recommendationRails?.oftenBought?.items?.length) || Boolean(recommendationRails?.similar?.items?.length),
   );
@@ -797,11 +827,16 @@ export function SingleProductView({
   }, []);
 
   useEffect(() => {
+    setLiteExperience(prefersLiteProductExperience());
+  }, []);
+
+  useEffect(() => {
     setResolvedRecommendationRails(recommendationRails);
   }, [recommendationRails]);
 
   useEffect(() => {
     if (!recommendationsActivated) return;
+    if (liteExperience) return;
     if (!productId) return;
     const hasServerRecommendations =
       Boolean(recommendationRails?.oftenBought?.items?.length) || Boolean(recommendationRails?.similar?.items?.length);
@@ -825,18 +860,14 @@ export function SingleProductView({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [productId, recommendationRails, recommendationsActivated]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.title = `${item.data?.product?.title || "Product"} | Piessang`;
-  }, [item.data?.product?.title]);
+  }, [liteExperience, productId, recommendationRails, recommendationsActivated]);
 
   useEffect(() => {
     setFavoriteState(Boolean(item.data?.is_favorite) || Boolean(favoriteIds?.includes(productId)));
   }, [favoriteIds, item.data?.is_favorite, productId]);
 
   useEffect(() => {
+    if (liteExperience) return;
     if (!productId || typeof window === "undefined") return;
 
     const sessionKey = `piessang:product-viewer:${productId}`;
@@ -848,7 +879,10 @@ export function SingleProductView({
 
     let cancelled = false;
     let interval: number | null = null;
+    let inFlight = false;
     const heartbeat = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const response = await fetch("/api/client/v1/products/live-viewers", {
           method: "POST",
@@ -859,7 +893,20 @@ export function SingleProductView({
         if (!cancelled && response.ok && typeof payload?.count === "number") {
           setLiveViewerCount(payload.count);
         }
-      } catch {}
+      } catch {
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const handleVisibilityRefresh = () => {
+      if (document.visibilityState === "visible") {
+        void heartbeat();
+      }
+    };
+
+    const handleFocusRefresh = () => {
+      void heartbeat();
     };
 
     const cancelIdle = scheduleWhenIdle(() => {
@@ -881,15 +928,19 @@ export function SingleProductView({
         userId: profile?.uid || null,
         dedupeKey: `piessang_product_view:${productId}`,
       });
-      interval = window.setInterval(heartbeat, 30000);
+      interval = window.setInterval(heartbeat, 10000);
+      document.addEventListener("visibilitychange", handleVisibilityRefresh);
+      window.addEventListener("focus", handleFocusRefresh);
     }, 2000);
 
     return () => {
       cancelled = true;
       cancelIdle();
       if (interval != null) window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityRefresh);
+      window.removeEventListener("focus", handleFocusRefresh);
     };
-  }, [item.data?.product?.sellerCode, item.data?.product?.sellerSlug, item.data?.product?.title, item.data?.product?.vendorName, item.data?.seller?.sellerCode, item.data?.seller?.sellerSlug, item.data?.seller?.vendorName, item.data?.shopify?.vendorName, productId, profile?.uid]);
+  }, [item.data?.product?.sellerCode, item.data?.product?.sellerSlug, item.data?.product?.title, item.data?.product?.vendorName, item.data?.seller?.sellerCode, item.data?.seller?.sellerSlug, item.data?.seller?.vendorName, item.data?.shopify?.vendorName, liteExperience, productId, profile?.uid]);
 
   useEffect(() => {
     if (!snackbarMessage) return undefined;
@@ -1036,8 +1087,8 @@ export function SingleProductView({
   }
 
   return (
-    <div className="space-y-4 pb-28 lg:pb-0">
-      <section className="rounded-[8px] bg-white px-5 py-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+    <div data-safe-stack className="space-y-4 pb-28 lg:pb-0">
+      <section data-safe-card="header" className="rounded-[8px] bg-white px-5 py-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex flex-wrap items-center gap-2 text-[13px] text-[#57636c]">
             <Link href="/products" className="transition-colors hover:text-[#202020]">Products</Link>
@@ -1080,9 +1131,9 @@ export function SingleProductView({
         {shareMessage ? <p className="mt-3 text-[12px] text-[#57636c]">{shareMessage}</p> : null}
         {reportFeedback ? <p className="mt-3 text-[12px] text-[#57636c]">{reportFeedback}</p> : null}
       </section>
-      <section className="grid gap-4 lg:items-start lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+      <section data-safe-grid="product" className="grid gap-4 lg:items-start lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
         <div className="space-y-4 self-start">
-          <div className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <div data-safe-card="padded" className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
             <div className={hasThumbnailRail ? "grid gap-3 md:grid-cols-[88px_minmax(0,1fr)]" : "grid gap-3"}>
               {hasThumbnailRail ? (
                 <div className="order-2 flex gap-2 overflow-x-auto md:order-1 md:max-h-[620px] md:flex-col md:overflow-y-auto md:overflow-x-hidden md:pr-1">
@@ -1114,6 +1165,7 @@ export function SingleProductView({
 
               <div className="order-1">
                 <div
+                  data-safe-media
                   className="relative aspect-[1/1] overflow-hidden rounded-[8px] bg-white"
                   onMouseMove={(event) => {
                     const rect = event.currentTarget.getBoundingClientRect();
@@ -1215,12 +1267,12 @@ export function SingleProductView({
           </RenderWhenVisible>
         </div>
 
-        <div className="space-y-4 overflow-hidden rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+        <div data-safe-card="padded" className="space-y-4 overflow-hidden rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
               About this item
             </p>
-            <h1 className="mt-2 text-[28px] font-semibold leading-[1.05] text-[#202020]">
+            <h1 data-safe-title className="mt-2 text-[28px] font-semibold leading-[1.05] text-[#202020]">
               {item.data?.product?.title ?? "Untitled product"}
             </h1>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-normal">
@@ -1244,7 +1296,7 @@ export function SingleProductView({
                 Save {salePercent}%
               </p>
             ) : null}
-            <div className="flex flex-wrap items-end gap-3">
+            <div data-safe-actions className="flex flex-wrap items-end gap-3">
               {priceInclVat != null ? (
                 <div className="flex items-end gap-2">
                   <StorefrontPrice value={priceInclVat} tone={saleActive ? "sale" : "default"} size="lg" />
@@ -1323,7 +1375,7 @@ export function SingleProductView({
             </div>
           ) : null}
 
-          {liveViewerCount > 0 ? (
+          {!liteExperience && liveViewerCount > 0 ? (
             <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold">
               <span className="inline-flex items-center gap-1 text-[#b45309]">
                 {liveViewerCount <= LIVE_VIEWER_FLAME_THRESHOLD ? <FlameIcon /> : null}

@@ -15,7 +15,7 @@ import { SHOPPER_COUNTRY_OPTIONS } from "@/components/products/delivery-area-gat
 import { clientStorage } from "@/lib/firebase";
 import { prepareImageAsset } from "@/lib/client/image-prep";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
-import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
+import { SUPPORTED_PAYOUT_COUNTRIES, getDefaultPayoutCurrency } from "@/lib/seller/payout-config";
 
 type SellerBranding = {
   bannerImageUrl: string;
@@ -301,9 +301,12 @@ function getWiseDetailFallback(payoutProfile: SellerPayoutProfile, key: string) 
   }
 }
 
-function guessWiseFieldInputMode(field: { key?: string; values?: Array<{ value: string; label: string }> }) {
+function guessWiseFieldInputMode(field: { key?: string; label?: string; values?: Array<{ value: string; label: string }> }) {
   const key = normalizeWiseFieldKey(field?.key);
+  const fallback = toStr(field?.label || key).toLowerCase();
   if (Array.isArray(field?.values) && field.values.length) return "select";
+  if (key.includes("wire") || fallback.includes("wire transfer")) return "boolean";
+  if (key.includes("accounttype") || key.endsWith(".accountType") || fallback === "account type") return "account_type";
   if (key.includes("email")) return "email";
   if (key.includes("dateofbirth") || key.endsWith(".dob") || key.includes("birthdate") || key.includes("date")) return "date";
   if (key.includes("iban")) return "iban";
@@ -324,6 +327,7 @@ function getFriendlyWiseFieldLabel(field: { key?: string; label?: string }) {
     "address.state": "Province / State",
     "address.postCode": "Postal code",
     "details.accountNumber": "Account number",
+    "details.bankName": "Bank name",
     "details.dateOfBirth": "Date of birth",
     "details.iban": "IBAN",
     "details.swiftCode": "SWIFT / BIC",
@@ -344,8 +348,11 @@ function getFriendlyWiseFieldLabel(field: { key?: string; label?: string }) {
   if (fallback.toLowerCase() === "postcode") return "Postal code";
   if (fallback.toLowerCase() === "swiftcode") return "SWIFT / BIC";
   if (fallback.toLowerCase() === "bankcode") return "Branch code";
+  if (fallback.toLowerCase() === "bankname") return "Bank name";
   if (fallback.toLowerCase() === "accountnumber") return "Account number";
   if (fallback.toLowerCase() === "dateofbirth") return "Date of birth";
+  if (fallback.toLowerCase().includes("bankname")) return "Bank name";
+  if (fallback.toLowerCase().includes("send as a wire transfer only")) return "Use wire transfer only";
 
   return fallback
     .replace(/\//g, " ")
@@ -353,6 +360,41 @@ function getFriendlyWiseFieldLabel(field: { key?: string; label?: string }) {
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function getWiseFieldHelpText(field: { key?: string; label?: string }) {
+  const key = normalizeWiseFieldKey(field?.key);
+  const fallback = toStr(field?.label || key).toLowerCase();
+
+  if (key.includes("wire") || fallback.includes("send as a wire transfer only")) {
+    return "Leave this off for a normal US bank account. Only use it if your bank says this account can receive wire transfers only.";
+  }
+
+  return "";
+}
+
+function getWiseBooleanOptions(field: { key?: string; label?: string }) {
+  const key = normalizeWiseFieldKey(field?.key);
+  const fallback = toStr(field?.label || key).toLowerCase();
+  if (key.includes("wire") || fallback.includes("send as a wire transfer only") || fallback.includes("wire transfer")) {
+    return [
+      { value: "false", label: "No" },
+      { value: "true", label: "Yes" },
+    ];
+  }
+  return [];
+}
+
+function getWiseAccountTypeOptions(field: { key?: string; label?: string }) {
+  const key = normalizeWiseFieldKey(field?.key);
+  const fallback = toStr(field?.label || key).toLowerCase();
+  if (key.includes("accounttype") || key.endsWith(".accountType") || fallback === "account type") {
+    return [
+      { value: "CHECKING", label: "Checking" },
+      { value: "SAVINGS", label: "Savings" },
+    ];
+  }
+  return [];
 }
 
 function getWiseFieldGroupTitle(fieldKey: unknown) {
@@ -862,7 +904,10 @@ export function SellerSettingsWorkspace({
     let cancelled = false;
 
     async function loadBranding() {
-      if (!sellerSlug) return;
+      if (!sellerSlug) {
+        if (!cancelled) setLoading(false);
+        return;
+      }
 
       setLoading(true);
       setError(null);
@@ -940,7 +985,7 @@ export function SellerSettingsWorkspace({
             onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
             payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
             lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
-            recipientEmail: toStr(nextPayoutProfile?.recipientEmail || nextBusinessDetails?.email || profile?.email || ""),
+            recipientEmail: toStr(nextBusinessDetails?.email || profile?.email || nextPayoutProfile?.recipientEmail || ""),
             lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
           });
           setBusinessDetails({
@@ -1059,13 +1104,40 @@ export function SellerSettingsWorkspace({
   }, []);
 
   const payoutProvider = toStr(payoutProfile.provider || "wise").toLowerCase();
+  const payoutErrorNotice = (() => {
+    const message = toStr(error);
+    if (!message) return "";
+    const normalized = message.toLowerCase();
+    if (
+      normalized.includes("payout") ||
+      normalized.includes("wise") ||
+      normalized.includes("bank") ||
+      normalized.includes("recipient") ||
+      normalized.includes("routing") ||
+      normalized.includes("wire") ||
+      normalized.includes("swift") ||
+      normalized.includes("account number") ||
+      normalized.includes("postal code") ||
+      normalized.includes("address")
+    ) {
+      return message;
+    }
+    return "";
+  })();
   const selectedShippingZoneCountries = useMemo(
     () => deliveryProfile.shippingZones.map((zone) => normalizeCountryKey(zone.country)).filter(Boolean),
     [deliveryProfile.shippingZones],
   );
   const hasDuplicateShippingZoneCountries = selectedShippingZoneCountries.length !== new Set(selectedShippingZoneCountries).size;
   const recipientId = payoutProvider === "wise" ? payoutProfile.wiseRecipientId : payoutProfile.stripeRecipientAccountId;
-  const payoutRecipientReady = Boolean(payoutStatus?.connected || recipientId);
+  const payoutRecipientReady = Boolean(
+    payoutStatus?.connected ||
+      payoutStatus?.payoutsEnabled === true ||
+      payoutStatus?.hasBankDestination === true ||
+      recipientId ||
+      payoutProfile.payoutMethodEnabled === true ||
+      ["verified", "ready"].includes(toStr(payoutProfile.verificationStatus || payoutProfile.onboardingStatus).toLowerCase()),
+  );
   const payoutSummaryBank = payoutStatus?.bankName
     ? `${payoutStatus.bankName}${payoutStatus.accountLast4 ? ` •••• ${payoutStatus.accountLast4}` : ""}`
     : payoutStatus?.accountSummary
@@ -1089,9 +1161,10 @@ export function SellerSettingsWorkspace({
   const payoutNoticeText = sanitizeLegacyPayoutNotice(payoutProfile.verificationNotes);
   const payoutSetupComplete =
     payoutSummaryStatus === "ready for payouts" ||
-    (payoutStatus?.connected === true && payoutStatus?.hasBankDestination === true);
+    payoutRecipientReady;
   const payoutConnectedSummary =
     payoutSummaryBank && payoutSummaryBank !== "Save payout details to create a Wise recipient" ? payoutSummaryBank : "";
+  const sellerPayoutEmail = toStr(businessDetails.email || profile?.email || payoutProfile.recipientEmail || "");
   const activeWiseRequirementType =
     toStr(payoutProfile.wiseRequirementType) ||
     toStr(wiseRequirementOptions[0]?.type);
@@ -1200,6 +1273,29 @@ export function SellerSettingsWorkspace({
         throw new Error(payload?.message || "Unable to create the payout recipient.");
       }
       const nextUrl = toStr(payload?.data?.url);
+      const nextRecipientId = toStr(payload?.data?.recipientId);
+      const nextOnboardingStatus = toStr(payload?.data?.onboardingStatus || (nextRecipientId ? "ready" : ""));
+      if (nextRecipientId || nextOnboardingStatus) {
+        setPayoutProfile((current) => ({
+          ...current,
+          provider: payoutProvider,
+          wiseRecipientId: nextRecipientId || current.wiseRecipientId,
+          wiseRecipientStatus: nextOnboardingStatus === "ready" ? "active" : current.wiseRecipientStatus,
+          onboardingStatus: nextOnboardingStatus || current.onboardingStatus,
+          verificationStatus:
+            nextOnboardingStatus === "ready"
+              ? "verified"
+              : nextOnboardingStatus
+                ? "pending"
+                : current.verificationStatus,
+          payoutMethodEnabled: nextOnboardingStatus === "ready" ? true : current.payoutMethodEnabled,
+          verificationNotes:
+            nextOnboardingStatus === "ready"
+              ? "Wise recipient is ready for payouts."
+              : current.verificationNotes,
+          lastVerifiedAt: new Date().toISOString(),
+        }));
+      }
       if (!nextUrl) {
         void loadPayoutStatus();
         showSnackbar(payload?.data?.message || "Payout recipient saved successfully.", "success");
@@ -1398,7 +1494,7 @@ export function SellerSettingsWorkspace({
         onboardingStatus: toStr(nextPayoutProfile?.onboardingStatus || "created"),
         payoutMethodEnabled: nextPayoutProfile?.payoutMethodEnabled === true,
         lastCollectionLinkSentAt: toStr(nextPayoutProfile?.lastCollectionLinkSentAt),
-        recipientEmail: toStr(nextPayoutProfile?.recipientEmail || nextBusinessDetails?.email || profile?.email || ""),
+        recipientEmail: toStr(nextBusinessDetails?.email || profile?.email || nextPayoutProfile?.recipientEmail || ""),
         lastVerifiedAt: toStr(nextPayoutProfile?.lastVerifiedAt),
       });
       setBusinessDetails({
@@ -2251,25 +2347,9 @@ export function SellerSettingsWorkspace({
         onToggle={() => setSectionOpen((current) => ({ ...current, payouts: !current.payouts }))}
       >
         <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] px-4 py-3 text-[12px] leading-[1.7] text-[#57636c]">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="font-semibold text-[#202020]">How this works</p>
-              <p className="mt-1">Fill in your bank details, then click <span className="font-semibold text-[#202020]">Save and connect payouts</span>. Piessang will save your details and connect your payout destination automatically.</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void createPayoutRecipient()}
-                disabled={!canEditSettings || payoutConnectBusy}
-                className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {payoutConnectBusy
-                  ? "Preparing..."
-                  : recipientId
-                    ? "Save and update payouts"
-                    : "Save and connect payouts"}
-              </button>
-            </div>
+          <div>
+            <p className="font-semibold text-[#202020]">How this works</p>
+            <p className="mt-1">Fill in your bank details, then use the button at the bottom of this form to save your details and connect your payout destination automatically.</p>
           </div>
           <p className="mt-2 text-[12px] text-[#57636c]">
             {recipientId
@@ -2278,27 +2358,70 @@ export function SellerSettingsWorkspace({
           </p>
         </div>
 
+        {payoutErrorNotice ? (
+          <div className="mt-3 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-4 py-4 text-[13px] leading-[1.7] text-[#7f1d1d]">
+            <p className="font-semibold text-[#b91c1c]">We couldn&apos;t complete your payout setup.</p>
+            <p className="mt-1">{payoutErrorNotice}</p>
+            <p className="mt-2">
+              If you&apos;re unsure how to fix this, please contact support or create a support ticket and we&apos;ll help you finish the payout setup.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Link
+                href="/support/tickets"
+                className="inline-flex h-9 items-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b]"
+              >
+                Create support ticket
+              </Link>
+              <Link
+                href="/support"
+                className="inline-flex h-9 items-center rounded-[8px] border border-[#d9b5b8] bg-white px-3 text-[12px] font-semibold text-[#7f1d1d] transition-colors hover:border-[#b91c1c]"
+              >
+                Contact support
+              </Link>
+            </div>
+          </div>
+        ) : null}
+
         <div className="mt-3 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <label className="block">
               <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Account holder name</span>
-              <input value={payoutProfile.accountHolderName} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, accountHolderName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="La Vie De Luc (Pty) Ltd" />
+              <input value={payoutProfile.accountHolderName} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, accountHolderName: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="Dillon Jurgens" />
             </label>
             <label className="block">
               <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Recipient email</span>
-              <input value={payoutProfile.recipientEmail} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, recipientEmail: event.target.value.slice(0, 120) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="finance@yourbusiness.com" />
+              <input value={sellerPayoutEmail} readOnly disabled className="w-full cursor-not-allowed rounded-[8px] border border-black/10 bg-[#f7f7f7] px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="seller email" />
             </label>
             <label className="block">
               <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Currency</span>
-              <select value={payoutProfile.currency} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, currency: event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
-                {SUPPORTED_PAYOUT_CURRENCIES.map((entry) => (
-                  <option key={entry.code} value={entry.code}>{entry.code}</option>
-                ))}
-              </select>
+              <div className="w-full rounded-[8px] border border-black/10 bg-[#f7f7f7] px-3 py-2.5 text-[13px] font-medium text-[#202020]">
+                {payoutProfile.currency || getDefaultPayoutCurrency(payoutProfile.bankCountry) || "USD"}
+              </div>
+              <p className="mt-1.5 text-[11px] leading-[1.5] text-[#57636c]">
+                Currency is set automatically from the selected bank country.
+              </p>
             </label>
             <label className="block">
               <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Bank country</span>
-              <select value={payoutProfile.bankCountry} onChange={(event) => setPayoutProfile((current) => ({ ...current, provider: payoutProvider, bankCountry: event.target.value, country: event.target.value, beneficiaryCountry: current.beneficiaryCountry || event.target.value }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]">
+              <select
+                value={payoutProfile.bankCountry}
+                onChange={(event) =>
+                  setPayoutProfile((current) => {
+                    const nextCountry = event.target.value;
+                    const nextCurrency = getDefaultPayoutCurrency(nextCountry) || current.currency || "USD";
+                    return {
+                      ...current,
+                      provider: payoutProvider,
+                      bankCountry: nextCountry,
+                      country: nextCountry,
+                      currency: nextCurrency,
+                      beneficiaryCountry: current.beneficiaryCountry || nextCountry,
+                    };
+                  })
+                }
+                disabled={!canEditSettings}
+                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+              >
                 {SUPPORTED_PAYOUT_COUNTRIES.map((entry) => (
                   <option key={entry.code} value={entry.code}>{entry.label}</option>
                 ))}
@@ -2322,10 +2445,14 @@ export function SellerSettingsWorkspace({
                     const key = normalizeWiseFieldKey(field.key);
                     const inputMode = guessWiseFieldInputMode(field);
                     const value = getWiseDetailFallback(payoutProfile, key);
+                    const friendlyLabel = getFriendlyWiseFieldLabel(field);
+                    const helpText = getWiseFieldHelpText(field);
+                    const booleanOptions = getWiseBooleanOptions(field);
+                    const accountTypeOptions = getWiseAccountTypeOptions(field);
                     return (
                       <label key={key} className="block">
                         <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                          {getFriendlyWiseFieldLabel(field)}
+                          {friendlyLabel}
                           {field.required !== false ? " *" : ""}
                         </span>
                         {inputMode === "select" ? (
@@ -2346,6 +2473,51 @@ export function SellerSettingsWorkspace({
                           >
                             <option value="">Select</option>
                             {(field.values || []).map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : inputMode === "boolean" ? (
+                          <select
+                            value={value || "false"}
+                            onChange={(event) =>
+                              setPayoutProfile((current) => ({
+                                ...current,
+                                provider: payoutProvider,
+                                wiseDetails: {
+                                  ...current.wiseDetails,
+                                  [key]: event.target.value,
+                                },
+                              }))
+                            }
+                            disabled={!canEditSettings}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                          >
+                            {booleanOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : inputMode === "account_type" ? (
+                          <select
+                            value={value || ""}
+                            onChange={(event) =>
+                              setPayoutProfile((current) => ({
+                                ...current,
+                                provider: payoutProvider,
+                                wiseDetails: {
+                                  ...current.wiseDetails,
+                                  [key]: event.target.value,
+                                },
+                              }))
+                            }
+                            disabled={!canEditSettings}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                          >
+                            <option value="">Select account type</option>
+                            {accountTypeOptions.map((option) => (
                               <option key={option.value} value={option.value}>
                                 {option.label}
                               </option>
@@ -2374,15 +2546,32 @@ export function SellerSettingsWorkspace({
                             }
                             disabled={!canEditSettings}
                             className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
-                            placeholder={getFriendlyWiseFieldLabel(field)}
+                            placeholder={friendlyLabel}
                           />
                         )}
+                        {helpText ? (
+                          <p className="mt-1.5 text-[11px] leading-[1.5] text-[#57636c]">{helpText}</p>
+                        ) : null}
                       </label>
                     );
                   })}
                 </div>
               </div>
             ))}
+          </div>
+          <div className="mt-5">
+            <button
+              type="button"
+              onClick={() => void createPayoutRecipient()}
+              disabled={!canEditSettings || payoutConnectBusy}
+              className="inline-flex h-11 w-full items-center justify-center rounded-[10px] bg-[#202020] px-4 text-[14px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {payoutConnectBusy
+                ? "Preparing..."
+                : recipientId
+                  ? "Save and update payouts"
+                  : "Save and connect payouts"}
+            </button>
           </div>
         </div>
 
@@ -2501,7 +2690,9 @@ export function SellerSettingsWorkspace({
 
       {hasUnsavedChanges ? (
         <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.08)] px-4 py-3 text-[13px] text-[#166534]">
-          You have unsaved changes in your seller settings. Save your updates so your new delivery rules, payout details, and shipping setup can take effect.
+          {payoutRecipientReady
+            ? "Your payouts are already connected. You still have other unsaved seller settings on this page, so save your updates when you're ready."
+            : "You have unsaved changes in your seller settings. Save your updates so your new delivery rules, payout details, and shipping setup can take effect."}
         </div>
       ) : null}
 

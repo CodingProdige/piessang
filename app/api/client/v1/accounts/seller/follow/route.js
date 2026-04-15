@@ -22,6 +22,14 @@ function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
 }
 
+function resolveBaseUrl() {
+  return (
+    toStr(process.env.BASE_URL) ||
+    toStr(process.env.NEXT_PUBLIC_BASE_URL) ||
+    "https://piessang.com"
+  ).replace(/\/+$/, "");
+}
+
 async function resolveSeller(searchParams, body = {}) {
   const sellerIdentifier =
     toStr(searchParams?.get("seller")) ||
@@ -38,6 +46,8 @@ async function resolveSeller(searchParams, body = {}) {
   const seller = owner.data?.seller && typeof owner.data.seller === "object" ? owner.data.seller : {};
   return {
     ownerUid: toStr(owner.id),
+    ownerEmail: toStr(owner.data?.email || owner.data?.account?.email),
+    ownerName: toStr(owner.data?.account?.accountName || owner.data?.personal?.fullName || owner.data?.displayName),
     sellerCode: toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode || sellerIdentifier),
     sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || sellerIdentifier),
     vendorName: toStr(seller?.vendorName || seller?.groupVendorName || sellerIdentifier),
@@ -116,6 +126,47 @@ export async function POST(request) {
           followerName: sessionUser.displayName || null,
         },
       });
+
+      const baseUrl = resolveBaseUrl();
+      const followerName = sessionUser.displayName || sessionUser.email?.split("@")[0] || "A shopper";
+      const dashboardLink = `${baseUrl}/seller/dashboard?section=notifications`;
+
+      if (seller.ownerUid) {
+        await fetch(`${baseUrl}/api/client/v1/notifications/push`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            uid: seller.ownerUid,
+            type: "seller-new-follower",
+            variables: {
+              followerName,
+              vendorName: seller.vendorName,
+              link: dashboardLink,
+            },
+            data: {
+              link: dashboardLink,
+            },
+          }),
+        }).catch(() => null);
+      }
+
+      if (seller.ownerEmail) {
+        await fetch(`${baseUrl}/api/client/v1/notifications/email`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "seller-new-follower",
+            to: seller.ownerEmail,
+            uid: seller.ownerUid,
+            data: {
+              name: seller.ownerName || seller.vendorName,
+              vendorName: seller.vendorName,
+              followerName,
+              dashboardUrl: dashboardLink,
+            },
+          }),
+        }).catch(() => null);
+      }
     }
 
     const state = await getSellerFollowState(sessionUser.uid, seller);

@@ -14,6 +14,7 @@ import {
 import { ResultsCount } from "@/components/products/results-count";
 import { SingleProductView } from "@/components/products/single-product-view";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
 import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
 export const revalidate = 300;
@@ -331,6 +332,7 @@ function currentNumberParam(searchParams: Record<string, SearchParamValue>, key:
 
 function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
   const params = new URLSearchParams();
+  let previewMode = false;
 
   for (const [key, value] of Object.entries(searchParams)) {
     if (key === "minPrice" || key === "maxPrice") {
@@ -338,7 +340,9 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
     }
 
     if (typeof value === "string" && value) {
-      if (key === "unique_id") {
+      if (key === "preview") {
+        previewMode = value === "1" || value === "true";
+      } else if (key === "unique_id") {
         params.set("id", value);
       } else if (key === "ids") {
         params.set("ids", value);
@@ -349,7 +353,9 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
         params.set(key, value);
       }
     } else if (Array.isArray(value) && value[0]) {
-      if (key === "unique_id") {
+      if (key === "preview") {
+        previewMode = value[0] === "1" || value[0] === "true";
+      } else if (key === "unique_id") {
         params.set("id", value[0]);
       } else if (key === "ids") {
         params.set("ids", value[0]);
@@ -362,7 +368,10 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
     }
   }
 
-  if (!params.has("isActive")) {
+  if (previewMode) {
+    params.set("includeUnavailable", "true");
+    params.delete("isActive");
+  } else if (!params.has("isActive")) {
     params.set("isActive", "true");
   }
 
@@ -638,11 +647,11 @@ function pickDisplayVariant(variants?: ProductVariant[]) {
 }
 
 function getBrandLabel(item: ProductItem) {
-  return item.data?.brand?.title ?? item.data?.grouping?.brand ?? "Piessang";
+  return resolveBrandLabel(item.data);
 }
 
 function getBrandKey(item: ProductItem) {
-  return item.data?.brand?.slug ?? item.data?.grouping?.brand ?? "";
+  return resolveBrandKey(item.data);
 }
 
 function getPageTitle(searchParams: Record<string, SearchParamValue>) {
@@ -1330,7 +1339,7 @@ export async function ProductsPage({
       }
 
       return (
-        <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
+        <PageBody data-safe-page className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
           <SingleProductView
             item={singleItem}
             backHref={singleProductBackHref}
@@ -1438,7 +1447,7 @@ export async function ProductsPage({
   const openInNewTab = currentParam(resolvedSearchParams, "openInNewTab") === "true";
 
   return (
-    <PageBody className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
+    <PageBody data-safe-page className="px-3 py-4 text-[#202020] lg:px-4 lg:py-6">
       <section className="rounded-[8px] bg-white px-5 py-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[13px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Browse products</p>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">

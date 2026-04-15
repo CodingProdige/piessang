@@ -515,8 +515,8 @@ function getVariantChangeImpactSummary({
   if (baseline.language !== current.language) reviewTriggers.push("language");
   if (baseline.ageRange !== current.ageRange) reviewTriggers.push("age range");
   if (baseline.modelFitment !== current.modelFitment) reviewTriggers.push("fitment");
-  if (baseline.parcelPreset !== current.parcelPreset) reviewTriggers.push("parcel preset");
-  if (baseline.shippingClass !== current.shippingClass) reviewTriggers.push("shipping class");
+  if (baseline.parcelPreset !== current.parcelPreset) liveChanges.push("parcel preset");
+  if (baseline.shippingClass !== current.shippingClass) liveChanges.push("shipping class");
   if (baseline.sku !== current.sku) reviewTriggers.push("SKU");
   if (baseline.barcode !== current.barcode) reviewTriggers.push("barcode");
   if (baseline.color !== current.color) reviewTriggers.push("color");
@@ -524,7 +524,7 @@ function getVariantChangeImpactSummary({
   if (baseline.unitCount !== current.unitCount || baseline.volume !== current.volume || baseline.volumeUnit !== current.volumeUnit) {
     reviewTriggers.push("pack details");
   }
-  if (baseline.isDefault !== current.isDefault) reviewTriggers.push("default selection");
+  if (baseline.isDefault !== current.isDefault) liveChanges.push("default selection");
   if (baseline.isActive !== current.isActive) reviewTriggers.push("variant visibility");
 
   if (baseline.sellingPriceIncl !== current.sellingPriceIncl) liveChanges.push("price");
@@ -1341,17 +1341,20 @@ type SellerCatalogueEditorProps = {
   editorProductIdOverride?: string;
   sellerOverride?: string;
   embeddedMode?: boolean;
+  reviewContextOverride?: string;
 };
 
 export function SellerCatalogueEditor({
   editorProductIdOverride,
   sellerOverride,
   embeddedMode = false,
+  reviewContextOverride,
 }: SellerCatalogueEditorProps = {}) {
   const { authReady, isAuthenticated, isSeller, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const reviewContext = String(reviewContextOverride ?? searchParams.get("reviewContext") ?? "").trim().toLowerCase();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const variantUploadInputRef = useRef<HTMLInputElement | null>(null);
   const uniqueCodeRequestRef = useRef(0);
@@ -1639,7 +1642,7 @@ export function SellerCatalogueEditor({
   const inventoryTrackingRequired = fulfillmentMode === "bevgo";
   const inventoryTrackingEnabled = inventoryTrackingRequired || inventoryTracking;
   const inventoryTrackingForProduct = inventoryTrackingEnabled;
-  const continueSellingAvailable = fulfillmentMode === "seller" && !inventoryTrackingEnabled;
+  const continueSellingAvailable = fulfillmentMode === "seller" && inventoryTrackingEnabled;
   const fulfillmentLocked = Boolean(editorProductId || createdProduct?.uniqueId);
   const activeProcessLabel = useMemo(() => {
     if (submitting) return "Saving product...";
@@ -1663,6 +1666,11 @@ export function SellerCatalogueEditor({
   ]);
   const showInitialEditorSkeleton = Boolean(editorProductId) && (loadingProduct || (loadingVariants && !variantItems.length));
   const activeProductId = createdProduct?.uniqueId || editorProductId || "";
+  const adminReviewEditing =
+    isSystemAdmin &&
+    reviewContext === "product-reviews" &&
+    Boolean(activeProductId) &&
+    String(createdProduct?.moderationStatus ?? "").trim().toLowerCase() === "in_review";
   const productChangeImpact = useMemo(
     () =>
       getProductChangeImpactSummary({
@@ -3425,21 +3433,25 @@ export function SellerCatalogueEditor({
     try {
       const isUpdate = Boolean(activeProductId);
       const productHasEnteredReviewFlow = hasEnteredReviewFlow(createdProduct?.moderationStatus);
+      const targetModerationStatus: "draft" | "in_review" =
+        isUpdate && adminReviewEditing ? "in_review" : "draft";
       if (
         isUpdate &&
         !(await requestDraftImpactConfirmation({
           title: "Update product",
           message:
-            String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
-              ? "Updating this product will send your changes for review while the current live version stays visible until approval."
-              : productHasEnteredReviewFlow
-                ? "Updating this product will move it back to draft and it will need to be resubmitted for review."
-                : "Update this draft with your latest changes?",
+            adminReviewEditing
+              ? "Updating this product here will keep it in the review queue so you can continue reviewing it after saving your fixes."
+              : String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
+                ? "Updating this product will send your changes for review while the current live version stays visible until approval."
+                : productHasEnteredReviewFlow
+                  ? "Updating this product will move it back to draft and it will need to be resubmitted for review."
+                  : "Update this draft with your latest changes?",
         }))
       ) {
         return { savedId: activeProductId, isUpdate };
       }
-      const payload = buildProductPayload(isUpdate ? "draft" : "draft", !isUpdate);
+      const payload = buildProductPayload(targetModerationStatus, !isUpdate);
       const { normalizedUniqueId, normalizedSku, normalizedTitle, normalizedBrandSlug, normalizedBrandTitle } = payload;
 
       const response = await fetch(isUpdate ? PRODUCT_UPDATE_ENDPOINT : "/api/catalogue/v1/products/product/create", {
@@ -3450,6 +3462,7 @@ export function SellerCatalogueEditor({
             ? {
                 unique_id: normalizedUniqueId,
                 data: payload.data,
+                adminReviewEdit: adminReviewEditing,
               }
             : payload,
         ),
@@ -3521,13 +3534,15 @@ export function SellerCatalogueEditor({
       setMessage(
         [
           isUpdate
-            ? payloadResponse?.resubmissionRequired
-              ? payloadResponse?.liveVersionKept
-                ? "Product updated. Your changes are now in review while the current live version stays visible."
-                : productHasEnteredReviewFlow
-                  ? "Product updated. It has been moved back to draft and must be resubmitted for review."
-                  : "Draft updated."
-              : "Draft updated."
+            ? adminReviewEditing
+              ? "Product updated. It stays in review so you can approve or reject it once your fixes are done."
+              : payloadResponse?.resubmissionRequired
+                ? payloadResponse?.liveVersionKept
+                  ? "Product updated. Your changes are now in review while the current live version stays visible."
+                  : productHasEnteredReviewFlow
+                    ? "Product updated. It has been moved back to draft and must be resubmitted for review."
+                    : "Draft updated."
+                : "Draft updated."
             : "Product saved as draft.",
           savedBrandTitle
             ? brandPending
@@ -3860,17 +3875,22 @@ export function SellerCatalogueEditor({
       }
       if (
         activeProductId &&
+        variantChangeImpact.tone === "review" &&
         !(await requestDraftImpactConfirmation({
           title: editingVariantIndex !== null ? "Update variant" : "Add variant",
           message:
             editingVariantIndex !== null
               ? String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
                 ? "Updating this variant will send your changes for review while the current live version stays visible until approval."
+                : adminReviewEditing
+                  ? "Updating this variant will keep the product in the review queue so you can continue reviewing it after saving."
                 : hasEnteredReviewFlow(createdProduct?.moderationStatus)
                   ? "Updating this variant will move the product back to draft and it will need to be resubmitted for review."
                   : "Update this draft variant with your latest changes?"
               : String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
                 ? "Adding this variant will send your changes for review while the current live version stays visible until approval."
+                : adminReviewEditing
+                  ? "Adding this variant will keep the product in the review queue so you can continue reviewing it after saving."
                 : hasEnteredReviewFlow(createdProduct?.moderationStatus)
                   ? "Adding this variant will move the product back to draft and it will need to be resubmitted for review."
                   : "Add this variant to your draft product?",
@@ -4121,6 +4141,7 @@ export function SellerCatalogueEditor({
                   }
                 : null,
               inventory: inventoryRows,
+              adminReviewEdit: adminReviewEditing,
             },
           }),
         });
@@ -4137,14 +4158,18 @@ export function SellerCatalogueEditor({
                 moderationStatus: payload?.resubmissionRequired
                   ? payload?.liveVersionKept
                     ? "in_review"
-                    : "draft"
+                    : adminReviewEditing
+                      ? "in_review"
+                      : "draft"
                   : current.moderationStatus,
               }
             : current,
         );
 
         setMessage(
-          payload?.resubmissionRequired
+          adminReviewEditing && payload?.resubmissionRequired
+            ? "Variant updated. It stays in review so you can continue reviewing the product."
+            : payload?.resubmissionRequired
             ? payload?.liveVersionKept
               ? "Variant updated. Your changes are in review while the current live version stays visible."
               : hasEnteredReviewFlow(createdProduct?.moderationStatus)
@@ -4236,6 +4261,7 @@ export function SellerCatalogueEditor({
                 }
               : null,
             inventory: inventoryRows,
+            adminReviewEdit: adminReviewEditing,
           },
         }),
       });
@@ -4252,14 +4278,18 @@ export function SellerCatalogueEditor({
               moderationStatus: payload?.resubmissionRequired
                 ? payload?.liveVersionKept
                   ? "in_review"
-                  : "draft"
+                  : adminReviewEditing
+                    ? "in_review"
+                    : "draft"
                 : current.moderationStatus,
             }
           : current,
       );
 
       setMessage(
-        payload?.resubmissionRequired
+        adminReviewEditing && payload?.resubmissionRequired
+          ? "Variant added. It stays in review so you can continue reviewing the product."
+          : payload?.resubmissionRequired
           ? payload?.liveVersionKept
             ? "Variant added. Your changes are in review while the current live version stays visible."
             : hasEnteredReviewFlow(createdProduct?.moderationStatus)
@@ -4298,6 +4328,8 @@ export function SellerCatalogueEditor({
         message:
           String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
             ? "Deleting this variant will send your changes for review while the current live version stays visible until approval."
+            : adminReviewEditing
+              ? "Deleting this variant will keep the product in the review queue so you can continue reviewing it after saving."
             : "Deleting this variant will move the product back to draft and it will need to be resubmitted for review.",
       }))
     ) return;
@@ -4312,6 +4344,7 @@ export function SellerCatalogueEditor({
         body: JSON.stringify({
           unique_id: activeProductId,
           variant_id: variantId,
+          adminReviewEdit: adminReviewEditing,
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -4325,13 +4358,17 @@ export function SellerCatalogueEditor({
               moderationStatus: payload?.resubmissionRequired
                 ? payload?.liveVersionKept
                   ? "in_review"
-                  : "draft"
+                  : adminReviewEditing
+                    ? "in_review"
+                    : "draft"
                 : current.moderationStatus,
             }
           : current,
       );
       setMessage(
-        payload?.resubmissionRequired
+        adminReviewEditing && payload?.resubmissionRequired
+          ? "Variant removed. The product stays in review so you can continue reviewing it."
+          : payload?.resubmissionRequired
           ? payload?.liveVersionKept
             ? "Variant removed from the pending update. The current live version stays visible while the change is reviewed."
             : "Variant removed. The product is back in draft and must be resubmitted for review."
@@ -4661,7 +4698,7 @@ export function SellerCatalogueEditor({
           <div className="flex flex-wrap gap-2">
             {activeProductId ? (
               <Link
-                href={`/products/${createdProduct?.titleSlug || productTitleSlug}?unique_id=${encodeURIComponent(activeProductId)}`}
+                href={`/products/${createdProduct?.titleSlug || productTitleSlug}?unique_id=${encodeURIComponent(activeProductId)}&preview=1`}
                 className="inline-flex h-10 items-center rounded-[8px] border border-white/10 bg-white/10 px-4 text-[13px] font-semibold text-white transition-colors hover:bg-white/15"
               >
                 Preview
@@ -4747,7 +4784,7 @@ export function SellerCatalogueEditor({
               <p className="mt-2 text-[12px] uppercase tracking-[0.12em] text-[#907d4c]">SKU: {createdProduct.sku}</p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Link
-                  href={`/products/${createdProduct.titleSlug}?unique_id=${createdProduct.uniqueId}`}
+                  href={`/products/${createdProduct.titleSlug}?unique_id=${createdProduct.uniqueId}&preview=1`}
                   className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
                 >
                   Preview
@@ -5345,31 +5382,29 @@ export function SellerCatalogueEditor({
 
                 {variantFormOpen ? (
                   <div className="mt-4 space-y-3 rounded-[8px] border border-black/5 bg-white p-4">
-                    <div
-                      className={[
-                        "rounded-[8px] border px-3 py-3",
-                        variantChangeImpact.tone === "review"
-                          ? "border-[#f0c7cb] bg-[#fff7f8]"
-                          : variantChangeImpact.tone === "live"
+                    {variantChangeImpact.tone !== "review" ? (
+                      <div
+                        className={[
+                          "rounded-[8px] border px-3 py-3",
+                          variantChangeImpact.tone === "live"
                             ? "border-[#cfe8d8] bg-[rgba(57,169,107,0.07)]"
                             : "border-black/5 bg-[#fafafa]",
-                      ].join(" ")}
-                    >
-                      <p
-                        className={[
-                          "text-[11px] font-semibold uppercase tracking-[0.12em]",
-                          variantChangeImpact.tone === "review"
-                            ? "text-[#b91c1c]"
-                            : variantChangeImpact.tone === "live"
-                              ? "text-[#1a8553]"
-                              : "text-[#907d4c]",
                         ].join(" ")}
                       >
-                        Variant change impact
-                      </p>
-                      <p className="mt-2 text-[14px] font-semibold text-[#202020]">{variantChangeImpact.title}</p>
-                      <p className="mt-1 text-[12px] leading-[1.55] text-[#57636c]">{variantChangeImpact.message}</p>
-                    </div>
+                        <p
+                          className={[
+                            "text-[11px] font-semibold uppercase tracking-[0.12em]",
+                            variantChangeImpact.tone === "live"
+                              ? "text-[#1a8553]"
+                              : "text-[#907d4c]",
+                          ].join(" ")}
+                        >
+                          Variant change impact
+                        </p>
+                        <p className="mt-2 text-[14px] font-semibold text-[#202020]">{variantChangeImpact.title}</p>
+                        <p className="mt-1 text-[12px] leading-[1.55] text-[#57636c]">{variantChangeImpact.message}</p>
+                      </div>
+                    ) : null}
                     <div className="grid gap-3 sm:grid-cols-2">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant ID <span className="text-[#d11c1c]">*</span></span>
@@ -6050,7 +6085,9 @@ export function SellerCatalogueEditor({
                         </label>
                       ) : (
                         <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
-                          Continue selling when out of stock is only available for self-fulfilment without inventory tracking.
+                          {fulfillmentMode !== "seller"
+                            ? "Continue selling when out of stock is only available for self-fulfilled products."
+                            : "When inventory tracking is off, this variant is treated as always available on the marketplace."}
                         </div>
                       )}
                       <label className="flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020]">

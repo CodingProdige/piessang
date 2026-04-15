@@ -133,6 +133,13 @@ async function attachSettlementAdjustments(db, record) {
   const orderSnap = await db.collection("orders_v2").doc(orderId).get();
   if (!orderSnap.exists) return record;
   const order = orderSnap.data() || {};
+  const liveOrderStatus = toStr(order?.order?.status?.order || order?.lifecycle?.orderStatus).toLowerCase();
+  const livePaymentStatus = toStr(order?.payment?.status || order?.order?.status?.payment || order?.lifecycle?.paymentStatus).toLowerCase();
+  const liveCancellationStatus = toStr(order?.cancellation?.status || order?.lifecycle?.cancellationStatus).toLowerCase();
+  const cancelledOrRefunded =
+    liveOrderStatus === "cancelled" ||
+    liveCancellationStatus === "cancelled" ||
+    ["refunded", "partial_refund"].includes(livePaymentStatus);
   const notesMap =
     order?.credit_notes?.seller_notes && typeof order.credit_notes.seller_notes === "object"
       ? order.credit_notes.seller_notes
@@ -157,6 +164,17 @@ async function attachSettlementAdjustments(db, record) {
 
   return {
     ...record,
+    status: cancelledOrRefunded ? "cancelled" : record.status,
+    orderStatus: liveOrderStatus || record.orderStatus,
+    paymentStatus: livePaymentStatus || record.paymentStatus,
+    payout: {
+      ...(record?.payout || {}),
+      status: cancelledOrRefunded ? "cancelled" : toStr(record?.payout?.status || "held").toLowerCase(),
+      net_due_incl: cancelledOrRefunded ? 0 : toNum(record?.payout?.net_due_incl || 0),
+      remaining_due_incl: cancelledOrRefunded ? 0 : toNum(record?.payout?.remaining_due_incl || record?.payout?.net_due_incl || 0),
+      released_incl: cancelledOrRefunded ? 0 : toNum(record?.payout?.released_incl || 0),
+      hold_reason: cancelledOrRefunded ? "cancelled" : toStr(record?.payout?.hold_reason || ""),
+    },
     adjustments: {
       refunded_incl: toNum(notes.reduce((sum, entry) => sum + toNum(entry.amountIncl || 0), 0)),
       credit_note_count: notes.length,

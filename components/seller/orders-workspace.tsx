@@ -528,6 +528,19 @@ function previousPeriod(value: string | undefined, days: number) {
   return diff > days * 86_400_000 && diff <= days * 2 * 86_400_000;
 }
 
+function isFinanciallyCountableOrder(item: SellerOrderSlice) {
+  const orderStatus = toStr(item.orderStatus).toLowerCase();
+  const paymentStatus = toStr(item.paymentStatus).toLowerCase();
+  const fulfillmentStatus = toStr(item.fulfillmentStatus).toLowerCase();
+  const cancellationStatus = toStr(item.cancellation?.status).toLowerCase();
+  return (
+    orderStatus !== "cancelled" &&
+    fulfillmentStatus !== "cancelled" &&
+    cancellationStatus !== "cancelled" &&
+    !["refunded", "partial_refund"].includes(paymentStatus)
+  );
+}
+
 function SellerHoverCard({
   item,
   open,
@@ -722,7 +735,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const [hoverCard, setHoverCard] = useState<HoverCardState>(null);
   const [periodMenuOpen, setPeriodMenuOpen] = useState(false);
   const [metricPeriod, setMetricPeriod] = useState<SellerMetricPeriod>("7d");
-  const [viewFilter, setViewFilter] = useState<SellerViewFilter>(mode === "fulfilled" ? "fulfilled" : mode === "unfulfilled" ? "unfulfilled" : "open");
+  const [viewFilter, setViewFilter] = useState<SellerViewFilter>("all");
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const [metricInfoOpen, setMetricInfoOpen] = useState<string | null>(null);
   const [cancelModalOrderId, setCancelModalOrderId] = useState<string | null>(null);
@@ -752,7 +765,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   }, [activeOrderId]);
 
   useEffect(() => {
-    setViewFilter(mode === "fulfilled" ? "fulfilled" : mode === "unfulfilled" ? "unfulfilled" : "open");
+    setViewFilter("all");
   }, [mode]);
 
   useOutsideDismiss(
@@ -886,6 +899,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
             : {
                 ...entry,
                 orderStatus: nextStatus === "delivered" ? "completed" : nextStatus,
+                paymentStatus: toStr(payload?.paymentStatus || entry.paymentStatus),
                 fulfillmentStatus: nextStatus === "delivered" ? "delivered" : nextStatus,
                 deliveryProgress: payload?.deliveryProgress || entry.deliveryProgress,
                 deliveryOption: entry.deliveryOption,
@@ -907,7 +921,11 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               },
         ),
       );
-      setNotice(`Order ${item.orderNumber || item.orderId} marked ${statusLabelText(nextStatus).toLowerCase()}.`);
+      setNotice(
+        payload?.refundStarted
+          ? `Order ${item.orderNumber || item.orderId} cancelled and refund started.`
+          : `Order ${item.orderNumber || item.orderId} marked ${statusLabelText(nextStatus).toLowerCase()}.`,
+      );
       return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to update seller order status.");
@@ -1066,9 +1084,26 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
     });
   }, [items, searchTerm, viewFilter]);
 
-  const totalUnits = useMemo(() => filteredItems.reduce((sum, item) => sum + Number(item.counts.quantity || 0), 0), [filteredItems]);
-  const totalValue = useMemo(() => filteredItems.reduce((sum, item) => sum + Number(item.totals.totalIncl || item.totals.subtotalIncl || 0), 0), [filteredItems]);
-  const totalDelivered = useMemo(() => filteredItems.filter((item) => item.deliveryProgress?.isComplete).length, [filteredItems]);
+  const totalUnits = useMemo(
+    () => filteredItems.filter((item) => isFinanciallyCountableOrder(item)).reduce((sum, item) => sum + Number(item.counts.quantity || 0), 0),
+    [filteredItems],
+  );
+  const totalValue = useMemo(
+    () =>
+      filteredItems
+        .filter((item) => isFinanciallyCountableOrder(item))
+        .reduce((sum, item) => sum + Number(item.totals.totalIncl || item.totals.subtotalIncl || 0), 0),
+    [filteredItems],
+  );
+  const totalDelivered = useMemo(
+    () =>
+      filteredItems.filter(
+        (item) =>
+          isFinanciallyCountableOrder(item) &&
+          (item.deliveryProgress?.isComplete || toStr(item.fulfillmentStatus).toLowerCase() === "delivered"),
+      ).length,
+    [filteredItems],
+  );
   const activeItem = useMemo(() => items.find((item) => item.orderId === activeOrderId) || null, [activeOrderId, items]);
   const cancelModalItem = useMemo(() => items.find((item) => item.orderId === cancelModalOrderId) || null, [cancelModalOrderId, items]);
   const dispatchModalItem = useMemo(() => items.find((item) => item.orderId === dispatchModalOrderId) || null, [dispatchModalOrderId, items]);
@@ -1083,13 +1118,15 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
 
   const periodDays = metricPeriod === "today" ? 1 : metricPeriod === "7d" ? 7 : 30;
   const periodStats = useMemo(() => {
-    const currentItems = filteredItems.filter((item) => inPeriod(item.createdAt, periodDays));
-    const previousItems = filteredItems.filter((item) => previousPeriod(item.createdAt, periodDays));
+    const currentItems = filteredItems.filter((item) => inPeriod(item.createdAt, periodDays) && isFinanciallyCountableOrder(item));
+    const previousItems = filteredItems.filter((item) => previousPeriod(item.createdAt, periodDays) && isFinanciallyCountableOrder(item));
     const summarise = (list: SellerOrderSlice[]) => ({
       orders: list.length,
       units: list.reduce((sum, item) => sum + Number(item.counts.quantity || 0), 0),
       value: list.reduce((sum, item) => sum + Number(item.totals.totalIncl || item.totals.subtotalIncl || 0), 0),
-      delivered: list.filter((item) => item.deliveryProgress?.isComplete).length,
+      delivered: list.filter(
+        (item) => item.deliveryProgress?.isComplete || toStr(item.fulfillmentStatus).toLowerCase() === "delivered",
+      ).length,
     });
     return {
       current: summarise(currentItems),

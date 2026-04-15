@@ -14,6 +14,11 @@ import {
   RecentlyViewedRail,
   SearchHistoryRail,
 } from "@/components/cms/personalized-landing-sections";
+import {
+  renderSharedLandingSectionContent,
+  type SharedLandingCategory,
+  type SharedLandingProduct,
+} from "@/components/cms/shared-landing-section-content";
 
 type ProductOption = ProductItem & {
   title: string;
@@ -93,6 +98,37 @@ function CategoryChipIcon({ category }: { category: { slug?: string; title?: str
     default:
       return <span className={common}>🛍️</span>;
   }
+}
+
+function getCategoryChipImageUrl(section: LandingSection, categorySlug: string) {
+  const categoryImages =
+    section?.props?.categoryImages && typeof section.props.categoryImages === "object"
+      ? section.props.categoryImages
+      : {};
+  return toStr(categoryImages?.[categorySlug]);
+}
+
+function CategoryChipVisual({
+  section,
+  category,
+}: {
+  section: LandingSection;
+  category: { slug?: string; title?: string };
+}) {
+  const imageUrl = getCategoryChipImageUrl(section, toStr(category.slug));
+  if (imageUrl) {
+    return (
+      <div className="relative h-[72px] w-[72px] overflow-hidden rounded-full border border-black/8 bg-[#f3f4f6] shadow-[0_8px_20px_rgba(20,24,27,0.08)] sm:h-[78px] sm:w-[78px]">
+        <Image src={imageUrl} alt={toStr(category.title, "Category")} fill sizes="78px" className="object-cover" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-[72px] w-[72px] items-center justify-center rounded-full border border-black/8 bg-[#fbfbfb] text-[28px] shadow-[0_8px_20px_rgba(20,24,27,0.05)] sm:h-[78px] sm:w-[78px]">
+      <CategoryChipIcon category={category} />
+    </div>
+  );
 }
 
 function getSellerIdentifier(data: any) {
@@ -301,6 +337,8 @@ function getDeferredSectionMinHeight(section: LandingSection) {
       return 320;
     case "compact_promo_grid":
       return 260;
+    case "facebook_rail":
+      return 240;
     case "category_chip_rail":
     case "brand_logo_rail":
     case "text_block":
@@ -474,7 +512,17 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "product_rail") {
+    const sharedContent = renderSharedLandingSectionContent({
+      section,
+      products: products as SharedLandingProduct[],
+      categories: categories as SharedLandingCategory[],
+      mode: "desktop",
+    });
+    if (sharedContent) {
+      block = sharedContent;
+    }
+
+    if (!block && section.type === "product_rail") {
       const source = toStr(section.props?.source, "new_arrivals");
       const selectedCategorySlugs = (Array.isArray(section.props?.categorySlugs) ? section.props.categorySlugs : [])
         .map((entry: unknown) => slugify(entry))
@@ -502,7 +550,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "featured_duo") {
+    if (!block && section.type === "featured_duo") {
       const selected = products
         .filter((product) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
         .slice(0, 2);
@@ -517,7 +565,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "category_chip_rail") {
+    if (!block && section.type === "category_chip_rail") {
       const selectedCategorySlugs = Array.isArray(section.props?.categorySlugs)
         ? section.props.categorySlugs.map((slug: unknown) => toStr(slug)).filter(Boolean)
         : [];
@@ -531,15 +579,15 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
             <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Quick shop")}</p>
             <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
           </div>
-          <div className="mt-4 flex flex-wrap gap-2.5">
+          <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
             {selected.map((category) => (
               <Link
                 key={category.id}
                 href={`/products?category=${encodeURIComponent(category.slug)}`}
-                className="inline-flex min-h-10 items-center gap-2 rounded-full border border-black/8 bg-[#fbfbfb] px-4 text-[13px] font-semibold text-[#202020]"
+                className="flex w-[84px] shrink-0 flex-col items-center text-center text-[13px] font-medium leading-[1.3] text-[#202020] sm:w-[96px]"
               >
-                <CategoryChipIcon category={category} />
-                {category.title}
+                <CategoryChipVisual section={section} category={category} />
+                <span className="mt-2 line-clamp-2">{category.title}</span>
               </Link>
             ))}
           </div>
@@ -547,7 +595,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "category_rail") {
+    if (!block && section.type === "category_rail") {
       const selected = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
         ? categories.filter((category) => section.props.categorySlugs.includes(category.slug))
         : categories.slice(0, 8);
@@ -583,7 +631,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "brand_logo_rail") {
+    if (!block && section.type === "brand_logo_rail") {
       const brands = (Array.isArray(section.props?.brands) ? section.props.brands : []).map((brand: unknown) => toStr(brand)).filter(Boolean);
       block = (
         <SectionShell key={section.id}>
@@ -602,7 +650,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "category_mosaic") {
+    if (!block && section.type === "category_mosaic") {
       const selected = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
         ? categories.filter((category) => section.props.categorySlugs.includes(category.slug)).slice(0, 5)
         : categories.slice(0, 5);
@@ -629,7 +677,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "compact_promo_grid") {
+    if (!block && section.type === "compact_promo_grid") {
       const tiles = (Array.isArray(section.props?.tiles) ? section.props.tiles : []).slice(0, 4);
       block = (
         <SectionShell key={section.id}>
@@ -660,7 +708,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "promo_tiles") {
+    if (!block && section.type === "promo_tiles") {
       const tiles = Array.isArray(section.props?.tiles) ? section.props.tiles : [];
       block = (
         <SectionShell key={section.id}>
@@ -689,7 +737,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "text_block") {
+    if (!block && section.type === "text_block") {
       block = (
         <SectionShell key={section.id}>
           <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#8f7531]">{toStr(section.props?.eyebrow, "Piessang")}</p>
@@ -706,7 +754,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       );
     }
 
-    if (section.type === "editorial_collection") {
+    if (!block && section.type === "editorial_collection") {
       const points = (Array.isArray(section.props?.points) ? section.props.points : []).map((point: unknown) => toStr(point)).filter(Boolean);
       block = (
         <SectionShell key={section.id}>

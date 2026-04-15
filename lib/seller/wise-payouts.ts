@@ -324,12 +324,16 @@ function buildWiseRecipientPayload({ payoutProfile = {}, businessDetails = {}, s
       setNested(payload, "details.legalType", value);
       continue;
     }
-    if (key.startsWith("address.") || key.startsWith("details.")) {
+    if (key.startsWith("address.")) {
+      setNested(payload, `details.${key}`, value);
+      continue;
+    }
+    if (key.startsWith("details.")) {
       setNested(payload, key, value);
       continue;
     }
     if (["country", "city", "state", "postCode", "firstLine", "secondLine"].includes(key)) {
-      setNested(payload, `address.${key}`, value);
+      setNested(payload, `details.address.${key}`, value);
       continue;
     }
     setNested(payload, `details.${key}`, value);

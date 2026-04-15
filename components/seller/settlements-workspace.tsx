@@ -411,21 +411,43 @@ export function SellerSettlementsWorkspace({
   const settlementRows = useMemo(() => {
     return settlements.map((record) => {
       const status = toStr(record?.status || "").toLowerCase();
+      const orderStatus = toStr(record?.orderStatus || "").toLowerCase();
+      const paymentStatus = toStr(record?.paymentStatus || "").toLowerCase();
       const payoutStatus = toStr(record?.payout?.status || "").toLowerCase();
-      let payoutState: "On hold" | "Ready" | "Processing" | "Paid" = "On hold";
-      if (status === "paid" || payoutStatus === "paid") payoutState = "Paid";
+      const isCancelledOrRefunded =
+        status === "cancelled" ||
+        orderStatus === "cancelled" ||
+        ["refunded", "partial_refund"].includes(paymentStatus) ||
+        payoutStatus === "cancelled";
+      const originalGross = toNum(record?.payout?.gross_incl || 0);
+      const originalNetDue = toNum(record?.payout?.net_due_incl || 0);
+      const originalRemainingDue = toNum(record?.payout?.remaining_due_incl || record?.payout?.net_due_incl || 0);
+      let payoutState: "On hold" | "Ready" | "Processing" | "Paid" | "Cancelled" = "On hold";
+      if (isCancelledOrRefunded) payoutState = "Cancelled";
+      else if (status === "paid" || payoutStatus === "paid") payoutState = "Paid";
       else if (status === "ready_for_payout" || payoutStatus === "ready_for_payout") payoutState = "Ready";
       else if (status === "processing_payout" || ["pending_submission", "submitted", "in_transit"].includes(payoutStatus)) payoutState = "Processing";
 
       const availableDate =
         payoutState === "Paid"
           ? toStr(record?.payout?.releasedAt || record?.updatedAt || "")
-          : toStr(record?.payout?.eligible_at || record?.fulfilment?.expectedFulfilmentBy || record?.updatedAt || "");
+          : payoutState === "Cancelled"
+            ? toStr(record?.updatedAt || record?.lastSyncedAt || "")
+            : toStr(record?.payout?.eligible_at || record?.fulfilment?.expectedFulfilmentBy || record?.updatedAt || "");
 
       return {
         ...record,
+        payout: {
+          ...(record?.payout || {}),
+          net_due_incl: originalNetDue,
+          remaining_due_incl: originalRemainingDue,
+          released_incl: isCancelledOrRefunded ? 0 : toNum(record?.payout?.released_incl || 0),
+        },
+        displayAmount: originalGross,
+        payableAmount: isCancelledOrRefunded ? 0 : originalRemainingDue,
         payoutState,
         availableDate,
+        isCancelledOrRefunded,
       };
     });
   }, [settlements]);
@@ -436,7 +458,7 @@ export function SellerSettlementsWorkspace({
   );
 
   const heldSettlements = useMemo(
-    () => settlementRows.filter((record) => record.payoutState === "On hold"),
+    () => settlementRows.filter((record) => record.payoutState === "On hold" && record.isCancelledOrRefunded !== true),
     [settlementRows],
   );
 
@@ -451,12 +473,12 @@ export function SellerSettlementsWorkspace({
   );
 
   const availableTotal = useMemo(
-    () => availableSettlements.reduce((sum, record) => sum + toNum(record?.payout?.remaining_due_incl || record?.payout?.net_due_incl || 0), 0),
+    () => availableSettlements.reduce((sum, record) => sum + toNum((record as { payableAmount?: number })?.payableAmount || 0), 0),
     [availableSettlements],
   );
 
   const heldTotal = useMemo(
-    () => heldSettlements.reduce((sum, record) => sum + toNum(record?.payout?.remaining_due_incl || record?.payout?.net_due_incl || 0), 0),
+    () => heldSettlements.reduce((sum, record) => sum + toNum((record as { payableAmount?: number })?.payableAmount || 0), 0),
     [heldSettlements],
   );
 
@@ -796,6 +818,8 @@ export function SellerSettlementsWorkspace({
               const payoutTone =
                 record.payoutState === "Paid"
                   ? "success"
+                  : record.payoutState === "Cancelled"
+                    ? "danger"
                   : record.payoutState === "Ready"
                     ? "info"
                     : record.payoutState === "Processing"
@@ -815,7 +839,7 @@ export function SellerSettlementsWorkspace({
                     </div>
 
                     <div className="text-[13px] font-semibold text-[#202020]">
-                      {formatMoney(record.payout?.remaining_due_incl || record.payout?.net_due_incl || 0)}
+                      {formatMoney((record as { displayAmount?: number })?.displayAmount || record.payout?.remaining_due_incl || record.payout?.net_due_incl || 0)}
                     </div>
 
                     <div>
@@ -824,7 +848,9 @@ export function SellerSettlementsWorkspace({
 
                     <div className="text-[13px] text-[#202020]">
                       <span className="block font-semibold">{record.availableDate ? formatTime(record.availableDate) : "Awaiting update"}</span>
-                      <span className="block text-[11px] text-[#57636c]">Available date</span>
+                      <span className="block text-[11px] text-[#57636c]">
+                        {record.payoutState === "Cancelled" ? "Cancelled" : "Available date"}
+                      </span>
                     </div>
 
                     <div className="flex items-center justify-between gap-2 md:justify-end">
@@ -840,7 +866,10 @@ export function SellerSettlementsWorkspace({
                         ["Order amount", record.payout?.gross_incl || 0],
                         ["Payout due", record.payout?.remaining_due_incl || record.payout?.net_due_incl || 0],
                         ["Marketplace fee", record.payout?.success_fee_incl || 0],
-                        ["Available date", record.availableDate ? formatTime(record.availableDate) : "Awaiting update"],
+                        [
+                          record.payoutState === "Cancelled" ? "Cancelled" : "Available date",
+                          record.availableDate ? formatTime(record.availableDate) : "Awaiting update",
+                        ],
                       ].map(([label, value]) => (
                         <div key={String(label)} className="rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-2">
                           <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{label}</p>
@@ -853,7 +882,9 @@ export function SellerSettlementsWorkspace({
                     <div className="mt-4 rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] px-3 py-3 text-[12px] text-[#57636c]">
                       <p className="font-semibold text-[#202020]">Why this status?</p>
                       <p className="mt-1">
-                        {record.payoutState === "On hold"
+                        {record.payoutState === "Cancelled"
+                          ? "This settlement was cancelled because the underlying order was cancelled or refunded. No funds are payable for this order."
+                          : record.payoutState === "On hold"
                           ? holdReasonSummary || "Funds are still in the hold period before payout."
                           : record.payoutState === "Processing"
                             ? "This payout is currently being processed."

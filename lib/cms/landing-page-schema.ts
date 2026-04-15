@@ -8,6 +8,7 @@ export type LandingSectionType =
   | "category_chip_rail"
   | "featured_duo"
   | "brand_logo_rail"
+  | "facebook_rail"
   | "category_mosaic"
   | "editorial_collection"
   | "product_rail"
@@ -108,6 +109,7 @@ export function makeDefaultLandingSections(): LandingSection[] {
         title: "Quick shop",
         subtitle: "Jump straight into the categories shoppers browse most.",
         categorySlugs: [],
+        categoryImages: {},
       },
     },
     {
@@ -185,6 +187,32 @@ export function makeDefaultLandingSections(): LandingSection[] {
         title: "Trusted brands",
         subtitle: "Clean logo-style brand chips to break up the page.",
         brands: ["CresHia", "IMOU", "EZVIZ", "SAMSUNG", "Coca-Cola"],
+      },
+    },
+    {
+      id: nextId("facebook"),
+      type: "facebook_rail",
+      props: {
+        title: "Follow us on Facebook",
+        subtitle: "Catch launches, marketplace updates, and fresh highlights on our Facebook page.",
+        pageLink: "",
+        ctaLabel: "Open Facebook",
+        posts: [
+          {
+            id: nextId("fbpost"),
+            title: "Fresh arrivals this week",
+            subtitle: "Spotlight new products, launches, or marketplace highlights from your Facebook page.",
+            href: "",
+            imageUrl: "",
+          },
+          {
+            id: nextId("fbpost"),
+            title: "Campaign update",
+            subtitle: "Use this card for your latest promotion, event, or community post.",
+            href: "",
+            imageUrl: "",
+          },
+        ],
       },
     },
     {

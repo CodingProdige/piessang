@@ -10,6 +10,7 @@ import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { getCanonicalOfferBarcode } from "@/lib/catalogue/offer-group";
+import { googleFeedAvailabilityForVariant, variantIsListable } from "@/lib/catalogue/availability";
 
 const VAT = 0.15;
 const FEED_TITLE = "Piessang Product Feed";
@@ -136,13 +137,7 @@ const isSaleLive = (variant) =>
   toNum(variant?.sale?.qty_available) > 0;
 
 function availabilityForVariant(variant) {
-  const continueSelling = variant?.placement?.continue_selling_out_of_stock === true;
-  const invQty = sumInventory(variant);
-  const saleQty = isSaleLive(variant) ? toNum(variant?.sale?.qty_available) : 0;
-
-  if (invQty + saleQty > 0) return "in_stock";
-  if (continueSelling) return "in_stock";
-  return "out_of_stock";
+  return googleFeedAvailabilityForVariant(variant);
 }
 
 function buildGoogleCategory(grouping) {
@@ -209,15 +204,12 @@ function isEligibleVariantForGoogle(product, variant) {
   const variantId = String(variant?.variant_id || "").trim();
   const variantActive = variant?.placement?.isActive !== false;
   const image = resolveVariantImage(product, variant);
-  const hasListableAvailability =
-    sumInventory(variant) + (isSaleLive(variant) ? toNum(variant?.sale?.qty_available) : 0) > 0 ||
-    variant?.placement?.continue_selling_out_of_stock === true;
   return (
     Boolean(variantId) &&
     variantActive &&
     Boolean(image) &&
     Boolean(variantPriceFields(variant)) &&
-    hasListableAvailability
+    variantIsListable(variant)
   );
 }
 

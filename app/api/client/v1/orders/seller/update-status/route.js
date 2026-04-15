@@ -10,6 +10,7 @@ import { buildOrderDeliveryProgress, deriveAggregateOrderStatuses, enrichOrderIt
 import { canTransitionSellerFulfillment, getSellerFulfillmentStatusLabel, normalizeSellerFulfillmentStatus, requiresCancellationReason } from "@/lib/orders/status-lifecycle";
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 import { sendTrackingUpdateNotifications } from "@/lib/orders/tracking-notifications";
+import { processStripeOrderRefund } from "@/lib/payments/stripe-refunds";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
@@ -87,6 +88,18 @@ function getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug) {
       return Boolean((normalizedCode && entryCode === normalizedCode) || (normalizedSlug && entrySlug === normalizedSlug));
     }) || null
   );
+}
+
+function getPrimaryPeachPaymentId(order) {
+  const attempts = Array.isArray(order?.payment?.attempts) ? order.payment.attempts : [];
+  const chargedAttempt = attempts.find(
+    (attempt) =>
+      toLower(attempt?.provider) === "peach" &&
+      toLower(attempt?.status) === "charged" &&
+      toLower(attempt?.type) !== "refund" &&
+      toStr(attempt?.peachTransactionId),
+  );
+  return toStr(chargedAttempt?.peachTransactionId || "");
 }
 
 async function resolveOrderId(db, orderId, orderNumber) {
@@ -232,6 +245,68 @@ export async function POST(req) {
     const { items: enrichedItems, progress } = buildOrderDeliveryProgress({ ...order, items: nextItems });
 
     const wholeOrderCancelled = aggregate.orderStatus === "cancelled";
+    const paymentProvider = toLower(order?.payment?.provider || "");
+    const shouldAutoRefund =
+      wholeOrderCancelled &&
+      status === "cancelled" &&
+      paymentStatus === "paid" &&
+      ["stripe", "peach"].includes(paymentProvider);
+    const origin = new URL(req.url).origin;
+    let refundResult = null;
+
+    if (shouldAutoRefund) {
+      if (paymentProvider === "stripe") {
+        refundResult = await processStripeOrderRefund({
+          orderRef,
+          orderId: resolvedOrderId,
+          order,
+          refundRequestId: `seller-cancel:${resolvedOrderId}:${sellerCode || sellerSlug || "seller"}`,
+          message: cancellationReason || "Seller cancelled this order.",
+          adminUid: sessionUser.uid,
+          markOrderCancelled: true,
+          cancelReason: cancellationReason || "Seller cancelled this order.",
+        });
+      } else if (paymentProvider === "peach") {
+        const paymentId = getPrimaryPeachPaymentId(order);
+        if (!paymentId) {
+          return err(409, "Refund Unavailable", "We could not find the Peach payment reference needed to refund this cancelled order.");
+        }
+        const refundResponse = await fetch(`${origin}/api/client/v1/payments/peach/charge-refund`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            orderId: resolvedOrderId,
+            orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || ""),
+            paymentId,
+            refundRequestId: `seller-cancel:${resolvedOrderId}:${sellerCode || sellerSlug || "seller"}`,
+            message: cancellationReason || "Seller cancelled this order.",
+          }),
+        });
+        const refundPayload = await refundResponse.json().catch(() => ({}));
+        if (!refundResponse.ok || refundPayload?.ok === false) {
+          return err(
+            refundResponse.status || 500,
+            refundPayload?.title || "Refund Failed",
+            refundPayload?.message || "Unable to refund the cancelled order payment.",
+          );
+        }
+        const remainingPaid = Number(refundPayload?.remainingPaid ?? order?.payment?.paid_amount_incl ?? 0);
+        const refundedAmountIncl = Math.max(
+          Number(order?.payment?.refunded_amount_incl || 0),
+          Number(order?.payment?.paid_amount_incl || 0) - remainingPaid,
+        );
+        refundResult = {
+          status: toLower(refundPayload?.status || "refunded") === "partial_refund" ? "partial_refund" : "refunded",
+          refundId: toStr(refundPayload?.refundId || ""),
+          remainingPaid,
+          refundedAmountIncl,
+          refundedAt: now,
+        };
+      }
+    }
+    const refundStarted = ["refunded", "partial_refund", "already_refunded", "already_processed"].includes(
+      toLower(refundResult?.status || ""),
+    );
     const sellerVendorName = touchedItems[0]?.product_snapshot?.product?.vendorName || touchedItems[0]?.product_snapshot?.seller?.vendorName || "";
     const timelineEvent = createOrderTimelineEvent({
       type: `seller_${status}`,
@@ -312,6 +387,14 @@ export async function POST(req) {
                 editable_reason: cancellationReason,
                 cancel_message: cancellationReason,
                 cancel_message_at: now,
+                status: {
+                  ...(order?.order?.status || {}),
+                  order: aggregate.orderStatus,
+                  fulfillment: aggregate.fulfillmentStatus,
+                  payment: refundStarted
+                    ? (refundResult?.status === "partial_refund" ? "partial_refund" : "refunded")
+                    : order?.order?.status?.payment,
+                },
               }
             : {}),
         },
@@ -325,9 +408,40 @@ export async function POST(req) {
                 cancelledAt: now,
                 editable: false,
                 editableReason: cancellationReason,
+                cancellationStatus: "cancelled",
+                paymentStatus: refundStarted
+                  ? (refundResult?.status === "partial_refund" ? "partial_refund" : "refunded")
+                  : order?.lifecycle?.paymentStatus,
               }
             : {}),
         },
+        payment: {
+          ...(order?.payment || {}),
+          status: refundStarted
+            ? (refundResult?.status === "partial_refund" ? "partial_refund" : "refunded")
+            : order?.payment?.status,
+          refunded_at: refundStarted ? (refundResult?.refundedAt || now) : order?.payment?.refunded_at,
+          refunded_amount_incl:
+            refundStarted
+              ? (refundResult?.refundedAmountIncl ?? order?.payment?.refunded_amount_incl ?? 0)
+              : order?.payment?.refunded_amount_incl,
+          paid_amount_incl:
+            refundStarted
+              ? (refundResult?.remainingPaid ?? 0)
+              : order?.payment?.paid_amount_incl,
+        },
+        cancellation: wholeOrderCancelled
+          ? {
+              ...(order?.cancellation || {}),
+              status: "cancelled",
+              mode: "cancel",
+              reason: cancellationReason || order?.cancellation?.reason || null,
+              requestedAt: order?.cancellation?.requestedAt || now,
+              requestedByUid: order?.cancellation?.requestedByUid || sessionUser.uid,
+              approvedAt: order?.cancellation?.approvedAt || now,
+              approvedByUid: order?.cancellation?.approvedByUid || sessionUser.uid,
+            }
+          : order?.cancellation,
         timestamps: {
           ...(order?.timestamps || {}),
           updatedAt: now,
@@ -345,7 +459,6 @@ export async function POST(req) {
     const customerEmail = getCustomerEmail(order);
     const customerPhone = getCustomerPhone(order);
     const customerName = getCustomerName(order);
-    const origin = new URL(req.url).origin;
     await sendTrackingUpdateNotifications({
       origin,
       customerEmail,
@@ -411,6 +524,10 @@ export async function POST(req) {
       updatedCount: touchedItems.length,
       status,
       deliveryProgress: progress,
+      paymentStatus: refundStarted
+        ? (refundResult?.status === "partial_refund" ? "partial_refund" : "refunded")
+        : paymentStatus,
+      refundStarted,
     });
   } catch (e) {
     return err(500, "Update Failed", e?.message || "Unexpected error updating seller order items.");

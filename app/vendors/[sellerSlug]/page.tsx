@@ -2,6 +2,7 @@ import Link from "next/link";
 import { headers } from "next/headers";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import Image from "next/image";
 import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { ProductsResults } from "@/components/products/products-results";
@@ -15,6 +16,9 @@ import {
 } from "@/lib/seller/account-status";
 
 export const dynamic = "force-dynamic";
+
+const VENDOR_BANNER_PLACEHOLDER = "/backgrounds/piessang-repeat-background.png";
+const VENDOR_LOGO_PLACEHOLDER = "/avatars/Piessang monkey avatars for profiles.jpg";
 
 type SearchParamValue = string | string[] | undefined;
 type SearchParamsInput = Record<string, SearchParamValue> | Promise<Record<string, SearchParamValue>>;
@@ -189,8 +193,13 @@ export default async function VendorPage({
                 imageStyle={{ objectPosition: branding.bannerObjectPosition || "center center" }}
               />
             ) : (
-              <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,#faf6ea,#f5f5f5)] text-center">
-                <div>
+              <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-[linear-gradient(135deg,#faf6ea,#f5f5f5)] text-center">
+                <div
+                  className="absolute inset-0 bg-center bg-repeat opacity-[0.16]"
+                  style={{ backgroundImage: `url('${VENDOR_BANNER_PLACEHOLDER}')` }}
+                  aria-hidden="true"
+                />
+                <div className="relative">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Vendor</p>
                   <h1 className="mt-2 text-[30px] font-semibold tracking-[-0.03em] text-[#202020]">
                     {vendorName}
@@ -215,9 +224,13 @@ export default async function VendorPage({
                       imageStyle={{ objectPosition: branding.logoObjectPosition || "center center" }}
                     />
                   ) : (
-                    <div className="flex h-full w-full items-center justify-center text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">
-                      Logo
-                    </div>
+                    <Image
+                      src={VENDOR_LOGO_PLACEHOLDER}
+                      alt={`${vendorName} placeholder logo`}
+                      fill
+                      sizes="80px"
+                      className="object-cover"
+                    />
                   )}
                 </div>
                 <div className="min-w-0">

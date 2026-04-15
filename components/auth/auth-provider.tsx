@@ -666,6 +666,17 @@ export function AuthProvider({
       setUser(nextUser);
 
       if (!nextUser) {
+        const didSignOut = Boolean(previousUid);
+        if (didSignOut) {
+          writeCachedAuthBootstrap(null);
+          setProfile(null);
+          setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
+          setAuthReady(true);
+          await syncServerSession(null);
+          router.refresh();
+          return;
+        }
+
         const bootstrap = await loadAuthBootstrap();
         if (hasAuthBootstrapData(bootstrap)) {
           setProfile(bootstrap.profile);
@@ -680,7 +691,6 @@ export function AuthProvider({
         setProfile(null);
         setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
         setAuthReady(true);
-        void syncServerSession(null);
         return;
       }
 
@@ -700,7 +710,7 @@ export function AuthProvider({
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (!pendingSellerRegistration) return;
@@ -800,12 +810,12 @@ export function AuthProvider({
         window.localStorage.removeItem("piessang_push_token");
       }
       await signOut(clientAuth);
-      await syncServerSession(null);
       writeCachedAuthBootstrap(null);
       setProfile(null);
       setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
       closeAuthModal();
       router.replace("/");
+      router.refresh();
     } finally {
       setBusy(false);
     }

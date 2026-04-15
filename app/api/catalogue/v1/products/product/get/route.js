@@ -11,6 +11,11 @@ import {
   isSellerAccountUnavailable,
 } from "@/lib/seller/account-status";
 import { getCanonicalOfferBarcode as resolveCanonicalOfferBarcode, pickPrimaryOfferVariant } from "@/lib/catalogue/offer-group";
+import {
+  productHasListableAvailability,
+  variantCanContinueSellingOutOfStock,
+  variantTotalInStockItemsAvailable,
+} from "@/lib/catalogue/availability";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -171,14 +176,15 @@ function fuzzyScore(hay, needle){
  */
 function matchesGrouping(data, { category, subCategory, brand }) {
   const g = data?.grouping || {};
+  const recordBrand = normStr(g?.brand || data?.brand?.slug);
   // Hard conflicts (product declares a level that doesn't match filter)
-  if (brand && g.brand && g.brand !== brand) return false;
+  if (brand && recordBrand && recordBrand !== brand) return false;
   if (subCategory && g.subCategory && g.subCategory !== subCategory) return false;
   if (category && g.category && g.category !== category) return false;
 
   const anyFilterProvided = !!(brand || subCategory || category);
   const anyPositiveMatch =
-    (brand && g.brand === brand) ||
+    (brand && recordBrand === brand) ||
     (subCategory && g.subCategory === subCategory) ||
     (category && g.category === category);
 
@@ -237,49 +243,6 @@ function variantInventoryHasStock(variant){
 function hasInStockVariants(data){
   const variants = Array.isArray(data?.variants) ? data.variants : [];
   return variants.some((variant) => variantTotalInStockItemsAvailable(variant) > 0);
-}
-
-function variantInventoryQtyTotal(variant){
-  const rows = Array.isArray(variant?.inventory) ? variant.inventory : [];
-  if (!rows.length) return 0;
-
-  return rows.reduce((sum, row) => {
-    if (!row || typeof row !== "object") return sum;
-    if (row?.in_stock === false) return sum;
-    if (row?.supplier_out_of_stock === true) return sum;
-
-    const qty = Number(
-      row?.in_stock_qty ??
-      row?.unit_stock_qty ??
-      row?.qty_available ??
-      row?.quantity ??
-      row?.qty ??
-      0
-    );
-    return Number.isFinite(qty) && qty > 0 ? sum + qty : sum;
-  }, 0);
-}
-
-function variantSaleQtyAvailable(variant){
-  return 0;
-}
-
-function variantTotalInStockItemsAvailable(variant){
-  return variantInventoryQtyTotal(variant) + variantSaleQtyAvailable(variant);
-}
-
-function variantCanContinueSellingOutOfStock(variant){
-  return variant?.placement?.continue_selling_out_of_stock === true;
-}
-
-function productHasListableAvailability(data){
-  const variants = Array.isArray(data?.variants) ? data.variants : [];
-  if (!variants.length) return false;
-
-  return variants.some((variant) =>
-    variantTotalInStockItemsAvailable(variant) > 0 ||
-    variantCanContinueSellingOutOfStock(variant)
-  );
 }
 
 function enrichVariantsWithAvailability(variants){

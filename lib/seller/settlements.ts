@@ -620,6 +620,14 @@ export async function syncOrderSellerSettlements({
       lastSyncedAt: now(),
     };
 
+    if (nextStatus === "cancelled") {
+      settlementPayload.payout.net_due_incl = 0;
+      settlementPayload.payout.released_incl = 0;
+      settlementPayload.payout.remaining_due_incl = 0;
+      settlementPayload.payout.status = "cancelled";
+      settlementPayload.payout.hold_reason = "cancelled";
+    }
+
     await settlementRef.set(settlementPayload, { merge: true });
 
     if (sellerOwner?.id && strikeReasonCode) {

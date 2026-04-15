@@ -115,7 +115,7 @@ const INTEGRATIONS: IntegrationCard[] = [
     category: "Commerce",
     description: "Sync catalogue, stock, and pricing from Shopify into Piessang.",
     accent: "from-[#edf8dc] via-[#f8fcec] to-white",
-    available: true,
+    available: false,
   },
   {
     id: "meta",
@@ -353,7 +353,8 @@ export function SellerIntegrationsWorkspace({
 
   function openIntegration(id: string) {
     setSelectedIntegration(id);
-    if (id === "shopify") setDrawerOpen(true);
+    const selected = INTEGRATIONS.find((item) => item.id === id);
+    if (id === "shopify" && selected?.available) setDrawerOpen(true);
   }
 
   return (
@@ -371,7 +372,7 @@ export function SellerIntegrationsWorkspace({
               {connection?.connected ? "1 active integration" : "No active integrations yet"}
             </div>
             <div className="inline-flex items-center rounded-full bg-[rgba(15,128,195,0.08)] px-4 py-2 text-[12px] font-semibold text-[#0f80c3]">
-              Shopify available now
+              Shopify coming soon
             </div>
           </div>
         </div>
@@ -457,86 +458,27 @@ export function SellerIntegrationsWorkspace({
             <div>
               <p className="text-[22px] font-semibold tracking-[-0.03em] text-[#202020]">Shopify</p>
               <p className="mt-2 max-w-[720px] text-[13px] leading-[1.7] text-[#67727d]">
-                Select Shopify from the grid, then handle connection details in a side drawer instead of cluttering the main page.
+                This integration is being prepared for launch and will stay hidden behind a coming-soon guard until Shopify approval is complete.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => setDrawerOpen(true)}
-              className="inline-flex h-10 items-center rounded-full bg-[#6f55f6] px-4 text-[12px] font-semibold text-white"
-            >
-              Open Shopify details
-            </button>
+            <span className="inline-flex h-10 items-center rounded-full bg-[#f4f5fb] px-4 text-[12px] font-semibold text-[#6c7280]">
+              Coming soon
+            </span>
           </div>
 
-          <div className="mt-5 grid gap-4 sm:grid-cols-3">
-            <div className="rounded-[18px] border border-black/8 bg-[#f8f8fd] px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#8d7598]">Status</p>
-              <p className="mt-2 text-[16px] font-semibold text-[#202020]">{connection?.connected ? "Connected" : "Ready to connect"}</p>
-              <p className="mt-1 text-[12px] text-[#67727d]">{connection?.shopDomain || "No store linked yet"}</p>
+          <div className="mt-5 rounded-[20px] border border-dashed border-black/10 bg-[#fbfbfe] px-5 py-8 text-center">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[18px] bg-white shadow-[0_12px_24px_rgba(20,24,27,0.08)]">
+              <IntegrationLogo id="shopify" />
             </div>
-            <div className="rounded-[18px] border border-black/8 bg-[#f8f8fd] px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#8d7598]">Preview</p>
-              <p className="mt-2 text-[16px] font-semibold text-[#202020]">{previewTotals.products} products</p>
-              <p className="mt-1 text-[12px] text-[#67727d]">{previewTotals.variants} variants in latest snapshot</p>
-            </div>
-            <div className="rounded-[18px] border border-black/8 bg-[#f8f8fd] px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#8d7598]">Last verified</p>
-              <p className="mt-2 text-[16px] font-semibold text-[#202020]">{connection?.verifiedAt ? "Available" : "Not yet"}</p>
-              <p className="mt-1 text-[12px] text-[#67727d]">{formatTimestamp(connection?.verifiedAt)}</p>
-            </div>
-            <div className="rounded-[18px] border border-black/8 bg-[#f8f8fd] px-4 py-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#8d7598]">Webhook sync</p>
-              <p className="mt-2 text-[16px] font-semibold text-[#202020]">
-                {connection?.webhooks?.topics?.some((item) => item?.ok) ? "Registered" : "Pending"}
-              </p>
-              <p className="mt-1 text-[12px] text-[#67727d]">
-                {connection?.lastWebhookAt
-                  ? `${formatStatus(connection?.lastWebhookTopic || "received")} at ${formatTimestamp(connection?.lastWebhookAt)}`
-                  : connection?.webhooks?.lastError || "Webhooks will register after a successful connection."}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-5 rounded-[20px] border border-black/8 bg-[#fbfbfe] p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-[14px] font-semibold text-[#202020]">Recent preview</p>
-                <p className="mt-1 text-[12px] text-[#67727d]">
-                  {preview?.fetchedAt ? `Updated ${formatTimestamp(preview.fetchedAt)}` : "Connect Shopify to load the first preview."}
-                </p>
-              </div>
-              <div className="inline-flex rounded-full bg-[rgba(111,85,246,0.08)] px-3 py-1.5 text-[11px] font-semibold text-[#6b4ce6]">
-                {previewTotals.products} items visible
-              </div>
-            </div>
-
-            {visiblePreview.length ? (
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                {visiblePreview.map((item) => (
-                  <article key={item.id} className="rounded-[18px] border border-black/8 bg-white p-3">
-                    <p className="truncate text-[14px] font-semibold text-[#202020]">{item.title}</p>
-                    <p className="mt-1 truncate text-[12px] text-[#75808b]">{item.vendor || connection?.shopName || "Shopify"}</p>
-                    <div className="mt-3 flex items-center justify-between text-[12px] text-[#67727d]">
-                      <span>{item.variantCount} variants</span>
-                      <span>{item.totalInventory} stock</span>
-                    </div>
-                    <p className="mt-3 text-[12px] font-semibold text-[#202020]">
-                      {item.variants[0] ? `${formatPrice(item.variants[0].price)} from first variant` : "No pricing yet"}
-                    </p>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="mt-4 rounded-[16px] border border-dashed border-black/10 bg-white px-4 py-8 text-[13px] text-[#67727d]">
-                {loading ? "Loading preview..." : "No preview yet."}
-              </div>
-            )}
+            <p className="mt-4 text-[18px] font-semibold text-[#202020]">Coming soon</p>
+            <p className="mx-auto mt-2 max-w-[620px] text-[13px] leading-[1.7] text-[#67727d]">
+              Shopify connection is temporarily hidden while the Piessang Shopify app completes approval. We&apos;ll reopen this integration once it&apos;s ready for sellers to use.
+            </p>
           </div>
         </section>
       ) : null}
 
-      {drawerOpen && selectedCard.id === "shopify" ? (
+      {drawerOpen && selectedCard.id === "shopify" && selectedCard.available ? (
         <div className="fixed inset-0 z-[90] flex justify-end bg-[rgba(20,24,27,0.22)]">
           <button
             type="button"

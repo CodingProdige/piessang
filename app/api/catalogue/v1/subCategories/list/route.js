@@ -34,7 +34,9 @@ export async function GET(req){
     const items = rows.map(d => ({
       slug:  d?.subCategory?.slug ?? null,
       kind:  d?.subCategory?.kind ?? null,
-      title: d?.subCategory?.title ?? null
+      title: d?.subCategory?.title ?? null,
+      category: d?.grouping?.category ?? null,
+      isActive: d?.placement?.isActive ?? null
     }));
 
     return ok({ count: items.length, items });

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatMoneyExact } from "@/lib/money";
-import { sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 
 type SellerHomeWorkspaceProps = {
   sellerSlug: string;
@@ -17,6 +17,8 @@ type TimeframeKey = "7d" | "30d" | "90d";
 
 type SellerOrderSlice = {
   createdAt?: string;
+  paymentStatus?: string;
+  fulfillmentStatus?: string;
   flags?: {
     new?: boolean;
     unfulfilled?: boolean;
@@ -66,6 +68,12 @@ function isWithinTimeframe(value: string, days: number) {
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (days - 1));
   return input.getTime() >= start.getTime();
+}
+
+function isFinanciallyCountableOrder(item: SellerOrderSlice) {
+  const paymentStatus = toStr(item?.paymentStatus).toLowerCase();
+  const fulfillmentStatus = toStr(item?.fulfillmentStatus).toLowerCase();
+  return fulfillmentStatus !== "cancelled" && !["refunded", "partial_refund"].includes(paymentStatus);
 }
 
 function buildSeries(items: SellerOrderSlice[], days: number, mode: "sales" | "orders") {
@@ -302,11 +310,18 @@ export function SellerHomeWorkspace({
   }, [sellerCode, sellerSlug, uid, vendorName]);
 
   const deliveryProfile = settingsData?.deliveryProfile || {};
+  const normalizedDeliveryProfile = normalizeSellerDeliveryProfile(deliveryProfile);
   const branding = settingsData?.branding || {};
   const businessDetails = settingsData?.businessDetails || {};
+  const settingsPayoutProfile = settingsData?.payoutProfile || {};
   const payoutReady = Boolean(
-    stripeStatus?.payoutsEnabled === true &&
-      stripeStatus?.hasBankDestination === true,
+    (stripeStatus?.payoutsEnabled === true && stripeStatus?.hasBankDestination === true) ||
+      stripeStatus?.connected === true ||
+      settingsPayoutProfile?.payoutMethodEnabled === true ||
+      toStr(settingsPayoutProfile?.wiseRecipientId) ||
+      ["verified", "ready"].includes(
+        toStr(settingsPayoutProfile?.verificationStatus || settingsPayoutProfile?.onboardingStatus).toLowerCase(),
+      ),
   );
   const businessReady = Boolean(
     toStr(businessDetails?.companyName) &&
@@ -314,6 +329,20 @@ export function SellerHomeWorkspace({
   );
   const brandingReady = Boolean(toStr(branding?.bannerImageUrl) && toStr(branding?.logoImageUrl));
   const deliveryReady = sellerDeliverySettingsReady(deliveryProfile);
+  const deliveryOriginSelected = Boolean(
+    toStr(normalizedDeliveryProfile?.origin?.city) ||
+      toStr(normalizedDeliveryProfile?.origin?.country) ||
+      toStr(normalizedDeliveryProfile?.origin?.postalCode),
+  );
+  const deliveryConfiguredButMissingOrigin = Boolean(
+    !deliveryReady &&
+      !deliveryOriginSelected &&
+      (
+        normalizedDeliveryProfile?.directDelivery?.enabled === true ||
+        (normalizedDeliveryProfile?.shippingZones || []).length > 0 ||
+        normalizedDeliveryProfile?.pickup?.enabled === true
+      ),
+  );
   const publishedProducts = products.filter((item) => item?.data?.placement?.isActive).length;
   const firstProductReady = publishedProducts > 0;
 
@@ -324,7 +353,7 @@ export function SellerHomeWorkspace({
         title: "Complete your business profile",
         description: "Add your business details so your seller profile, invoices, and account records are complete.",
         complete: businessReady,
-        actionLabel: businessReady ? "Review settings" : "Add business details",
+        actionLabel: "Get started",
         action: () => onNavigate("settings"),
       },
       {
@@ -332,15 +361,17 @@ export function SellerHomeWorkspace({
         title: "Upload your banner and logo",
         description: "Branding helps your public seller profile feel trustworthy and ready for customers.",
         complete: brandingReady,
-        actionLabel: brandingReady ? "Review branding" : "Set branding",
+        actionLabel: "Get started",
         action: () => onNavigate("settings"),
       },
       {
         id: "delivery",
         title: "Configure delivery rules",
-        description: "Set local delivery, country shipping, or collection so Piessang can route orders correctly.",
+        description: deliveryConfiguredButMissingOrigin
+          ? "Your delivery settings are almost done. Choose your shipping origin so Piessang can route orders correctly."
+          : "Set local delivery, country shipping, or collection so Piessang can route orders correctly.",
         complete: deliveryReady,
-        actionLabel: deliveryReady ? "Review delivery setup" : "Set delivery rules",
+        actionLabel: "Get started",
         action: () => onNavigate("settings"),
       },
       {
@@ -348,7 +379,7 @@ export function SellerHomeWorkspace({
         title: "Connect payouts",
         description: "Finish your payout setup so settlements can move through to your bank account.",
         complete: payoutReady,
-        actionLabel: payoutReady ? "Review payouts" : "Complete payout setup",
+        actionLabel: "Get started",
         action: () => onNavigate("settings"),
       },
       {
@@ -356,18 +387,18 @@ export function SellerHomeWorkspace({
         title: "Publish your first product",
         description: "Add at least one active product so customers can start discovering and buying from you.",
         complete: firstProductReady,
-        actionLabel: firstProductReady ? "View products" : "Create first product",
+        actionLabel: "Get started",
         action: () => onNavigate(firstProductReady ? "products" : "create-product"),
       },
     ],
-    [brandingReady, businessReady, deliveryReady, firstProductReady, onNavigate, payoutReady],
+    [brandingReady, businessReady, deliveryConfiguredButMissingOrigin, deliveryReady, firstProductReady, onNavigate, payoutReady],
   );
 
   const setupComplete = setupTasks.every((task) => task.complete);
   const setupResolved = !loading && !error;
   const days = daysForTimeframe(timeframe);
   const currentOrders = useMemo(
-    () => orders.filter((item) => isWithinTimeframe(toStr(item?.createdAt), days)),
+    () => orders.filter((item) => isWithinTimeframe(toStr(item?.createdAt), days) && isFinanciallyCountableOrder(item)),
     [days, orders],
   );
 
@@ -381,6 +412,7 @@ export function SellerHomeWorkspace({
     previousStart.setDate(previousEnd.getDate() - (days - 1));
 
     return orders.filter((item) => {
+      if (!isFinanciallyCountableOrder(item)) return false;
       const created = new Date(toStr(item?.createdAt));
       if (Number.isNaN(created.getTime())) return false;
       return created.getTime() >= previousStart.getTime() && created.getTime() <= previousEnd.getTime();

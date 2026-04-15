@@ -551,7 +551,7 @@ export async function POST(req){
       return err(401, "Unauthorized", "Sign in again to update this product.");
     }
 
-    const { unique_id, data } = await req.json();
+    const { unique_id, data, adminReviewEdit } = await req.json();
 
     const pid = toStr(unique_id);
     if (!is8(pid))
@@ -631,19 +631,27 @@ export async function POST(req){
     const currentModerationStatus = toStr(current?.moderation?.status, "draft");
     const preserveLiveVersionDuringReview =
       currentModerationStatus === "published" || hasLiveSnapshotRecord(current);
+    const keepAdminEditedReviewInQueue =
+      toBool(adminReviewEdit) &&
+      normalizeKey(profile?.systemAccessType) === "admin" &&
+      currentModerationStatus === "in_review";
     const nextModerationStatus = toStr(next?.moderation?.status, currentModerationStatus) || currentModerationStatus;
     const meaningfulContentChange = hasReviewSensitiveProductChanges(patch, { changeRequestOnly });
     next.moderation = next.moderation || {};
     next.moderation.status = meaningfulContentChange
       ? preserveLiveVersionDuringReview
         ? "in_review"
-        : "draft"
+        : keepAdminEditedReviewInQueue
+          ? "in_review"
+          : "draft"
       : nextModerationStatus;
     if (meaningfulContentChange) {
       next.moderation.reason = "product_changed";
       next.moderation.notes = preserveLiveVersionDuringReview
         ? "Product updates are in review. The current live version stays visible until the changes are approved."
-        : "Product updates require the listing to be reviewed again before it goes live.";
+        : keepAdminEditedReviewInQueue
+          ? "Updated by Piessang during review. The listing remains in the review queue until approval or rejection."
+          : "Product updates require the listing to be reviewed again before it goes live.";
       next.moderation.reviewedAt = null;
       next.moderation.reviewedBy = null;
     }

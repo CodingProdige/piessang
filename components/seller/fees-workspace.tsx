@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_MARKETPLACE_FEE_CONFIG } from "@/lib/marketplace/fees";
 import { formatMoneyExact } from "@/lib/money";
+import { PlatformPopover, PopoverHintTrigger } from "@/components/ui/platform-popover";
 
 type FeeRule = {
   kind?: string;
@@ -21,9 +22,13 @@ type CategoryItem = {
     updatedAt?: string | null;
   } | null;
   subCategories?: Array<{
+    draftId?: string;
+    taxonomyDocId?: string;
     slug: string;
     title: string;
     feeRule?: FeeRule;
+    isActive?: boolean;
+    originalSlug?: string | null;
   }>;
 };
 
@@ -90,6 +95,36 @@ function toFixedRule(percent: unknown) {
     kind: "fixed",
     percent: toNum(percent, 12),
   };
+}
+
+function toSlug(value: unknown) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function createDraftId() {
+  return `subcat-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function toCategorySubCategorySlug(categorySlug: unknown, subCategorySlug: unknown) {
+  return toSlug([categorySlug, subCategorySlug].filter(Boolean).join("-"));
+}
+
+function isSubCategoryDraftDirty(
+  draftSubCategory: { slug: string; title: string; feeRule?: FeeRule; isActive?: boolean },
+  originalSubCategory: { slug: string; title: string; feeRule?: FeeRule; isActive?: boolean } | undefined,
+  fallbackPercent = 12,
+) {
+  if (!originalSubCategory) return true;
+  return (
+    String(draftSubCategory.title || "").trim() !== String(originalSubCategory.title || "").trim() ||
+    String(draftSubCategory.slug || "").trim() !== String(originalSubCategory.slug || "").trim() ||
+    getFixedPercent(draftSubCategory.feeRule, fallbackPercent) !== getFixedPercent(originalSubCategory.feeRule, fallbackPercent) ||
+    (draftSubCategory.isActive !== false) !== (originalSubCategory.isActive !== false)
+  );
 }
 
 function normalizeUrl(value: string | URL | null | undefined) {
@@ -166,6 +201,13 @@ export function SellerFeesWorkspace() {
   const [draftThresholdDays, setDraftThresholdDays] = useState("35");
   const [draftCategorySlug, setDraftCategorySlug] = useState("");
   const [draftCategoryTitle, setDraftCategoryTitle] = useState("");
+  const [draftSubCategories, setDraftSubCategories] = useState<Array<{ draftId: string; taxonomyDocId?: string; slug: string; title: string; feeRule?: FeeRule; isActive?: boolean; originalSlug?: string | null }>>([]);
+  const [draftNewSubCategoryTitle, setDraftNewSubCategoryTitle] = useState("");
+  const [draftNewSubCategorySlug, setDraftNewSubCategorySlug] = useState("");
+  const [activeSlugDraftId, setActiveSlugDraftId] = useState<string | null>(null);
+  const [activeFeeInfoDraftId, setActiveFeeInfoDraftId] = useState<string | null>(null);
+  const [savingSubCategoryDraftId, setSavingSubCategoryDraftId] = useState<string | null>(null);
+  const [catalogueSubCategories, setCatalogueSubCategories] = useState<Array<{ slug?: string | null; title?: string | null; category?: string | null; isActive?: boolean | null }>>([]);
   const [draftFulfilmentLabel, setDraftFulfilmentLabel] = useState("");
   const [draftFulfilmentMinVolume, setDraftFulfilmentMinVolume] = useState("");
   const [draftFulfilmentMaxVolume, setDraftFulfilmentMaxVolume] = useState("");
@@ -199,6 +241,28 @@ export function SellerFeesWorkspace() {
     }
 
     void loadConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCatalogueSubCategories() {
+      try {
+        const response = await fetch("/api/catalogue/v1/subCategories/list", { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) return;
+        if (!cancelled) {
+          setCatalogueSubCategories(Array.isArray(payload?.items) ? payload.items.filter(Boolean) : []);
+        }
+      } catch {
+      }
+    }
+
+    void loadCatalogueSubCategories();
 
     return () => {
       cancelled = true;
@@ -244,6 +308,14 @@ export function SellerFeesWorkspace() {
     () => categories.find((item) => item.slug === editingCategorySlug) ?? null,
     [categories, editingCategorySlug],
   );
+  const originalSubCategoriesByKey = useMemo(() => {
+    const map = new Map<string, { taxonomyDocId?: string; slug: string; title: string; feeRule?: FeeRule; isActive?: boolean }>();
+    for (const subCategory of editingCategory?.subCategories || []) {
+      if (subCategory?.taxonomyDocId) map.set(`id:${subCategory.taxonomyDocId}`, subCategory);
+      if (subCategory?.slug) map.set(`slug:${subCategory.slug}`, subCategory);
+    }
+    return map;
+  }, [editingCategory]);
   const editingFulfilmentRow = useMemo(
     () => fulfilmentRows.find((item) => item.id === editingFulfilmentId) ?? null,
     [fulfilmentRows, editingFulfilmentId],
@@ -271,6 +343,15 @@ export function SellerFeesWorkspace() {
       return slug && !existing.has(slug);
     });
   }, [availableCatalogueCategories, categories]);
+  const duplicateSubCategoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of catalogueSubCategories) {
+      const slug = toSlug(item?.slug);
+      if (!slug) continue;
+      counts.set(slug, (counts.get(slug) || 0) + 1);
+    }
+    return counts;
+  }, [catalogueSubCategories]);
 
   const categoryLastUpdated = useMemo(
     () =>
@@ -381,6 +462,12 @@ export function SellerFeesWorkspace() {
     setDraftThresholdDays(String(toNum(config?.storage?.thresholdDays, 35)));
     setDraftCategorySlug("");
     setDraftCategoryTitle("");
+    setDraftSubCategories([]);
+    setDraftNewSubCategoryTitle("");
+    setDraftNewSubCategorySlug("");
+    setActiveSlugDraftId(null);
+    setActiveFeeInfoDraftId(null);
+    setSavingSubCategoryDraftId(null);
     setDraftFulfilmentLabel("");
     setDraftFulfilmentMinVolume("");
     setDraftFulfilmentMaxVolume("");
@@ -406,6 +493,17 @@ export function SellerFeesWorkspace() {
     closeAllModals();
     setEditingCategorySlug(category.slug);
     setDraftPercent(String(getFixedPercent(category.feeRule, 12)));
+          setDraftSubCategories(
+      Array.isArray(category.subCategories)
+        ? category.subCategories.map((subCategory) => ({
+            draftId: subCategory?.draftId || createDraftId(),
+            ...subCategory,
+            taxonomyDocId: subCategory?.taxonomyDocId || undefined,
+            isActive: subCategory?.isActive !== false,
+            originalSlug: subCategory?.slug || null,
+          }))
+        : [],
+    );
   }
 
   function openAddCategoryModal() {
@@ -447,7 +545,7 @@ export function SellerFeesWorkspace() {
     setDraftThresholdDays(String(toNum(config?.storage?.thresholdDays, 35)));
   }
 
-  function applyCategoryPercent() {
+  async function applyCategoryPercent() {
     if (!editingCategory) return;
     const nextPercent = Math.max(0, toNum(draftPercent, 12));
 
@@ -458,17 +556,219 @@ export function SellerFeesWorkspace() {
         return {
           ...category,
           feeRule: toFixedRule(nextPercent),
-          subCategories: Array.isArray(category.subCategories)
-            ? category.subCategories.map((subCategory) => ({
-                ...subCategory,
-                feeRule: toFixedRule(nextPercent),
-              }))
-            : [],
+          subCategories: category.subCategories || [],
         };
       }),
     }));
 
-    closeAllModals();
+    setSavedConfig((current: FeeConfig) => ({
+      ...current,
+      categories: (current.categories || []).map((category) => {
+        if (category.slug !== editingCategory.slug) return category;
+        return {
+          ...category,
+          feeRule: toFixedRule(nextPercent),
+        };
+      }),
+    }));
+
+    setMessage("Category fee updated.");
+    setError(null);
+  }
+
+  async function saveDraftSubCategory(draftId: string) {
+    if (!editingCategory) return;
+    const draftSubCategory = draftSubCategories.find((item) => item.draftId === draftId);
+    if (!draftSubCategory) return;
+
+    const payload = {
+      grouping: { category: editingCategory.slug },
+      subCategory: {
+        slug: draftSubCategory.slug,
+        title: String(draftSubCategory.title || "").trim(),
+        kind: "consumable",
+      },
+      placement: {
+        isActive: draftSubCategory.isActive !== false,
+      },
+    };
+
+    if (!payload.subCategory.slug || !payload.subCategory.title) {
+      setError("Every sub-category needs a valid title and slug before you can save.");
+      return;
+    }
+
+    setSavingSubCategoryDraftId(draftId);
+    setError(null);
+    setMessage(null);
+    try {
+      let nextTaxonomyDocId = draftSubCategory.taxonomyDocId;
+      if (!draftSubCategory.originalSlug) {
+        const createResponse = await fetch("/api/catalogue/v1/subCategories/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: payload }),
+        });
+        const createPayload = await createResponse.json().catch(() => ({}));
+        if (!createResponse.ok || createPayload?.ok === false) {
+          throw new Error(createPayload?.message || `Unable to create sub-category '${payload.subCategory.title}'.`);
+        }
+        nextTaxonomyDocId = createPayload?.id ? String(createPayload.id) : nextTaxonomyDocId;
+      } else {
+        const updateResponse = await fetch("/api/catalogue/v1/subCategories/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            slug: draftSubCategory.originalSlug || undefined,
+            ...(draftSubCategory.taxonomyDocId ? { id: draftSubCategory.taxonomyDocId } : { slug: draftSubCategory.originalSlug }),
+            data: payload,
+          }),
+        });
+        const updatePayload = await updateResponse.json().catch(() => ({}));
+        if (!updateResponse.ok || updatePayload?.ok === false) {
+          throw new Error(updatePayload?.message || `Unable to update sub-category '${payload.subCategory.title}'.`);
+        }
+        nextTaxonomyDocId = updatePayload?.id ? String(updatePayload.id) : nextTaxonomyDocId;
+      }
+
+      setDraftSubCategories((current) =>
+        current.map((item) =>
+          item.draftId === draftId
+            ? {
+                ...item,
+                taxonomyDocId: nextTaxonomyDocId,
+                originalSlug: payload.subCategory.slug,
+              }
+            : item,
+        ),
+      );
+      setConfig((current: FeeConfig) => ({
+        ...current,
+        categories: (current.categories || []).map((category) => {
+          if (category.slug !== editingCategory.slug) return category;
+          const nextSubCategories = Array.isArray(category.subCategories) ? [...category.subCategories] : [];
+          const existingIndex = nextSubCategories.findIndex((item) => (nextTaxonomyDocId && item?.taxonomyDocId === nextTaxonomyDocId) || item?.slug === (draftSubCategory.originalSlug || draftSubCategory.slug));
+          const nextItem = {
+            taxonomyDocId: nextTaxonomyDocId,
+            slug: payload.subCategory.slug,
+            title: payload.subCategory.title,
+            feeRule: draftSubCategory.feeRule || category.feeRule || toFixedRule(Math.max(0, toNum(draftPercent, 12))),
+            isActive: payload.placement.isActive,
+          };
+          if (existingIndex >= 0) nextSubCategories[existingIndex] = nextItem;
+          else nextSubCategories.push(nextItem);
+          return { ...category, subCategories: nextSubCategories };
+        }),
+      }));
+      setSavedConfig((current: FeeConfig) => ({
+        ...current,
+        categories: (current.categories || []).map((category) => {
+          if (category.slug !== editingCategory.slug) return category;
+          const nextSubCategories = Array.isArray(category.subCategories) ? [...category.subCategories] : [];
+          const existingIndex = nextSubCategories.findIndex((item) => (nextTaxonomyDocId && item?.taxonomyDocId === nextTaxonomyDocId) || item?.slug === (draftSubCategory.originalSlug || draftSubCategory.slug));
+          const nextItem = {
+            taxonomyDocId: nextTaxonomyDocId,
+            slug: payload.subCategory.slug,
+            title: payload.subCategory.title,
+            feeRule: draftSubCategory.feeRule || category.feeRule || toFixedRule(Math.max(0, toNum(draftPercent, 12))),
+            isActive: payload.placement.isActive,
+          };
+          if (existingIndex >= 0) nextSubCategories[existingIndex] = nextItem;
+          else nextSubCategories.push(nextItem);
+          return { ...category, subCategories: nextSubCategories };
+        }),
+      }));
+      setMessage(`Saved sub-category '${payload.subCategory.title}'.`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to save sub-category.");
+    } finally {
+      setSavingSubCategoryDraftId(null);
+    }
+  }
+
+  function updateDraftSubCategory(
+    draftId: string,
+    updater: (subCategory: { draftId: string; taxonomyDocId?: string; slug: string; title: string; feeRule?: FeeRule; isActive?: boolean; originalSlug?: string | null }) => {
+      draftId: string;
+      taxonomyDocId?: string;
+      slug: string;
+      title: string;
+      feeRule?: FeeRule;
+      isActive?: boolean;
+      originalSlug?: string | null;
+    },
+  ) {
+    setDraftSubCategories((current) =>
+      current.map((subCategory) => (subCategory.draftId === draftId ? updater(subCategory) : subCategory)),
+    );
+  }
+
+  function addDraftSubCategory() {
+    const title = String(draftNewSubCategoryTitle || "").trim();
+    const slug = toSlug(draftNewSubCategorySlug || draftNewSubCategoryTitle);
+    if (!title || !slug) {
+      setError("Enter a valid sub-category title before adding it.");
+      return;
+    }
+    if (draftSubCategories.some((item) => item.slug === slug)) {
+      setError("A sub-category with this slug already exists in this category.");
+      return;
+    }
+    setDraftSubCategories((current) => [
+      ...current,
+      {
+        draftId: createDraftId(),
+        taxonomyDocId: undefined,
+        slug,
+        title,
+        feeRule: toFixedRule(Math.max(0, toNum(draftPercent, 12))),
+        isActive: true,
+        originalSlug: null,
+      },
+    ]);
+    setError(null);
+    setDraftNewSubCategoryTitle("");
+    setDraftNewSubCategorySlug("");
+  }
+
+  async function removeDraftSubCategory(subCategorySlug: string) {
+    if (!editingCategory) return;
+    const draftItem = draftSubCategories.find((item) => item.slug === subCategorySlug);
+    const existingSubCategory = editingCategory.subCategories?.find((item) => item.slug === (draftItem?.originalSlug || subCategorySlug));
+    if (existingSubCategory) {
+      try {
+        const params = new URLSearchParams({
+          limit: "1",
+          includeUnavailable: "true",
+          category: editingCategory.slug,
+          subCategory: existingSubCategory.slug,
+        });
+        const response = await fetch(`/api/catalogue/v1/products/product/get?${params.toString()}`, { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        const attachedCount = Number(payload?.count || 0);
+        if (attachedCount > 0) {
+          setError(`This sub-category cannot be deleted because ${attachedCount} product${attachedCount === 1 ? "" : "s"} are attached to it.`);
+          return;
+        }
+      } catch {
+        setError("Unable to verify whether products are attached to this sub-category.");
+        return;
+      }
+    }
+
+    setDraftSubCategories((current) => current.filter((item) => item.slug !== subCategorySlug));
+    setError(null);
+  }
+
+  function getDuplicateSlugSuggestions(categorySlug: string, subCategory: { title?: string; slug?: string; originalSlug?: string | null }) {
+    const baseTitleSlug = toSlug(subCategory.title || subCategory.slug || "");
+    const suggestions = [
+      toCategorySubCategorySlug(categorySlug, baseTitleSlug),
+      toCategorySubCategorySlug(categorySlug, subCategory.originalSlug || baseTitleSlug),
+      toSlug(`${baseTitleSlug}-${categorySlug}`),
+    ].filter(Boolean);
+
+    return Array.from(new Set(suggestions)).filter((candidate) => candidate && candidate !== subCategory.slug);
   }
 
   function deleteCategoryFee() {
@@ -769,6 +1069,12 @@ export function SellerFeesWorkspace() {
                 const currentPercent = getFixedPercent(category.feeRule, 12);
                 const savedPercent = getFixedPercent(savedCategory?.feeRule, 12);
                 const isChanged = Math.abs(currentPercent - savedPercent) > 0.001;
+                const inactiveSubCategoryCount = Array.isArray(category.subCategories)
+                  ? category.subCategories.filter((subCategory) => subCategory?.isActive === false).length
+                  : 0;
+                const duplicateSubCategoryCount = Array.isArray(category.subCategories)
+                  ? category.subCategories.filter((subCategory) => (duplicateSubCategoryCounts.get(toSlug(subCategory?.slug)) || 0) > 1).length
+                  : 0;
 
                 return (
                   <div
@@ -780,6 +1086,16 @@ export function SellerFeesWorkspace() {
                       <span className="mt-0.5 block text-[11px] text-[#7d7d7d]">
                         {(category.subCategories || []).length} sub-categor{(category.subCategories || []).length === 1 ? "y" : "ies"}
                       </span>
+                      {inactiveSubCategoryCount > 0 ? (
+                        <span className="mt-1 block text-[11px] font-medium text-[#b91c1c]">
+                          {inactiveSubCategoryCount} inactive sub-categor{inactiveSubCategoryCount === 1 ? "y may" : "ies may"} block product approvals
+                        </span>
+                      ) : null}
+                      {duplicateSubCategoryCount > 0 ? (
+                        <span className="mt-1 block text-[11px] font-medium text-[#b91c1c]">
+                          {duplicateSubCategoryCount} duplicate sub-category slug{duplicateSubCategoryCount === 1 ? "" : "s"} detected and may block product approvals
+                        </span>
+                      ) : null}
                     </div>
                     <div className={`truncate ${isChanged ? "text-[#166534]" : "text-[#57636c]"}`}>{category.slug}</div>
                     <div className={`font-semibold ${isChanged ? "text-[#166534]" : "text-[#202020]"}`}>
@@ -992,8 +1308,10 @@ export function SellerFeesWorkspace() {
       </div>
 
       {editingCategory ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" role="dialog" aria-modal="true" onClick={closeAllModals}>
-          <div className="w-full max-w-[480px] rounded-[8px] bg-white p-5 shadow-[0_20px_50px_rgba(20,24,27,0.2)]" onClick={(event) => event.stopPropagation()}>
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 px-4 py-6" role="dialog" aria-modal="true" onClick={closeAllModals}>
+          <div className="flex min-h-full items-start justify-center">
+          <div className="w-full max-w-[720px] rounded-[8px] bg-white shadow-[0_20px_50px_rgba(20,24,27,0.2)]" onClick={(event) => event.stopPropagation()}>
+            <div className="max-h-[calc(100vh-3rem)] overflow-y-auto p-5">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Edit fee</p>
@@ -1014,6 +1332,243 @@ export function SellerFeesWorkspace() {
               <input type="number" min="0" step="0.1" value={draftPercent} onChange={(event) => setDraftPercent(event.target.value)} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#cbb26b]" />
             </label>
 
+            <div className="mt-5 rounded-[8px] border border-black/5 bg-[rgba(32,32,32,0.02)] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Sub-categories</p>
+                  <p className="mt-1 text-[12px] text-[#57636c]">Edit sub-category commission and active state for this parent category.</p>
+                </div>
+                {draftSubCategories.length ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDraftSubCategories((current) =>
+                        current.map((subCategory) => ({
+                          ...subCategory,
+                          feeRule: toFixedRule(Math.max(0, toNum(draftPercent, 12))),
+                        })),
+                      )
+                    }
+                    className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
+                  >
+                    Apply parent fee to all
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {draftSubCategories.length ? (
+                  draftSubCategories.map((subCategory) => {
+                    const originalSubCategory =
+                      (subCategory.taxonomyDocId ? originalSubCategoriesByKey.get(`id:${subCategory.taxonomyDocId}`) : undefined) ||
+                      (subCategory.originalSlug ? originalSubCategoriesByKey.get(`slug:${subCategory.originalSlug}`) : undefined) ||
+                      originalSubCategoriesByKey.get(`slug:${subCategory.slug}`);
+                    const showSaveButton =
+                      savingSubCategoryDraftId === subCategory.draftId ||
+                      isSubCategoryDraftDirty(subCategory, originalSubCategory, Math.max(0, toNum(draftPercent, 12)));
+
+                    return (
+                    <div key={subCategory.draftId} className="rounded-[8px] border border-black/8 bg-white p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-[13px] font-semibold text-[#202020]">{subCategory.title}</p>
+                          <p className="mt-0.5 text-[11px] text-[#7d7d7d]">{subCategory.slug}</p>
+                          {subCategory.isActive === false ? (
+                            <p className="mt-1 text-[11px] font-medium text-[#b91c1c]">
+                              Inactive sub-categories can block product approval if products are assigned here.
+                            </p>
+                          ) : null}
+                          {(duplicateSubCategoryCounts.get(toSlug(subCategory.slug)) || 0) > 1 ? (
+                            <p className="mt-1 text-[11px] font-medium text-[#b91c1c]">
+                              This slug exists more than once in the catalogue taxonomy and can block product approval.
+                            </p>
+                          ) : null}
+                        </div>
+                        <label className="inline-flex items-center gap-2 text-[12px] font-semibold text-[#202020]">
+                          <input
+                            type="checkbox"
+                            checked={subCategory.isActive !== false}
+                            onChange={(event) =>
+                              updateDraftSubCategory(subCategory.draftId, (current) => ({
+                                ...current,
+                                isActive: event.target.checked,
+                              }))
+                            }
+                            className="h-4 w-4 rounded border-black/20"
+                          />
+                          Active
+                        </label>
+                      </div>
+                      <div className={`mt-3 grid gap-3 ${showSaveButton ? "sm:grid-cols-[minmax(0,1fr)_180px_auto_auto]" : "sm:grid-cols-[minmax(0,1fr)_180px_auto]"}`}>
+                        <label className="block">
+                          <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Sub-category title</span>
+                          <input
+                            type="text"
+                            value={subCategory.title}
+                            onChange={(event) =>
+                              updateDraftSubCategory(subCategory.draftId, (current) => ({
+                                ...current,
+                                title: event.target.value,
+                              }))
+                            }
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#cbb26b]"
+                          />
+                        </label>
+                        <label className="relative block">
+                          <span className="mb-1.5 flex items-center gap-2 text-[12px] font-semibold text-[#202020]">
+                            <span>Sub-category fee</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setActiveFeeInfoDraftId((current) => (current === subCategory.draftId ? null : subCategory.draftId))
+                              }
+                              onMouseEnter={() => setActiveFeeInfoDraftId(subCategory.draftId)}
+                              onMouseLeave={() =>
+                                setActiveFeeInfoDraftId((current) => (current === subCategory.draftId ? null : current))
+                              }
+                              className="relative text-left"
+                              aria-label="About sub-category fee"
+                            >
+                              <PopoverHintTrigger active={activeFeeInfoDraftId === subCategory.draftId} className="gap-0 border-b-0 pb-0 text-[12px] font-semibold text-[#202020]">
+                                <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-black/15 text-[10px] text-[#7d7d7d]">i</span>
+                              </PopoverHintTrigger>
+                            </button>
+                          </span>
+                          {activeFeeInfoDraftId === subCategory.draftId ? (
+                            <PlatformPopover className="left-0 right-auto top-7 z-20 mt-2 w-[min(280px,calc(100vw-64px))]">
+                              <p className="text-[14px] font-semibold text-[#202020]">Sub-category fee</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">Percentage charged for this sub-category.</p>
+                            </PlatformPopover>
+                          ) : null}
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.1"
+                            value={String(getFixedPercent(subCategory.feeRule, Math.max(0, toNum(draftPercent, 12))))}
+                            onChange={(event) =>
+                              updateDraftSubCategory(subCategory.draftId, (current) => ({
+                                ...current,
+                                feeRule: toFixedRule(Math.max(0, toNum(event.target.value, getFixedPercent(current.feeRule, 12)))),
+                              }))
+                            }
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#cbb26b]"
+                          />
+                        </label>
+                        {showSaveButton ? (
+                          <div className="flex items-end">
+                            <button
+                              type="button"
+                              onClick={() => void saveDraftSubCategory(subCategory.draftId)}
+                              disabled={savingSubCategoryDraftId === subCategory.draftId}
+                              className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {savingSubCategoryDraftId === subCategory.draftId ? "Saving..." : "Save"}
+                            </button>
+                          </div>
+                        ) : null}
+                        <div className="flex items-end">
+                          <button
+                            type="button"
+                            onClick={() => void removeDraftSubCategory(subCategory.slug)}
+                            className="inline-flex h-10 items-center rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 text-[12px] font-semibold text-[#b91c1c]"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                      <label className="mt-3 block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Sub-category slug</span>
+                        <input
+                          type="text"
+                          value={subCategory.slug}
+                          onChange={(event) =>
+                            updateDraftSubCategory(subCategory.draftId, (current) => ({
+                              ...current,
+                              slug: String(event.target.value || "").toLowerCase(),
+                            }))
+                          }
+                          onBlur={(event) =>
+                            updateDraftSubCategory(subCategory.draftId, (current) => ({
+                              ...current,
+                              slug: toSlug(event.target.value),
+                            }))
+                          }
+                          onFocus={() => setActiveSlugDraftId(subCategory.draftId)}
+                          onBlurCapture={() => {
+                            window.setTimeout(() => {
+                              setActiveSlugDraftId((current) => (current === subCategory.draftId ? null : current));
+                            }, 120);
+                          }}
+                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#cbb26b]"
+                        />
+                      </label>
+                      {activeSlugDraftId === subCategory.draftId && (duplicateSubCategoryCounts.get(toSlug(subCategory.slug)) || 0) > 1 ? (
+                        <div className="mt-3 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] p-3">
+                          <p className="text-[11px] font-medium text-[#b91c1c]">Suggested unique slugs</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {getDuplicateSlugSuggestions(editingCategory.slug, subCategory).map((suggestion) => (
+                              <button
+                                key={suggestion}
+                                type="button"
+                                onClick={() =>
+                                  updateDraftSubCategory(subCategory.draftId, (current) => ({
+                                    ...current,
+                                    slug: suggestion,
+                                  }))
+                                }
+                                className="inline-flex items-center rounded-full border border-black/10 bg-white px-3 py-1 text-[11px] font-semibold text-[#202020]"
+                              >
+                                {suggestion}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[8px] border border-dashed border-black/10 px-4 py-4 text-[12px] text-[#57636c]">
+                    No sub-categories are configured for this category.
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-white p-3">
+                <p className="text-[12px] font-semibold text-[#202020]">Add sub-category</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <label className="block">
+                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Title</span>
+                    <input
+                      type="text"
+                      value={draftNewSubCategoryTitle}
+                      onChange={(event) => setDraftNewSubCategoryTitle(event.target.value)}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#cbb26b]"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Slug</span>
+                    <input
+                      type="text"
+                      value={draftNewSubCategorySlug}
+                      onChange={(event) => setDraftNewSubCategorySlug(toSlug(event.target.value))}
+                      placeholder={toSlug(draftNewSubCategoryTitle)}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none focus:border-[#cbb26b]"
+                    />
+                  </label>
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={addDraftSubCategory}
+                      className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="mt-5 flex items-center justify-between gap-2">
               <button type="button" onClick={deleteCategoryFee} className="inline-flex h-10 items-center rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 text-[13px] font-semibold text-[#b91c1c]">
                 Delete fee
@@ -1023,10 +1578,12 @@ export function SellerFeesWorkspace() {
                 Cancel
               </button>
               <button type="button" onClick={applyCategoryPercent} className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white">
-                Update fee
+                Save category fee
               </button>
               </div>
             </div>
+            </div>
+          </div>
           </div>
         </div>
       ) : null}

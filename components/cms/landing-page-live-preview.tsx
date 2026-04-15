@@ -13,6 +13,11 @@ import {
   RecentlyViewedRail,
   SearchHistoryRail,
 } from "@/components/cms/personalized-landing-sections";
+import {
+  renderSharedLandingSectionContent,
+  type SharedLandingCategory,
+  type SharedLandingProduct,
+} from "@/components/cms/shared-landing-section-content";
 
 type PreviewProduct = ProductItem & {
   title?: string;
@@ -77,9 +82,64 @@ function CategoryChipIcon({ category }: { category: { slug?: string; title?: str
   }
 }
 
+function getCategoryChipImageUrl(section: LandingSection, categorySlug: string) {
+  const categoryImages =
+    section?.props?.categoryImages && typeof section.props.categoryImages === "object"
+      ? section.props.categoryImages
+      : {};
+  return toStr(categoryImages?.[categorySlug]);
+}
+
+function CategoryChipVisual({
+  section,
+  category,
+}: {
+  section: LandingSection;
+  category: { slug?: string; title?: string };
+}) {
+  const imageUrl = getCategoryChipImageUrl(section, toStr(category.slug));
+  if (imageUrl) {
+    return (
+      <div className="relative h-[72px] w-[72px] overflow-hidden rounded-full border border-black/8 bg-[#f3f4f6] shadow-[0_8px_20px_rgba(20,24,27,0.08)] sm:h-[78px] sm:w-[78px]">
+        <Image src={imageUrl} alt={toStr(category.title, "Category")} fill sizes="78px" className="object-cover" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-[72px] w-[72px] items-center justify-center rounded-full border border-black/8 bg-[#fbfbfb] text-[28px] shadow-[0_8px_20px_rgba(20,24,27,0.05)] sm:h-[78px] sm:w-[78px]">
+      <CategoryChipIcon category={category} />
+    </div>
+  );
+}
+
 function toNum(value: unknown) {
   const parsed = Number(value || 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toBool(value: unknown) {
+  if (typeof value === "boolean") return value;
+  const normalized = toStr(value).toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
+}
+
+function slugify(value: unknown) {
+  return toStr(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function sortProductsForRail(items: PreviewProduct[], prioritizeCampaigns: boolean, randomize: boolean) {
+  const sorted = [...items];
+  if (randomize) {
+    sorted.sort(() => Math.random() - 0.5);
+  }
+  if (prioritizeCampaigns) {
+    sorted.sort((a: any, b: any) => Number(Boolean(b?.hasActiveCampaign)) - Number(Boolean(a?.hasActiveCampaign)));
+  }
+  return sorted;
 }
 
 function resolveRailLimit(sectionProps: any, mode: "desktop" | "tablet" | "mobile" = "desktop") {
@@ -501,13 +561,38 @@ export function LandingPageLivePreview({
           );
         }
 
+        const sharedContent = renderSharedLandingSectionContent({
+          section,
+          products: products as SharedLandingProduct[],
+          categories: categories as SharedLandingCategory[],
+          mode,
+          isPreview: true,
+        });
+        if (sharedContent) {
+          return (
+            <PreviewSelectableShell key={section.id} blockId={section.id} label={label} selected={isSelected} onSelect={onSelectBlock} controls={controls}>
+              {sharedContent}
+            </PreviewSelectableShell>
+          );
+        }
+
         if (section.type === "product_rail") {
           const source = toStr(section.props?.source, "new_arrivals");
+          const selectedCategorySlugs = (Array.isArray(section.props?.categorySlugs) ? section.props.categorySlugs : [])
+            .map((entry: unknown) => slugify(entry))
+            .filter(Boolean);
+          const prioritizeCampaigns = toBool(section.props?.prioritizeCampaigns) || toBool(section.props?.prioritizeFeatured);
+          const randomize = toBool(section.props?.randomize);
           const selectedProducts =
             source === "manual"
               ? products.filter((product) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
+              : source === "category_match"
+                ? products.filter((product: any) => {
+                    if (!selectedCategorySlugs.length) return true;
+                    return selectedCategorySlugs.includes(slugify(product.categorySlug || product.category));
+                  })
               : products.slice().reverse();
-          const items = selectedProducts.slice(0, resolveRailLimit(section.props, mode));
+          const items = sortProductsForRail(selectedProducts, prioritizeCampaigns, randomize).slice(0, resolveRailLimit(section.props, mode));
           return (
             <PreviewSelectableShell
               key={section.id}
@@ -558,11 +643,11 @@ export function LandingPageLivePreview({
                   <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Quick shop")}</p>
                   <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
                 </div>
-                <div className="mt-4 flex flex-wrap gap-2.5">
+                <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
                   {selectedCategories.map((category) => (
-                    <div key={category.id} className="inline-flex min-h-10 items-center gap-2 rounded-full border border-black/8 bg-[#fbfbfb] px-4 text-[13px] font-semibold text-[#202020]">
-                      <CategoryChipIcon category={category} />
-                      {category.title}
+                    <div key={category.id} className="flex w-[84px] shrink-0 flex-col items-center text-center text-[13px] font-medium leading-[1.3] text-[#202020] sm:w-[96px]">
+                      <CategoryChipVisual section={section} category={category} />
+                      <span className="mt-2 line-clamp-2">{category.title}</span>
                     </div>
                   ))}
                 </div>
@@ -685,7 +770,11 @@ export function LandingPageLivePreview({
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   {tiles.map((tile: any, index: number) => (
                     <div key={toStr(tile?.id, `compact-preview-${index}`)} className="overflow-hidden rounded-[8px] border border-black/6 bg-[linear-gradient(180deg,#ffffff,#fbfbfb)]">
-                      <div className="aspect-square bg-[#fafafa]" />
+                      <div className="relative aspect-square bg-[#fafafa]">
+                        {toStr(tile?.imageUrl) ? (
+                          <Image src={toStr(tile?.imageUrl)} alt={toStr(tile?.title, "Promo tile")} fill sizes="(max-width: 640px) 50vw, 280px" className="object-cover" />
+                        ) : null}
+                      </div>
                       <div className="p-3">
                         <p className="text-[14px] font-semibold leading-[1.25] text-[#202020]">{toStr(tile?.title, "Promo tile")}</p>
                         <p className="mt-1 text-[11px] leading-[1.5] text-[#7a8594]">{toStr(tile?.subtitle)}</p>

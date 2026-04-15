@@ -176,6 +176,12 @@ function sentenceCase(value?: string | null) {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
+function isFinanciallyCountableOrder(order: SellerOrderSlice) {
+  const paymentStatus = toStr(order?.paymentStatus).toLowerCase();
+  const fulfillmentStatus = toStr(order?.fulfillmentStatus).toLowerCase();
+  return fulfillmentStatus !== "cancelled" && !["refunded", "partial_refund"].includes(paymentStatus);
+}
+
 function daysForTimeframe(value: TimeframeKey) {
   if (value === "7d") return 7;
   if (value === "90d") return 90;
@@ -679,8 +685,8 @@ export function SellerAnalyticsWorkspace({ sellerSlug, sellerCode, vendorName }:
   const periodDays = daysForTimeframe(timeframe);
 
   const analytics = useMemo(() => {
-    const currentOrders = orders.filter((item) => isWithinDays(item.createdAt, periodDays, 0));
-    const previousOrders = orders.filter((item) => isWithinDays(item.createdAt, periodDays, periodDays));
+    const currentOrders = orders.filter((item) => isWithinDays(item.createdAt, periodDays, 0) && isFinanciallyCountableOrder(item));
+    const previousOrders = orders.filter((item) => isWithinDays(item.createdAt, periodDays, periodDays) && isFinanciallyCountableOrder(item));
 
     const summarize = (items: SellerOrderSlice[]) => {
       const revenue = items.reduce((sum, item) => sum + toNum(item?.totals?.totalIncl), 0);

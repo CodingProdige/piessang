@@ -3,7 +3,6 @@
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { SellerCatalogueEditor } from "@/app/seller/catalogue/new/page";
-import { ContentsquareReplayCaptureModal } from "@/components/seller/contentsquare-replay-capture-modal";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { formatMoneyExact } from "@/lib/money";
 
@@ -64,6 +63,27 @@ function valuesDiffer(left: unknown, right: unknown) {
 
 function imageCount(data: ReviewProduct["data"] | null | undefined) {
   return Array.isArray(data?.media?.images) ? data.media.images.filter((entry) => Boolean(entry?.imageUrl)).length : 0;
+}
+
+function formatParentIssue(issue: any) {
+  const parent = toStr(issue?.parent);
+  const slug = toStr(issue?.slug);
+  const reason = toStr(issue?.issue);
+
+  if (reason === "not_unique") {
+    return `${parent || "Parent grouping"} '${slug || "unknown"}' exists more than once in the catalogue taxonomy. Remove or rename the duplicate before approving this product.`;
+  }
+  if (reason === "inactive") {
+    return `${parent || "Parent grouping"} '${slug || "unknown"}' is inactive. Reactivate it before approving this product.`;
+  }
+  if (reason === "not_found") {
+    return `${parent || "Parent grouping"} '${slug || "unknown"}' could not be found in the catalogue taxonomy.`;
+  }
+  if (reason === "missing_slug") {
+    return `${parent || "Parent grouping"} is missing on this product.`;
+  }
+
+  return "";
 }
 
 function variantCount(data: ReviewProduct["data"] | null | undefined) {
@@ -230,7 +250,6 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
   const [rejectIssueCode, setRejectIssueCode] = useState<string>("other");
   const [rejectFeedback, setRejectFeedback] = useState("");
   const [reviewModalProductId, setReviewModalProductId] = useState<string | null>(null);
-  const [replayTarget, setReplayTarget] = useState<ReviewProduct | null>(null);
 
   async function loadItems(options?: { silent?: boolean }) {
     const silent = Boolean(options?.silent);
@@ -352,7 +371,8 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "Unable to update review outcome.");
+        const parentIssues = Array.isArray(payload?.parent_issues) ? payload.parent_issues.map(formatParentIssue).filter(Boolean) : [];
+        throw new Error(parentIssues[0] || payload?.message || "Unable to update review outcome.");
       }
       setMessage(
         outcome === "approve"
@@ -592,7 +612,7 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
             return (
               <section key={item.id} className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
                 <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                  <div className="flex min-w-0 gap-4">
+                  <div className="flex min-w-0 flex-1 gap-4">
                     <label className="mt-1 inline-flex h-5 shrink-0 items-center">
                       <input
                         type="checkbox"
@@ -607,7 +627,7 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
                         aria-label={`Select ${title}`}
                       />
                     </label>
-                    <div className="h-20 w-20 overflow-hidden rounded-[8px] border border-black/5 bg-[#f4f4f4]">
+                    <div className="h-20 w-20 shrink-0 overflow-hidden rounded-[8px] border border-black/5 bg-[#f4f4f4]">
                       {image ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={image} alt={title} className="h-full w-full object-cover" />
@@ -647,7 +667,7 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
                       </p>
                     </div>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex w-full flex-col gap-2 md:w-[220px] md:shrink-0">
                     <button
                       type="button"
                       onClick={() => {
@@ -656,30 +676,22 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
                         setRejectFeedback(REJECTION_PRESETS.find((preset) => preset.code === "other")?.message || "");
                       }}
                       disabled={isBusy}
-                      className="inline-flex h-10 items-center rounded-[8px] border border-[#f0c7cb] bg-white px-4 text-[13px] font-semibold text-[#b91c1c] disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-10 w-full items-center justify-center rounded-[8px] border border-[#f0c7cb] bg-white px-4 text-[13px] font-semibold text-[#b91c1c] disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {isBusy ? "Saving..." : "Reject"}
                     </button>
                     <button
                       type="button"
                       onClick={() => openReviewProduct(item.id)}
-                      className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+                      className="inline-flex h-10 w-full items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
                     >
                       Review product
                     </button>
                     <button
                       type="button"
-                      onClick={() => setReplayTarget(item)}
-                      disabled={isBusy || bulkBusy}
-                      className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Save replay
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => void updateReview(item, "approve")}
                       disabled={isBusy || bulkBusy}
-                      className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-10 w-full items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {isBusy ? "Saving..." : "Approve"}
                     </button>
@@ -834,37 +846,12 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
                 editorProductIdOverride={reviewModalProductId}
                 sellerOverride={reviewSellerSlug}
                 embeddedMode
+                reviewContextOverride="product-reviews"
               />
             </div>
           </div>
         </div>
       ) : null}
-
-      <ContentsquareReplayCaptureModal
-        open={Boolean(replayTarget)}
-        title={toStr(replayTarget?.data?.product?.title, "Save replay")}
-        defaults={
-          replayTarget
-            ? {
-                title: `Product review • ${toStr(replayTarget?.data?.product?.title, "Product")}`,
-                productSlug: "",
-                sellerSlug: reviewSellerSlug,
-                pagePath: replayTarget?.id ? `/products/${replayTarget.id}` : "",
-                issueType: "product review",
-                notes: replayTarget?.data?.live_snapshot
-                  ? "Replay captured from product update review flow."
-                  : "Replay captured from new product review flow.",
-              }
-            : undefined
-        }
-        onClose={() => setReplayTarget(null)}
-        onSaved={() =>
-          setSnackbarNotice({
-            tone: "success",
-            message: "Replay saved to Contentsquare tools.",
-          })
-        }
-      />
     </div>
   );
 }

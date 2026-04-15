@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/auth-provider";
+import { AppSnackbar } from "@/components/ui/app-snackbar";
 
 function toCountLabel(value: number) {
   const count = Number(value || 0);
@@ -25,7 +26,7 @@ export function VendorFollowControls({
   const [loading, setLoading] = useState(false);
   const [following, setFollowing] = useState(false);
   const [followerCount, setFollowerCount] = useState(initialFollowerCount);
-  const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,7 +54,7 @@ export function VendorFollowControls({
       return;
     }
     setLoading(true);
-    setMessage("");
+    setNotice(null);
     try {
       const response = await fetch("/api/client/v1/accounts/seller/follow", {
         method: "POST",
@@ -70,16 +71,22 @@ export function VendorFollowControls({
       }
       setFollowing(payload?.following === true);
       setFollowerCount(Number(payload?.followerCount || 0));
-      setMessage(payload?.following ? `You are now following ${vendorName}.` : `You stopped following ${vendorName}.`);
+      setNotice({
+        tone: "success",
+        message: payload?.following ? `You are now following ${vendorName}.` : `You stopped following ${vendorName}.`,
+      });
     } catch (error: any) {
-      setMessage(error?.message || "Unable to update follow state right now.");
+      setNotice({
+        tone: "error",
+        message: error?.message || "Unable to update follow state right now.",
+      });
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="flex flex-col items-start gap-2">
+    <>
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-full bg-[rgba(203,178,107,0.12)] px-3 py-1.5 text-[12px] font-semibold text-[#907d4c]">
           {toCountLabel(followerCount)}
@@ -103,7 +110,7 @@ export function VendorFollowControls({
           Following
         </Link>
       </div>
-      {message ? <p className="text-[12px] text-[#57636c]">{message}</p> : null}
-    </div>
+      <AppSnackbar notice={notice} onClose={() => setNotice(null)} />
+    </>
   );
 }

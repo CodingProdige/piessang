@@ -107,6 +107,12 @@ function getOrderFulfillmentStatus(order = {}) {
   return toStr(order?.lifecycle?.fulfillmentStatus || order?.status?.fulfillment || "unknown").toLowerCase();
 }
 
+function isFinanciallyCountableOrder(order = {}) {
+  const paymentStatus = getOrderPaymentStatus(order);
+  const fulfillmentStatus = getOrderFulfillmentStatus(order);
+  return fulfillmentStatus !== "cancelled" && !["refunded", "partial_refund"].includes(paymentStatus);
+}
+
 function getOrderChannel(order = {}) {
   return sentenceCase(order?.meta?.channel || order?.channel || "Online store", "Online store");
 }
@@ -201,7 +207,7 @@ export async function GET(request) {
 
     const orders = ordersSnap.docs.map((docSnap) => ({ docId: docSnap.id, ...(docSnap.data() || {}) }));
     const currentOrderRows = orders
-      .filter((order) => isWithinDays(getOrderCreatedAt(order), days, 0))
+      .filter((order) => isWithinDays(getOrderCreatedAt(order), days, 0) && isFinanciallyCountableOrder(order))
       .map((order) => ({
         orderId: toStr(order.docId),
         orderNumber: toStr(order?.meta?.orderNumber || order?.orderNumber || order.docId),
@@ -219,7 +225,7 @@ export async function GET(request) {
         deliveryLabel: getOrderDeliveryLabel(order),
       }));
     const previousOrderRows = orders
-      .filter((order) => isWithinDays(getOrderCreatedAt(order), days, days))
+      .filter((order) => isWithinDays(getOrderCreatedAt(order), days, days) && isFinanciallyCountableOrder(order))
       .map((order) => ({
         amount: getOrderAmount(order),
         units: Array.isArray(order?.items) ? order.items.reduce((sum, item) => sum + Math.max(1, toNum(item?.quantity)), 0) : 0,
@@ -245,7 +251,7 @@ export async function GET(request) {
     const deliveryMix = new Map();
     const regionMix = new Map();
     const topProductsMap = new Map();
-    for (const order of orders.filter((item) => isWithinDays(getOrderCreatedAt(item), days, 0))) {
+    for (const order of orders.filter((item) => isWithinDays(getOrderCreatedAt(item), days, 0) && isFinanciallyCountableOrder(item))) {
       const amount = getOrderAmount(order);
       const channel = getOrderChannel(order);
       const region = getOrderRegion(order);
@@ -266,7 +272,7 @@ export async function GET(request) {
     const topProducts = Array.from(topProductsMap.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 6);
 
     const customerMap = new Map();
-    for (const order of orders.filter((item) => isWithinDays(getOrderCreatedAt(item), days, 0))) {
+    for (const order of orders.filter((item) => isWithinDays(getOrderCreatedAt(item), days, 0) && isFinanciallyCountableOrder(item))) {
       const customer = getOrderCustomer(order);
       const key = customer.id || customer.name.toLowerCase();
       const currentEntry = customerMap.get(key) || { ...customer, orders: 0 };
@@ -352,7 +358,7 @@ export async function GET(request) {
       activeSellerCount,
       orderSellerCount: Array.from(
         orders
-          .filter((item) => isWithinDays(getOrderCreatedAt(item), days, 0))
+          .filter((item) => isWithinDays(getOrderCreatedAt(item), days, 0) && isFinanciallyCountableOrder(item))
           .reduce((acc, order) => {
             for (const sellerCode of getSellerCodes(order)) acc.add(sellerCode);
             return acc;

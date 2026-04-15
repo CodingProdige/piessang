@@ -41,6 +41,12 @@ export const pushTemplates = {
     link: "{{link}}"
   },
 
+  "seller-new-follower": {
+    title: "You gained a new follower",
+    body: "{{followerName}} just followed {{vendorName}} on Piessang.",
+    link: "{{link}}"
+  },
+
   "favorite-on-sale": {
     title: "A favourite is on sale",
     body: "{{productTitle}} is now on sale.",

@@ -648,6 +648,7 @@ function SidebarMenu({
   sellerBadges,
   onNavigate,
   onClose,
+  onBackToMySeller,
 }: {
   mobile?: boolean;
   collapsed?: boolean;
@@ -676,6 +677,7 @@ function SidebarMenu({
   };
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
+  onBackToMySeller?: () => void;
 }) {
   const blockedAllowedSections: SidebarSection[] = ["home", "settings", "integrations", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-google-analytics", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-google-merchant-countries", "admin-google-merchant", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
@@ -725,6 +727,18 @@ function SidebarMenu({
             </button>
           ) : null}
         </div>
+        {!compactDesktop && onBackToMySeller ? (
+          <button
+            type="button"
+            onClick={() => {
+              onBackToMySeller();
+              onClose?.();
+            }}
+            className="mt-3 inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.06)]"
+          >
+            Back to my seller dashboard
+          </button>
+        ) : null}
       </div>
 
       <nav className={mobile ? "mt-3 space-y-3 overflow-y-auto pb-4" : "mt-2 space-y-3 lg:mt-3 lg:space-y-4"}>
@@ -1057,16 +1071,6 @@ function SellerDashboardContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { authReady, isAuthenticated, isSeller, sellerStatus, profile, openAuthModal, openSellerRegistrationModal } = useAuth();
-  const [activeSection, setActiveSection] = useState<SidebarSection>("home");
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [desktopMenuCollapsed, setDesktopMenuCollapsed] = useState(false);
-  const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
-  const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0, notifications: 0 });
-  const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
-  const [reviewRequestReason, setReviewRequestReason] = useState("other");
-  const [reviewRequestMessage, setReviewRequestMessage] = useState("");
-  const [reviewRequestSubmitting, setReviewRequestSubmitting] = useState(false);
-
   const resolveSection = (value: string | null): SidebarSection => {
     const reviewContext = (searchParams.get("reviewContext") || "").toLowerCase();
     if (((value || "").toLowerCase() === "create-product" || (value || "").toLowerCase() === "create") && reviewContext === "product-reviews") {
@@ -1192,8 +1196,32 @@ function SellerDashboardContent() {
     }
   };
 
+  const readSectionFromUrl = () => {
+    if (typeof window === "undefined") {
+      return resolveSection(searchParams.get("section"));
+    }
+    const urlParams = new URLSearchParams(window.location.search);
+    return resolveSection(urlParams.get("section"));
+  };
+
+  const [activeSection, setActiveSection] = useState<SidebarSection>(() => readSectionFromUrl());
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [desktopMenuCollapsed, setDesktopMenuCollapsed] = useState(false);
+  const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
+  const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0, notifications: 0 });
+  const [adminSelectedSellerContext, setAdminSelectedSellerContext] = useState<SellerContextItem | null>(null);
+  const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
+  const [reviewRequestReason, setReviewRequestReason] = useState("other");
+  const [reviewRequestMessage, setReviewRequestMessage] = useState("");
+  const [reviewRequestSubmitting, setReviewRequestSubmitting] = useState(false);
+
   useEffect(() => {
-    setActiveSection(resolveSection(searchParams.get("section")));
+    const rawSection = searchParams.get("section");
+    const reviewContext = (searchParams.get("reviewContext") || "").toLowerCase();
+    const hasExplicitSection = Boolean(String(rawSection || "").trim());
+    const isReviewEditor = (String(rawSection || "").toLowerCase() === "create-product" || String(rawSection || "").toLowerCase() === "create") && reviewContext === "product-reviews";
+    if (!hasExplicitSection && !isReviewEditor) return;
+    setActiveSection(resolveSection(rawSection));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
@@ -1389,22 +1417,108 @@ function SellerDashboardContent() {
     profile?.sellerVendorName,
     vendorName,
   ]);
+  const requestedSeller = searchParams.get("seller")?.trim() || "";
+  const isRequestedSellerKnown = useMemo(
+    () => sellerContexts.some((item) => item.sellerSlug === requestedSeller || item.sellerCode === requestedSeller),
+    [requestedSeller, sellerContexts],
+  );
 
-  const resolvedSellerSlug = useMemo(() => {
-    const currentSeller = searchParams.get("seller")?.trim() || "";
-    if (
-      currentSeller &&
-      sellerContexts.some((item) => item.sellerSlug === currentSeller || item.sellerCode === currentSeller)
-    ) {
-      return currentSeller;
+  useEffect(() => {
+    const requesterUid = profile?.uid || "";
+    if (!isSystemAdmin || !requesterUid || !requestedSeller) {
+      setAdminSelectedSellerContext(null);
+      return;
+    }
+    if (isRequestedSellerKnown) {
+      setAdminSelectedSellerContext(null);
+      return;
     }
 
-    return sellerContexts[0]?.sellerCode || sellerContexts[0]?.sellerSlug || profile?.sellerCode?.trim() || toSellerSlug(vendorName);
-  }, [profile?.sellerCode, searchParams, sellerContexts, vendorName]);
+    let cancelled = false;
+    async function loadRequestedSellerContext() {
+      try {
+        const params = new URLSearchParams({
+          uid: requesterUid,
+          filter: "all",
+          seller: requestedSeller,
+        });
+        const response = await fetch(`/api/client/v1/accounts/seller/list?${params.toString()}`, {
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        const match = Array.isArray(payload?.sellers) ? payload.sellers[0] : null;
+        if (!response.ok || payload?.ok === false || !match) {
+          if (!cancelled) setAdminSelectedSellerContext(null);
+          return;
+        }
+        if (!cancelled) {
+          setAdminSelectedSellerContext({
+            sellerSlug: String(match?.sellerSlug || match?.sellerCode || "").trim(),
+            sellerCode: String(match?.sellerCode || match?.sellerSlug || "").trim(),
+            vendorName: String(match?.vendorName || match?.sellerSlug || match?.sellerCode || "Seller account").trim(),
+            role: "admin",
+            status: String(match?.status || "").trim().toLowerCase() || null,
+            teamOwnerUid: null,
+            grantedAt: null,
+            blockedReasonCode: String(match?.blockedReasonCode || "").trim() || null,
+            blockedReasonMessage: String(match?.blockedReasonMessage || "").trim() || null,
+            blockedAt: String(match?.blockedAt || "").trim() || null,
+            blockedBy: String(match?.blockedBy || "").trim() || null,
+            reviewRequestStatus: String(match?.reviewStatus || "").trim().toLowerCase() || null,
+            reviewRequestedAt: String(match?.reviewRequestedAt || "").trim() || null,
+            reviewRequestedBy: String(match?.reviewRequestedBy || "").trim() || null,
+            reviewRequestMessage: String(match?.reviewRequestMessage || "").trim() || null,
+            reviewResponseStatus: String(match?.reviewResponseStatus || "").trim().toLowerCase() || null,
+            reviewResponseAt: String(match?.reviewResponseAt || "").trim() || null,
+            reviewResponseBy: String(match?.reviewResponseBy || "").trim() || null,
+            reviewResponseMessage: String(match?.reviewResponseMessage || "").trim() || null,
+          });
+        }
+      } catch {
+        if (!cancelled) setAdminSelectedSellerContext(null);
+      }
+    }
+
+    void loadRequestedSellerContext();
+    return () => {
+      cancelled = true;
+    };
+  }, [isRequestedSellerKnown, isSystemAdmin, profile?.uid, requestedSeller]);
+
+  const adminRequestedSellerPending =
+    Boolean(isSystemAdmin && requestedSeller) &&
+    !isRequestedSellerKnown &&
+    !adminSelectedSellerContext;
+
+  const availableSellerContexts = useMemo(() => {
+    if (!adminSelectedSellerContext) return sellerContexts;
+    const alreadyIncluded = sellerContexts.some(
+      (item) =>
+        item.sellerSlug === adminSelectedSellerContext.sellerSlug ||
+        item.sellerCode === adminSelectedSellerContext.sellerCode,
+    );
+    return alreadyIncluded ? sellerContexts : [...sellerContexts, adminSelectedSellerContext];
+  }, [adminSelectedSellerContext, sellerContexts]);
+
+  const resolvedSellerSlug = useMemo(() => {
+    if (
+      requestedSeller &&
+      availableSellerContexts.some((item) => item.sellerSlug === requestedSeller || item.sellerCode === requestedSeller)
+    ) {
+      return requestedSeller;
+    }
+
+    if (adminRequestedSellerPending) {
+      return requestedSeller;
+    }
+
+    return availableSellerContexts[0]?.sellerCode || availableSellerContexts[0]?.sellerSlug || profile?.sellerCode?.trim() || toSellerSlug(vendorName);
+  }, [adminRequestedSellerPending, availableSellerContexts, profile?.sellerCode, requestedSeller, vendorName]);
 
   const activeSellerContext = useMemo(() => {
-    return sellerContexts.find((item) => item.sellerSlug === resolvedSellerSlug || item.sellerCode === resolvedSellerSlug) ?? sellerContexts[0] ?? null;
-  }, [resolvedSellerSlug, sellerContexts]);
+    if (adminRequestedSellerPending) return null;
+    return availableSellerContexts.find((item) => item.sellerSlug === resolvedSellerSlug || item.sellerCode === resolvedSellerSlug) ?? availableSellerContexts[0] ?? null;
+  }, [adminRequestedSellerPending, availableSellerContexts, resolvedSellerSlug]);
   const activeVendorName = activeSellerContext?.vendorName || vendorName;
   const activeSellerRole = normalizeSellerRole(activeSellerContext?.role || profile?.sellerTeamRole || "");
   useEffect(() => {
@@ -1483,6 +1597,8 @@ function SellerDashboardContent() {
     return preferredOrder.find((section) => canAccessSellerSection(activeSellerRole, section)) || "home";
   }, [activeSellerRole, sellerBlocked, sellerClosed]);
   const currentAccessLabel = formatSellerAccessLabel(activeSellerContext, homeSellerSlug, isSystemAdmin);
+  const currentSearch = searchParams.toString();
+  const currentUrl = currentSearch ? `${pathname}?${currentSearch}` : pathname;
 
   async function submitSellerReviewRequest() {
     if (!profile?.uid || !resolvedSellerSlug) return;
@@ -1511,30 +1627,38 @@ function SellerDashboardContent() {
     }
   }
 
-  function setSellerContext(nextSellerSlug: string) {
+  function setSellerContext(nextSellerSlug: string, nextSection: SidebarSection = "home") {
     const sellerValue = String(nextSellerSlug ?? "").trim();
     if (!sellerValue) return;
 
     const nextParams = new URLSearchParams(searchParams.toString());
     nextParams.set("seller", sellerValue);
+    nextParams.set("section", nextSection);
     nextParams.delete("unique_id");
     nextParams.delete("id");
+    if (nextSection !== "product-reviews") {
+      nextParams.delete("reviewContext");
+    }
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    if (nextUrl === currentUrl) return;
     router.push(nextUrl, { scroll: false });
     setMobileMenuOpen(false);
   }
 
   useEffect(() => {
     if (!resolvedSellerSlug) return;
-    const currentSeller = searchParams.get("seller")?.trim() || "";
-    if (currentSeller === resolvedSellerSlug) return;
+    if (adminRequestedSellerPending) return;
+    if (requestedSeller === resolvedSellerSlug) return;
     if (activeSection === "create-product") return;
 
     const nextParams = new URLSearchParams(searchParams.toString());
     nextParams.set("seller", resolvedSellerSlug);
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
-    router.replace(nextUrl, { scroll: false });
-  }, [activeSection, pathname, router, resolvedSellerSlug, searchParams]);
+    if (nextUrl === currentUrl) return;
+    if (typeof window !== "undefined") {
+      window.history.replaceState(window.history.state, "", nextUrl);
+    }
+  }, [activeSection, adminRequestedSellerPending, currentUrl, pathname, requestedSeller, resolvedSellerSlug, searchParams]);
 
   useEffect(() => {
     const currentId = searchParams.get("unique_id")?.trim() || searchParams.get("id")?.trim() || "";
@@ -1546,8 +1670,11 @@ function SellerDashboardContent() {
     nextParams.delete("unique_id");
     nextParams.delete("id");
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
-    router.replace(nextUrl, { scroll: false });
-  }, [activeSection, pathname, router, searchParams]);
+    if (nextUrl === currentUrl) return;
+    if (typeof window !== "undefined") {
+      window.history.replaceState(window.history.state, "", nextUrl);
+    }
+  }, [activeSection, currentUrl, pathname, searchParams]);
 
   function setSection(nextSection: SidebarSection) {
     if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-google-analytics" || nextSection === "admin-landing-builder" || nextSection === "admin-landing-seo" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-google-merchant-countries" || nextSection === "admin-google-merchant" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
@@ -1564,6 +1691,7 @@ function SellerDashboardContent() {
       nextParams.delete("reviewContext");
     }
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    if (nextUrl === currentUrl) return;
     router.push(nextUrl, { scroll: false });
   }
 
@@ -1574,6 +1702,7 @@ function SellerDashboardContent() {
     nextParams.delete("id");
     nextParams.delete("reviewContext");
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    if (nextUrl === currentUrl) return;
     router.push(nextUrl, { scroll: false });
     setActiveSection("create-product");
     setMobileMenuOpen(false);
@@ -1586,6 +1715,7 @@ function SellerDashboardContent() {
     nextParams.set("reviewContext", "product-reviews");
     nextParams.delete("id");
     const nextUrl = nextParams.toString() ? `${pathname}?${nextParams.toString()}` : pathname;
+    if (nextUrl === currentUrl) return;
     router.push(nextUrl, { scroll: false });
     setActiveSection("product-reviews");
     setMobileMenuOpen(false);
@@ -1842,8 +1972,9 @@ function SellerDashboardContent() {
   }
 
   return (
-    <PageBody className="px-3 py-4 lg:px-4 lg:py-6">
-      <div className="mb-3 flex items-center justify-between gap-3 lg:hidden">
+    <>
+      <PageBody className="px-3 py-4 lg:px-4 lg:py-6">
+        <div className="mb-3 flex items-center justify-between gap-3 lg:hidden">
         <button
           type="button"
           onClick={() => setMobileMenuOpen(true)}
@@ -1873,7 +2004,7 @@ function SellerDashboardContent() {
           </div>
               <SidebarMenu
                 collapsed={desktopMenuCollapsed}
-                vendorName={vendorName}
+                vendorName={activeVendorName}
                 userEmail={profile?.email || ""}
                 activeSection={activeSection}
                 sellerRole={activeSellerRole}
@@ -1883,6 +2014,7 @@ function SellerDashboardContent() {
                 adminBadges={adminBadges}
                 sellerBadges={sellerBadges}
                 onNavigate={setSection}
+                onBackToMySeller={showReturnHome ? () => setSellerContext(homeSellerSlug) : undefined}
               />
         </aside>
 
@@ -2239,7 +2371,7 @@ function SellerDashboardContent() {
         >
           <SidebarMenu
             mobile
-            vendorName={vendorName}
+            vendorName={activeVendorName}
             userEmail={profile?.email || ""}
             activeSection={activeSection}
             sellerRole={activeSellerRole}
@@ -2249,11 +2381,13 @@ function SellerDashboardContent() {
             adminBadges={adminBadges}
             sellerBadges={sellerBadges}
             onNavigate={setSection}
+            onBackToMySeller={showReturnHome ? () => setSellerContext(homeSellerSlug) : undefined}
             onClose={() => setMobileMenuOpen(false)}
           />
         </aside>
-      </div>
-    </PageBody>
+        </div>
+      </PageBody>
+    </>
   );
 }
 

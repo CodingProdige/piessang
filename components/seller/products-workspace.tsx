@@ -6,6 +6,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
+import { PlatformPopover, PopoverHintTrigger } from "@/components/ui/platform-popover";
 import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
 import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
 import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
@@ -89,20 +90,32 @@ function toSlug(value: string) {
 
 function normalizeStatus(item: ProductItem["data"]) {
   const moderation = String(item?.moderation?.status ?? "").toLowerCase();
+  if (moderation === "archived" || moderation === "deleted") return "archived";
   if (moderation === "blocked") return "blocked";
   if (moderation === "rejected") return "rejected";
   if (moderation === "in_review" || moderation === "pending") return "review";
   if (moderation === "awaiting_stock") return "awaiting_stock";
   if (moderation === "draft") return "draft";
-  if (moderation === "published") return "live";
+  if (moderation === "published") {
+    if (item?.placement?.isActive === false) return "draft";
+    return "live";
+  }
   if (item?.placement?.isActive === false) return "draft";
   return "live";
+}
+
+function displayStatus(item: ProductItem["data"]) {
+  const baseStatus = normalizeStatus(item);
+  if (baseStatus === "live" && item?.is_unavailable_for_listing) return "live_hidden";
+  return baseStatus;
 }
 
 function statusTone(status: string) {
   switch (status) {
     case "live":
       return "bg-[rgba(57,169,107,0.12)] text-[#166534]";
+    case "live_hidden":
+      return "bg-[rgba(245,158,11,0.14)] text-[#b45309]";
     case "review":
       return "bg-[rgba(203,178,107,0.14)] text-[#8f7531]";
     case "awaiting_stock":
@@ -120,6 +133,8 @@ function statusTone(status: string) {
 
 function statusLabel(status: string) {
   switch (status) {
+    case "live_hidden":
+      return "Live hidden";
     case "review":
       return "In review";
     case "awaiting_stock":
@@ -129,6 +144,26 @@ function statusLabel(status: string) {
     default:
       return status;
   }
+}
+
+function getListingVisibilityMessage(item: ProductItem["data"]) {
+  const reasonMessage = String(item?.listing_block_reason_message || "").trim();
+  if (reasonMessage) return reasonMessage;
+
+  const reasonCode = String(item?.listing_block_reason_code || "").trim();
+  if (reasonCode === "missing_delivery_settings") {
+    return "Complete your delivery settings to show this self-fulfilled product to shoppers.";
+  }
+  if (reasonCode === "missing_variant_weight_for_shipping") {
+    return "Add the required variant weight for your per-kg shipping zones to show this product to shoppers.";
+  }
+  if (item?.placement?.supplier_out_of_stock) {
+    return "This product is hidden because the supplier is marked out of stock.";
+  }
+  if (item?.is_unavailable_for_listing) {
+    return "No sellable variants yet. Add stock, disable inventory tracking, or enable continue selling when out of stock.";
+  }
+  return "Hidden from shoppers";
 }
 
 function ChevronRightIcon({ className = "" }: { className?: string }) {
@@ -169,6 +204,46 @@ function WarningIcon({ className = "" }: { className?: string }) {
       <path d="M12 9v5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       <circle cx="12" cy="17" r="1" fill="currentColor" />
     </svg>
+  );
+}
+
+function ListingInfoPill({
+  label,
+  message,
+  toneClassName,
+  iconClassName = "",
+}: {
+  label: string;
+  message: string;
+  toneClassName: string;
+  iconClassName?: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <span
+      className="relative inline-flex"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold ${toneClassName}`}
+        aria-label={label}
+      >
+        <WarningIcon className={iconClassName || "h-3.5 w-3.5"} />
+        <PopoverHintTrigger active={open} className="gap-1 border-b-0 pb-0 text-[10px] font-semibold text-inherit">
+          <span>{label}</span>
+        </PopoverHintTrigger>
+      </button>
+      {open ? (
+        <PlatformPopover className="left-0 right-auto top-7 z-20 mt-2 w-[min(320px,calc(100vw-64px))]">
+          <p className="text-[14px] font-semibold text-[#202020]">{label}</p>
+          <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">{message}</p>
+        </PlatformPopover>
+      ) : null}
+    </span>
   );
 }
 
@@ -215,7 +290,11 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
       });
       const payload = await response.json().catch(() => ({}));
       const rows = Array.isArray(payload?.items) ? payload.items : [];
-      setItems(rows as ProductItem[]);
+      setItems(
+        (rows as ProductItem[]).filter(
+          (item) => normalizeStatus(item?.data) !== "archived",
+        ),
+      );
     } catch (cause) {
       if (!(cause instanceof DOMException && cause.name === "AbortError")) {
         console.error("seller products load failed:", cause);
@@ -264,7 +343,14 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
     const needle = query.trim().toLowerCase();
     return items.filter((item) => {
       const status = normalizeStatus(item.data);
-      if (statusFilter !== "all" && status !== statusFilter) return false;
+      const shownStatus = displayStatus(item.data);
+      if (statusFilter !== "all") {
+        if (statusFilter === "live") {
+          if (shownStatus !== "live") return false;
+        } else if (status !== statusFilter) {
+          return false;
+        }
+      }
       if (!needle) return true;
 
       const title = String(item?.data?.product?.title ?? "").toLowerCase();
@@ -302,7 +388,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
       variants: 0,
     };
     for (const item of items) {
-      const status = normalizeStatus(item.data);
+      const status = displayStatus(item.data) === "live" ? "live" : normalizeStatus(item.data);
       totals[status as keyof typeof totals] += 1;
       totals.variants += Array.isArray(item.data?.variants) ? item.data.variants.length : 0;
     }
@@ -820,6 +906,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                       const product = item.data?.product || {};
                       const grouping = item.data?.grouping || {};
                       const status = normalizeStatus(item.data);
+                      const rowStatus = displayStatus(item.data);
                       const images = item.data?.media?.images || [];
                       const image = images[0];
                       const variants = Array.isArray(item.data?.variants) ? item.data.variants : [];
@@ -867,7 +954,8 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                   blurHash={image?.blurHashUrl ?? null}
                                   alt={image?.altText || product.title || "Product image"}
                                   sizes="48px"
-                                  className="h-10 w-10 rounded-[8px] border border-black/5"
+                                  className="h-10 w-10 rounded-[8px] border border-black/5 bg-[#f4f4f4]"
+                                  imageClassName="object-cover"
                                 />
                                 <div className="min-w-0">
                                   <button
@@ -879,22 +967,22 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                     {product.title || "Untitled product"}
                                   </button>
                                   {item.data?.listing_block_reason_code === "missing_delivery_settings" ? (
-                                    <span
-                                      className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(185,28,28,0.08)] px-2 py-1 text-[10px] font-semibold text-[#b91c1c]"
-                                      title={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
-                                    >
-                                      <WarningIcon className="h-3.5 w-3.5" />
-                                      Hidden from storefront
-                                    </span>
+                                    <div className="mt-1">
+                                      <ListingInfoPill
+                                        label="Hidden from storefront"
+                                        message={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
+                                        toneClassName="bg-[rgba(185,28,28,0.08)] text-[#b91c1c]"
+                                      />
+                                    </div>
                                   ) : null}
                                   {item.data?.listing_block_reason_code === "missing_variant_weight_for_shipping" ? (
-                                    <span
-                                      className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(245,158,11,0.12)] px-2 py-1 text-[10px] font-semibold text-[#b45309]"
-                                      title={item.data?.listing_block_reason_message || "This listing is hidden until every variant has a weight required by your per-kg shipping zones."}
-                                    >
-                                      <WarningIcon className="h-3.5 w-3.5" />
-                                      Weight required
-                                    </span>
+                                    <div className="mt-1">
+                                      <ListingInfoPill
+                                        label="Weight required"
+                                        message={item.data?.listing_block_reason_message || "This listing is hidden until every variant has a weight required by your per-kg shipping zones."}
+                                        toneClassName="bg-[rgba(245,158,11,0.12)] text-[#b45309]"
+                                      />
+                                    </div>
                                   ) : null}
                                   <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">
                                     {product.brandTitle || grouping.brand || "Brand not set"} • {product.vendorName || "Piessang"}
@@ -918,19 +1006,23 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                   type="button"
                                   data-ignore-row-edit="true"
                                   onClick={() => setRejectionModalItem(item)}
-                                  className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)} transition-opacity hover:opacity-80`}
+                                  className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(rowStatus)} transition-opacity hover:opacity-80`}
                                   title="View rejection feedback"
                                 >
-                                  {statusLabel(status)}
+                                  {statusLabel(rowStatus)}
                                 </button>
                               ) : (
-                                <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)}`}>
-                                  {statusLabel(status)}
+                                <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(rowStatus)}`}>
+                                  {statusLabel(rowStatus)}
                                 </span>
                               )}
                             </td>
                             <td className="border-b border-black/5 px-3 py-2.5 align-middle text-[12px] text-[#57636c]">
-                              {item.data?.placement?.supplier_out_of_stock ? (
+                              {item.data?.is_unavailable_for_listing ? (
+                                <span className="font-semibold text-[#b45309]">
+                                  {getListingVisibilityMessage(item.data)}
+                                </span>
+                              ) : item.data?.placement?.supplier_out_of_stock ? (
                                 <span className="font-semibold text-[#b91c1c]">Supplier out of stock</span>
                               ) : inStockVariants > 0 ? (
                                 <span className="font-semibold text-[#166534]">{inStockVariants} variants in stock</span>
@@ -1030,6 +1122,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                   const product = item.data?.product || {};
                   const grouping = item.data?.grouping || {};
                   const status = normalizeStatus(item.data);
+                  const rowStatus = displayStatus(item.data);
                   const images = item.data?.media?.images || [];
                   const image = images[0];
                   const variants = Array.isArray(item.data?.variants) ? item.data.variants : [];
@@ -1071,7 +1164,8 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                             blurHash={image?.blurHashUrl ?? null}
                             alt={image?.altText || product.title || "Product image"}
                             sizes="56px"
-                            className="h-14 w-14 rounded-[8px]"
+                            className="h-14 w-14 rounded-[8px] bg-[#f4f4f4]"
+                            imageClassName="object-cover"
                           />
                         </button>
                         <div className="min-w-0 flex-1">
@@ -1086,21 +1180,21 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                 {product.title || "Untitled product"}
                               </button>
                               {item.data?.listing_block_reason_code === "missing_delivery_settings" ? (
-                                <div
-                                  className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(185,28,28,0.08)] px-2 py-1 text-[10px] font-semibold text-[#b91c1c]"
-                                  title={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
-                                >
-                                  <WarningIcon className="h-3.5 w-3.5" />
-                                  Hidden from storefront
+                                <div className="mt-1">
+                                  <ListingInfoPill
+                                    label="Hidden from storefront"
+                                    message={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
+                                    toneClassName="bg-[rgba(185,28,28,0.08)] text-[#b91c1c]"
+                                  />
                                 </div>
                               ) : null}
                               {item.data?.listing_block_reason_code === "missing_variant_weight_for_shipping" ? (
-                                <div
-                                  className="mt-1 inline-flex items-center gap-1 rounded-full bg-[rgba(245,158,11,0.12)] px-2 py-1 text-[10px] font-semibold text-[#b45309]"
-                                  title={item.data?.listing_block_reason_message || "This listing is hidden until every variant has a weight required by your per-kg shipping zones."}
-                                >
-                                  <WarningIcon className="h-3.5 w-3.5" />
-                                  Weight required
+                                <div className="mt-1">
+                                  <ListingInfoPill
+                                    label="Weight required"
+                                    message={item.data?.listing_block_reason_message || "This listing is hidden until every variant has a weight required by your per-kg shipping zones."}
+                                    toneClassName="bg-[rgba(245,158,11,0.12)] text-[#b45309]"
+                                  />
                                 </div>
                               ) : null}
                               <p className="mt-0.5 truncate text-[11px] text-[#7d7d7d]">
@@ -1133,17 +1227,22 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
                                 type="button"
                                 data-ignore-row-edit="true"
                                 onClick={() => setRejectionModalItem(item)}
-                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)} transition-opacity hover:opacity-80`}
+                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(rowStatus)} transition-opacity hover:opacity-80`}
                               >
-                                {statusLabel(status)}
+                                {statusLabel(rowStatus)}
                               </button>
                             ) : (
-                              <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(status)}`}>
-                                {statusLabel(status)}
+                              <span className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${statusTone(rowStatus)}`}>
+                                {statusLabel(rowStatus)}
                               </span>
                             )}
                             <span className="text-[11px] text-[#57636c]">{totalVariants} variants</span>
                           </div>
+                          {item.data?.is_unavailable_for_listing ? (
+                            <p className="mt-2 text-[11px] font-medium text-[#b45309]">
+                              {getListingVisibilityMessage(item.data)}
+                            </p>
+                          ) : null}
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <button
                               type="button"

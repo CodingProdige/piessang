@@ -12,6 +12,7 @@ type PageBodyProps<T extends ElementType> = {
   size?: PageBodySize;
   className?: string;
   children: ReactNode;
+  "data-safe-page"?: boolean;
 };
 
 function stripConflictingLayoutClasses(className: string) {
@@ -39,6 +40,7 @@ export function PageBody<T extends ElementType = "main">({
   size = "wide",
   className = "",
   children,
+  "data-safe-page": dataSafePage,
 }: PageBodyProps<T>) {
   const Component = (as || "main") as ElementType;
   const sanitizedClassName = stripConflictingLayoutClasses(className);
@@ -50,5 +52,5 @@ export function PageBody<T extends ElementType = "main">({
     .filter(Boolean)
     .join(" ");
 
-  return <Component data-page-body={size} className={classes}>{children}</Component>;
+  return <Component data-page-body={size} data-safe-page={dataSafePage ? "" : undefined} className={classes}>{children}</Component>;
 }

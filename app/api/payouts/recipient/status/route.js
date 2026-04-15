@@ -40,7 +40,6 @@ export async function GET(req) {
     if (!sellerOwner) return err(404, "Seller Not Found", "Could not find that seller account.");
     const summary = await syncWiseRecipientStateForSeller({
       sellerUid: sellerOwner.id,
-      payoutProfile: sellerOwner.data?.seller?.payoutProfile || {},
     });
 
     return ok({

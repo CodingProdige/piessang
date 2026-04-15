@@ -69,8 +69,10 @@ function sanitizeCategories(input) {
               if (!subSlug || !subTitle) return null;
               return {
                 slug: subSlug,
+                taxonomyDocId: toStr(subCategory?.taxonomyDocId) || undefined,
                 title: subTitle,
                 feeRule: sanitizeFeeRule(subCategory?.feeRule) || sanitizeFeeRule(category?.feeRule),
+                isActive: subCategory?.isActive !== false,
               };
             })
             .filter(Boolean)
@@ -228,7 +230,7 @@ export async function POST(req) {
               subCategorySlug: subCategory.slug,
               title: subCategory.title,
               rule: subCategory.feeRule || category.feeRule || null,
-              isActive: true,
+              isActive: subCategory.isActive !== false,
               ...nowPayload,
             },
             { merge: true },

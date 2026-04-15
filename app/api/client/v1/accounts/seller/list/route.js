@@ -77,6 +77,7 @@ export async function GET(req) {
     const { searchParams } = new URL(req.url);
     const uid = toStr(searchParams.get("uid"));
     const filter = toStr(searchParams.get("filter"), "all").toLowerCase();
+    const sellerNeedle = toStr(searchParams.get("seller")).toLowerCase();
     const db = getAdminDb();
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
 
@@ -100,6 +101,11 @@ export async function GET(req) {
     });
 
     const filtered = sellers.filter((seller) => {
+      if (sellerNeedle) {
+        const slug = toStr(seller.sellerSlug).toLowerCase();
+        const code = toStr(seller.sellerCode).toLowerCase();
+        if (slug !== sellerNeedle && code !== sellerNeedle) return false;
+      }
       if (filter === "blocked" || filter === "suspended") return seller.status === "blocked";
       if (filter === "review" || filter === "review-requests" || filter === "review-request") {
         return seller.reviewStatus === "pending" || seller.reviewStatus === "requested";

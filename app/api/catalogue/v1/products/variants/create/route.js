@@ -25,7 +25,7 @@ const ALLOWED_VOLUME_UNITS = new Set(["kg", "ml", "lt", "g", "small", "medium", 
 const money2=(v)=>Number.isFinite(+v)?Math.round(+v*100)/100:0;
 const toInt=(v,f=0)=>Number.isFinite(+v)?Math.trunc(+v):f;
 const toNum=(v,f=0)=>Number.isFinite(+v)?+v:f;
-const toStr=(v,f="")=>(v==null?f:String(v)).trim();
+const toStr=(v,f="")=>String(v == null ? (f ?? "") : v).trim();
 const toBool=(v,f=false)=>
   typeof v==="boolean"?v:
   typeof v==="number"?v!==0:
@@ -138,12 +138,13 @@ function parseInventory(arr) {
 
 export async function POST(req){
   try{
+    const body = await req.json();
     const db = getAdminDb();
     if (!db) {
       return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     }
 
-    const { unique_id, data } = await req.json();
+    const { unique_id, data, adminReviewEdit } = body;
     const pid = toStr(unique_id);
     if (!is8(pid)) return err(400,"Invalid Product ID","'unique_id' must be an 8-digit string.");
     if (!data || typeof data!=="object") return err(400,"Invalid Variant","Provide a valid 'data' object.");
@@ -316,6 +317,9 @@ export async function POST(req){
 
     const preserveLiveVersionDuringReview =
       toStr(current?.moderation?.status).toLowerCase() === "published" || hasLiveSnapshotRecord(current);
+    const keepAdminEditedReviewInQueue =
+      toBool(adminReviewEdit) &&
+      toStr(current?.moderation?.status).toLowerCase() === "in_review";
 
     const updatePayload = {
       variants,
@@ -328,9 +332,14 @@ export async function POST(req){
       },
       moderation: {
         ...(current?.moderation || {}),
-        status: preserveLiveVersionDuringReview ? "in_review" : "draft",
+        status:
+          preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue
+            ? "in_review"
+            : "draft",
         reason: "variant_changed",
-        notes: preserveLiveVersionDuringReview
+        notes: keepAdminEditedReviewInQueue
+          ? "Updated by Piessang during review. The listing remains in the review queue until approval or rejection."
+          : preserveLiveVersionDuringReview
           ? "Variant updates are in review. The current live version stays visible until the changes are approved."
           : "Variant updates require the listing to be reviewed again before it goes live.",
         reviewedAt: null,
@@ -338,7 +347,10 @@ export async function POST(req){
       },
       placement: {
         ...(current?.placement || {}),
-        isActive: preserveLiveVersionDuringReview ? Boolean(current?.placement?.isActive) : false,
+        isActive:
+          preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue
+            ? Boolean(current?.placement?.isActive)
+            : false,
       },
       "timestamps.updatedAt":FieldValue.serverTimestamp()
     };
@@ -391,22 +403,26 @@ export async function POST(req){
       stockTotal <= 10 &&
       process.env.SENDGRID_API_KEY?.startsWith("SG.")
     ) {
-      const recipients = await collectSellerNotificationEmails({
-        sellerSlug,
-        fallbackEmails: [current?.seller?.contactEmail, current?.email, current?.product?.vendorEmail].filter(Boolean),
-      });
-      if (recipients.length) {
-        await sendSellerNotificationEmails({
-          origin: new URL(req.url).origin,
-          type: "seller-low-stock",
-          to: recipients,
-          data: {
-            vendorName: current?.product?.vendorName || current?.seller?.vendorName || "Piessang seller",
-            productTitle: current?.product?.title || "your product",
-            variantLabel: variant.label || "variant",
-            currentStock: String(stockTotal),
-          },
+      try {
+        const recipients = await collectSellerNotificationEmails({
+          sellerSlug,
+          fallbackEmails: [current?.seller?.contactEmail, current?.email, current?.product?.vendorEmail].filter(Boolean),
         });
+        if (recipients.length) {
+          await sendSellerNotificationEmails({
+            origin: new URL(req.url).origin,
+            type: "seller-low-stock",
+            to: recipients,
+            data: {
+              vendorName: current?.product?.vendorName || current?.seller?.vendorName || "Piessang seller",
+              productTitle: current?.product?.title || "your product",
+              variantLabel: variant.label || "variant",
+              currentStock: String(stockTotal),
+            },
+          });
+        }
+      } catch (notificationError) {
+        console.warn("variant create low-stock notification failed:", notificationError);
       }
     }
 
@@ -415,12 +431,16 @@ export async function POST(req){
       unique_id:pid,
       variant_id:vId,
       resubmissionRequired: true,
-      liveVersionKept: preserveLiveVersionDuringReview,
+      liveVersionKept: preserveLiveVersionDuringReview || keepAdminEditedReviewInQueue,
       variant
     });
 
   }catch(e){
     console.error("variant create failed:",e);
-    return err(500,"Unexpected Error","Failed to add variant.");
+    return err(
+      Number.isFinite(Number(e?.status)) ? Number(e.status) : 500,
+      Number.isFinite(Number(e?.status)) ? "Variant Create Failed" : "Unexpected Error",
+      e?.message || "Failed to add variant."
+    );
   }
 }

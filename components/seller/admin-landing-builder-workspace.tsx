@@ -31,6 +31,8 @@ type BuilderPayload = {
   };
 };
 
+type AssetTarget = { sectionId: string; tileId?: string | null; categorySlug?: string | null } | null;
+
 const SECTION_TYPES: LandingSectionType[] = [
   "hero_banner",
   "split_banner",
@@ -41,6 +43,7 @@ const SECTION_TYPES: LandingSectionType[] = [
   "category_chip_rail",
   "featured_duo",
   "brand_logo_rail",
+  "facebook_rail",
   "category_mosaic",
   "editorial_collection",
   "product_rail",
@@ -68,7 +71,7 @@ const SECTION_GROUPS: Array<{
   },
   {
     title: "Navigation & promos",
-    types: ["category_chip_rail", "category_rail", "category_mosaic", "compact_promo_grid", "promo_tiles", "brand_logo_rail"],
+    types: ["category_chip_rail", "category_rail", "category_mosaic", "compact_promo_grid", "promo_tiles", "brand_logo_rail", "facebook_rail"],
   },
 ];
 
@@ -96,6 +99,8 @@ function iconForSectionType(type: LandingSectionType) {
       return "▣";
     case "brand_logo_rail":
       return "◎";
+    case "facebook_rail":
+      return "f";
     case "category_mosaic":
       return "▦";
     case "editorial_collection":
@@ -235,6 +240,7 @@ function createSection(type: LandingSectionType): LandingSection {
         title: "Quick shop",
         subtitle: "Jump straight into the categories shoppers browse most.",
         categorySlugs: [],
+        categoryImages: {},
       },
     };
   }
@@ -257,6 +263,27 @@ function createSection(type: LandingSectionType): LandingSection {
         title: "Trusted brands",
         subtitle: "Clean logo-style brand chips to break up the page.",
         brands: ["CresHia", "IMOU", "EZVIZ", "SAMSUNG"],
+      },
+    };
+  }
+  if (type === "facebook_rail") {
+    return {
+      id: nextId("facebook"),
+      type,
+      props: {
+        title: "Follow us on Facebook",
+        subtitle: "Send shoppers to your Facebook page for news, launches, and fresh highlights.",
+        pageLink: "",
+        ctaLabel: "Open Facebook",
+        posts: [
+          {
+            id: nextId("fbpost"),
+            title: "Fresh arrivals this week",
+            subtitle: "Highlight your latest Facebook post here.",
+            href: "",
+            imageUrl: "",
+          },
+        ],
       },
     };
   }
@@ -445,6 +472,27 @@ function SectionTypeSkeletonPreview({ type }: { type: LandingSectionType }) {
     );
   }
 
+  if (type === "facebook_rail") {
+    return (
+      <div className="rounded-[18px] border border-[#d6e4ff] bg-[linear-gradient(135deg,#eef4ff,#ffffff_55%,#f7f9ff)] p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-2">
+            <div className="h-7 w-40 rounded-[10px] bg-[#d7e4ff]" />
+            <div className="h-3 w-52 rounded-full bg-[#e8eefc]" />
+            <div className="h-3 w-44 rounded-full bg-[#eef2f7]" />
+          </div>
+          <div className="flex h-11 w-11 items-center justify-center rounded-[14px] bg-[#1877f2] text-[22px] font-semibold text-white">
+            f
+          </div>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <div className="h-10 w-28 rounded-[12px] bg-[#1877f2]" />
+          <div className="h-3 w-24 rounded-full bg-[#d7e4ff]" />
+        </div>
+      </div>
+    );
+  }
+
   if (type === "featured_duo") {
     return (
       <div className="rounded-[18px] border border-black/6 bg-white p-4">
@@ -527,7 +575,7 @@ export function SellerAdminLandingBuilderWorkspace() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
-  const [assetTarget, setAssetTarget] = useState<{ sectionId: string; tileId?: string | null } | null>(null);
+  const [assetTarget, setAssetTarget] = useState<AssetTarget>(null);
   const [versionNote, setVersionNote] = useState("");
   const [uploadingAsset, setUploadingAsset] = useState(false);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
@@ -646,12 +694,17 @@ export function SellerAdminLandingBuilderWorkspace() {
     const nextSlugs = currentSlugs.includes(slug)
       ? currentSlugs.filter((item) => item !== slug)
       : [...currentSlugs, slug];
+    const nextCategoryImages = {
+      ...(section.props?.categoryImages && typeof section.props.categoryImages === "object" ? section.props.categoryImages : {}),
+    };
+    if (!nextSlugs.includes(slug)) delete nextCategoryImages[slug];
 
     updateSection({
       ...section,
       props: {
         ...section.props,
         categorySlugs: nextSlugs,
+        categoryImages: nextCategoryImages,
       },
     });
   }
@@ -738,6 +791,17 @@ export function SellerAdminLandingBuilderWorkspace() {
           ),
         },
       });
+    } else if (assetTarget.categorySlug && section.type === "category_chip_rail") {
+      updateSection({
+        ...section,
+        props: {
+          ...section.props,
+          categoryImages: {
+            ...(section.props?.categoryImages && typeof section.props.categoryImages === "object" ? section.props.categoryImages : {}),
+            [assetTarget.categorySlug]: imageUrl,
+          },
+        },
+      });
     } else {
       updateSection({ ...section, props: { ...section.props, imageUrl } });
     }
@@ -773,8 +837,31 @@ export function SellerAdminLandingBuilderWorkspace() {
     setUploadingAsset(true);
     setSnackbar({ open: true, tone: "info", message: "Uploading asset..." });
     try {
-      const uploaded = await uploadLandingAsset(file, assetTarget?.tileId ? "promo-tiles" : "general");
+      const uploaded = await uploadLandingAsset(file, assetTarget?.tileId ? "promo-tiles" : assetTarget?.categorySlug ? "category-chips" : "general");
       assignImageToTarget(uploaded.url);
+      setSnackbar({ open: true, tone: "success", message: "Asset uploaded." });
+    } catch (error) {
+      setSnackbar({ open: true, tone: "error", message: error instanceof Error ? error.message : "Unable to upload this asset." });
+    } finally {
+      setUploadingAsset(false);
+    }
+  }
+
+  async function uploadCategoryChipImage(file: File, section: LandingSection, slug: string) {
+    setUploadingAsset(true);
+    setSnackbar({ open: true, tone: "info", message: "Uploading asset..." });
+    try {
+      const uploaded = await uploadLandingAsset(file, "category-chips");
+      updateSection({
+        ...section,
+        props: {
+          ...section.props,
+          categoryImages: {
+            ...(section.props?.categoryImages && typeof section.props.categoryImages === "object" ? section.props.categoryImages : {}),
+            [slug]: uploaded.url,
+          },
+        },
+      });
       setSnackbar({ open: true, tone: "success", message: "Asset uploaded." });
     } catch (error) {
       setSnackbar({ open: true, tone: "error", message: error instanceof Error ? error.message : "Unable to upload this asset." });
@@ -1611,6 +1698,150 @@ export function SellerAdminLandingBuilderWorkspace() {
                 </label>
               ) : null}
 
+              {selectedSection.type === "facebook_rail" ? (
+                <>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Subtitle</span>
+                    <textarea
+                      value={toStr(selectedSection.props?.subtitle)}
+                      onChange={(event) => updateSection({ ...selectedSection, props: { ...selectedSection.props, subtitle: event.target.value } })}
+                      className="min-h-[90px] w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                    />
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Page link</span>
+                      <input
+                        value={toStr(selectedSection.props?.pageLink)}
+                        onChange={(event) => updateSection({ ...selectedSection, props: { ...selectedSection.props, pageLink: event.target.value } })}
+                        className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                        placeholder="https://facebook.com/your-page"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Button label</span>
+                      <input
+                        value={toStr(selectedSection.props?.ctaLabel)}
+                        onChange={(event) => updateSection({ ...selectedSection, props: { ...selectedSection.props, ctaLabel: event.target.value } })}
+                        className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                      />
+                    </label>
+                  </div>
+                  <div className="rounded-[16px] border border-black/6 bg-[#fafafa] p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[12px] font-semibold text-[#202020]">Recent post cards</p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSection({
+                            ...selectedSection,
+                            props: {
+                              ...selectedSection.props,
+                              posts: [
+                                ...(Array.isArray(selectedSection.props?.posts) ? selectedSection.props.posts : []),
+                                { id: nextId("fbpost"), title: "New Facebook post", subtitle: "Add supporting copy here.", href: "", imageUrl: "" },
+                              ],
+                            },
+                          })
+                        }
+                        className="inline-flex h-8 items-center rounded-[10px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020]"
+                      >
+                        Add post
+                      </button>
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      {(Array.isArray(selectedSection.props?.posts) ? selectedSection.props.posts : []).map((post: any, index: number) => (
+                        <div key={toStr(post?.id, `fbpost-${index}`)} className="rounded-[14px] border border-black/6 bg-white p-3">
+                          <div className="grid gap-3">
+                            <input
+                              value={toStr(post?.title)}
+                              onChange={(event) =>
+                                updateSection({
+                                  ...selectedSection,
+                                  props: {
+                                    ...selectedSection.props,
+                                    posts: (selectedSection.props.posts || []).map((entry: any, entryIndex: number) =>
+                                      entryIndex === index ? { ...entry, title: event.target.value } : entry,
+                                    ),
+                                  },
+                                })
+                              }
+                              placeholder="Post title"
+                              className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                            />
+                            <textarea
+                              value={toStr(post?.subtitle)}
+                              onChange={(event) =>
+                                updateSection({
+                                  ...selectedSection,
+                                  props: {
+                                    ...selectedSection.props,
+                                    posts: (selectedSection.props.posts || []).map((entry: any, entryIndex: number) =>
+                                      entryIndex === index ? { ...entry, subtitle: event.target.value } : entry,
+                                    ),
+                                  },
+                                })
+                              }
+                              placeholder="Post excerpt"
+                              className="min-h-[84px] w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                            />
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              <input
+                                value={toStr(post?.href)}
+                                onChange={(event) =>
+                                  updateSection({
+                                    ...selectedSection,
+                                    props: {
+                                      ...selectedSection.props,
+                                      posts: (selectedSection.props.posts || []).map((entry: any, entryIndex: number) =>
+                                        entryIndex === index ? { ...entry, href: event.target.value } : entry,
+                                      ),
+                                    },
+                                  })
+                                }
+                                placeholder="Post link"
+                                className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                              />
+                              <input
+                                value={toStr(post?.imageUrl)}
+                                onChange={(event) =>
+                                  updateSection({
+                                    ...selectedSection,
+                                    props: {
+                                      ...selectedSection.props,
+                                      posts: (selectedSection.props.posts || []).map((entry: any, entryIndex: number) =>
+                                        entryIndex === index ? { ...entry, imageUrl: event.target.value } : entry,
+                                      ),
+                                    },
+                                  })
+                                }
+                                placeholder="Image URL"
+                                className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSection({
+                                  ...selectedSection,
+                                  props: {
+                                    ...selectedSection.props,
+                                    posts: (selectedSection.props.posts || []).filter((_: any, entryIndex: number) => entryIndex !== index),
+                                  },
+                                })
+                              }
+                              className="inline-flex h-10 items-center justify-center rounded-[12px] border border-[#f2c7c7] bg-[#fff7f7] px-3 text-[12px] font-semibold text-[#b91c1c]"
+                            >
+                              Remove post
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : null}
+
               {selectedSection.type === "category_rail" || selectedSection.type === "category_chip_rail" ? (
                 <div className="block">
                   <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Categories with products</span>
@@ -1652,6 +1883,112 @@ export function SellerAdminLandingBuilderWorkspace() {
                   <span className="mt-1.5 block text-[11px] text-[#8b94a3]">
                     This list only includes categories that currently contain live products.
                   </span>
+                </div>
+              ) : null}
+
+              {selectedSection.type === "category_chip_rail" ? (
+                <div className="rounded-[16px] border border-black/6 bg-[#fafafa] p-4">
+                  <p className="text-[12px] font-semibold text-[#202020]">Category chip images</p>
+                  <p className="mt-1 text-[11px] text-[#8b94a3]">Add a custom image for each selected category.</p>
+                  <div className="mt-3 space-y-3">
+                    {(Array.isArray(selectedSection.props?.categorySlugs) ? selectedSection.props.categorySlugs : [])
+                      .map((slug: unknown) => toStr(slug))
+                      .filter(Boolean)
+                      .map((slug) => {
+                        const category = categories.find((entry) => entry.slug === slug);
+                        const currentImageUrl =
+                          selectedSection.props?.categoryImages && typeof selectedSection.props.categoryImages === "object"
+                            ? toStr(selectedSection.props.categoryImages?.[slug])
+                            : "";
+                        return (
+                          <div key={`${selectedSection.id}-${slug}`} className="rounded-[12px] border border-black/8 bg-white p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate text-[13px] font-semibold text-[#202020]">{category?.title || slug}</p>
+                                <p className="mt-0.5 text-[11px] text-[#8b94a3]">{slug}</p>
+                              </div>
+                              {currentImageUrl ? (
+                                <div className="relative h-12 w-12 overflow-hidden rounded-full border border-black/8 bg-[#f3f4f6]">
+                                  <Image src={currentImageUrl} alt={category?.title || slug} fill sizes="48px" className="object-cover" />
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="mt-3 space-y-2">
+                              <input
+                                type="text"
+                                value={currentImageUrl}
+                                onChange={(event) =>
+                                  updateSection({
+                                    ...selectedSection,
+                                    props: {
+                                      ...selectedSection.props,
+                                      categoryImages: {
+                                        ...(selectedSection.props?.categoryImages && typeof selectedSection.props.categoryImages === "object"
+                                          ? selectedSection.props.categoryImages
+                                          : {}),
+                                        [slug]: event.target.value.trim(),
+                                      },
+                                    },
+                                  })
+                                }
+                                placeholder="Image URL"
+                                className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setAssetTarget({ sectionId: selectedSection.id, categorySlug: slug })}
+                                  className="inline-flex h-9 items-center rounded-[10px] border border-black/10 bg-[#fafafa] px-3 text-[12px] font-semibold text-[#202020]"
+                                >
+                                  Library
+                                </button>
+                                <label className="inline-flex h-9 cursor-pointer items-center rounded-[10px] border border-black/10 bg-[#fafafa] px-3 text-[12px] font-semibold text-[#202020]">
+                                  {uploadingAsset ? "Uploading..." : "Upload"}
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={(event) => {
+                                      const file = event.target.files?.[0];
+                                      if (file) void uploadCategoryChipImage(file, selectedSection, slug);
+                                      event.currentTarget.value = "";
+                                    }}
+                                  />
+                                </label>
+                                {currentImageUrl ? (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateSection({
+                                        ...selectedSection,
+                                        props: {
+                                          ...selectedSection.props,
+                                          categoryImages: Object.fromEntries(
+                                            Object.entries(
+                                              selectedSection.props?.categoryImages && typeof selectedSection.props.categoryImages === "object"
+                                                ? selectedSection.props.categoryImages
+                                                : {},
+                                            ).filter(([key]) => key !== slug),
+                                          ),
+                                        },
+                                      })
+                                    }
+                                    className="inline-flex h-9 items-center rounded-[10px] border border-[#f2c7c7] bg-[#fff7f7] px-3 text-[12px] font-semibold text-[#b91c1c]"
+                                  >
+                                    Remove image
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    {!Array.isArray(selectedSection.props?.categorySlugs) || !selectedSection.props.categorySlugs.length ? (
+                      <div className="rounded-[10px] border border-dashed border-black/10 px-3 py-4 text-[12px] text-[#7a8594]">
+                        Select categories first, then add images for each chip here.
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
 

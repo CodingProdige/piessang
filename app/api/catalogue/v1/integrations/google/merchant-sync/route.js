@@ -11,6 +11,7 @@ import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { getCanonicalOfferBarcode } from "@/lib/catalogue/offer-group";
+import { googleAvailabilityForVariant, variantIsListable } from "@/lib/catalogue/availability";
 import {
   claimPendingGoogleSyncJobs,
   completeGoogleSyncJobs,
@@ -149,13 +150,7 @@ const hasPublishedModeration = (product) =>
   String(product?.moderation?.status || "").trim().toLowerCase() === "published";
 
 function availabilityForVariant(variant) {
-  const continueSelling = variant?.placement?.continue_selling_out_of_stock === true;
-  const invQty = sumInventory(variant);
-  const saleQty = isSaleLive(variant) ? toNum(variant?.sale?.qty_available) : 0;
-
-  if (invQty + saleQty > 0) return "in stock";
-  if (continueSelling) return "in stock";
-  return "out of stock";
+  return googleAvailabilityForVariant(variant);
 }
 
 function buildGoogleCategory(grouping) {
@@ -298,15 +293,12 @@ function isEligibleVariantForGoogle(product, variant) {
   const variantActive = variant?.placement?.isActive !== false;
   const imageLink = resolveVariantImage(product, variant);
   const priceIncl = resolveSellingPriceIncl(variant);
-  const hasListableAvailability =
-    sumInventory(variant) + (isSaleLive(variant) ? toNum(variant?.sale?.qty_available) : 0) > 0 ||
-    variant?.placement?.continue_selling_out_of_stock === true;
   return (
     Boolean(variantId) &&
     variantActive &&
     Boolean(imageLink) &&
     Boolean(priceIncl) &&
-    hasListableAvailability
+    variantIsListable(variant)
   );
 }
 

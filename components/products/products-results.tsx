@@ -14,6 +14,7 @@ import {
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement, useProductImpressionTracker } from "@/lib/analytics/product-engagement-client";
+import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
 import { formatCurrency } from "@/lib/seller/delivery-profile";
 import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
 import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
@@ -735,13 +736,7 @@ function pickDisplayVariant(variants?: ProductVariant[]) {
 }
 
 function getBrandLabel(item: ProductItem) {
-  return (
-    item.data?.brand?.title ??
-    item.data?.product?.brandTitle ??
-    item.data?.product?.brand ??
-    item.data?.grouping?.brand ??
-    "Piessang"
-  );
+  return resolveBrandLabel(item.data);
 }
 
 function normalizeSlug(value?: string | null) {
@@ -755,12 +750,7 @@ function normalizeSlug(value?: string | null) {
 }
 
 function getBrandSlug(item: ProductItem) {
-  const explicitSlug = item.data?.brand?.slug ?? "";
-  const productBrandSlug = normalizeSlug(item.data?.product?.brand);
-  const groupingBrand = item.data?.grouping?.brand ?? "";
-  const brandTitleSlug = normalizeSlug(item.data?.brand?.title);
-  const productBrandTitleSlug = normalizeSlug(item.data?.product?.brandTitle);
-  return explicitSlug || productBrandSlug || groupingBrand || brandTitleSlug || productBrandTitleSlug;
+  return resolveBrandKey(item.data);
 }
 
 function getVendorLabel(item: ProductItem) {
