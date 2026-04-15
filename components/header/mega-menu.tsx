@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { DisplayCurrencySelector } from "@/components/currency/display-currency-provider";
 import { PageBody } from "@/components/layout/page-body";
@@ -24,7 +24,6 @@ import {
 const CATEGORIES_ENDPOINT = "/api/catalogue/v1/categories/list";
 const SUBCATEGORIES_ENDPOINT = "/api/catalogue/v1/subCategories/list";
 const BRANDS_ENDPOINT = "/api/catalogue/v1/brands/get";
-const PRODUCTS_ENDPOINT = "/api/catalogue/v1/products/product/get";
 const PRODUCTS_PAGE = "/products";
 const MENU_HEIGHT = 430;
 const LANDING_PAGE_ENDPOINT = "/api/client/v1/landing-page/get";
@@ -42,6 +41,7 @@ type CatalogueCategory = {
   title?: string;
   description?: string | null;
   position?: number;
+  productCount?: number;
   id?: string;
   data?: {
     docId?: string;
@@ -63,6 +63,7 @@ type CatalogueSubCategory = {
   title?: string;
   description?: string | null;
   position?: number;
+  productCount?: number;
   id?: string;
   data?: {
     docId?: string;
@@ -115,6 +116,7 @@ type Department = {
   title: string;
   description: string;
   position: number;
+  productCount: number;
 };
 
 type SubCategory = {
@@ -123,6 +125,7 @@ type SubCategory = {
   title: string;
   description: string;
   position: number;
+  productCount: number;
 };
 
 type Brand = {
@@ -142,22 +145,10 @@ type MenuState = {
   brands: Brand[];
   subcategoriesLoading: boolean;
   brandsLoading: boolean;
-  productCountsBySubCategory: Record<string, number>;
-  productCountsByBrand: Record<string, number>;
   setHoveredSlug: (slug: string) => void;
   hoveredSubcategorySlug: string;
   setHoveredSubcategorySlug: (slug: string) => void;
 };
-
-type ProductAvailabilitySummary = {
-  categoryCounts: Record<string, number>;
-  subCategoryCounts: Record<string, number>;
-  brandCounts: Record<string, number>;
-};
-
-function normalizeKey(value: unknown) {
-  return String(value ?? "").trim().toLowerCase();
-}
 
 type FixedHeroConfig = {
   locked?: boolean;
@@ -339,6 +330,7 @@ async function fetchDepartments(): Promise<Department[]> {
           title,
           description: item.description?.trim() ?? item.data?.category?.description?.trim() ?? "",
           position: item.position ?? item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
+          productCount: Number(item.productCount ?? 0),
         };
       })
       .filter((item): item is Department => Boolean(item))
@@ -346,6 +338,16 @@ async function fetchDepartments(): Promise<Department[]> {
   } catch {
     return [];
   }
+}
+
+function formatCategoryProductCount(count: number) {
+  const value = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+  const label = value === 1 ? "product" : "products";
+  return `${value.toLocaleString()} ${label}`;
+}
+
+function MenuItemCount({ count }: { count: number }) {
+  return <span className="mt-0.5 block text-[11px] font-medium text-[#7b8390]">{formatCategoryProductCount(count)}</span>;
 }
 
 async function fetchSubcategories(categorySlug: string): Promise<SubCategory[]> {
@@ -377,6 +379,7 @@ async function fetchSubcategories(categorySlug: string): Promise<SubCategory[]> 
           title,
           description: item.description?.trim() ?? item.data?.subCategory?.description?.trim() ?? "",
           position: item.position ?? item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
+          productCount: Number(item.productCount ?? 0),
         };
       })
       .forEach((item) => {
@@ -450,60 +453,6 @@ async function fetchBrands(categorySlug: string, subCategorySlug?: string): Prom
   }
 }
 
-async function fetchProductAvailabilitySummary(): Promise<ProductAvailabilitySummary> {
-  try {
-    const url = new URL(PRODUCTS_ENDPOINT, window.location.origin);
-    url.searchParams.set("limit", "all");
-
-    const response = await fetch(url.toString());
-    if (!response.ok) throw new Error("Unable to load product availability");
-
-    const payload = (await response.json()) as {
-      items?: Array<{
-        data?: {
-          grouping?: { category?: string; subCategory?: string; brand?: string };
-          brand?: { slug?: string; title?: string };
-        };
-      }>;
-    };
-    const categoryCounts: Record<string, number> = {};
-    const subCategoryCounts: Record<string, number> = {};
-    const brandCounts: Record<string, number> = {};
-
-    for (const item of payload.items ?? []) {
-      const category = item?.data?.grouping?.category?.trim();
-      const subCategory = item?.data?.grouping?.subCategory?.trim();
-      const brandKeys = [
-        normalizeKey(item?.data?.brand?.slug),
-        normalizeKey(item?.data?.brand?.title),
-        normalizeKey(item?.data?.grouping?.brand),
-      ].filter(Boolean);
-      const uniqueBrandKeys = [...new Set(brandKeys)];
-      if (category) {
-        categoryCounts[category] = (categoryCounts[category] ?? 0) + 1;
-      }
-      if (category && subCategory) {
-        const key = `${category}::${subCategory}`;
-        subCategoryCounts[key] = (subCategoryCounts[key] ?? 0) + 1;
-      }
-      if (category && uniqueBrandKeys.length) {
-        for (const brandKey of uniqueBrandKeys) {
-          const categoryBrandKey = `${category}::${brandKey}`;
-          brandCounts[categoryBrandKey] = (brandCounts[categoryBrandKey] ?? 0) + 1;
-          if (subCategory) {
-            const subCategoryBrandKey = `${category}::${subCategory}::${brandKey}`;
-            brandCounts[subCategoryBrandKey] = (brandCounts[subCategoryBrandKey] ?? 0) + 1;
-          }
-        }
-      }
-    }
-
-    return { categoryCounts, subCategoryCounts, brandCounts };
-  } catch {
-    return { categoryCounts: {}, subCategoryCounts: {}, brandCounts: {} };
-  }
-}
-
 function useCatalogueMenu(enabled = true): MenuState {
   const [allDepartments, setAllDepartments] = useState<Department[]>([]);
   const [hoveredSlug, setHoveredSlug] = useState("");
@@ -514,10 +463,6 @@ function useCatalogueMenu(enabled = true): MenuState {
   const [brandsByKey, setBrandsByKey] = useState<Record<string, Brand[]>>({});
   const [subcategoriesLoading, setSubcategoriesLoading] = useState(false);
   const [brandsLoading, setBrandsLoading] = useState(false);
-  const [productCountsByCategory, setProductCountsByCategory] = useState<Record<string, number>>({});
-  const [productCountsBySubCategory, setProductCountsBySubCategory] = useState<Record<string, number>>({});
-  const [productCountsByBrand, setProductCountsByBrand] = useState<Record<string, number>>({});
-  const [availabilityReady, setAvailabilityReady] = useState(false);
   const subcategoryRequestId = useRef(0);
   const brandRequestId = useRef(0);
 
@@ -535,42 +480,7 @@ function useCatalogueMenu(enabled = true): MenuState {
     };
   }, [enabled]);
 
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    let idleId: number | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-    const loadAvailability = () => {
-      void fetchProductAvailabilitySummary().then((summary) => {
-        if (cancelled) return;
-        setProductCountsByCategory(summary.categoryCounts);
-        setProductCountsBySubCategory(summary.subCategoryCounts);
-        setProductCountsByBrand(summary.brandCounts);
-        setAvailabilityReady(true);
-      });
-    };
-
-    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-      idleId = window.requestIdleCallback(() => loadAvailability(), { timeout: 1500 });
-    } else {
-      timeoutId = setTimeout(loadAvailability, 350);
-    }
-
-    return () => {
-      cancelled = true;
-      if (idleId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-      }
-    };
-  }, [enabled]);
-
-  const departments = availabilityReady
-    ? allDepartments.filter((item) => (productCountsByCategory[item.slug] ?? 0) > 0)
-    : [];
+  const departments = allDepartments;
 
   useEffect(() => {
     if (!enabled) return;
@@ -592,16 +502,11 @@ function useCatalogueMenu(enabled = true): MenuState {
       if (subcategoryRequestId.current !== requestId) return;
       setSubcategoriesByCategory((current) => ({
         ...current,
-        [categorySlug]: availabilityReady
-          ? items.filter((item) => {
-              const key = `${categorySlug}::${item.slug}`;
-              return (productCountsBySubCategory[key] ?? 0) > 0;
-            })
-          : items,
+        [categorySlug]: items,
       }));
       setSubcategoriesLoading(false);
     });
-  }, [availabilityReady, hoveredSlug, productCountsBySubCategory, enabled]);
+  }, [hoveredSlug, enabled]);
 
   const displayCategorySlug = hoveredSlug;
   const activeSubcategories = displayCategorySlug ? subcategoriesByCategory[displayCategorySlug] ?? [] : [];
@@ -632,16 +537,7 @@ function useCatalogueMenu(enabled = true): MenuState {
   }, [displayCategorySlug, displaySubcategorySlug, brandsByKey, enabled]);
 
   const activeBrands = displayCategorySlug
-    ? (brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? []).filter((brand) => {
-        if (!availabilityReady) return true;
-        const brandKeys = [normalizeKey(brand.slug), normalizeKey(brand.title)].filter(Boolean);
-        return brandKeys.some((brandKey) => {
-          const availabilityKey = displaySubcategorySlug
-            ? `${displayCategorySlug}::${displaySubcategorySlug}::${brandKey}`
-            : `${displayCategorySlug}::${brandKey}`;
-          return (productCountsByBrand[availabilityKey] ?? 0) > 0;
-        });
-      })
+    ? (brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? [])
     : [];
 
   return {
@@ -651,8 +547,6 @@ function useCatalogueMenu(enabled = true): MenuState {
     brands: activeBrands,
     subcategoriesLoading,
     brandsLoading,
-    productCountsBySubCategory,
-    productCountsByBrand,
     setHoveredSlug,
     setHoveredSubcategorySlug,
     hoveredSubcategorySlug,
@@ -940,6 +834,300 @@ function HeartButton({
   );
 }
 
+function useHeaderAuthControlsState() {
+  const router = useRouter();
+  const {
+    authReady,
+    isAuthenticated,
+    uid,
+    isSeller,
+    favoriteCount,
+    cartItemCount,
+    openAuthModal,
+    refreshProfile,
+    signOut,
+  } = useAuth();
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const authSettled = authReady || isAuthenticated;
+  const showAuthenticatedActions = isAuthenticated;
+  const showGuestActions = authReady && !isAuthenticated;
+  const favoritesHref = useMemo(() => {
+    if (!showAuthenticatedActions || !uid) return "/products";
+    const params = new URLSearchParams({
+      favoritesOnly: "true",
+      userId: uid,
+    });
+    return `/products?${params.toString()}`;
+  }, [showAuthenticatedActions, uid]);
+  const notificationsHref = "/account/notifications";
+
+  useEffect(() => {
+    let cancelled = false;
+    let idleCallbackId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    async function loadNotificationCount() {
+      if (!showAuthenticatedActions) {
+        if (!cancelled) setNotificationUnreadCount(0);
+        return;
+      }
+      const run = async () => {
+        try {
+          const response = await fetch("/api/client/v1/accounts/notifications", { cache: "no-store" });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok || payload?.ok === false) return;
+          if (!cancelled) {
+            setNotificationUnreadCount(Number(payload?.unreadCount || 0));
+          }
+        } catch {
+          if (!cancelled) setNotificationUnreadCount(0);
+        }
+      };
+      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+        idleCallbackId = window.requestIdleCallback(() => {
+          void run();
+        });
+        return;
+      }
+      timeoutId = setTimeout(() => {
+        void run();
+      }, 350);
+    }
+    void loadNotificationCount();
+    return () => {
+      cancelled = true;
+      if (idleCallbackId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        window.cancelIdleCallback(idleCallbackId);
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [showAuthenticatedActions]);
+
+  const handleClearFavorites = useCallback(async () => {
+    if (!showAuthenticatedActions || !uid) {
+      openAuthModal("Sign in to manage your favourites.");
+      return;
+    }
+
+    await fetch("/api/client/v1/accounts/favorites/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid }),
+    });
+    await refreshProfile();
+    router.push("/products");
+  }, [openAuthModal, refreshProfile, router, showAuthenticatedActions, uid]);
+
+  return {
+    authSettled,
+    showAuthenticatedActions,
+    showGuestActions,
+    isSeller,
+    favoriteCount,
+    cartItemCount,
+    notificationUnreadCount,
+    favoritesHref,
+    notificationsHref,
+    openAuthModal,
+    signOut,
+    handleClearFavorites,
+  };
+}
+
+type HeaderAuthControlsState = ReturnType<typeof useHeaderAuthControlsState>;
+
+function DesktopHeaderAuthControls({
+  authState,
+  onOpenCartPreview,
+}: {
+  authState: HeaderAuthControlsState;
+  onOpenCartPreview: () => void;
+}) {
+  const {
+    showAuthenticatedActions,
+    showGuestActions,
+    isSeller,
+    favoriteCount,
+    cartItemCount,
+    notificationUnreadCount,
+    favoritesHref,
+    notificationsHref,
+    openAuthModal,
+    signOut,
+    handleClearFavorites,
+  } = authState;
+
+  return (
+    <div className="hidden items-center gap-0 lg:flex">
+      {showAuthenticatedActions ? (
+        <>
+          <Link
+            href="/account"
+            className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
+          >
+            My Account
+          </Link>
+          {isSeller ? (
+            <Link
+              href="/seller/dashboard"
+              className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
+            >
+              Seller dashboard
+            </Link>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
+          >
+            Logout
+          </button>
+        </>
+      ) : showGuestActions ? (
+        <>
+          <button
+            type="button"
+            onClick={() => openAuthModal("Sign in to access your account and favourites.")}
+            className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
+          >
+            Login
+          </button>
+          <button
+            type="button"
+            onClick={() => openAuthModal("Create your Piessang account to continue.")}
+            className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
+          >
+            Register
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="border-r border-black/10 px-5 last:border-r-0">
+            <HeaderTextPlaceholder widthClass="w-12" />
+          </span>
+          <span className="border-r border-black/10 px-5 last:border-r-0">
+            <HeaderTextPlaceholder widthClass="w-14" />
+          </span>
+        </>
+      )}
+      <NotificationsButton
+        isAuthenticated={showAuthenticatedActions}
+        unreadCount={notificationUnreadCount}
+        notificationsHref={notificationsHref}
+        onRequireAuth={() => openAuthModal("Sign in to view your notifications.")}
+      />
+      <HeartButton
+        isAuthenticated={showAuthenticatedActions}
+        favoriteCount={favoriteCount}
+        favoritesHref={favoritesHref}
+        onRequireAuth={() => openAuthModal("Sign in to save favourites.")}
+        onClearFavorites={() => void handleClearFavorites()}
+      />
+      <CartButton
+        isAuthenticated={showAuthenticatedActions}
+        cartItemCount={cartItemCount}
+        onRequireAuth={() => openAuthModal("Sign in to manage your cart.")}
+        onOpenCartPreview={onOpenCartPreview}
+      />
+    </div>
+  );
+}
+
+function DesktopHeaderSupportLinks({ isSeller }: { isSeller: boolean }) {
+
+  return (
+    <div className="hidden items-center gap-0 lg:flex">
+      {[
+        { label: "Help Centre", href: "/account?section=support" },
+        !isSeller ? { label: "Sell on Piessang", href: "/sell-on-piessang" } : null,
+      ].map((item) =>
+        item ? (
+          <Link
+            key={item.label}
+            href={item.href}
+            className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
+          >
+            {item.label}
+          </Link>
+        ) : null,
+      )}
+    </div>
+  );
+}
+
+function MobileHeaderAuthActions({
+  authState,
+  onOpenCartPreview,
+}: {
+  authState: HeaderAuthControlsState;
+  onOpenCartPreview: () => void;
+}) {
+  const router = useRouter();
+  const {
+    showAuthenticatedActions,
+    cartItemCount,
+    notificationUnreadCount,
+    notificationsHref,
+    openAuthModal,
+  } = authState;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={
+          showAuthenticatedActions
+            ? () => {
+                router.push(notificationsHref);
+              }
+            : () => openAuthModal("Sign in to view your notifications.")
+        }
+        className="relative inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
+        aria-label="Notifications"
+      >
+        <BellIcon />
+        {showAuthenticatedActions && notificationUnreadCount > 0 ? (
+          <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
+            {notificationUnreadCount}
+          </span>
+        ) : null}
+      </button>
+      <button
+        type="button"
+        onClick={
+          showAuthenticatedActions
+            ? onOpenCartPreview
+            : () => openAuthModal("Sign in to manage your cart.")
+        }
+        className="relative inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
+        aria-label="Cart"
+      >
+        <CartIcon />
+        {showAuthenticatedActions && cartItemCount > 0 ? (
+          <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
+            {cartItemCount}
+          </span>
+        ) : null}
+      </button>
+    </>
+  );
+}
+
+function HeaderCartPreviewBridge({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const { uid, syncCartState } = useAuth();
+
+  if (!open) return null;
+
+  return <CartPreviewDrawer open={open} onClose={onClose} uid={uid} onCartChange={syncCartState} />;
+}
+
 function DesktopHero({ hero }: { hero?: FixedHeroConfig | null }) {
   const images = Array.isArray(hero?.images)
     ? hero.images
@@ -1079,13 +1267,14 @@ function CategoryFlyout({
                 })}
                 className={
                   subcategory.slug === hoveredSubcategorySlug
-                    ? "block w-full rounded-[8px] bg-[rgba(203,178,107,0.22)] px-2 py-1 text-left text-[14px] font-bold text-[#4a4545] transition-colors"
-                    : "block w-full rounded-[8px] px-2 py-1 text-left text-[14px] font-medium text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545]"
+                    ? "block w-full rounded-[8px] bg-[rgba(203,178,107,0.22)] px-2 py-1.5 text-left text-[#4a4545] transition-colors"
+                    : "block w-full rounded-[8px] px-2 py-1.5 text-left text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545]"
                 }
                 onMouseEnter={() => setHoveredSubcategorySlug(subcategory.slug)}
                 onMouseLeave={() => setHoveredSubcategorySlug("")}
               >
-                {subcategory.title}
+                <span className="block truncate text-[14px] font-semibold">{subcategory.title}</span>
+                <MenuItemCount count={subcategory.productCount} />
               </Link>
             ))}
             {subcategoriesLoading ? (
@@ -1144,34 +1333,27 @@ function MobileDrawer({
   open,
   onClose,
   departments,
-  productCountsBySubCategory,
-  authReady,
-  isAuthenticated,
-  isSeller,
-  favoriteCount,
-  cartItemCount,
-  favoritesHref,
-  onRequireAuth,
+  authState,
   onOpenCartPreview,
-  onSignOut,
   onOpenLogoMeaning,
 }: {
   open: boolean;
   onClose: () => void;
   departments: Department[];
-  productCountsBySubCategory: Record<string, number>;
-  authReady: boolean;
-  isAuthenticated: boolean;
-  isSeller: boolean;
-  favoriteCount: number;
-  cartItemCount: number;
-  favoritesHref: string;
-  onRequireAuth: () => void;
+  authState: HeaderAuthControlsState;
   onOpenCartPreview: () => void;
-  onSignOut: () => void;
   onOpenLogoMeaning: () => void;
 }) {
-  const { openAuthModal } = useAuth();
+  const {
+    authSettled: authReady,
+    showAuthenticatedActions: isAuthenticated,
+    isSeller,
+    favoriteCount,
+    cartItemCount,
+    favoritesHref,
+    openAuthModal,
+    signOut,
+  } = authState;
   const [view, setView] = useState<"root" | "categories" | "subcategories">("root");
   const [activeDepartment, setActiveDepartment] = useState<Department | null>(null);
   const [mobileSubcategories, setMobileSubcategories] = useState<SubCategory[]>([]);
@@ -1191,12 +1373,7 @@ function MobileDrawer({
     setView("subcategories");
     setSubcategoriesLoading(true);
     const items = await fetchSubcategories(department.slug);
-    setMobileSubcategories(
-      items.filter((item) => {
-        const key = `${department.slug}::${item.slug}`;
-        return (productCountsBySubCategory[key] ?? 0) > 0;
-      }),
-    );
+    setMobileSubcategories(items);
     setSubcategoriesLoading(false);
   }
 
@@ -1333,9 +1510,12 @@ function MobileDrawer({
                   key={department.id}
                   type="button"
                   onClick={() => void openDepartment(department)}
-                  className="mx-3 mb-2 flex min-h-[58px] w-auto items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 text-left text-[16px] font-medium text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+                  className="mx-3 mb-2 flex min-h-[64px] w-auto items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-2 text-left text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
                 >
-                  <span>{department.title}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[16px] font-medium">{department.title}</span>
+                    <MenuItemCount count={department.productCount} />
+                  </span>
                   <span className="text-[#b8b8b8]">→</span>
                 </button>
               ))}
@@ -1370,9 +1550,12 @@ function MobileDrawer({
                     key={subCategory.id}
                     href={buildProductsHref({ category: activeDepartment?.slug, subCategory: subCategory.slug })}
                     onClick={onClose}
-                    className="mx-3 mb-2 flex min-h-[58px] items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 text-[16px] font-medium text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
+                    className="mx-3 mb-2 flex min-h-[64px] items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-2 text-[#4b5563] shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
                   >
-                    <span>{subCategory.title}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-[16px] font-medium">{subCategory.title}</span>
+                      <MenuItemCount count={subCategory.productCount} />
+                    </span>
                     <span className="text-[#b8b8b8]">→</span>
                   </Link>
                 ))
@@ -1385,11 +1568,11 @@ function MobileDrawer({
           <div className="px-3 py-2">
             <button
               type="button"
-              onClick={() => {
-                onClose();
-                if (isAuthenticated) onOpenCartPreview();
-                else onRequireAuth();
-              }}
+                onClick={() => {
+                  onClose();
+                  if (isAuthenticated) onOpenCartPreview();
+                  else openAuthModal("Sign in to manage your cart and favourites.");
+                }}
               className="flex w-full items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-3 text-left shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
             >
               <span className="flex items-center gap-3 text-[16px] font-medium text-[#202020]">
@@ -1424,7 +1607,7 @@ function MobileDrawer({
                 type="button"
                 onClick={() => {
                   onClose();
-                  onRequireAuth();
+                  openAuthModal("Sign in to manage your cart and favourites.");
                 }}
                 className="flex w-full items-center justify-between rounded-[14px] border border-black/5 bg-white px-4 py-3 text-left shadow-[0_6px_18px_rgba(20,24,27,0.04)]"
               >
@@ -1448,7 +1631,7 @@ function MobileDrawer({
 
           <div className="mt-auto flex items-center justify-center gap-6 border-t border-black/5 bg-[#fafafa] px-5 py-5 text-center">
             {isAuthenticated ? (
-              <button type="button" onClick={onSignOut} className="text-[15px] font-semibold text-[#0f80c3]">
+              <button type="button" onClick={() => void signOut()} className="text-[15px] font-semibold text-[#0f80c3]">
                 Logout
               </button>
             ) : authReady ? (
@@ -1482,30 +1665,13 @@ function MobileDrawer({
 }
 
 export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean }) {
-  const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [cartPreviewOpen, setCartPreviewOpen] = useState(false);
   const [logoMeaningOpen, setLogoMeaningOpen] = useState(false);
-  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [fixedHeroConfig, setFixedHeroConfig] = useState<FixedHeroConfig | null>(null);
-  const {
-    authReady,
-    isAuthenticated,
-    profile,
-    uid,
-    isSeller,
-    favoriteCount,
-    cartItemCount,
-    openAuthModal,
-    refreshProfile,
-    syncCartState,
-    signOut,
-  } = useAuth();
-  const authSettled = authReady || isAuthenticated;
-  const showAuthenticatedActions = isAuthenticated;
-  const showGuestActions = authReady && !isAuthenticated;
+  const authState = useHeaderAuthControlsState();
   const catalogueMenuEnabled = showMegaMenu || mobileOpen;
   const {
     departments,
@@ -1514,7 +1680,6 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     brands,
     subcategoriesLoading,
     brandsLoading,
-    productCountsBySubCategory,
     hoveredSubcategorySlug,
     setHoveredSlug,
     setHoveredSubcategorySlug,
@@ -1523,87 +1688,6 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
     () => departments.find((department) => department.slug === hoveredSlug) ?? departments[0],
     [hoveredSlug, departments],
   );
-  const favoritesHref = useMemo(() => {
-    if (!showAuthenticatedActions || !uid) return "/products";
-    const params = new URLSearchParams({
-      favoritesOnly: "true",
-      userId: uid,
-    });
-    return `/products?${params.toString()}`;
-  }, [showAuthenticatedActions, uid]);
-  const notificationsHref = "/account/notifications";
-
-  useEffect(() => {
-    let idleId: number | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-    const prefetchCommonRoutes = () => {
-      void router.prefetch("/");
-      void router.prefetch("/products");
-      void router.prefetch("/account");
-      if (isSeller) {
-        void router.prefetch("/seller/dashboard");
-      }
-    };
-
-    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-      idleId = window.requestIdleCallback(() => prefetchCommonRoutes(), { timeout: 1500 });
-    } else {
-      timeoutId = setTimeout(prefetchCommonRoutes, 300);
-    }
-
-    return () => {
-      if (idleId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
-        window.cancelIdleCallback(idleId);
-      }
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-      }
-    };
-  }, [isSeller, router]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let idleCallbackId: number | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    async function loadNotificationCount() {
-      if (!showAuthenticatedActions) {
-        if (!cancelled) setNotificationUnreadCount(0);
-        return;
-      }
-      const run = async () => {
-      try {
-        const response = await fetch("/api/client/v1/accounts/notifications", { cache: "no-store" });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload?.ok === false) return;
-        if (!cancelled) {
-          setNotificationUnreadCount(Number(payload?.unreadCount || 0));
-        }
-      } catch {
-        if (!cancelled) setNotificationUnreadCount(0);
-      }
-      };
-      if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-        idleCallbackId = window.requestIdleCallback(() => {
-          void run();
-        });
-        return;
-      }
-      timeoutId = setTimeout(() => {
-        void run();
-      }, 350);
-    }
-    void loadNotificationCount();
-    return () => {
-      cancelled = true;
-      if (idleCallbackId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
-        window.cancelIdleCallback(idleCallbackId);
-      }
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-      }
-    };
-  }, [showAuthenticatedActions]);
 
   useEffect(() => {
     if (!showMegaMenu) return;
@@ -1622,21 +1706,6 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
       cancelled = true;
     };
   }, [showMegaMenu]);
-
-  const handleClearFavorites = async () => {
-    if (!showAuthenticatedActions || !uid) {
-      openAuthModal("Sign in to manage your favourites.");
-      return;
-    }
-
-    await fetch("/api/client/v1/accounts/favorites/clear", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uid }),
-    });
-    await refreshProfile();
-    router.push("/products");
-  };
 
   return (
     <header id="bevgo-site-header" className="bg-white shadow-[0_2px_16px_rgba(20,24,27,0.08)]">
@@ -1666,96 +1735,10 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                 <LogoMeaningLink onClick={() => setLogoMeaningOpen(true)} />
               </div>
             </div>
-          <div className="hidden items-center gap-0 lg:flex">
-              {[
-                { label: "Help Centre", href: "/account?section=support" },
-                !isSeller ? { label: "Sell on Piessang", href: "/sell-on-piessang" } : null,
-              ].map((item) => (
-                item ? (
-                <Link
-                  key={item.label}
-                  href={item.href}
-                  className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
-                >
-                  {item.label}
-                </Link>
-                ) : null
-              ))}
-            </div>
+            <DesktopHeaderSupportLinks isSeller={authState.isSeller} />
           </div>
 
-          <div className="hidden items-center gap-0 lg:flex">
-            {showAuthenticatedActions ? (
-              <>
-                <Link
-                  href="/account"
-                  className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
-                >
-                  My Account
-                </Link>
-                {isSeller ? (
-                  <Link
-                    href="/seller/dashboard"
-                    className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
-                  >
-                    Seller dashboard
-                  </Link>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => void signOut()}
-                  className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
-                >
-                  Logout
-                </button>
-              </>
-            ) : showGuestActions ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => openAuthModal("Sign in to access your account and favourites.")}
-                  className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
-                >
-                  Login
-                </button>
-                <button
-                  type="button"
-                  onClick={() => openAuthModal("Create your Piessang account to continue.")}
-                  className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
-                >
-                  Register
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="border-r border-black/10 px-5 last:border-r-0">
-                  <HeaderTextPlaceholder widthClass="w-12" />
-                </span>
-                <span className="border-r border-black/10 px-5 last:border-r-0">
-                  <HeaderTextPlaceholder widthClass="w-14" />
-                </span>
-              </>
-            )}
-            <NotificationsButton
-              isAuthenticated={showAuthenticatedActions}
-              unreadCount={notificationUnreadCount}
-              notificationsHref={notificationsHref}
-              onRequireAuth={() => openAuthModal("Sign in to view your notifications.")}
-            />
-            <HeartButton
-              isAuthenticated={showAuthenticatedActions}
-              favoriteCount={favoriteCount}
-              favoritesHref={favoritesHref}
-              onRequireAuth={() => openAuthModal("Sign in to save favourites.")}
-              onClearFavorites={() => void handleClearFavorites()}
-            />
-              <CartButton
-                isAuthenticated={showAuthenticatedActions}
-                cartItemCount={cartItemCount}
-                onRequireAuth={() => openAuthModal("Sign in to manage your cart.")}
-                onOpenCartPreview={() => setCartPreviewOpen(true)}
-              />
-          </div>
+          <DesktopHeaderAuthControls authState={authState} onOpenCartPreview={() => setCartPreviewOpen(true)} />
         </div>
         </PageBody>
 
@@ -1806,42 +1789,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               >
                 <SearchIcon />
               </button>
-              <button
-                type="button"
-                onClick={
-                  showAuthenticatedActions
-                    ? () => {
-                        router.push(notificationsHref);
-                      }
-                    : () => openAuthModal("Sign in to view your notifications.")
-                }
-                className="relative inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
-                aria-label="Notifications"
-              >
-                <BellIcon />
-                {showAuthenticatedActions && notificationUnreadCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
-                    {notificationUnreadCount}
-                  </span>
-                ) : null}
-              </button>
-              <button
-                type="button"
-                onClick={
-                  showAuthenticatedActions
-                    ? () => setCartPreviewOpen(true)
-                    : () => openAuthModal("Sign in to manage your cart.")
-                }
-                className="relative inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
-                aria-label="Cart"
-              >
-                <CartIcon />
-                {showAuthenticatedActions && cartItemCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
-                    {cartItemCount}
-                  </span>
-                ) : null}
-              </button>
+              <MobileHeaderAuthActions authState={authState} onOpenCartPreview={() => setCartPreviewOpen(true)} />
             </div>
           </div>
         </div>
@@ -1929,8 +1877,8 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                             href={buildProductsHref({ category: department.slug })}
                             className={
                               department.slug === hoveredSlug
-                                ? "flex h-[40px] w-full items-center justify-between bg-[rgba(203,178,107,0.22)] px-5 text-[14px] font-bold text-[#4a4545] transition-colors"
-                                : "flex h-[40px] w-full items-center justify-between bg-white px-5 text-[14px] font-bold text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545] focus:bg-[rgba(203,178,107,0.22)] focus:text-[#4a4545]"
+                                ? "flex min-h-[52px] w-full items-center justify-between bg-[rgba(203,178,107,0.22)] px-5 py-2 text-[#4a4545] transition-colors"
+                                : "flex min-h-[52px] w-full items-center justify-between bg-white px-5 py-2 text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545] focus:bg-[rgba(203,178,107,0.22)] focus:text-[#4a4545]"
                             }
                             onMouseEnter={() => {
                               setHoveredSlug(department.slug);
@@ -1943,7 +1891,10 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                               setHoveredSubcategorySlug("");
                             }}
                           >
-                            <span>{department.title}</span>
+                            <span className="min-w-0">
+                              <span className="block truncate text-[14px] font-bold">{department.title}</span>
+                              <MenuItemCount count={department.productCount} />
+                            </span>
                             <span aria-hidden="true">›</span>
                           </Link>
                         ))
@@ -1976,29 +1927,14 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         </div>
       ) : null}
 
-      {cartPreviewOpen ? (
-        <CartPreviewDrawer
-          open={cartPreviewOpen}
-          onClose={() => setCartPreviewOpen(false)}
-          uid={uid}
-          onCartChange={syncCartState}
-        />
-      ) : null}
+      <HeaderCartPreviewBridge open={cartPreviewOpen} onClose={() => setCartPreviewOpen(false)} />
 
       <MobileDrawer
         open={mobileOpen}
         onClose={() => setMobileOpen(false)}
         departments={departments}
-        productCountsBySubCategory={productCountsBySubCategory}
-        authReady={authSettled}
-        isAuthenticated={showAuthenticatedActions}
-        isSeller={isSeller}
-        favoriteCount={favoriteCount}
-        cartItemCount={cartItemCount}
-        favoritesHref={favoritesHref}
-        onRequireAuth={() => openAuthModal("Sign in to manage your cart and favourites.")}
+        authState={authState}
         onOpenCartPreview={() => setCartPreviewOpen(true)}
-        onSignOut={() => void signOut()}
         onOpenLogoMeaning={() => setLogoMeaningOpen(true)}
       />
 

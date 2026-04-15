@@ -38,7 +38,8 @@ export async function GET(req){
     });
     const items = rows.map(d => ({
       slug:  d?.category?.slug ?? null,
-      title: d?.category?.title ?? null
+      title: d?.category?.title ?? null,
+      productCount: Number(d?.productCount ?? 0),
     }));
 
     return ok({ count: items.length, items });

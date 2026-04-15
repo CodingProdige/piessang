@@ -29,6 +29,7 @@ export async function POST(req){
     const ref = doc(col); // auto-ID
     const body = {
       docId: ref.id,                   // <- store docId
+      productCount: 0,
       grouping: { category },
       subCategory: {
         slug,

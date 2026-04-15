@@ -37,6 +37,10 @@
     {
       "path": "/api/cron/google-merchant-reconcile",
       "schedule": "15 3 * * *"
+    },
+    {
+      "path": "/api/cron/catalogue-menu-counts",
+      "schedule": "0 * * * *"
     }
   ]
 }

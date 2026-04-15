@@ -106,6 +106,7 @@ export async function POST(req){
 
     const body = {
       docId: newRef.id,           // 👈 now guaranteed
+      productCount: 0,
       category: {
         slug,
         title,

@@ -36,7 +36,8 @@ export async function GET(req){
       kind:  d?.subCategory?.kind ?? null,
       title: d?.subCategory?.title ?? null,
       category: d?.grouping?.category ?? null,
-      isActive: d?.placement?.isActive ?? null
+      isActive: d?.placement?.isActive ?? null,
+      productCount: Number(d?.productCount ?? 0),
     }));
 
     return ok({ count: items.length, items });
