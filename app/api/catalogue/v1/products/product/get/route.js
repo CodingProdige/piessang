@@ -3,6 +3,7 @@ export const preferredRegion = "fra1";
 
 // app/api/catalogue/v1/products/product/get/route.js
 import { NextResponse } from "next/server";
+import { loadActiveCheckoutReservationMap } from "@/lib/cart/checkout-reservations";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
@@ -242,14 +243,29 @@ function variantInventoryHasStock(variant){
 
 function hasInStockVariants(data){
   const variants = Array.isArray(data?.variants) ? data.variants : [];
-  return variants.some((variant) => variantTotalInStockItemsAvailable(variant) > 0);
+  return variants.some((variant) => {
+    if (typeof variant?.total_in_stock_items_available === "number") {
+      return Number(variant.total_in_stock_items_available) > 0;
+    }
+    return variantTotalInStockItemsAvailable(variant) > 0;
+  });
 }
 
-function enrichVariantsWithAvailability(variants){
+function enrichVariantsWithAvailability(variants, reservationMap = new Map()){
   const list = Array.isArray(variants) ? variants : [];
   return list.map((variant) => ({
     ...sanitizeVariantForMarketplace(variant),
-    total_in_stock_items_available: variantTotalInStockItemsAvailable(variant)
+    total_in_stock_items_available: Math.max(
+      0,
+      variantCanContinueSellingOutOfStock(variant)
+        ? variantTotalInStockItemsAvailable(variant)
+        : variantTotalInStockItemsAvailable(variant) - Number(reservationMap.get(normStr(variant?.variant_id)) || 0),
+    ),
+    checkout_reserved_qty: Number(reservationMap.get(normStr(variant?.variant_id)) || 0),
+    checkout_reserved_unavailable:
+      !variantCanContinueSellingOutOfStock(variant) &&
+      variantTotalInStockItemsAvailable(variant) > 0 &&
+      Math.max(0, variantTotalInStockItemsAvailable(variant) - Number(reservationMap.get(normStr(variant?.variant_id)) || 0)) <= 0,
   }));
 }
 
@@ -454,10 +470,12 @@ async function buildAlternateOffersForBarcode(db, barcode, includeUnavailable = 
     }),
   );
 
-  return items
-    .filter((item) => getCanonicalOfferBarcode(item?.data) === normalizedBarcode)
-    .map((item) => {
-      const enrichedVariants = enrichVariantsWithAvailability(item?.data?.variants);
+  const offers = await Promise.all(
+    items
+      .filter((item) => getCanonicalOfferBarcode(item?.data) === normalizedBarcode)
+      .map(async (item) => {
+      const reservationMap = await buildVariantCheckoutReservationMap(item?.data);
+      const enrichedVariants = enrichVariantsWithAvailability(item?.data?.variants, reservationMap);
       const dataWithVariantAvailability = { ...item.data, variants: enrichedVariants };
       const sellerIdentifier = getSellerIdentifier(dataWithVariantAvailability);
       const sellerOwner = sellerIdentifier ? sellerMetaMap.get(sellerIdentifier) : null;
@@ -472,9 +490,20 @@ async function buildAlternateOffersForBarcode(db, barcode, includeUnavailable = 
         sellerOwner,
       );
       return buildAlternateOfferSummary({ id: item.id, data: displayData });
-    })
-    .filter(Boolean)
-    .sort(compareAlternateOffers);
+    }),
+  );
+  return offers.filter(Boolean).sort(compareAlternateOffers);
+}
+
+async function buildVariantCheckoutReservationMap(data) {
+  const productId = normStr(data?.product?.unique_id || data?.docId);
+  const variantIds = Array.isArray(data?.variants) ? data.variants.map((variant) => normStr(variant?.variant_id)).filter(Boolean) : [];
+  if (!productId || !variantIds.length) return new Map();
+  try {
+    return await loadActiveCheckoutReservationMap({ productId, variantIds });
+  } catch {
+    return new Map();
+  }
 }
 
 export async function GET(req){
@@ -508,9 +537,10 @@ export async function GET(req){
         if (!snap.exists) continue;
         const rawData = normalizeTimestamps(snap.data() || {});
         let data = includeUnavailable ? rawData : getPublicMarketplaceSource(rawData);
+        const reservationMap = await buildVariantCheckoutReservationMap(data);
         data = {
           ...data,
-          variants: enrichVariantsWithAvailability(data?.variants),
+          variants: enrichVariantsWithAvailability(data?.variants, reservationMap),
         };
 
         const shouldResolveSellerOwner = includeUnavailable !== true;
@@ -569,9 +599,10 @@ export async function GET(req){
       if (!snap.exists) return err(404,"Not Found",`No product with id '${byId}'.`);
       const rawData = normalizeTimestamps(snap.data()||{});
       const data = includeUnavailable ? rawData : getPublicMarketplaceSource(rawData);
+      const reservationMap = await buildVariantCheckoutReservationMap(data);
       let dataWithVariantAvailability = {
         ...data,
-        variants: enrichVariantsWithAvailability(data?.variants)
+        variants: enrichVariantsWithAvailability(data?.variants, reservationMap)
       };
       const shouldResolveSellerOwner = includeUnavailable !== true;
       let singleSellerOwner = null;
@@ -831,8 +862,9 @@ export async function GET(req){
       return true;
     });
 
-    items = items.map(({ id, data })=>{
-      const enrichedVariants = enrichVariantsWithAvailability(data?.variants);
+    items = await Promise.all(items.map(async ({ id, data })=>{
+      const reservationMap = await buildVariantCheckoutReservationMap(data);
+      const enrichedVariants = enrichVariantsWithAvailability(data?.variants, reservationMap);
       const dataWithVariantAvailability = {
         ...data,
         variants: enrichedVariants
@@ -869,7 +901,7 @@ export async function GET(req){
             : null,
         }
       };
-    });
+    }));
 
     items = annotateItemsWithOfferGroupContext(items);
 

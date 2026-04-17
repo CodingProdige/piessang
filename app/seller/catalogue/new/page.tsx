@@ -12,6 +12,14 @@ import { clientStorage } from "@/lib/firebase";
 import { getSellerBlockReasonFix, getSellerBlockReasonLabel } from "@/lib/seller/account-status";
 import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
 import { sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
+import { buildVariantOptionMatrix, formatVariantAxisValue, type VariantAxisKey } from "@/lib/catalogue/variant-options";
+import { getRelevantVariantMetadataGroups } from "@/lib/catalogue/variant-context";
+import {
+  DEFAULT_VARIANT_METADATA_SELECT_OPTIONS,
+  sanitizeVariantMetadataSelectOptionsConfig,
+  type SelectableVariantMetadataKey,
+  type VariantMetadataSelectOptionsConfig,
+} from "@/lib/catalogue/variant-metadata-select-options";
 import {
   buildMarketplaceFeeSnapshot,
   describeMarketplaceFeeRule,
@@ -72,22 +80,101 @@ type ProductVariantItem = {
   flavor?: string | null;
   abv?: string | null;
   containerType?: string | null;
+  caffeineLevel?: string | null;
+  sweetenerType?: string | null;
   storageCapacity?: string | null;
   memoryRam?: string | null;
+  cpuModel?: string | null;
+  graphicsModel?: string | null;
+  screenSize?: string | null;
+  screenResolution?: string | null;
+  refreshRate?: string | null;
+  operatingSystem?: string | null;
+  batteryCapacity?: string | null;
+  powerOutput?: string | null;
+  cameraSpec?: string | null;
+  lensSpec?: string | null;
+  chipsetModel?: string | null;
+  ports?: string | null;
+  wirelessStandard?: string | null;
+  voltage?: string | null;
+  capacitySpec?: string | null;
+  dimensionsSpec?: string | null;
+  includedInBox?: string | null;
   connectivity?: string | null;
   compatibility?: string | null;
+  fit?: string | null;
+  lengthSpec?: string | null;
+  sleeveLength?: string | null;
+  neckline?: string | null;
+  rise?: string | null;
+  inseam?: string | null;
+  pattern?: string | null;
+  occasion?: string | null;
   sizeSystem?: string | null;
+  finish?: string | null;
+  spf?: string | null;
+  fragranceFamily?: string | null;
+  texture?: string | null;
+  undertone?: string | null;
+  coverage?: string | null;
   material?: string | null;
   ringSize?: string | null;
   strapLength?: string | null;
+  heelHeight?: string | null;
+  stoneType?: string | null;
   bookFormat?: string | null;
   language?: string | null;
+  readingAge?: string | null;
+  subtitleLanguage?: string | null;
+  editionType?: string | null;
+  gamePlatform?: string | null;
+  gameEdition?: string | null;
+  genre?: string | null;
+  regionCode?: string | null;
+  ageRating?: string | null;
+  petSize?: string | null;
+  petLifeStage?: string | null;
+  breedSize?: string | null;
+  petFoodType?: string | null;
+  activityLevel?: string | null;
+  luggageSize?: string | null;
+  luggageCapacity?: string | null;
+  shellType?: string | null;
+  wheelCount?: string | null;
+  closureType?: string | null;
+  cameraMount?: string | null;
+  sensorFormat?: string | null;
+  lensMount?: string | null;
+  stabilization?: string | null;
+  megapixels?: string | null;
+  instrumentType?: string | null;
+  keyCount?: string | null;
+  stringCount?: string | null;
+  bodySize?: string | null;
+  pickupType?: string | null;
   ageRange?: string | null;
   modelFitment?: string | null;
+  sizeRange?: string | null;
+  feedingStage?: string | null;
+  safetyStandard?: string | null;
+  engineCode?: string | null;
+  sidePosition?: string | null;
+  axlePosition?: string | null;
+  threadSize?: string | null;
+  vehicleMake?: string | null;
+  energyRating?: string | null;
+  installationType?: string | null;
+  fuelType?: string | null;
+  loadCapacity?: string | null;
+  waterPressure?: string | null;
+  waterUsage?: string | null;
+  noiseLevel?: string | null;
   sku?: string | null;
   barcode?: string | null;
   barcodeImageUrl?: string | null;
   color?: string | null;
+  metadataNotes?: VariantMetadataNotes;
   media?: {
     images?: ProductImage[];
   };
@@ -165,18 +252,96 @@ type VariantDraft = {
   flavor: string;
   abv: string;
   containerType: string;
+  caffeineLevel: string;
+  sweetenerType: string;
   storageCapacity: string;
   memoryRam: string;
+  cpuModel: string;
+  graphicsModel: string;
+  screenSize: string;
+  screenResolution: string;
+  refreshRate: string;
+  operatingSystem: string;
+  batteryCapacity: string;
+  powerOutput: string;
+  cameraSpec: string;
+  lensSpec: string;
+  chipsetModel: string;
+  ports: string;
+  wirelessStandard: string;
+  voltage: string;
+  capacitySpec: string;
+  dimensionsSpec: string;
+  includedInBox: string;
   connectivity: string;
   compatibility: string;
+  fit: string;
+  lengthSpec: string;
+  sleeveLength: string;
+  neckline: string;
+  rise: string;
+  inseam: string;
+  pattern: string;
+  occasion: string;
   sizeSystem: string;
+  finish: string;
+  spf: string;
+  fragranceFamily: string;
+  texture: string;
+  undertone: string;
+  coverage: string;
   material: string;
   ringSize: string;
   strapLength: string;
+  heelHeight: string;
+  stoneType: string;
   bookFormat: string;
   language: string;
+  readingAge: string;
+  subtitleLanguage: string;
+  editionType: string;
+  gamePlatform: string;
+  gameEdition: string;
+  genre: string;
+  regionCode: string;
+  ageRating: string;
+  petSize: string;
+  petLifeStage: string;
+  breedSize: string;
+  petFoodType: string;
+  activityLevel: string;
+  luggageSize: string;
+  luggageCapacity: string;
+  shellType: string;
+  wheelCount: string;
+  closureType: string;
+  cameraMount: string;
+  sensorFormat: string;
+  lensMount: string;
+  stabilization: string;
+  megapixels: string;
+  instrumentType: string;
+  keyCount: string;
+  stringCount: string;
+  bodySize: string;
+  pickupType: string;
   ageRange: string;
   modelFitment: string;
+  sizeRange: string;
+  feedingStage: string;
+  safetyStandard: string;
+  engineCode: string;
+  sidePosition: string;
+  axlePosition: string;
+  threadSize: string;
+  vehicleMake: string;
+  energyRating: string;
+  installationType: string;
+  fuelType: string;
+  loadCapacity: string;
+  waterPressure: string;
+  waterUsage: string;
+  noiseLevel: string;
   parcelPreset: string;
   shippingClass: string;
   sku: string;
@@ -201,6 +366,16 @@ type VariantDraft = {
   widthCm: string;
   heightCm: string;
   monthlySales30d: string;
+  metadataNotes: Partial<Record<VariantMetadataKey, string>>;
+};
+
+type VariantMetadataKey = Exclude<VariantAxisKey, "color"> | "abv";
+type VariantMetadataNotes = Partial<Record<VariantMetadataKey, string>>;
+
+type VariantMetadataFieldDefinition = {
+  key: VariantMetadataKey;
+  label: string;
+  group: string;
 };
 
 type SellerContextItem = {
@@ -237,20 +412,126 @@ const PARCEL_PRESET_OPTIONS: Array<{ value: ParcelPresetKey; label: string; desc
   { value: "standard_box", label: "Standard box", description: "Best for most general parcels and homeware." },
   { value: "bulky_box", label: "Bulky box", description: "Best for larger items that need a bigger carton." },
 ];
-const APPAREL_SIZE_OPTIONS = ["XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "One Size", "Custom"];
-const BEAUTY_SHADE_OPTIONS = ["Light", "Medium", "Tan", "Deep", "Clear", "Universal", "Custom"];
-const BEAUTY_SCENT_OPTIONS = ["Floral", "Fresh", "Citrus", "Woody", "Sweet", "Unscented", "Custom"];
-const BEAUTY_SKIN_TYPE_OPTIONS = ["All skin types", "Dry", "Oily", "Combination", "Sensitive", "Mature", "Custom"];
-const BEAUTY_HAIR_TYPE_OPTIONS = ["All hair types", "Straight", "Wavy", "Curly", "Coily", "Dry or damaged", "Custom"];
-const BEVERAGE_CONTAINER_OPTIONS = ["Bottle", "Can", "Carton", "Glass bottle", "Multipack", "Custom"];
-const ELECTRONICS_STORAGE_OPTIONS = ["32GB", "64GB", "128GB", "256GB", "512GB", "1TB", "Custom"];
-const ELECTRONICS_MEMORY_OPTIONS = ["2GB", "4GB", "8GB", "16GB", "32GB", "64GB", "Custom"];
-const ELECTRONICS_CONNECTIVITY_OPTIONS = ["Wi-Fi", "4G", "5G", "Bluetooth", "Wired", "Custom"];
-const FOOTWEAR_SIZE_SYSTEM_OPTIONS = ["UK", "US", "EU", "CM", "Custom"];
-const MATERIAL_OPTIONS = ["Leather", "Gold", "Silver", "Stainless steel", "Cotton", "Synthetic", "Wood", "Custom"];
-const BOOK_FORMAT_OPTIONS = ["Paperback", "Hardcover", "eBook", "Audiobook", "DVD", "Blu-ray", "CD", "Custom"];
-const LANGUAGE_OPTIONS = ["English", "Afrikaans", "Zulu", "Xhosa", "French", "Portuguese", "Custom"];
-const BABY_AGE_RANGE_OPTIONS = ["0-3 months", "3-6 months", "6-12 months", "12-24 months", "2-4 years", "Custom"];
+const VARIANT_METADATA_GROUP_ORDER = [
+  "Core options",
+  "Beauty & personal care",
+  "Beverages & grocery",
+  "Electronics & appliances",
+  "Fashion & apparel",
+  "Footwear & jewellery",
+  "Books & media",
+  "Games & entertainment",
+  "Pets",
+  "Luggage & travel",
+  "Photography & video",
+  "Musical instruments",
+  "Baby & fitment",
+  "Automotive & tools",
+  "Home & appliances",
+] as const;
+const VARIANT_METADATA_FIELDS: VariantMetadataFieldDefinition[] = [
+  { key: "size", label: "Size", group: "Core options" },
+  { key: "material", label: "Material", group: "Core options" },
+  { key: "shade", label: "Shade", group: "Beauty & personal care" },
+  { key: "scent", label: "Scent", group: "Beauty & personal care" },
+  { key: "finish", label: "Finish", group: "Beauty & personal care" },
+  { key: "spf", label: "SPF", group: "Beauty & personal care" },
+  { key: "fragranceFamily", label: "Fragrance family", group: "Beauty & personal care" },
+  { key: "texture", label: "Texture", group: "Beauty & personal care" },
+  { key: "undertone", label: "Undertone", group: "Beauty & personal care" },
+  { key: "coverage", label: "Coverage", group: "Beauty & personal care" },
+  { key: "skinType", label: "Skin type", group: "Beauty & personal care" },
+  { key: "hairType", label: "Hair type", group: "Beauty & personal care" },
+  { key: "flavor", label: "Flavor", group: "Beverages & grocery" },
+  { key: "containerType", label: "Container type", group: "Beverages & grocery" },
+  { key: "abv", label: "Alcohol by volume (ABV)", group: "Beverages & grocery" },
+  { key: "caffeineLevel", label: "Caffeine level", group: "Beverages & grocery" },
+  { key: "sweetenerType", label: "Sweetener type", group: "Beverages & grocery" },
+  { key: "storageCapacity", label: "Storage", group: "Electronics & appliances" },
+  { key: "memoryRam", label: "Memory (RAM)", group: "Electronics & appliances" },
+  { key: "cpuModel", label: "CPU model", group: "Electronics & appliances" },
+  { key: "graphicsModel", label: "Graphics card / GPU", group: "Electronics & appliances" },
+  { key: "screenSize", label: "Screen size", group: "Electronics & appliances" },
+  { key: "screenResolution", label: "Screen resolution", group: "Electronics & appliances" },
+  { key: "refreshRate", label: "Refresh rate", group: "Electronics & appliances" },
+  { key: "operatingSystem", label: "Operating system", group: "Electronics & appliances" },
+  { key: "batteryCapacity", label: "Battery capacity", group: "Electronics & appliances" },
+  { key: "powerOutput", label: "Power output", group: "Electronics & appliances" },
+  { key: "cameraSpec", label: "Camera spec", group: "Electronics & appliances" },
+  { key: "lensSpec", label: "Lens spec", group: "Electronics & appliances" },
+  { key: "chipsetModel", label: "Chipset / motherboard", group: "Electronics & appliances" },
+  { key: "ports", label: "Ports", group: "Electronics & appliances" },
+  { key: "wirelessStandard", label: "Wireless standard", group: "Electronics & appliances" },
+  { key: "voltage", label: "Voltage", group: "Electronics & appliances" },
+  { key: "capacitySpec", label: "Capacity / output", group: "Electronics & appliances" },
+  { key: "dimensionsSpec", label: "Dimensions", group: "Electronics & appliances" },
+  { key: "includedInBox", label: "Included in the box", group: "Electronics & appliances" },
+  { key: "connectivity", label: "Connectivity", group: "Electronics & appliances" },
+  { key: "compatibility", label: "Compatibility", group: "Electronics & appliances" },
+  { key: "fit", label: "Fit", group: "Fashion & apparel" },
+  { key: "lengthSpec", label: "Length", group: "Fashion & apparel" },
+  { key: "sleeveLength", label: "Sleeve length", group: "Fashion & apparel" },
+  { key: "neckline", label: "Neckline", group: "Fashion & apparel" },
+  { key: "rise", label: "Rise", group: "Fashion & apparel" },
+  { key: "inseam", label: "Inseam", group: "Fashion & apparel" },
+  { key: "pattern", label: "Pattern", group: "Fashion & apparel" },
+  { key: "occasion", label: "Occasion", group: "Fashion & apparel" },
+  { key: "sizeSystem", label: "Size system", group: "Footwear & jewellery" },
+  { key: "ringSize", label: "Ring size", group: "Footwear & jewellery" },
+  { key: "strapLength", label: "Strap or chain length", group: "Footwear & jewellery" },
+  { key: "heelHeight", label: "Heel height", group: "Footwear & jewellery" },
+  { key: "stoneType", label: "Stone type", group: "Footwear & jewellery" },
+  { key: "bookFormat", label: "Format", group: "Books & media" },
+  { key: "language", label: "Language", group: "Books & media" },
+  { key: "readingAge", label: "Reading age", group: "Books & media" },
+  { key: "subtitleLanguage", label: "Subtitle language", group: "Books & media" },
+  { key: "editionType", label: "Edition type", group: "Books & media" },
+  { key: "gamePlatform", label: "Platform", group: "Games & entertainment" },
+  { key: "gameEdition", label: "Edition", group: "Games & entertainment" },
+  { key: "genre", label: "Genre", group: "Games & entertainment" },
+  { key: "regionCode", label: "Region", group: "Games & entertainment" },
+  { key: "ageRating", label: "Age rating", group: "Games & entertainment" },
+  { key: "petSize", label: "Pet size", group: "Pets" },
+  { key: "petLifeStage", label: "Life stage", group: "Pets" },
+  { key: "breedSize", label: "Breed size", group: "Pets" },
+  { key: "petFoodType", label: "Food type", group: "Pets" },
+  { key: "activityLevel", label: "Activity level", group: "Pets" },
+  { key: "luggageSize", label: "Luggage size", group: "Luggage & travel" },
+  { key: "luggageCapacity", label: "Luggage capacity", group: "Luggage & travel" },
+  { key: "shellType", label: "Shell type", group: "Luggage & travel" },
+  { key: "wheelCount", label: "Wheel count", group: "Luggage & travel" },
+  { key: "closureType", label: "Closure type", group: "Luggage & travel" },
+  { key: "cameraMount", label: "Camera mount", group: "Photography & video" },
+  { key: "sensorFormat", label: "Sensor format", group: "Photography & video" },
+  { key: "lensMount", label: "Lens mount", group: "Photography & video" },
+  { key: "stabilization", label: "Stabilization", group: "Photography & video" },
+  { key: "megapixels", label: "Megapixels", group: "Photography & video" },
+  { key: "instrumentType", label: "Instrument type", group: "Musical instruments" },
+  { key: "keyCount", label: "Key count", group: "Musical instruments" },
+  { key: "stringCount", label: "String count", group: "Musical instruments" },
+  { key: "bodySize", label: "Body size", group: "Musical instruments" },
+  { key: "pickupType", label: "Pickup type", group: "Musical instruments" },
+  { key: "ageRange", label: "Age range", group: "Baby & fitment" },
+  { key: "modelFitment", label: "Model fitment", group: "Baby & fitment" },
+  { key: "sizeRange", label: "Size range", group: "Baby & fitment" },
+  { key: "feedingStage", label: "Feeding stage", group: "Baby & fitment" },
+  { key: "safetyStandard", label: "Safety standard", group: "Baby & fitment" },
+  { key: "engineCode", label: "Engine code", group: "Automotive & tools" },
+  { key: "sidePosition", label: "Side / position", group: "Automotive & tools" },
+  { key: "axlePosition", label: "Axle", group: "Automotive & tools" },
+  { key: "threadSize", label: "Thread size", group: "Automotive & tools" },
+  { key: "vehicleMake", label: "Vehicle make", group: "Automotive & tools" },
+  { key: "energyRating", label: "Energy rating", group: "Home & appliances" },
+  { key: "installationType", label: "Installation type", group: "Home & appliances" },
+  { key: "fuelType", label: "Fuel type", group: "Home & appliances" },
+  { key: "loadCapacity", label: "Load capacity", group: "Home & appliances" },
+  { key: "waterPressure", label: "Water pressure", group: "Home & appliances" },
+  { key: "waterUsage", label: "Water usage", group: "Home & appliances" },
+  { key: "noiseLevel", label: "Noise level", group: "Home & appliances" },
+];
+const VARIANT_METADATA_FIELD_MAP = Object.fromEntries(
+  VARIANT_METADATA_FIELDS.map((field) => [field.key, field]),
+) as Record<VariantMetadataKey, VariantMetadataFieldDefinition>;
 const PRE_LOVED_CONDITIONS = [
   { value: "like-new", label: "Like New" },
   { value: "excellent", label: "Excellent" },
@@ -272,6 +553,92 @@ const COLOR_SWATCHES = [
   "#a16207",
   "#64748b",
 ];
+const APPAREL_SIZE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.size;
+const BEAUTY_SHADE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.shade;
+const BEAUTY_SCENT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.scent;
+const BEAUTY_SKIN_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.skinType;
+const BEAUTY_HAIR_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.hairType;
+const BEAUTY_FINISH_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.finish;
+const BEAUTY_TEXTURE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.texture;
+const BEAUTY_FRAGRANCE_FAMILY_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.fragranceFamily;
+const BEAUTY_UNDERTONE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.undertone;
+const BEAUTY_COVERAGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.coverage;
+const FASHION_FIT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.fit;
+const FASHION_LENGTH_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.lengthSpec;
+const FASHION_SLEEVE_LENGTH_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.sleeveLength;
+const FASHION_NECKLINE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.neckline;
+const FASHION_RISE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.rise;
+const FASHION_PATTERN_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.pattern;
+const FASHION_OCCASION_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.occasion;
+const BEVERAGE_CONTAINER_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.containerType;
+const BEVERAGE_CAFFEINE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.caffeineLevel;
+const BEVERAGE_SWEETENER_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.sweetenerType;
+const ELECTRONICS_STORAGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.storageCapacity;
+const ELECTRONICS_MEMORY_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.memoryRam;
+const ELECTRONICS_CONNECTIVITY_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.connectivity;
+const FOOTWEAR_SIZE_SYSTEM_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.sizeSystem;
+const FOOTWEAR_HEEL_HEIGHT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.heelHeight;
+const JEWELLERY_STONE_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.stoneType;
+const MATERIAL_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.material;
+const BOOK_FORMAT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.bookFormat;
+const LANGUAGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.language;
+const BOOK_READING_AGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.readingAge;
+const BOOK_SUBTITLE_LANGUAGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.subtitleLanguage;
+const BOOK_EDITION_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.editionType;
+const GAME_PLATFORM_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.gamePlatform;
+const GAME_EDITION_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.gameEdition;
+const GAME_GENRE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.genre;
+const GAME_REGION_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.regionCode;
+const GAME_AGE_RATING_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.ageRating;
+const PET_SIZE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.petSize;
+const PET_LIFE_STAGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.petLifeStage;
+const PET_BREED_SIZE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.breedSize;
+const PET_FOOD_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.petFoodType;
+const PET_ACTIVITY_LEVEL_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.activityLevel;
+const LUGGAGE_SIZE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.luggageSize;
+const SHELL_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.shellType;
+const LUGGAGE_WHEEL_COUNT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.wheelCount;
+const LUGGAGE_CLOSURE_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.closureType;
+const CAMERA_MOUNT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.cameraMount;
+const SENSOR_FORMAT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.sensorFormat;
+const LENS_MOUNT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.lensMount;
+const STABILIZATION_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.stabilization;
+const MEGAPIXEL_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.megapixels;
+const INSTRUMENT_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.instrumentType;
+const STRING_COUNT_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.stringCount;
+const INSTRUMENT_BODY_SIZE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.bodySize;
+const PICKUP_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.pickupType;
+const BABY_AGE_RANGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.ageRange;
+const BABY_SIZE_RANGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.sizeRange;
+const BABY_FEEDING_STAGE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.feedingStage;
+const BABY_SAFETY_STANDARD_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.safetyStandard;
+const AUTOMOTIVE_SIDE_POSITION_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.sidePosition;
+const AUTOMOTIVE_AXLE_POSITION_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.axlePosition;
+const VEHICLE_MAKE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.vehicleMake;
+const HOME_ENERGY_RATING_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.energyRating;
+const HOME_NOISE_LEVEL_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.noiseLevel;
+const HOME_INSTALLATION_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.installationType;
+const HOME_FUEL_TYPE_OPTIONS = DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.fuelType;
+
+function getSwatchLabel(value?: string | null) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return "";
+  const labels: Record<string, string> = {
+    "#ffffff": "White",
+    "#000000": "Black",
+    "#e11d48": "Rose Red",
+    "#f97316": "Orange",
+    "#facc15": "Sun Yellow",
+    "#22c55e": "Green",
+    "#06b6d4": "Teal",
+    "#3b82f6": "Blue",
+    "#8b5cf6": "Purple",
+    "#ec4899": "Pink",
+    "#a16207": "Brown",
+    "#64748b": "Slate",
+  };
+  return labels[normalized] || formatVariantAxisValue("color", value) || String(value ?? "").trim();
+}
 const OVERVIEW_MAX_LENGTH = 160;
 const DESCRIPTION_MAX_LENGTH = 900;
 
@@ -352,18 +719,96 @@ type VariantEditorBaseline = {
   flavor: string;
   abv: string;
   containerType: string;
+  caffeineLevel: string;
+  sweetenerType: string;
   storageCapacity: string;
   memoryRam: string;
+  cpuModel: string;
+  graphicsModel: string;
+  screenSize: string;
+  screenResolution: string;
+  refreshRate: string;
+  operatingSystem: string;
+  batteryCapacity: string;
+  powerOutput: string;
+  cameraSpec: string;
+  lensSpec: string;
+  chipsetModel: string;
+  ports: string;
+  wirelessStandard: string;
+  voltage: string;
+  capacitySpec: string;
+  dimensionsSpec: string;
+  includedInBox: string;
   connectivity: string;
   compatibility: string;
+  fit: string;
+  lengthSpec: string;
+  sleeveLength: string;
+  neckline: string;
+  rise: string;
+  inseam: string;
+  pattern: string;
+  occasion: string;
   sizeSystem: string;
+  finish: string;
+  spf: string;
+  fragranceFamily: string;
+  texture: string;
+  undertone: string;
+  coverage: string;
   material: string;
   ringSize: string;
   strapLength: string;
+  heelHeight: string;
+  stoneType: string;
   bookFormat: string;
   language: string;
+  readingAge: string;
+  subtitleLanguage: string;
+  editionType: string;
+  gamePlatform: string;
+  gameEdition: string;
+  genre: string;
+  regionCode: string;
+  ageRating: string;
+  petSize: string;
+  petLifeStage: string;
+  breedSize: string;
+  petFoodType: string;
+  activityLevel: string;
+  luggageSize: string;
+  luggageCapacity: string;
+  shellType: string;
+  wheelCount: string;
+  closureType: string;
+  cameraMount: string;
+  sensorFormat: string;
+  lensMount: string;
+  stabilization: string;
+  megapixels: string;
+  instrumentType: string;
+  keyCount: string;
+  stringCount: string;
+  bodySize: string;
+  pickupType: string;
   ageRange: string;
   modelFitment: string;
+  sizeRange: string;
+  feedingStage: string;
+  safetyStandard: string;
+  engineCode: string;
+  sidePosition: string;
+  axlePosition: string;
+  threadSize: string;
+  vehicleMake: string;
+  energyRating: string;
+  installationType: string;
+  fuelType: string;
+  loadCapacity: string;
+  waterPressure: string;
+  waterUsage: string;
+  noiseLevel: string;
   parcelPreset: string;
   shippingClass: string;
   sku: string;
@@ -421,18 +866,96 @@ function createVariantEditorBaseline(input: Partial<VariantEditorBaseline>): Var
     flavor: String(input.flavor ?? "").trim(),
     abv: String(input.abv ?? "").trim(),
     containerType: String(input.containerType ?? "").trim(),
+    caffeineLevel: String(input.caffeineLevel ?? "").trim(),
+    sweetenerType: String(input.sweetenerType ?? "").trim(),
     storageCapacity: String(input.storageCapacity ?? "").trim(),
     memoryRam: String(input.memoryRam ?? "").trim(),
+    cpuModel: String(input.cpuModel ?? "").trim(),
+    graphicsModel: String(input.graphicsModel ?? "").trim(),
+    screenSize: String(input.screenSize ?? "").trim(),
+    screenResolution: String(input.screenResolution ?? "").trim(),
+    refreshRate: String(input.refreshRate ?? "").trim(),
+    operatingSystem: String(input.operatingSystem ?? "").trim(),
+    batteryCapacity: String(input.batteryCapacity ?? "").trim(),
+    powerOutput: String(input.powerOutput ?? "").trim(),
+    cameraSpec: String(input.cameraSpec ?? "").trim(),
+    lensSpec: String(input.lensSpec ?? "").trim(),
+    chipsetModel: String(input.chipsetModel ?? "").trim(),
+    ports: String(input.ports ?? "").trim(),
+    wirelessStandard: String(input.wirelessStandard ?? "").trim(),
+    voltage: String(input.voltage ?? "").trim(),
+    capacitySpec: String(input.capacitySpec ?? "").trim(),
+    dimensionsSpec: String(input.dimensionsSpec ?? "").trim(),
+    includedInBox: String(input.includedInBox ?? "").trim(),
     connectivity: String(input.connectivity ?? "").trim(),
     compatibility: String(input.compatibility ?? "").trim(),
+    fit: String(input.fit ?? "").trim(),
+    lengthSpec: String(input.lengthSpec ?? "").trim(),
+    sleeveLength: String(input.sleeveLength ?? "").trim(),
+    neckline: String(input.neckline ?? "").trim(),
+    rise: String(input.rise ?? "").trim(),
+    inseam: String(input.inseam ?? "").trim(),
+    pattern: String(input.pattern ?? "").trim(),
+    occasion: String(input.occasion ?? "").trim(),
     sizeSystem: String(input.sizeSystem ?? "").trim(),
+    finish: String(input.finish ?? "").trim(),
+    spf: String(input.spf ?? "").trim(),
+    fragranceFamily: String(input.fragranceFamily ?? "").trim(),
+    texture: String(input.texture ?? "").trim(),
+    undertone: String(input.undertone ?? "").trim(),
+    coverage: String(input.coverage ?? "").trim(),
     material: String(input.material ?? "").trim(),
     ringSize: String(input.ringSize ?? "").trim(),
     strapLength: String(input.strapLength ?? "").trim(),
+    heelHeight: String(input.heelHeight ?? "").trim(),
+    stoneType: String(input.stoneType ?? "").trim(),
     bookFormat: String(input.bookFormat ?? "").trim(),
     language: String(input.language ?? "").trim(),
+    readingAge: String(input.readingAge ?? "").trim(),
+    subtitleLanguage: String(input.subtitleLanguage ?? "").trim(),
+    editionType: String(input.editionType ?? "").trim(),
+    gamePlatform: String(input.gamePlatform ?? "").trim(),
+    gameEdition: String(input.gameEdition ?? "").trim(),
+    genre: String(input.genre ?? "").trim(),
+    regionCode: String(input.regionCode ?? "").trim(),
+    ageRating: String(input.ageRating ?? "").trim(),
+    petSize: String(input.petSize ?? "").trim(),
+    petLifeStage: String(input.petLifeStage ?? "").trim(),
+    breedSize: String(input.breedSize ?? "").trim(),
+    petFoodType: String(input.petFoodType ?? "").trim(),
+    activityLevel: String(input.activityLevel ?? "").trim(),
+    luggageSize: String(input.luggageSize ?? "").trim(),
+    luggageCapacity: String(input.luggageCapacity ?? "").trim(),
+    shellType: String(input.shellType ?? "").trim(),
+    wheelCount: String(input.wheelCount ?? "").trim(),
+    closureType: String(input.closureType ?? "").trim(),
+    cameraMount: String(input.cameraMount ?? "").trim(),
+    sensorFormat: String(input.sensorFormat ?? "").trim(),
+    lensMount: String(input.lensMount ?? "").trim(),
+    stabilization: String(input.stabilization ?? "").trim(),
+    megapixels: String(input.megapixels ?? "").trim(),
+    instrumentType: String(input.instrumentType ?? "").trim(),
+    keyCount: String(input.keyCount ?? "").trim(),
+    stringCount: String(input.stringCount ?? "").trim(),
+    bodySize: String(input.bodySize ?? "").trim(),
+    pickupType: String(input.pickupType ?? "").trim(),
     ageRange: String(input.ageRange ?? "").trim(),
     modelFitment: String(input.modelFitment ?? "").trim(),
+    sizeRange: String(input.sizeRange ?? "").trim(),
+    feedingStage: String(input.feedingStage ?? "").trim(),
+    safetyStandard: String(input.safetyStandard ?? "").trim(),
+    engineCode: String(input.engineCode ?? "").trim(),
+    sidePosition: String(input.sidePosition ?? "").trim(),
+    axlePosition: String(input.axlePosition ?? "").trim(),
+    threadSize: String(input.threadSize ?? "").trim(),
+    vehicleMake: String(input.vehicleMake ?? "").trim(),
+    energyRating: String(input.energyRating ?? "").trim(),
+    installationType: String(input.installationType ?? "").trim(),
+    fuelType: String(input.fuelType ?? "").trim(),
+    loadCapacity: String(input.loadCapacity ?? "").trim(),
+    waterPressure: String(input.waterPressure ?? "").trim(),
+    waterUsage: String(input.waterUsage ?? "").trim(),
+    noiseLevel: String(input.noiseLevel ?? "").trim(),
     parcelPreset: String(input.parcelPreset ?? "").trim(),
     shippingClass: String(input.shippingClass ?? "").trim(),
     sku: String(input.sku ?? "").trim(),
@@ -505,16 +1028,72 @@ function getVariantChangeImpactSummary({
   if (baseline.containerType !== current.containerType) reviewTriggers.push("container type");
   if (baseline.storageCapacity !== current.storageCapacity) reviewTriggers.push("storage capacity");
   if (baseline.memoryRam !== current.memoryRam) reviewTriggers.push("memory");
+  if (baseline.cpuModel !== current.cpuModel) reviewTriggers.push("CPU");
+  if (baseline.graphicsModel !== current.graphicsModel) reviewTriggers.push("graphics");
+  if (baseline.screenSize !== current.screenSize) reviewTriggers.push("screen size");
+  if (baseline.screenResolution !== current.screenResolution) reviewTriggers.push("resolution");
+  if (baseline.refreshRate !== current.refreshRate) reviewTriggers.push("refresh rate");
+  if (baseline.operatingSystem !== current.operatingSystem) reviewTriggers.push("operating system");
+  if (baseline.batteryCapacity !== current.batteryCapacity) reviewTriggers.push("battery capacity");
+  if (baseline.powerOutput !== current.powerOutput) reviewTriggers.push("power output");
+  if (baseline.cameraSpec !== current.cameraSpec) reviewTriggers.push("camera");
+  if (baseline.lensSpec !== current.lensSpec) reviewTriggers.push("lens");
+  if (baseline.chipsetModel !== current.chipsetModel) reviewTriggers.push("chipset");
+  if (baseline.ports !== current.ports) reviewTriggers.push("ports");
+  if (baseline.wirelessStandard !== current.wirelessStandard) reviewTriggers.push("wireless standard");
+  if (baseline.voltage !== current.voltage) reviewTriggers.push("voltage");
+  if (baseline.capacitySpec !== current.capacitySpec) reviewTriggers.push("capacity");
+  if (baseline.dimensionsSpec !== current.dimensionsSpec) reviewTriggers.push("dimensions");
+  if (baseline.includedInBox !== current.includedInBox) reviewTriggers.push("included in the box");
   if (baseline.connectivity !== current.connectivity) reviewTriggers.push("connectivity");
   if (baseline.compatibility !== current.compatibility) reviewTriggers.push("compatibility");
+  if (baseline.fit !== current.fit) reviewTriggers.push("fit");
+  if (baseline.lengthSpec !== current.lengthSpec) reviewTriggers.push("length");
+  if (baseline.sleeveLength !== current.sleeveLength) reviewTriggers.push("sleeve length");
+  if (baseline.neckline !== current.neckline) reviewTriggers.push("neckline");
+  if (baseline.rise !== current.rise) reviewTriggers.push("rise");
+  if (baseline.inseam !== current.inseam) reviewTriggers.push("inseam");
+  if (baseline.pattern !== current.pattern) reviewTriggers.push("pattern");
+  if (baseline.occasion !== current.occasion) reviewTriggers.push("occasion");
   if (baseline.sizeSystem !== current.sizeSystem) reviewTriggers.push("size system");
+  if (baseline.finish !== current.finish) reviewTriggers.push("finish");
+  if (baseline.spf !== current.spf) reviewTriggers.push("SPF");
+  if (baseline.fragranceFamily !== current.fragranceFamily) reviewTriggers.push("fragrance family");
+  if (baseline.texture !== current.texture) reviewTriggers.push("texture");
+  if (baseline.undertone !== current.undertone) reviewTriggers.push("undertone");
+  if (baseline.coverage !== current.coverage) reviewTriggers.push("coverage");
   if (baseline.material !== current.material) reviewTriggers.push("material");
   if (baseline.ringSize !== current.ringSize) reviewTriggers.push("ring size");
   if (baseline.strapLength !== current.strapLength) reviewTriggers.push("strap length");
   if (baseline.bookFormat !== current.bookFormat) reviewTriggers.push("format");
   if (baseline.language !== current.language) reviewTriggers.push("language");
+  if (baseline.gamePlatform !== current.gamePlatform) reviewTriggers.push("platform");
+  if (baseline.gameEdition !== current.gameEdition) reviewTriggers.push("edition");
+  if (baseline.genre !== current.genre) reviewTriggers.push("genre");
+  if (baseline.regionCode !== current.regionCode) reviewTriggers.push("region");
+  if (baseline.ageRating !== current.ageRating) reviewTriggers.push("age rating");
+  if (baseline.petSize !== current.petSize) reviewTriggers.push("pet size");
+  if (baseline.petLifeStage !== current.petLifeStage) reviewTriggers.push("life stage");
+  if (baseline.luggageSize !== current.luggageSize) reviewTriggers.push("luggage size");
+  if (baseline.luggageCapacity !== current.luggageCapacity) reviewTriggers.push("luggage capacity");
+  if (baseline.shellType !== current.shellType) reviewTriggers.push("shell type");
+  if (baseline.cameraMount !== current.cameraMount) reviewTriggers.push("camera mount");
+  if (baseline.sensorFormat !== current.sensorFormat) reviewTriggers.push("sensor format");
+  if (baseline.instrumentType !== current.instrumentType) reviewTriggers.push("instrument type");
+  if (baseline.keyCount !== current.keyCount) reviewTriggers.push("key count");
   if (baseline.ageRange !== current.ageRange) reviewTriggers.push("age range");
   if (baseline.modelFitment !== current.modelFitment) reviewTriggers.push("fitment");
+  if (baseline.engineCode !== current.engineCode) reviewTriggers.push("engine code");
+  if (baseline.sidePosition !== current.sidePosition) reviewTriggers.push("side or position");
+  if (baseline.axlePosition !== current.axlePosition) reviewTriggers.push("axle");
+  if (baseline.threadSize !== current.threadSize) reviewTriggers.push("thread size");
+  if (baseline.energyRating !== current.energyRating) reviewTriggers.push("energy rating");
+  if (baseline.installationType !== current.installationType) reviewTriggers.push("installation type");
+  if (baseline.fuelType !== current.fuelType) reviewTriggers.push("fuel type");
+  if (baseline.loadCapacity !== current.loadCapacity) reviewTriggers.push("load capacity");
+  if (baseline.waterPressure !== current.waterPressure) reviewTriggers.push("water pressure");
+  if (baseline.waterUsage !== current.waterUsage) reviewTriggers.push("water usage");
+  if (baseline.noiseLevel !== current.noiseLevel) reviewTriggers.push("noise level");
   if (baseline.parcelPreset !== current.parcelPreset) liveChanges.push("parcel preset");
   if (baseline.shippingClass !== current.shippingClass) liveChanges.push("shipping class");
   if (baseline.sku !== current.sku) reviewTriggers.push("SKU");
@@ -808,6 +1387,13 @@ function isBookMediaProduct(category: string, subCategory: string) {
   return ["media-entertainment"].includes(categorySlug) || ["books", "books-media"].includes(subCategorySlug);
 }
 
+function isGameProduct(category: string, subCategory: string) {
+  const categorySlug = String(category ?? "").trim().toLowerCase();
+  const subCategorySlug = String(subCategory ?? "").trim().toLowerCase();
+  return ["gaming"].includes(categorySlug)
+    || ["games", "gaming-accessories", "video-games", "consoles-games", "board-games", "consoles", "merchandise", "games-puzzles"].includes(subCategorySlug);
+}
+
 function isBabyProduct(category: string, subCategory: string) {
   const categorySlug = String(category ?? "").trim().toLowerCase();
   const subCategorySlug = String(subCategory ?? "").trim().toLowerCase();
@@ -831,8 +1417,26 @@ function formatVariantSize(value: string) {
   const normalized = String(value ?? "").trim();
   if (!normalized) return "";
   const upper = normalized.toUpperCase();
-  if (APPAREL_SIZE_OPTIONS.some((item) => item.toUpperCase() === upper)) return normalized;
+  if ((DEFAULT_VARIANT_METADATA_SELECT_OPTIONS.size || []).some((item) => item.toUpperCase() === upper)) return normalized;
   return normalized;
+}
+
+function getSelectedVariantMetadataKeysFromDraft(input: Partial<VariantDraft> | Partial<ProductVariantItem>): VariantMetadataKey[] {
+  const keys = VARIANT_METADATA_FIELDS
+    .filter((field) => String(input[field.key as keyof typeof input] ?? "").trim())
+    .map((field) => field.key);
+  return Array.from(new Set(keys));
+}
+
+function clearVariantMetadataField(draft: VariantDraft, key: VariantMetadataKey): VariantDraft {
+  return {
+    ...draft,
+    [key]: "",
+    metadataNotes: {
+      ...draft.metadataNotes,
+      [key]: "",
+    },
+  };
 }
 
 function getParcelPresetMeta(value: string) {
@@ -853,6 +1457,199 @@ function variantSalePriceIncl(value?: ProductVariantItem | null) {
   const legacy = Number(value?.sale?.sale_price_excl);
   if (Number.isFinite(legacy) && legacy > 0) return exclToIncl(legacy);
   return 0;
+}
+
+function buildVariantAxisPreviewText(variant?: ProductVariantItem | null) {
+  if (!variant) return "No option values set yet.";
+  const parts = [
+    variant.color ? `Color ${formatVariantAxisValue("color", variant.color)}` : "",
+    variant.size ? `Size ${String(variant.size).trim()}` : "",
+    variant.storageCapacity ? `Storage ${String(variant.storageCapacity).trim()}` : "",
+    variant.memoryRam ? `Memory ${String(variant.memoryRam).trim()}` : "",
+    variant.cpuModel ? `CPU ${String(variant.cpuModel).trim()}` : "",
+    variant.graphicsModel ? `Graphics ${String(variant.graphicsModel).trim()}` : "",
+    variant.screenSize ? `Screen ${String(variant.screenSize).trim()}` : "",
+    variant.screenResolution ? `${String(variant.screenResolution).trim()}` : "",
+    variant.refreshRate ? `${String(variant.refreshRate).trim()} Hz` : "",
+    variant.operatingSystem ? String(variant.operatingSystem).trim() : "",
+    variant.batteryCapacity ? `Battery ${String(variant.batteryCapacity).trim()}` : "",
+    variant.powerOutput ? `Power ${String(variant.powerOutput).trim()}` : "",
+    variant.cameraSpec ? `Camera ${String(variant.cameraSpec).trim()}` : "",
+    variant.lensSpec ? `Lens ${String(variant.lensSpec).trim()}` : "",
+    variant.chipsetModel ? `Chipset ${String(variant.chipsetModel).trim()}` : "",
+    variant.ports ? `Ports ${String(variant.ports).trim()}` : "",
+    variant.wirelessStandard ? String(variant.wirelessStandard).trim() : "",
+    variant.voltage ? `${String(variant.voltage).trim()}` : "",
+    variant.capacitySpec ? `${String(variant.capacitySpec).trim()}` : "",
+    variant.dimensionsSpec ? `${String(variant.dimensionsSpec).trim()}` : "",
+    variant.includedInBox ? `Box ${String(variant.includedInBox).trim()}` : "",
+    variant.connectivity ? String(variant.connectivity).trim() : "",
+    variant.compatibility ? String(variant.compatibility).trim() : "",
+    variant.fit ? `Fit ${String(variant.fit).trim()}` : "",
+    variant.lengthSpec ? `Length ${String(variant.lengthSpec).trim()}` : "",
+    variant.sleeveLength ? `Sleeve ${String(variant.sleeveLength).trim()}` : "",
+    variant.neckline ? String(variant.neckline).trim() : "",
+    variant.rise ? String(variant.rise).trim() : "",
+    variant.inseam ? `Inseam ${String(variant.inseam).trim()}` : "",
+    variant.pattern ? String(variant.pattern).trim() : "",
+    variant.occasion ? String(variant.occasion).trim() : "",
+    variant.shade ? `Shade ${String(variant.shade).trim()}` : "",
+    variant.scent ? String(variant.scent).trim() : "",
+    variant.finish ? String(variant.finish).trim() : "",
+    variant.spf ? `SPF ${String(variant.spf).trim()}` : "",
+    variant.fragranceFamily ? String(variant.fragranceFamily).trim() : "",
+    variant.texture ? String(variant.texture).trim() : "",
+    variant.undertone ? `${String(variant.undertone).trim()} undertone` : "",
+    variant.coverage ? `${String(variant.coverage).trim()} coverage` : "",
+    variant.skinType ? `${String(variant.skinType).trim()} skin` : "",
+    variant.hairType ? `${String(variant.hairType).trim()} hair` : "",
+    variant.flavor ? String(variant.flavor).trim() : "",
+    variant.abv ? `${String(variant.abv).trim()}% ABV` : "",
+    variant.containerType ? String(variant.containerType).trim() : "",
+    variant.caffeineLevel ? String(variant.caffeineLevel).trim() : "",
+    variant.sweetenerType ? String(variant.sweetenerType).trim() : "",
+    variant.sizeSystem ? String(variant.sizeSystem).trim() : "",
+    variant.material ? String(variant.material).trim() : "",
+    variant.ringSize ? `Ring ${String(variant.ringSize).trim()}` : "",
+    variant.strapLength ? String(variant.strapLength).trim() : "",
+    variant.heelHeight ? String(variant.heelHeight).trim() : "",
+    variant.stoneType ? String(variant.stoneType).trim() : "",
+    variant.bookFormat ? String(variant.bookFormat).trim() : "",
+    variant.language ? String(variant.language).trim() : "",
+    variant.readingAge ? `Age ${String(variant.readingAge).trim()}` : "",
+    variant.subtitleLanguage ? `Subs ${String(variant.subtitleLanguage).trim()}` : "",
+    variant.editionType ? String(variant.editionType).trim() : "",
+    variant.gamePlatform ? String(variant.gamePlatform).trim() : "",
+    variant.gameEdition ? String(variant.gameEdition).trim() : "",
+    variant.genre ? String(variant.genre).trim() : "",
+    variant.regionCode ? String(variant.regionCode).trim() : "",
+    variant.ageRating ? `Rated ${String(variant.ageRating).trim()}` : "",
+    variant.petSize ? `Pet ${String(variant.petSize).trim()}` : "",
+    variant.petLifeStage ? String(variant.petLifeStage).trim() : "",
+    variant.breedSize ? String(variant.breedSize).trim() : "",
+    variant.petFoodType ? String(variant.petFoodType).trim() : "",
+    variant.activityLevel ? `${String(variant.activityLevel).trim()} activity` : "",
+    variant.luggageSize ? String(variant.luggageSize).trim() : "",
+    variant.luggageCapacity ? `Capacity ${String(variant.luggageCapacity).trim()}` : "",
+    variant.shellType ? String(variant.shellType).trim() : "",
+    variant.wheelCount ? String(variant.wheelCount).trim() : "",
+    variant.closureType ? String(variant.closureType).trim() : "",
+    variant.cameraMount ? String(variant.cameraMount).trim() : "",
+    variant.sensorFormat ? String(variant.sensorFormat).trim() : "",
+    variant.lensMount ? String(variant.lensMount).trim() : "",
+    variant.stabilization ? String(variant.stabilization).trim() : "",
+    variant.megapixels ? `${String(variant.megapixels).trim()}` : "",
+    variant.instrumentType ? String(variant.instrumentType).trim() : "",
+    variant.keyCount ? `${String(variant.keyCount).trim()} keys` : "",
+    variant.stringCount ? String(variant.stringCount).trim() : "",
+    variant.bodySize ? String(variant.bodySize).trim() : "",
+    variant.pickupType ? String(variant.pickupType).trim() : "",
+    variant.ageRange ? String(variant.ageRange).trim() : "",
+    variant.modelFitment ? String(variant.modelFitment).trim() : "",
+    variant.sizeRange ? String(variant.sizeRange).trim() : "",
+    variant.feedingStage ? String(variant.feedingStage).trim() : "",
+    variant.safetyStandard ? String(variant.safetyStandard).trim() : "",
+    variant.engineCode ? `Engine ${String(variant.engineCode).trim()}` : "",
+    variant.sidePosition ? String(variant.sidePosition).trim() : "",
+    variant.axlePosition ? String(variant.axlePosition).trim() : "",
+    variant.threadSize ? `Thread ${String(variant.threadSize).trim()}` : "",
+    variant.vehicleMake ? String(variant.vehicleMake).trim() : "",
+    variant.energyRating ? `Energy ${String(variant.energyRating).trim()}` : "",
+    variant.installationType ? String(variant.installationType).trim() : "",
+    variant.fuelType ? String(variant.fuelType).trim() : "",
+    variant.loadCapacity ? `Load ${String(variant.loadCapacity).trim()}` : "",
+    variant.waterPressure ? `Pressure ${String(variant.waterPressure).trim()}` : "",
+    variant.waterUsage ? `Water ${String(variant.waterUsage).trim()}` : "",
+    variant.noiseLevel ? `Noise ${String(variant.noiseLevel).trim()}` : "",
+  ].filter(Boolean);
+  return parts.join(" • ") || "No option values set yet.";
+}
+
+function buildDraftVariantPreviewItem(draft: VariantDraft): ProductVariantItem {
+  return {
+    variant_id: draft.variantId.trim() || "draft",
+    label: draft.label.trim() || "Draft variant",
+    size: draft.size.trim() || null,
+    shade: draft.shade.trim() || null,
+    scent: draft.scent.trim() || null,
+    skinType: draft.skinType.trim() || null,
+    hairType: draft.hairType.trim() || null,
+    flavor: draft.flavor.trim() || null,
+    abv: draft.abv.trim() || null,
+    containerType: draft.containerType.trim() || null,
+    storageCapacity: draft.storageCapacity.trim() || null,
+    memoryRam: draft.memoryRam.trim() || null,
+    cpuModel: draft.cpuModel.trim() || null,
+    graphicsModel: draft.graphicsModel.trim() || null,
+    screenSize: draft.screenSize.trim() || null,
+    screenResolution: draft.screenResolution.trim() || null,
+    refreshRate: draft.refreshRate.trim() || null,
+    operatingSystem: draft.operatingSystem.trim() || null,
+    batteryCapacity: draft.batteryCapacity.trim() || null,
+    powerOutput: draft.powerOutput.trim() || null,
+    cameraSpec: draft.cameraSpec.trim() || null,
+    lensSpec: draft.lensSpec.trim() || null,
+    chipsetModel: draft.chipsetModel.trim() || null,
+    ports: draft.ports.trim() || null,
+    wirelessStandard: draft.wirelessStandard.trim() || null,
+    voltage: draft.voltage.trim() || null,
+    capacitySpec: draft.capacitySpec.trim() || null,
+    dimensionsSpec: draft.dimensionsSpec.trim() || null,
+    includedInBox: draft.includedInBox.trim() || null,
+    connectivity: draft.connectivity.trim() || null,
+    compatibility: draft.compatibility.trim() || null,
+    fit: draft.fit.trim() || null,
+    lengthSpec: draft.lengthSpec.trim() || null,
+    sleeveLength: draft.sleeveLength.trim() || null,
+    neckline: draft.neckline.trim() || null,
+    rise: draft.rise.trim() || null,
+    inseam: draft.inseam.trim() || null,
+    pattern: draft.pattern.trim() || null,
+    occasion: draft.occasion.trim() || null,
+    sizeSystem: draft.sizeSystem.trim() || null,
+    finish: draft.finish.trim() || null,
+    spf: draft.spf.trim() || null,
+    fragranceFamily: draft.fragranceFamily.trim() || null,
+    texture: draft.texture.trim() || null,
+    undertone: draft.undertone.trim() || null,
+    coverage: draft.coverage.trim() || null,
+    material: draft.material.trim() || null,
+    ringSize: draft.ringSize.trim() || null,
+    strapLength: draft.strapLength.trim() || null,
+    bookFormat: draft.bookFormat.trim() || null,
+    language: draft.language.trim() || null,
+    gamePlatform: draft.gamePlatform.trim() || null,
+    gameEdition: draft.gameEdition.trim() || null,
+    genre: draft.genre.trim() || null,
+    regionCode: draft.regionCode.trim() || null,
+    ageRating: draft.ageRating.trim() || null,
+    petSize: draft.petSize.trim() || null,
+    petLifeStage: draft.petLifeStage.trim() || null,
+    luggageSize: draft.luggageSize.trim() || null,
+    luggageCapacity: draft.luggageCapacity.trim() || null,
+    shellType: draft.shellType.trim() || null,
+    cameraMount: draft.cameraMount.trim() || null,
+    sensorFormat: draft.sensorFormat.trim() || null,
+    instrumentType: draft.instrumentType.trim() || null,
+    keyCount: draft.keyCount.trim() || null,
+    ageRange: draft.ageRange.trim() || null,
+    modelFitment: draft.modelFitment.trim() || null,
+    engineCode: draft.engineCode.trim() || null,
+    sidePosition: draft.sidePosition.trim() || null,
+    axlePosition: draft.axlePosition.trim() || null,
+    threadSize: draft.threadSize.trim() || null,
+    energyRating: draft.energyRating.trim() || null,
+    installationType: draft.installationType.trim() || null,
+    fuelType: draft.fuelType.trim() || null,
+    loadCapacity: draft.loadCapacity.trim() || null,
+    waterPressure: draft.waterPressure.trim() || null,
+    waterUsage: draft.waterUsage.trim() || null,
+    noiseLevel: draft.noiseLevel.trim() || null,
+    color: draft.hasColor ? draft.color.trim() || null : null,
+    pricing: {
+      selling_price_incl: money2(draft.sellingPriceIncl || 0),
+    },
+  };
 }
 
 function sanitizeProductTitle(value: string) {
@@ -1218,17 +2015,19 @@ function SwatchPicker({
     <div className={["flex flex-wrap gap-2", className].join(" ")}>
       {COLOR_SWATCHES.map((swatch) => {
         const selected = value.toLowerCase() === swatch.toLowerCase();
+        const label = getSwatchLabel(swatch);
         return (
           <button
             key={swatch}
             type="button"
             onClick={() => onChange(swatch)}
             className={[
-              "h-8 w-8 rounded-[8px] border transition-transform hover:scale-[1.04]",
+              "h-10 w-10 rounded-[10px] border transition-transform hover:scale-[1.04]",
               selected ? "border-[#202020] ring-2 ring-[#cbb26b] ring-offset-2 ring-offset-white" : "border-black/10",
             ].join(" ")}
             style={{ backgroundColor: swatch }}
-            aria-label={`Select ${swatch} color`}
+            title={label}
+            aria-label={`Select ${label}`}
           />
         );
       })}
@@ -1449,6 +2248,28 @@ export function SellerCatalogueEditor({
   const sellerBlockedReasonLabel = getSellerBlockReasonLabel(sellerBlockedReasonCode);
   const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadVariantMetadataOptions() {
+      try {
+        const response = await fetch("/api/catalogue/v1/variant-metadata/options", { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false || cancelled) return;
+        setVariantMetadataSelectOptions(
+          sanitizeVariantMetadataSelectOptionsConfig(payload?.config ?? payload?.options ?? {}),
+        );
+      } catch {
+        // Keep default in-code options when the managed config is unavailable.
+      }
+    }
+
+    void loadVariantMetadataOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [uniqueId, setUniqueId] = useState("");
   const [productSku, setProductSku] = useState("");
   const [title, setTitle] = useState("");
@@ -1465,6 +2286,9 @@ export function SellerCatalogueEditor({
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
   const [variantImages, setVariantImages] = useState<ProductImage[]>([]);
   const [variantItems, setVariantItems] = useState<ProductVariantItem[]>([]);
+  const [variantMetadataSelectOptions, setVariantMetadataSelectOptions] = useState<VariantMetadataSelectOptionsConfig>(
+    DEFAULT_VARIANT_METADATA_SELECT_OPTIONS,
+  );
   const [variantDraft, setVariantDraft] = useState<VariantDraft>({
     variantId: "",
     label: "",
@@ -1476,18 +2300,96 @@ export function SellerCatalogueEditor({
     flavor: "",
     abv: "",
     containerType: "",
+    caffeineLevel: "",
+    sweetenerType: "",
     storageCapacity: "",
     memoryRam: "",
-    connectivity: "",
-    compatibility: "",
-    sizeSystem: "",
+    cpuModel: "",
+    graphicsModel: "",
+    screenSize: "",
+    screenResolution: "",
+    refreshRate: "",
+    operatingSystem: "",
+    batteryCapacity: "",
+    powerOutput: "",
+    cameraSpec: "",
+    lensSpec: "",
+    chipsetModel: "",
+    ports: "",
+    wirelessStandard: "",
+    voltage: "",
+    capacitySpec: "",
+    dimensionsSpec: "",
+    includedInBox: "",
+      connectivity: "",
+      compatibility: "",
+      fit: "",
+      lengthSpec: "",
+      sleeveLength: "",
+      neckline: "",
+      rise: "",
+      inseam: "",
+      pattern: "",
+      occasion: "",
+      sizeSystem: "",
+      finish: "",
+      spf: "",
+      fragranceFamily: "",
+      texture: "",
+      undertone: "",
+      coverage: "",
     material: "",
     ringSize: "",
     strapLength: "",
+    heelHeight: "",
+    stoneType: "",
     bookFormat: "",
     language: "",
+    readingAge: "",
+    subtitleLanguage: "",
+    editionType: "",
+    gamePlatform: "",
+    gameEdition: "",
+    genre: "",
+    regionCode: "",
+    ageRating: "",
+    petSize: "",
+    petLifeStage: "",
+    breedSize: "",
+    petFoodType: "",
+    activityLevel: "",
+    luggageSize: "",
+    luggageCapacity: "",
+    shellType: "",
+    wheelCount: "",
+    closureType: "",
+    cameraMount: "",
+    sensorFormat: "",
+    lensMount: "",
+    stabilization: "",
+    megapixels: "",
+    instrumentType: "",
+    keyCount: "",
+    stringCount: "",
+    bodySize: "",
+    pickupType: "",
     ageRange: "",
     modelFitment: "",
+    sizeRange: "",
+    feedingStage: "",
+    safetyStandard: "",
+    engineCode: "",
+    sidePosition: "",
+    axlePosition: "",
+    threadSize: "",
+    vehicleMake: "",
+      energyRating: "",
+      installationType: "",
+      fuelType: "",
+      loadCapacity: "",
+      waterPressure: "",
+      waterUsage: "",
+      noiseLevel: "",
     parcelPreset: "",
     shippingClass: "",
     sku: "",
@@ -1512,7 +2414,10 @@ export function SellerCatalogueEditor({
     widthCm: "",
     heightCm: "",
     monthlySales30d: "",
+    metadataNotes: {},
   });
+  const [selectedVariantMetadataKeys, setSelectedVariantMetadataKeys] = useState<VariantMetadataKey[]>([]);
+  const [variantMetadataFieldToAdd, setVariantMetadataFieldToAdd] = useState("");
   const [inventoryTracking, setInventoryTracking] = useState(false);
   const [fulfillmentMode, setFulfillmentMode] = useState<"seller" | "bevgo">("seller");
   const [draggedImageIndex, setDraggedImageIndex] = useState<number | null>(null);
@@ -1593,22 +2498,47 @@ export function SellerCatalogueEditor({
     [feeConfig],
   );
   const subCategories = useMemo(() => getMarketplaceCatalogueSubCategories(category, marketplaceCategories), [category, marketplaceCategories]);
+  const hasVariantCategoryContext = useMemo(
+    () => Boolean(String(category ?? "").trim() || String(subCategory ?? "").trim()),
+    [category, subCategory],
+  );
   const isPreLovedProductDraft = useMemo(() => isPreLovedCategory(category), [category]);
-  const isApparelProductDraft = useMemo(() => isApparelProduct(category, subCategory), [category, subCategory]);
-  const isBeautyProductDraft = useMemo(() => isBeautyProduct(category, subCategory), [category, subCategory]);
-  const isCosmeticsProductDraft = useMemo(() => isCosmeticsProduct(subCategory), [subCategory]);
-  const isFragranceProductDraft = useMemo(() => isFragranceProduct(subCategory), [subCategory]);
-  const isSkinCareProductDraft = useMemo(() => isSkinCareProduct(subCategory), [subCategory]);
-  const isHairCareProductDraft = useMemo(() => isHairCareProduct(subCategory), [subCategory]);
-  const isBeverageProductDraft = useMemo(() => isBeverageProduct(category, subCategory), [category, subCategory]);
-  const isLiquorProductDraft = useMemo(() => isLiquorProduct(category, subCategory), [category, subCategory]);
-  const isElectronicsProductDraft = useMemo(() => isElectronicsProduct(category, subCategory), [category, subCategory]);
-  const isPortableElectronicsProductDraft = useMemo(() => isPortableElectronicsProduct(subCategory), [subCategory]);
-  const isFootwearProductDraft = useMemo(() => isFootwearProduct(category, subCategory), [category, subCategory]);
-  const isJewelleryProductDraft = useMemo(() => isJewelleryProduct(subCategory), [subCategory]);
-  const isBookMediaProductDraft = useMemo(() => isBookMediaProduct(category, subCategory), [category, subCategory]);
-  const isBabyProductDraft = useMemo(() => isBabyProduct(category, subCategory), [category, subCategory]);
-  const isFitmentProductDraft = useMemo(() => isFitmentProduct(category, subCategory), [category, subCategory]);
+  const isApparelProductDraft = useMemo(() => hasVariantCategoryContext && isApparelProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const isBeautyProductDraft = useMemo(() => hasVariantCategoryContext && isBeautyProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const isCosmeticsProductDraft = useMemo(() => hasVariantCategoryContext && isCosmeticsProduct(subCategory), [hasVariantCategoryContext, subCategory]);
+  const isFragranceProductDraft = useMemo(() => hasVariantCategoryContext && isFragranceProduct(subCategory), [hasVariantCategoryContext, subCategory]);
+  const isSkinCareProductDraft = useMemo(() => hasVariantCategoryContext && isSkinCareProduct(subCategory), [hasVariantCategoryContext, subCategory]);
+  const isHairCareProductDraft = useMemo(() => hasVariantCategoryContext && isHairCareProduct(subCategory), [hasVariantCategoryContext, subCategory]);
+  const isLiquorProductDraft = useMemo(() => hasVariantCategoryContext && isLiquorProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const isElectronicsProductDraft = useMemo(() => hasVariantCategoryContext && isElectronicsProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const isFootwearProductDraft = useMemo(() => hasVariantCategoryContext && isFootwearProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const isJewelleryProductDraft = useMemo(() => hasVariantCategoryContext && isJewelleryProduct(subCategory), [hasVariantCategoryContext, subCategory]);
+  const isBookMediaProductDraft = useMemo(() => hasVariantCategoryContext && isBookMediaProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const isBabyProductDraft = useMemo(() => hasVariantCategoryContext && isBabyProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const isFitmentProductDraft = useMemo(() => hasVariantCategoryContext && isFitmentProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const variantAxisMatrix = useMemo(() => buildVariantOptionMatrix(variantItems), [variantItems]);
+  const relevantVariantMetadataGroups = useMemo(
+    () => (hasVariantCategoryContext ? getRelevantVariantMetadataGroups(category, subCategory) : new Set<string>()),
+    [category, hasVariantCategoryContext, subCategory],
+  );
+  const variantMetadataFieldsByGroup = useMemo(
+    () =>
+      VARIANT_METADATA_GROUP_ORDER.map((group) => ({
+        group,
+        fields: VARIANT_METADATA_FIELDS.filter((field) => field.group === group && relevantVariantMetadataGroups.has(field.group)),
+      })).filter((entry) => entry.fields.length > 0),
+    [relevantVariantMetadataGroups],
+  );
+  const availableVariantMetadataFieldsByGroup = useMemo(
+    () =>
+      variantMetadataFieldsByGroup
+        .map((entry) => ({
+          group: entry.group,
+          fields: entry.fields.filter((field) => !selectedVariantMetadataKeys.includes(field.key)),
+        }))
+        .filter((entry) => entry.fields.length > 0),
+    [selectedVariantMetadataKeys, variantMetadataFieldsByGroup],
+  );
 
   const descriptionEditorRef = useRef<HTMLDivElement | null>(null);
   const previousReadyRequirementCountRef = useRef(0);
@@ -1710,6 +2640,7 @@ export function SellerCatalogueEditor({
       title,
     ],
   );
+
   const variantChangeImpact = useMemo(() => {
     const editingVariant =
       editingVariantIndex !== null && variantItems[editingVariantIndex]
@@ -1727,18 +2658,96 @@ export function SellerCatalogueEditor({
         flavor: String((editingVariant as any).flavor ?? "").trim(),
         abv: String((editingVariant as any).abv ?? "").trim(),
         containerType: String((editingVariant as any).containerType ?? "").trim(),
+        caffeineLevel: String((editingVariant as any).caffeineLevel ?? "").trim(),
+        sweetenerType: String((editingVariant as any).sweetenerType ?? "").trim(),
         storageCapacity: String((editingVariant as any).storageCapacity ?? "").trim(),
         memoryRam: String((editingVariant as any).memoryRam ?? "").trim(),
+        cpuModel: String((editingVariant as any).cpuModel ?? "").trim(),
+        graphicsModel: String((editingVariant as any).graphicsModel ?? "").trim(),
+        screenSize: String((editingVariant as any).screenSize ?? "").trim(),
+        screenResolution: String((editingVariant as any).screenResolution ?? "").trim(),
+        refreshRate: String((editingVariant as any).refreshRate ?? "").trim(),
+        operatingSystem: String((editingVariant as any).operatingSystem ?? "").trim(),
+        batteryCapacity: String((editingVariant as any).batteryCapacity ?? "").trim(),
+        powerOutput: String((editingVariant as any).powerOutput ?? "").trim(),
+        cameraSpec: String((editingVariant as any).cameraSpec ?? "").trim(),
+        lensSpec: String((editingVariant as any).lensSpec ?? "").trim(),
+        chipsetModel: String((editingVariant as any).chipsetModel ?? "").trim(),
+        ports: String((editingVariant as any).ports ?? "").trim(),
+        wirelessStandard: String((editingVariant as any).wirelessStandard ?? "").trim(),
+        voltage: String((editingVariant as any).voltage ?? "").trim(),
+        capacitySpec: String((editingVariant as any).capacitySpec ?? "").trim(),
+        dimensionsSpec: String((editingVariant as any).dimensionsSpec ?? "").trim(),
+        includedInBox: String((editingVariant as any).includedInBox ?? "").trim(),
         connectivity: String((editingVariant as any).connectivity ?? "").trim(),
         compatibility: String((editingVariant as any).compatibility ?? "").trim(),
+        fit: String((editingVariant as any).fit ?? "").trim(),
+        lengthSpec: String((editingVariant as any).lengthSpec ?? "").trim(),
+        sleeveLength: String((editingVariant as any).sleeveLength ?? "").trim(),
+        neckline: String((editingVariant as any).neckline ?? "").trim(),
+        rise: String((editingVariant as any).rise ?? "").trim(),
+        inseam: String((editingVariant as any).inseam ?? "").trim(),
+        pattern: String((editingVariant as any).pattern ?? "").trim(),
+        occasion: String((editingVariant as any).occasion ?? "").trim(),
         sizeSystem: String((editingVariant as any).sizeSystem ?? "").trim(),
+        finish: String((editingVariant as any).finish ?? "").trim(),
+        spf: String((editingVariant as any).spf ?? "").trim(),
+        fragranceFamily: String((editingVariant as any).fragranceFamily ?? "").trim(),
+        texture: String((editingVariant as any).texture ?? "").trim(),
+        undertone: String((editingVariant as any).undertone ?? "").trim(),
+        coverage: String((editingVariant as any).coverage ?? "").trim(),
         material: String((editingVariant as any).material ?? "").trim(),
         ringSize: String((editingVariant as any).ringSize ?? "").trim(),
         strapLength: String((editingVariant as any).strapLength ?? "").trim(),
+        heelHeight: String((editingVariant as any).heelHeight ?? "").trim(),
+        stoneType: String((editingVariant as any).stoneType ?? "").trim(),
         bookFormat: String((editingVariant as any).bookFormat ?? "").trim(),
         language: String((editingVariant as any).language ?? "").trim(),
+        readingAge: String((editingVariant as any).readingAge ?? "").trim(),
+        subtitleLanguage: String((editingVariant as any).subtitleLanguage ?? "").trim(),
+        editionType: String((editingVariant as any).editionType ?? "").trim(),
+        gamePlatform: String((editingVariant as any).gamePlatform ?? "").trim(),
+        gameEdition: String((editingVariant as any).gameEdition ?? "").trim(),
+        genre: String((editingVariant as any).genre ?? "").trim(),
+        regionCode: String((editingVariant as any).regionCode ?? "").trim(),
+        ageRating: String((editingVariant as any).ageRating ?? "").trim(),
+        petSize: String((editingVariant as any).petSize ?? "").trim(),
+        petLifeStage: String((editingVariant as any).petLifeStage ?? "").trim(),
+        breedSize: String((editingVariant as any).breedSize ?? "").trim(),
+        petFoodType: String((editingVariant as any).petFoodType ?? "").trim(),
+        activityLevel: String((editingVariant as any).activityLevel ?? "").trim(),
+        luggageSize: String((editingVariant as any).luggageSize ?? "").trim(),
+        luggageCapacity: String((editingVariant as any).luggageCapacity ?? "").trim(),
+        shellType: String((editingVariant as any).shellType ?? "").trim(),
+        wheelCount: String((editingVariant as any).wheelCount ?? "").trim(),
+        closureType: String((editingVariant as any).closureType ?? "").trim(),
+        cameraMount: String((editingVariant as any).cameraMount ?? "").trim(),
+        sensorFormat: String((editingVariant as any).sensorFormat ?? "").trim(),
+        lensMount: String((editingVariant as any).lensMount ?? "").trim(),
+        stabilization: String((editingVariant as any).stabilization ?? "").trim(),
+        megapixels: String((editingVariant as any).megapixels ?? "").trim(),
+        instrumentType: String((editingVariant as any).instrumentType ?? "").trim(),
+        keyCount: String((editingVariant as any).keyCount ?? "").trim(),
+        stringCount: String((editingVariant as any).stringCount ?? "").trim(),
+        bodySize: String((editingVariant as any).bodySize ?? "").trim(),
+        pickupType: String((editingVariant as any).pickupType ?? "").trim(),
         ageRange: String((editingVariant as any).ageRange ?? "").trim(),
         modelFitment: String((editingVariant as any).modelFitment ?? "").trim(),
+        sizeRange: String((editingVariant as any).sizeRange ?? "").trim(),
+        feedingStage: String((editingVariant as any).feedingStage ?? "").trim(),
+        safetyStandard: String((editingVariant as any).safetyStandard ?? "").trim(),
+        engineCode: String((editingVariant as any).engineCode ?? "").trim(),
+        sidePosition: String((editingVariant as any).sidePosition ?? "").trim(),
+        axlePosition: String((editingVariant as any).axlePosition ?? "").trim(),
+        threadSize: String((editingVariant as any).threadSize ?? "").trim(),
+        vehicleMake: String((editingVariant as any).vehicleMake ?? "").trim(),
+        energyRating: String((editingVariant as any).energyRating ?? "").trim(),
+        installationType: String((editingVariant as any).installationType ?? "").trim(),
+        fuelType: String((editingVariant as any).fuelType ?? "").trim(),
+        loadCapacity: String((editingVariant as any).loadCapacity ?? "").trim(),
+        waterPressure: String((editingVariant as any).waterPressure ?? "").trim(),
+        waterUsage: String((editingVariant as any).waterUsage ?? "").trim(),
+        noiseLevel: String((editingVariant as any).noiseLevel ?? "").trim(),
         parcelPreset: String(editingVariant.logistics?.parcel_preset ?? "").trim(),
         shippingClass: String(editingVariant.logistics?.shipping_class ?? "").trim(),
         sku: String(editingVariant.sku ?? "").trim(),
@@ -1775,16 +2784,72 @@ export function SellerCatalogueEditor({
         containerType: variantDraft.containerType,
         storageCapacity: variantDraft.storageCapacity,
         memoryRam: variantDraft.memoryRam,
+        cpuModel: variantDraft.cpuModel,
+        graphicsModel: variantDraft.graphicsModel,
+        screenSize: variantDraft.screenSize,
+        screenResolution: variantDraft.screenResolution,
+        refreshRate: variantDraft.refreshRate,
+        operatingSystem: variantDraft.operatingSystem,
+        batteryCapacity: variantDraft.batteryCapacity,
+        powerOutput: variantDraft.powerOutput,
+        cameraSpec: variantDraft.cameraSpec,
+        lensSpec: variantDraft.lensSpec,
+        chipsetModel: variantDraft.chipsetModel,
+        ports: variantDraft.ports,
+        wirelessStandard: variantDraft.wirelessStandard,
+        voltage: variantDraft.voltage,
+        capacitySpec: variantDraft.capacitySpec,
+        dimensionsSpec: variantDraft.dimensionsSpec,
+        includedInBox: variantDraft.includedInBox,
         connectivity: variantDraft.connectivity,
         compatibility: variantDraft.compatibility,
+        fit: variantDraft.fit,
+        lengthSpec: variantDraft.lengthSpec,
+        sleeveLength: variantDraft.sleeveLength,
+        neckline: variantDraft.neckline,
+        rise: variantDraft.rise,
+        inseam: variantDraft.inseam,
+        pattern: variantDraft.pattern,
+        occasion: variantDraft.occasion,
         sizeSystem: variantDraft.sizeSystem,
+        finish: variantDraft.finish,
+        spf: variantDraft.spf,
+        fragranceFamily: variantDraft.fragranceFamily,
+        texture: variantDraft.texture,
+        undertone: variantDraft.undertone,
+        coverage: variantDraft.coverage,
         material: variantDraft.material,
         ringSize: variantDraft.ringSize,
         strapLength: variantDraft.strapLength,
         bookFormat: variantDraft.bookFormat,
         language: variantDraft.language,
+        gamePlatform: variantDraft.gamePlatform,
+        gameEdition: variantDraft.gameEdition,
+        genre: variantDraft.genre,
+        regionCode: variantDraft.regionCode,
+        ageRating: variantDraft.ageRating,
+        petSize: variantDraft.petSize,
+        petLifeStage: variantDraft.petLifeStage,
+        luggageSize: variantDraft.luggageSize,
+        luggageCapacity: variantDraft.luggageCapacity,
+        shellType: variantDraft.shellType,
+        cameraMount: variantDraft.cameraMount,
+        sensorFormat: variantDraft.sensorFormat,
+        instrumentType: variantDraft.instrumentType,
+        keyCount: variantDraft.keyCount,
         ageRange: variantDraft.ageRange,
         modelFitment: variantDraft.modelFitment,
+        engineCode: variantDraft.engineCode,
+        sidePosition: variantDraft.sidePosition,
+        axlePosition: variantDraft.axlePosition,
+        threadSize: variantDraft.threadSize,
+        energyRating: variantDraft.energyRating,
+        installationType: variantDraft.installationType,
+        fuelType: variantDraft.fuelType,
+        loadCapacity: variantDraft.loadCapacity,
+        waterPressure: variantDraft.waterPressure,
+        waterUsage: variantDraft.waterUsage,
+        noiseLevel: variantDraft.noiseLevel,
         parcelPreset: variantDraft.parcelPreset,
         shippingClass: variantDraft.shippingClass,
         sku: variantDraft.sku,
@@ -1814,7 +2879,32 @@ export function SellerCatalogueEditor({
     variantDraft.color,
     variantDraft.compatibility,
     variantDraft.connectivity,
+    variantDraft.cpuModel,
+    variantDraft.graphicsModel,
+    variantDraft.screenSize,
+    variantDraft.screenResolution,
+    variantDraft.refreshRate,
+    variantDraft.operatingSystem,
+    variantDraft.batteryCapacity,
+    variantDraft.powerOutput,
+    variantDraft.cameraSpec,
+    variantDraft.lensSpec,
+    variantDraft.chipsetModel,
+    variantDraft.ports,
+    variantDraft.wirelessStandard,
+    variantDraft.voltage,
+    variantDraft.capacitySpec,
+    variantDraft.dimensionsSpec,
+    variantDraft.includedInBox,
     variantDraft.continueSellingOutOfStock,
+    variantDraft.fit,
+    variantDraft.lengthSpec,
+    variantDraft.sleeveLength,
+    variantDraft.neckline,
+    variantDraft.rise,
+    variantDraft.inseam,
+    variantDraft.pattern,
+    variantDraft.occasion,
     variantDraft.hairType,
     variantDraft.hasColor,
     variantDraft.inventoryQty,
@@ -1826,6 +2916,23 @@ export function SellerCatalogueEditor({
     variantDraft.memoryRam,
     variantDraft.material,
     variantDraft.modelFitment,
+    variantDraft.finish,
+    variantDraft.spf,
+    variantDraft.fragranceFamily,
+    variantDraft.texture,
+    variantDraft.undertone,
+    variantDraft.coverage,
+    variantDraft.engineCode,
+    variantDraft.sidePosition,
+    variantDraft.axlePosition,
+    variantDraft.threadSize,
+    variantDraft.energyRating,
+    variantDraft.installationType,
+    variantDraft.fuelType,
+    variantDraft.loadCapacity,
+    variantDraft.waterPressure,
+    variantDraft.waterUsage,
+    variantDraft.noiseLevel,
     variantDraft.parcelPreset,
     variantDraft.saleDiscountPercent,
     variantDraft.scent,
@@ -1843,6 +2950,20 @@ export function SellerCatalogueEditor({
     variantDraft.abv,
     variantDraft.ageRange,
     variantDraft.bookFormat,
+    variantDraft.gamePlatform,
+    variantDraft.gameEdition,
+    variantDraft.genre,
+    variantDraft.regionCode,
+    variantDraft.ageRating,
+    variantDraft.petSize,
+    variantDraft.petLifeStage,
+    variantDraft.luggageSize,
+    variantDraft.luggageCapacity,
+    variantDraft.shellType,
+    variantDraft.cameraMount,
+    variantDraft.sensorFormat,
+    variantDraft.instrumentType,
+    variantDraft.keyCount,
     variantDraft.containerType,
     variantDraft.flavor,
     variantDraft.ringSize,
@@ -1903,6 +3024,7 @@ export function SellerCatalogueEditor({
       variantDraft.widthCm,
     ],
   );
+
   const activeParcelPresetMeta = getParcelPresetMeta(effectiveParcelPreset);
   const selectedSuccessFeePercent = useMemo(
     () => estimateMarketplaceSuccessFeePercent(selectedFeeRule.rule, variantEffectivePriceIncl || 0),
@@ -3293,7 +4415,6 @@ export function SellerCatalogueEditor({
       return "Variant ID is required.";
     }
     if (!variantDraft.label.trim()) return "Variant label is required.";
-    if (isApparelProductDraft && !variantDraft.size.trim()) return "Select a clothing size for this variant.";
     if (!sku.trim()) return "Variant SKU is required.";
     if (variantDraft.hasColor && !variantDraft.color.trim()) return "Choose a variant color or untick the color option.";
     const duplicateVariantId = existingVariants.some((item) => String(item?.variant_id ?? "").trim() === variantId);
@@ -3712,6 +4833,8 @@ export function SellerCatalogueEditor({
     setDraggedVariantImageIndex(null);
     setDropTargetVariantImageIndex(null);
     setEditingVariantIndex(null);
+    setSelectedVariantMetadataKeys([]);
+    setVariantMetadataFieldToAdd("");
     setVariantDraft({
       variantId: "",
       label: "",
@@ -3723,18 +4846,96 @@ export function SellerCatalogueEditor({
       flavor: "",
       abv: "",
       containerType: "",
+      caffeineLevel: "",
+      sweetenerType: "",
       storageCapacity: "",
       memoryRam: "",
+      cpuModel: "",
+      graphicsModel: "",
+      screenSize: "",
+      screenResolution: "",
+      refreshRate: "",
+      operatingSystem: "",
+      batteryCapacity: "",
+      powerOutput: "",
+      cameraSpec: "",
+      lensSpec: "",
+      chipsetModel: "",
+      ports: "",
+      wirelessStandard: "",
+      voltage: "",
+      capacitySpec: "",
+      dimensionsSpec: "",
+      includedInBox: "",
       connectivity: "",
       compatibility: "",
+      fit: "",
+      lengthSpec: "",
+      sleeveLength: "",
+      neckline: "",
+      rise: "",
+      inseam: "",
+      pattern: "",
+      occasion: "",
       sizeSystem: "",
+      finish: "",
+      spf: "",
+      fragranceFamily: "",
+      texture: "",
+      undertone: "",
+      coverage: "",
       material: "",
       ringSize: "",
       strapLength: "",
+      heelHeight: "",
+      stoneType: "",
       bookFormat: "",
       language: "",
+      readingAge: "",
+      subtitleLanguage: "",
+      editionType: "",
+      gamePlatform: "",
+      gameEdition: "",
+      genre: "",
+      regionCode: "",
+      ageRating: "",
+      petSize: "",
+      petLifeStage: "",
+      breedSize: "",
+      petFoodType: "",
+      activityLevel: "",
+      luggageSize: "",
+      luggageCapacity: "",
+      shellType: "",
+      wheelCount: "",
+      closureType: "",
+      cameraMount: "",
+      sensorFormat: "",
+      lensMount: "",
+      stabilization: "",
+      megapixels: "",
+      instrumentType: "",
+      keyCount: "",
+      stringCount: "",
+      bodySize: "",
+      pickupType: "",
       ageRange: "",
       modelFitment: "",
+      sizeRange: "",
+      feedingStage: "",
+      safetyStandard: "",
+      engineCode: "",
+      sidePosition: "",
+      axlePosition: "",
+      threadSize: "",
+      vehicleMake: "",
+      energyRating: "",
+      installationType: "",
+      fuelType: "",
+      loadCapacity: "",
+      waterPressure: "",
+      waterUsage: "",
+      noiseLevel: "",
       parcelPreset: "",
       shippingClass: "",
       sku: "",
@@ -3759,6 +4960,7 @@ export function SellerCatalogueEditor({
       widthCm: "",
       heightCm: "",
       monthlySales30d: "",
+      metadataNotes: {},
     });
   }
 
@@ -3766,6 +4968,8 @@ export function SellerCatalogueEditor({
     setEditingVariantIndex(index);
     setVariantFormOpen(true);
     setVariantImages(Array.isArray(variant.media?.images) ? variant.media.images : []);
+    setSelectedVariantMetadataKeys(getSelectedVariantMetadataKeysFromDraft(variant));
+    setVariantMetadataFieldToAdd("");
     setVariantDraft({
       variantId: String(variant.variant_id ?? "").trim(),
       label: String(variant.label ?? "").trim(),
@@ -3777,18 +4981,96 @@ export function SellerCatalogueEditor({
       flavor: String((variant as any).flavor ?? "").trim(),
       abv: String((variant as any).abv ?? "").trim(),
       containerType: String((variant as any).containerType ?? "").trim(),
+      caffeineLevel: String((variant as any).caffeineLevel ?? "").trim(),
+      sweetenerType: String((variant as any).sweetenerType ?? "").trim(),
       storageCapacity: String((variant as any).storageCapacity ?? "").trim(),
       memoryRam: String((variant as any).memoryRam ?? "").trim(),
+      cpuModel: String((variant as any).cpuModel ?? "").trim(),
+      graphicsModel: String((variant as any).graphicsModel ?? "").trim(),
+      screenSize: String((variant as any).screenSize ?? "").trim(),
+      screenResolution: String((variant as any).screenResolution ?? "").trim(),
+      refreshRate: String((variant as any).refreshRate ?? "").trim(),
+      operatingSystem: String((variant as any).operatingSystem ?? "").trim(),
+      batteryCapacity: String((variant as any).batteryCapacity ?? "").trim(),
+      powerOutput: String((variant as any).powerOutput ?? "").trim(),
+      cameraSpec: String((variant as any).cameraSpec ?? "").trim(),
+      lensSpec: String((variant as any).lensSpec ?? "").trim(),
+      chipsetModel: String((variant as any).chipsetModel ?? "").trim(),
+      ports: String((variant as any).ports ?? "").trim(),
+      wirelessStandard: String((variant as any).wirelessStandard ?? "").trim(),
+      voltage: String((variant as any).voltage ?? "").trim(),
+      capacitySpec: String((variant as any).capacitySpec ?? "").trim(),
+      dimensionsSpec: String((variant as any).dimensionsSpec ?? "").trim(),
+      includedInBox: String((variant as any).includedInBox ?? "").trim(),
       connectivity: String((variant as any).connectivity ?? "").trim(),
       compatibility: String((variant as any).compatibility ?? "").trim(),
+      fit: String((variant as any).fit ?? "").trim(),
+      lengthSpec: String((variant as any).lengthSpec ?? "").trim(),
+      sleeveLength: String((variant as any).sleeveLength ?? "").trim(),
+      neckline: String((variant as any).neckline ?? "").trim(),
+      rise: String((variant as any).rise ?? "").trim(),
+      inseam: String((variant as any).inseam ?? "").trim(),
+      pattern: String((variant as any).pattern ?? "").trim(),
+      occasion: String((variant as any).occasion ?? "").trim(),
       sizeSystem: String((variant as any).sizeSystem ?? "").trim(),
+      finish: String((variant as any).finish ?? "").trim(),
+      spf: String((variant as any).spf ?? "").trim(),
+      fragranceFamily: String((variant as any).fragranceFamily ?? "").trim(),
+      texture: String((variant as any).texture ?? "").trim(),
+      undertone: String((variant as any).undertone ?? "").trim(),
+      coverage: String((variant as any).coverage ?? "").trim(),
       material: String((variant as any).material ?? "").trim(),
       ringSize: String((variant as any).ringSize ?? "").trim(),
       strapLength: String((variant as any).strapLength ?? "").trim(),
+      heelHeight: String((variant as any).heelHeight ?? "").trim(),
+      stoneType: String((variant as any).stoneType ?? "").trim(),
       bookFormat: String((variant as any).bookFormat ?? "").trim(),
       language: String((variant as any).language ?? "").trim(),
+      readingAge: String((variant as any).readingAge ?? "").trim(),
+      subtitleLanguage: String((variant as any).subtitleLanguage ?? "").trim(),
+      editionType: String((variant as any).editionType ?? "").trim(),
+      gamePlatform: String((variant as any).gamePlatform ?? "").trim(),
+      gameEdition: String((variant as any).gameEdition ?? "").trim(),
+      genre: String((variant as any).genre ?? "").trim(),
+      regionCode: String((variant as any).regionCode ?? "").trim(),
+      ageRating: String((variant as any).ageRating ?? "").trim(),
+      petSize: String((variant as any).petSize ?? "").trim(),
+      petLifeStage: String((variant as any).petLifeStage ?? "").trim(),
+      breedSize: String((variant as any).breedSize ?? "").trim(),
+      petFoodType: String((variant as any).petFoodType ?? "").trim(),
+      activityLevel: String((variant as any).activityLevel ?? "").trim(),
+      luggageSize: String((variant as any).luggageSize ?? "").trim(),
+      luggageCapacity: String((variant as any).luggageCapacity ?? "").trim(),
+      shellType: String((variant as any).shellType ?? "").trim(),
+      wheelCount: String((variant as any).wheelCount ?? "").trim(),
+      closureType: String((variant as any).closureType ?? "").trim(),
+      cameraMount: String((variant as any).cameraMount ?? "").trim(),
+      sensorFormat: String((variant as any).sensorFormat ?? "").trim(),
+      lensMount: String((variant as any).lensMount ?? "").trim(),
+      stabilization: String((variant as any).stabilization ?? "").trim(),
+      megapixels: String((variant as any).megapixels ?? "").trim(),
+      instrumentType: String((variant as any).instrumentType ?? "").trim(),
+      keyCount: String((variant as any).keyCount ?? "").trim(),
+      stringCount: String((variant as any).stringCount ?? "").trim(),
+      bodySize: String((variant as any).bodySize ?? "").trim(),
+      pickupType: String((variant as any).pickupType ?? "").trim(),
       ageRange: String((variant as any).ageRange ?? "").trim(),
       modelFitment: String((variant as any).modelFitment ?? "").trim(),
+      sizeRange: String((variant as any).sizeRange ?? "").trim(),
+      feedingStage: String((variant as any).feedingStage ?? "").trim(),
+      safetyStandard: String((variant as any).safetyStandard ?? "").trim(),
+      engineCode: String((variant as any).engineCode ?? "").trim(),
+      sidePosition: String((variant as any).sidePosition ?? "").trim(),
+      axlePosition: String((variant as any).axlePosition ?? "").trim(),
+      threadSize: String((variant as any).threadSize ?? "").trim(),
+      vehicleMake: String((variant as any).vehicleMake ?? "").trim(),
+      energyRating: String((variant as any).energyRating ?? "").trim(),
+      installationType: String((variant as any).installationType ?? "").trim(),
+      fuelType: String((variant as any).fuelType ?? "").trim(),
+      loadCapacity: String((variant as any).loadCapacity ?? "").trim(),
+      waterPressure: String((variant as any).waterPressure ?? "").trim(),
+      waterUsage: String((variant as any).waterUsage ?? "").trim(),
+      noiseLevel: String((variant as any).noiseLevel ?? "").trim(),
       parcelPreset: String(variant.logistics?.parcel_preset ?? "").trim(),
       shippingClass: String(variant.logistics?.shipping_class ?? "").trim(),
       sku: String(variant.sku ?? "").trim(),
@@ -3813,6 +5095,12 @@ export function SellerCatalogueEditor({
       widthCm: String(variant.logistics?.width_cm ?? ""),
       heightCm: String(variant.logistics?.height_cm ?? ""),
       monthlySales30d: String(variant.logistics?.monthly_sales_30d ?? ""),
+      metadataNotes:
+        variant.metadataNotes && typeof variant.metadataNotes === "object"
+          ? Object.fromEntries(
+              Object.entries(variant.metadataNotes).map(([key, value]) => [key, String(value ?? "").trim()]),
+            ) as VariantMetadataNotes
+          : {},
     });
   }
 
@@ -3962,22 +5250,105 @@ export function SellerCatalogueEditor({
         flavor: variantDraft.flavor.trim(),
         abv: variantDraft.abv.trim(),
         containerType: variantDraft.containerType.trim(),
+        caffeineLevel: variantDraft.caffeineLevel.trim(),
+        sweetenerType: variantDraft.sweetenerType.trim(),
         storageCapacity: variantDraft.storageCapacity.trim(),
         memoryRam: variantDraft.memoryRam.trim(),
+        cpuModel: variantDraft.cpuModel.trim(),
+        graphicsModel: variantDraft.graphicsModel.trim(),
+        screenSize: variantDraft.screenSize.trim(),
+        screenResolution: variantDraft.screenResolution.trim(),
+        refreshRate: variantDraft.refreshRate.trim(),
+        operatingSystem: variantDraft.operatingSystem.trim(),
+        batteryCapacity: variantDraft.batteryCapacity.trim(),
+        powerOutput: variantDraft.powerOutput.trim(),
+        cameraSpec: variantDraft.cameraSpec.trim(),
+        lensSpec: variantDraft.lensSpec.trim(),
+        chipsetModel: variantDraft.chipsetModel.trim(),
+        ports: variantDraft.ports.trim(),
+        wirelessStandard: variantDraft.wirelessStandard.trim(),
+        voltage: variantDraft.voltage.trim(),
+        capacitySpec: variantDraft.capacitySpec.trim(),
+        dimensionsSpec: variantDraft.dimensionsSpec.trim(),
+        includedInBox: variantDraft.includedInBox.trim(),
         connectivity: variantDraft.connectivity.trim(),
         compatibility: variantDraft.compatibility.trim(),
+        fit: variantDraft.fit.trim(),
+        lengthSpec: variantDraft.lengthSpec.trim(),
+        sleeveLength: variantDraft.sleeveLength.trim(),
+        neckline: variantDraft.neckline.trim(),
+        rise: variantDraft.rise.trim(),
+        inseam: variantDraft.inseam.trim(),
+        pattern: variantDraft.pattern.trim(),
+        occasion: variantDraft.occasion.trim(),
         sizeSystem: variantDraft.sizeSystem.trim(),
+        finish: variantDraft.finish.trim(),
+        spf: variantDraft.spf.trim(),
+        fragranceFamily: variantDraft.fragranceFamily.trim(),
+        texture: variantDraft.texture.trim(),
+        undertone: variantDraft.undertone.trim(),
+        coverage: variantDraft.coverage.trim(),
         material: variantDraft.material.trim(),
         ringSize: variantDraft.ringSize.trim(),
         strapLength: variantDraft.strapLength.trim(),
+        heelHeight: variantDraft.heelHeight.trim(),
+        stoneType: variantDraft.stoneType.trim(),
         bookFormat: variantDraft.bookFormat.trim(),
         language: variantDraft.language.trim(),
+        readingAge: variantDraft.readingAge.trim(),
+        subtitleLanguage: variantDraft.subtitleLanguage.trim(),
+        editionType: variantDraft.editionType.trim(),
+        gamePlatform: variantDraft.gamePlatform.trim(),
+        gameEdition: variantDraft.gameEdition.trim(),
+        genre: variantDraft.genre.trim(),
+        regionCode: variantDraft.regionCode.trim(),
+        ageRating: variantDraft.ageRating.trim(),
+        petSize: variantDraft.petSize.trim(),
+        petLifeStage: variantDraft.petLifeStage.trim(),
+        breedSize: variantDraft.breedSize.trim(),
+        petFoodType: variantDraft.petFoodType.trim(),
+        activityLevel: variantDraft.activityLevel.trim(),
+        luggageSize: variantDraft.luggageSize.trim(),
+        luggageCapacity: variantDraft.luggageCapacity.trim(),
+        shellType: variantDraft.shellType.trim(),
+        wheelCount: variantDraft.wheelCount.trim(),
+        closureType: variantDraft.closureType.trim(),
+        cameraMount: variantDraft.cameraMount.trim(),
+        sensorFormat: variantDraft.sensorFormat.trim(),
+        lensMount: variantDraft.lensMount.trim(),
+        stabilization: variantDraft.stabilization.trim(),
+        megapixels: variantDraft.megapixels.trim(),
+        instrumentType: variantDraft.instrumentType.trim(),
+        keyCount: variantDraft.keyCount.trim(),
+        stringCount: variantDraft.stringCount.trim(),
+        bodySize: variantDraft.bodySize.trim(),
+        pickupType: variantDraft.pickupType.trim(),
         ageRange: variantDraft.ageRange.trim(),
         modelFitment: variantDraft.modelFitment.trim(),
+        sizeRange: variantDraft.sizeRange.trim(),
+        feedingStage: variantDraft.feedingStage.trim(),
+        safetyStandard: variantDraft.safetyStandard.trim(),
+        engineCode: variantDraft.engineCode.trim(),
+        sidePosition: variantDraft.sidePosition.trim(),
+        axlePosition: variantDraft.axlePosition.trim(),
+        threadSize: variantDraft.threadSize.trim(),
+        vehicleMake: variantDraft.vehicleMake.trim(),
+        energyRating: variantDraft.energyRating.trim(),
+        installationType: variantDraft.installationType.trim(),
+        fuelType: variantDraft.fuelType.trim(),
+        loadCapacity: variantDraft.loadCapacity.trim(),
+        waterPressure: variantDraft.waterPressure.trim(),
+        waterUsage: variantDraft.waterUsage.trim(),
+        noiseLevel: variantDraft.noiseLevel.trim(),
         sku,
         barcode: variantDraft.barcode.trim(),
         barcodeImageUrl: variantDraft.barcodeImageUrl.trim(),
         color: variantDraft.hasColor ? variantDraft.color.trim() : "",
+        metadataNotes: Object.fromEntries(
+          Object.entries(variantDraft.metadataNotes || {})
+            .map(([key, value]) => [key, String(value ?? "").trim()])
+            .filter(([, value]) => Boolean(value)),
+        ) as VariantMetadataNotes,
         placement: {
           is_default: variantDraft.isDefault,
           isActive: variantDraft.isActive,
@@ -4084,16 +5455,72 @@ export function SellerCatalogueEditor({
               containerType: variantDraft.containerType.trim(),
               storageCapacity: variantDraft.storageCapacity.trim(),
               memoryRam: variantDraft.memoryRam.trim(),
+              cpuModel: variantDraft.cpuModel.trim(),
+              graphicsModel: variantDraft.graphicsModel.trim(),
+              screenSize: variantDraft.screenSize.trim(),
+              screenResolution: variantDraft.screenResolution.trim(),
+              refreshRate: variantDraft.refreshRate.trim(),
+              operatingSystem: variantDraft.operatingSystem.trim(),
+              batteryCapacity: variantDraft.batteryCapacity.trim(),
+              powerOutput: variantDraft.powerOutput.trim(),
+              cameraSpec: variantDraft.cameraSpec.trim(),
+              lensSpec: variantDraft.lensSpec.trim(),
+              chipsetModel: variantDraft.chipsetModel.trim(),
+              ports: variantDraft.ports.trim(),
+              wirelessStandard: variantDraft.wirelessStandard.trim(),
+              voltage: variantDraft.voltage.trim(),
+              capacitySpec: variantDraft.capacitySpec.trim(),
+              dimensionsSpec: variantDraft.dimensionsSpec.trim(),
+              includedInBox: variantDraft.includedInBox.trim(),
               connectivity: variantDraft.connectivity.trim(),
               compatibility: variantDraft.compatibility.trim(),
+              fit: variantDraft.fit.trim(),
+              lengthSpec: variantDraft.lengthSpec.trim(),
+              sleeveLength: variantDraft.sleeveLength.trim(),
+              neckline: variantDraft.neckline.trim(),
+              rise: variantDraft.rise.trim(),
+              inseam: variantDraft.inseam.trim(),
+              pattern: variantDraft.pattern.trim(),
+              occasion: variantDraft.occasion.trim(),
               sizeSystem: variantDraft.sizeSystem.trim(),
+              finish: variantDraft.finish.trim(),
+              spf: variantDraft.spf.trim(),
+              fragranceFamily: variantDraft.fragranceFamily.trim(),
+              texture: variantDraft.texture.trim(),
+              undertone: variantDraft.undertone.trim(),
+              coverage: variantDraft.coverage.trim(),
               material: variantDraft.material.trim(),
               ringSize: variantDraft.ringSize.trim(),
               strapLength: variantDraft.strapLength.trim(),
               bookFormat: variantDraft.bookFormat.trim(),
               language: variantDraft.language.trim(),
+              gamePlatform: variantDraft.gamePlatform.trim(),
+              gameEdition: variantDraft.gameEdition.trim(),
+              genre: variantDraft.genre.trim(),
+              regionCode: variantDraft.regionCode.trim(),
+              ageRating: variantDraft.ageRating.trim(),
+              petSize: variantDraft.petSize.trim(),
+              petLifeStage: variantDraft.petLifeStage.trim(),
+              luggageSize: variantDraft.luggageSize.trim(),
+              luggageCapacity: variantDraft.luggageCapacity.trim(),
+              shellType: variantDraft.shellType.trim(),
+              cameraMount: variantDraft.cameraMount.trim(),
+              sensorFormat: variantDraft.sensorFormat.trim(),
+              instrumentType: variantDraft.instrumentType.trim(),
+              keyCount: variantDraft.keyCount.trim(),
               ageRange: variantDraft.ageRange.trim(),
               modelFitment: variantDraft.modelFitment.trim(),
+              engineCode: variantDraft.engineCode.trim(),
+              sidePosition: variantDraft.sidePosition.trim(),
+              axlePosition: variantDraft.axlePosition.trim(),
+              threadSize: variantDraft.threadSize.trim(),
+              energyRating: variantDraft.energyRating.trim(),
+              installationType: variantDraft.installationType.trim(),
+              fuelType: variantDraft.fuelType.trim(),
+              loadCapacity: variantDraft.loadCapacity.trim(),
+              waterPressure: variantDraft.waterPressure.trim(),
+              waterUsage: variantDraft.waterUsage.trim(),
+              noiseLevel: variantDraft.noiseLevel.trim(),
               sku,
               barcode: variantDraft.barcode.trim(),
               barcodeImageUrl: variantDraft.barcodeImageUrl.trim(),
@@ -4204,6 +5631,23 @@ export function SellerCatalogueEditor({
             containerType: variantDraft.containerType.trim(),
             storageCapacity: variantDraft.storageCapacity.trim(),
             memoryRam: variantDraft.memoryRam.trim(),
+            cpuModel: variantDraft.cpuModel.trim(),
+            graphicsModel: variantDraft.graphicsModel.trim(),
+            screenSize: variantDraft.screenSize.trim(),
+            screenResolution: variantDraft.screenResolution.trim(),
+            refreshRate: variantDraft.refreshRate.trim(),
+            operatingSystem: variantDraft.operatingSystem.trim(),
+            batteryCapacity: variantDraft.batteryCapacity.trim(),
+            powerOutput: variantDraft.powerOutput.trim(),
+            cameraSpec: variantDraft.cameraSpec.trim(),
+            lensSpec: variantDraft.lensSpec.trim(),
+            chipsetModel: variantDraft.chipsetModel.trim(),
+            ports: variantDraft.ports.trim(),
+            wirelessStandard: variantDraft.wirelessStandard.trim(),
+            voltage: variantDraft.voltage.trim(),
+            capacitySpec: variantDraft.capacitySpec.trim(),
+            dimensionsSpec: variantDraft.dimensionsSpec.trim(),
+            includedInBox: variantDraft.includedInBox.trim(),
             connectivity: variantDraft.connectivity.trim(),
             compatibility: variantDraft.compatibility.trim(),
             sizeSystem: variantDraft.sizeSystem.trim(),
@@ -5382,30 +6826,7 @@ export function SellerCatalogueEditor({
 
                 {variantFormOpen ? (
                   <div className="mt-4 space-y-3 rounded-[8px] border border-black/5 bg-white p-4">
-                    {variantChangeImpact.tone !== "review" ? (
-                      <div
-                        className={[
-                          "rounded-[8px] border px-3 py-3",
-                          variantChangeImpact.tone === "live"
-                            ? "border-[#cfe8d8] bg-[rgba(57,169,107,0.07)]"
-                            : "border-black/5 bg-[#fafafa]",
-                        ].join(" ")}
-                      >
-                        <p
-                          className={[
-                            "text-[11px] font-semibold uppercase tracking-[0.12em]",
-                            variantChangeImpact.tone === "live"
-                              ? "text-[#1a8553]"
-                              : "text-[#907d4c]",
-                          ].join(" ")}
-                        >
-                          Variant change impact
-                        </p>
-                        <p className="mt-2 text-[14px] font-semibold text-[#202020]">{variantChangeImpact.title}</p>
-                        <p className="mt-1 text-[12px] leading-[1.55] text-[#57636c]">{variantChangeImpact.message}</p>
-                      </div>
-                    ) : null}
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-3">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant ID <span className="text-[#d11c1c]">*</span></span>
                         <div className="flex gap-2">
@@ -5442,27 +6863,37 @@ export function SellerCatalogueEditor({
                         />
                       </label>
                     </div>
-                    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                    <div className="grid gap-3">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
                           Barcode {fulfillmentMode === "bevgo" ? <span className="text-[#d11c1c]">*</span> : null}
                         </span>
                         <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                        <input
-                          value={variantDraft.barcode}
-                          onChange={(event) => {
-                            setVariantDraft((current) => ({ ...current, barcode: event.target.value.trim() }));
-                            setVariantBarcodeStatus("idle");
-                          }}
-                          onBlur={() => {
-                            void checkVariantBarcodeUnique(
-                              variantDraft.barcode,
-                              editingVariantIndex !== null ? String(variantItems[editingVariantIndex]?.barcode ?? "") : "",
-                            );
-                          }}
-                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                          placeholder="Scan or paste the variant barcode"
-                        />
+                        <div className="flex gap-2">
+                          <input
+                            value={variantDraft.barcode}
+                            onChange={(event) => {
+                              setVariantDraft((current) => ({ ...current, barcode: event.target.value.trim() }));
+                              setVariantBarcodeStatus("idle");
+                            }}
+                            onBlur={() => {
+                              void checkVariantBarcodeUnique(
+                                variantDraft.barcode,
+                                editingVariantIndex !== null ? String(variantItems[editingVariantIndex]?.barcode ?? "") : "",
+                              );
+                            }}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="Scan or paste the variant barcode"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void generateVariantBarcode()}
+                            disabled={generatingVariantBarcode || submitting}
+                            className="inline-flex h-[42px] min-w-[132px] items-center justify-center rounded-[8px] border border-black/10 bg-[#202020] px-4 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {generatingVariantBarcode ? "Generating..." : "Generate barcode"}
+                          </button>
+                        </div>
                         <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
                           {fulfillmentMode === "bevgo"
                             ? "Required for Piessang fulfilment. Piessang can only receive inbound stock when the barcode on the delivered unit matches this platform variant."
@@ -5471,14 +6902,6 @@ export function SellerCatalogueEditor({
                         {variantBarcodeStatus === "taken" ? <p className="mt-1 text-[11px] text-[#b91c1c]">That barcode is already used on another variant.</p> : null}
                         {variantBarcodeStatus === "unique" ? <p className="mt-1 text-[11px] text-[#166534]">Barcode is available.</p> : null}
                       </label>
-                      <button
-                        type="button"
-                        onClick={() => void generateVariantBarcode()}
-                        disabled={generatingVariantBarcode || submitting}
-                        className="inline-flex h-[42px] min-w-[132px] items-center justify-center self-start sm:self-end rounded-[8px] border border-black/10 bg-[#202020] px-4 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {generatingVariantBarcode ? "Generating..." : "Generate barcode"}
-                      </button>
                     </div>
                     {variantDraft.barcodeImageUrl ? (
                       <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
@@ -5487,6 +6910,11 @@ export function SellerCatalogueEditor({
                       </div>
                     ) : null}
                     <div className="space-y-3">
+                      {!hasVariantCategoryContext ? (
+                        <div className="rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-3 py-2 text-[11px] text-[#57636c]">
+                          Choose a category or sub category first to unlock category-specific variant fields. Until then, this form stays neutral.
+                        </div>
+                      ) : null}
                       <label className="flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020]">
                         <input
                           type="checkbox"
@@ -5502,28 +6930,48 @@ export function SellerCatalogueEditor({
                         This variant has a color option
                       </label>
                       {variantDraft.hasColor ? (
-                        <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="grid gap-3">
                           <label className="block">
                             <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Color</span>
-                            <div className="flex items-center gap-3 rounded-[8px] border border-black/10 bg-white px-3 py-2.5">
-                              <SwatchPicker
-                                value={variantDraft.color || "#d1d5db"}
-                                onChange={(value) => setVariantDraft((current) => ({ ...current, color: value }))}
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-3">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Selected</span>
-                                  <span className="text-[12px] text-[#57636c]">
-                                    {variantDraft.color ? variantDraft.color.toUpperCase() : "No color selected"}
-                                  </span>
-                                </div>
-                                <input
-                                  type="color"
+                            <div className="rounded-[8px] border border-black/10 bg-white px-3 py-3">
+                              <div className="flex flex-col gap-3">
+                                <SwatchPicker
                                   value={variantDraft.color || "#d1d5db"}
-                                  onChange={(event) => setVariantDraft((current) => ({ ...current, color: event.target.value }))}
-                                  className="mt-2 h-8 w-full cursor-pointer rounded-[8px] border border-black/10 bg-transparent p-0"
-                                  aria-label="Pick variant color"
+                                  onChange={(value) => setVariantDraft((current) => ({ ...current, color: value }))}
+                                  className="w-full"
                                 />
+                                <div className="min-w-0">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Selected color</span>
+                                  <div className="mt-2 flex items-center gap-3 rounded-[8px] border border-black/10 bg-[#fafafa] px-3 py-2.5">
+                                    <span
+                                      className="h-8 w-8 shrink-0 rounded-full border border-black/10"
+                                      style={{ backgroundColor: variantDraft.color || "#d1d5db" }}
+                                      aria-hidden="true"
+                                    />
+                                    <div className="min-w-0">
+                                      <p className="truncate text-[13px] font-semibold text-[#202020]">
+                                        {variantDraft.color ? getSwatchLabel(variantDraft.color) : "No color selected"}
+                                      </p>
+                                      {variantDraft.color ? (
+                                        <p className="text-[11px] uppercase tracking-[0.04em] text-[#57636c]">
+                                          {variantDraft.color.toUpperCase()}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="mt-3">
+                                <label className="block">
+                                  <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Custom color</span>
+                                  <input
+                                    type="color"
+                                    value={variantDraft.color || "#d1d5db"}
+                                    onChange={(event) => setVariantDraft((current) => ({ ...current, color: event.target.value }))}
+                                    className="h-9 w-full cursor-pointer rounded-[8px] border border-black/10 bg-transparent p-1"
+                                    aria-label="Pick variant color"
+                                  />
+                                </label>
                               </div>
                             </div>
                           </label>
@@ -5593,56 +7041,398 @@ export function SellerCatalogueEditor({
                         ))}
                       </div>
                     </div>
-                    {isApparelProductDraft ? (
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="block">
-                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
-                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                          <input
-                            type="number"
-                            min="1"
-                            value={variantDraft.unitCount}
-                            onChange={(event) => setVariantDraft((current) => ({ ...current, unitCount: event.target.value }))}
-                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                          />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Clothing size <span className="text-[#d11c1c]">*</span></span>
-                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                          <div className="grid gap-2 sm:grid-cols-[minmax(0,160px)_1fr]">
+                    {!hasVariantCategoryContext ? (
+                      <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Variant metadata</p>
+                            <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                              Choose a category and/or subcategory above to unlock the relevant variant metadata fields.
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-[rgba(148,163,184,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#475569]">
+                            Locked
+                          </span>
+                        </div>
+                        <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
+                          Please select a category and/or subcategory first to unlock variant metadata fields.
+                        </div>
+                      </div>
+                    ) : true ? (
+                      <div className="space-y-4">
+                        <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Pack details</p>
+                            <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                              Keep the operational pack details here, including pack size, volume or weight, and basic dimensions.
+                            </p>
+                          </div>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                            <label className="block">
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
+                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <input
+                                type="number"
+                                min="1"
+                                value={variantDraft.unitCount}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, unitCount: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Volume / weight</span>
+                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <input
+                                type="number"
+                                min="0"
+                                value={variantDraft.volume}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, volume: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Unit</span>
+                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <select
+                                value={variantDraft.volumeUnit}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, volumeUnit: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              >
+                                {VOLUME_UNITS.map((unit) => (
+                                  <option key={unit} value={unit}>
+                                    {unit}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                            <label className="block">
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Length (cm)</span>
+                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <input
+                                type="number"
+                                min="0"
+                                value={variantDraft.lengthCm}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, lengthCm: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Width (cm)</span>
+                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <input
+                                type="number"
+                                min="0"
+                                value={variantDraft.widthCm}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, widthCm: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              />
+                            </label>
+                            <label className="block">
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Height (cm)</span>
+                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <input
+                                type="number"
+                                min="0"
+                                value={variantDraft.heightCm}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, heightCm: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              />
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Variant metadata</p>
+                              <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                Add only the fields that make sense for this variant. The list below is now narrowed to the selected category or subcategory so sellers are not digging through unrelated options.
+                              </p>
+                            </div>
+                            <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#907d4c]">
+                              Optional
+                            </span>
+                          </div>
+
+                          <label className="mt-3 block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Add metadata field</span>
                             <select
-                              value={APPAREL_SIZE_OPTIONS.includes(variantDraft.size) ? variantDraft.size : (variantDraft.size ? "Custom" : "")}
+                              value={variantMetadataFieldToAdd}
                               onChange={(event) => {
-                                const nextValue = event.target.value;
-                                setVariantDraft((current) => ({
-                                  ...current,
-                                  size: nextValue === "Custom" ? current.size : nextValue,
-                                }));
+                                const nextKey = event.target.value as VariantMetadataKey;
+                                setVariantMetadataFieldToAdd(nextKey);
+                                if (!nextKey) return;
+                                setSelectedVariantMetadataKeys((current) => (current.includes(nextKey) ? current : [...current, nextKey]));
+                                setVariantMetadataFieldToAdd("");
                               }}
                               className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
                             >
-                              <option value="">Select size</option>
-                              {APPAREL_SIZE_OPTIONS.map((sizeOption) => (
-                                <option key={sizeOption} value={sizeOption}>
-                                  {sizeOption}
-                                </option>
+                              <option value="">Choose a field to add</option>
+                              {availableVariantMetadataFieldsByGroup.map((entry) => (
+                                <optgroup key={entry.group} label={entry.group}>
+                                  {entry.fields.map((field) => (
+                                    <option key={field.key} value={field.key}>
+                                      {field.label}
+                                    </option>
+                                  ))}
+                                </optgroup>
                               ))}
                             </select>
-                            <input
-                              type="text"
-                              value={variantDraft.size}
-                              onChange={(event) => setVariantDraft((current) => ({ ...current, size: event.target.value }))}
-                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                              placeholder="Custom size or fit note"
-                            />
-                          </div>
-                          <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                            Use standard sizes like S, M, L, XL or add the exact fit note you want shoppers to see.
-                          </p>
-                        </label>
+                          </label>
+
+                          {selectedVariantMetadataKeys.length ? (
+                            <div className="mt-3 space-y-3">
+                              {selectedVariantMetadataKeys.map((fieldKey) => {
+                                const field = VARIANT_METADATA_FIELD_MAP[fieldKey];
+                                const isSelectWithCustom = [
+                                  "size",
+                                  "shade",
+                                  "scent",
+                                  "finish",
+                                  "spf",
+                                  "fragranceFamily",
+                                  "texture",
+                                  "undertone",
+                                  "coverage",
+                                  "skinType",
+                                  "hairType",
+                                  "containerType",
+                                  "caffeineLevel",
+                                  "sweetenerType",
+                                  "storageCapacity",
+                                  "memoryRam",
+                                  "connectivity",
+                                  "fit",
+                                  "lengthSpec",
+                                  "sleeveLength",
+                                  "neckline",
+                                  "rise",
+                                  "pattern",
+                                  "occasion",
+                                  "sizeSystem",
+                                  "material",
+                                  "heelHeight",
+                                  "stoneType",
+                                  "bookFormat",
+                                  "language",
+                                  "readingAge",
+                                  "subtitleLanguage",
+                                  "editionType",
+                                  "gamePlatform",
+                                  "gameEdition",
+                                  "genre",
+                                  "regionCode",
+                                  "ageRating",
+                                  "petSize",
+                                  "petLifeStage",
+                                  "breedSize",
+                                  "petFoodType",
+                                  "activityLevel",
+                                  "luggageSize",
+                                  "shellType",
+                                  "wheelCount",
+                                  "closureType",
+                                  "cameraMount",
+                                  "sensorFormat",
+                                  "lensMount",
+                                  "stabilization",
+                                  "megapixels",
+                                  "instrumentType",
+                                  "stringCount",
+                                  "bodySize",
+                                  "pickupType",
+                                  "ageRange",
+                                  "sizeRange",
+                                  "feedingStage",
+                                  "safetyStandard",
+                                  "sidePosition",
+                                  "axlePosition",
+                                  "vehicleMake",
+                                  "energyRating",
+                                  "installationType",
+                                  "fuelType",
+                                  "noiseLevel",
+                                ].includes(fieldKey);
+                                const selectOptions = isSelectWithCustom
+                                  ? (variantMetadataSelectOptions[fieldKey as SelectableVariantMetadataKey] ?? [])
+                                  : [];
+                                const fieldValue = variantDraft[fieldKey];
+                                const fieldNote = variantDraft.metadataNotes?.[fieldKey] ?? "";
+                                const selectedSelectValue = selectOptions.includes(fieldValue) ? fieldValue : (fieldValue ? "Custom" : "");
+                                return (
+                                  <div key={fieldKey} className="rounded-[8px] border border-black/10 bg-white p-3">
+                                    <div className="flex flex-wrap items-start justify-between gap-2">
+                                      <div>
+                                        <p className="text-[12px] font-semibold text-[#202020]">{field.label}</p>
+                                        <p className="mt-1 text-[11px] text-[#57636c]">{field.group}</p>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedVariantMetadataKeys((current) => current.filter((key) => key !== fieldKey));
+                                          setVariantDraft((current) => clearVariantMetadataField(current, fieldKey));
+                                        }}
+                                        className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#57636c]"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                    <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mt-2" />
+                                    <div className="mt-3">
+                                      {isSelectWithCustom ? (
+                                        <div className="grid gap-2">
+                                          <select
+                                            value={selectedSelectValue}
+                                            onChange={(event) => {
+                                              const nextValue = event.target.value;
+                                              setVariantDraft((current) => ({
+                                                ...current,
+                                                [fieldKey]:
+                                                  nextValue === "Custom"
+                                                    ? (selectOptions.includes(current[fieldKey]) ? "" : current[fieldKey])
+                                                    : nextValue,
+                                              }));
+                                            }}
+                                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                                          >
+                                            <option value="">Select {field.label.toLowerCase()}</option>
+                                            {selectOptions.map((option) => (
+                                              <option key={option} value={option}>
+                                                {option}
+                                              </option>
+                                            ))}
+                                          </select>
+                                          <input
+                                            type="text"
+                                            value={selectedSelectValue === "Custom" ? fieldValue : fieldNote}
+                                            onChange={(event) =>
+                                              setVariantDraft((current) => ({
+                                                ...current,
+                                                [fieldKey]: selectedSelectValue === "Custom" ? event.target.value : current[fieldKey],
+                                                metadataNotes: {
+                                                  ...(current.metadataNotes || {}),
+                                                  [fieldKey]: selectedSelectValue === "Custom"
+                                                    ? (current.metadataNotes?.[fieldKey] ?? "")
+                                                    : event.target.value,
+                                                },
+                                              }))
+                                            }
+                                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                                            placeholder={
+                                              selectedSelectValue === "Custom"
+                                                ? `Enter custom ${field.label.toLowerCase()} value`
+                                                : `Optional shopper-facing ${field.label.toLowerCase()} note`
+                                            }
+                                          />
+                                        </div>
+                                      ) : (
+                                        <input
+                                          type="text"
+                                          value={fieldValue}
+                                          onChange={(event) => setVariantDraft((current) => ({ ...current, [fieldKey]: event.target.value }))}
+                                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                                          placeholder={
+                                            fieldKey === "abv"
+                                              ? "13% ABV"
+                                              : fieldKey === "flavor"
+                                                ? "Lemon, vanilla, berry"
+                                                : fieldKey === "inseam"
+                                                  ? "30 inch, 76cm"
+                                                  : fieldKey === "loadCapacity"
+                                                    ? "8kg, 12-place setting"
+                                                    : fieldKey === "waterPressure"
+                                                      ? "100-600kPa"
+                                                : fieldKey === "engineCode"
+                                                  ? "2GD-FTV, EA888 Gen 3"
+                                                  : fieldKey === "threadSize"
+                                                    ? "M14 x 1.5, 1/4 inch"
+                                                    : fieldKey === "gamePlatform"
+                                                      ? "PlayStation 5, Nintendo Switch, PC"
+                                                      : fieldKey === "gameEdition"
+                                                        ? "Standard, Deluxe, Collector's"
+                                                        : fieldKey === "regionCode"
+                                                          ? "Region Free, PAL, NTSC"
+                                                          : fieldKey === "luggageCapacity"
+                                                            ? "40L, 75L"
+                                                            : fieldKey === "keyCount"
+                                                              ? "61, 88"
+                                                    : fieldKey === "waterUsage"
+                                                      ? "6L per cycle, 9L/min"
+                                                : fieldKey === "cpuModel"
+                                                  ? "Intel Core i7-1360P, Apple M3, Snapdragon X Elite"
+                                                  : fieldKey === "graphicsModel"
+                                                    ? "RTX 4060, Radeon 780M, Apple 10-core GPU"
+                                                    : fieldKey === "screenSize"
+                                                      ? "13-inch, 27-inch, 6.7-inch"
+                                                      : fieldKey === "screenResolution"
+                                                        ? "1920x1080, 2560x1600, 4K UHD"
+                                                        : fieldKey === "refreshRate"
+                                                          ? "60Hz, 120Hz, 144Hz"
+                                                          : fieldKey === "operatingSystem"
+                                                            ? "Windows 11, macOS Sequoia, Android 15"
+                                                            : fieldKey === "batteryCapacity"
+                                                              ? "5000mAh, 57Wh"
+                                                              : fieldKey === "powerOutput"
+                                                                ? "65W, 2400W, 1.5HP"
+                                                                : fieldKey === "cameraSpec"
+                                                                  ? "50MP main camera, 12MP ultra-wide"
+                                                                  : fieldKey === "lensSpec"
+                                                                    ? "18-55mm kit lens, f/1.8 prime lens"
+                                                                    : fieldKey === "chipsetModel"
+                                                                      ? "B650 chipset, A17 Pro, Intel Z790"
+                                                                      : fieldKey === "ports"
+                                                                        ? "USB-C, HDMI 2.1, Thunderbolt 4"
+                                                                        : fieldKey === "wirelessStandard"
+                                                                          ? "Wi-Fi 6E, Bluetooth 5.3, Zigbee"
+                                                                          : fieldKey === "voltage"
+                                                                            ? "220-240V, 12V"
+                                                                            : fieldKey === "capacitySpec"
+                                                                              ? "8kg, 20L, 9000 BTU"
+                                                                              : fieldKey === "dimensionsSpec"
+                                                                                ? "120 x 60 x 75 cm"
+                                                                                : fieldKey === "includedInBox"
+                                                                                  ? "Charger, cable, carry case"
+                                                                                  : fieldKey === "compatibility"
+                                                                                    ? "iPhone, Android, Windows, PlayStation 5"
+                                                                                    : fieldKey === "ringSize"
+                                                                                      ? "N, 7, 52mm"
+                                                                                      : fieldKey === "strapLength"
+                                                                                        ? "45 cm"
+                                                                                        : fieldKey === "modelFitment"
+                                                                                          ? "Ford Ranger 2019-2023"
+                                                                                          : "Enter value"
+                                          }
+                                        />
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
+                              Add the metadata fields that matter for this variant. Existing products with saved metadata will load those fields here automatically when you edit them.
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ) : isBeautyProductDraft ? (
-                      <div className="space-y-3">
+                      <div className="space-y-4">
+                        <div className="rounded-[10px] border border-[rgba(144,125,76,0.16)] bg-[rgba(144,125,76,0.05)] p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Optional variant specs</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                                Add beauty details like shade, scent, skin type or hair type only when they help shoppers choose between variants.
+                              </p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_12px_rgba(20,24,27,0.06)]">
+                              Optional
+                            </span>
+                          </div>
+                        </div>
                         <div className="grid gap-3 sm:grid-cols-3">
                           <label className="block">
                             <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
@@ -5687,7 +7477,7 @@ export function SellerCatalogueEditor({
                             <label className="block">
                               <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Shade</span>
                               <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                              <div className="grid gap-2 sm:grid-cols-[minmax(0,170px)_1fr]">
+                              <div className="grid gap-2">
                                 <select
                                   value={BEAUTY_SHADE_OPTIONS.includes(variantDraft.shade) ? variantDraft.shade : (variantDraft.shade ? "Custom" : "")}
                                   onChange={(event) => {
@@ -5711,7 +7501,7 @@ export function SellerCatalogueEditor({
                                   value={variantDraft.shade}
                                   onChange={(event) => setVariantDraft((current) => ({ ...current, shade: event.target.value }))}
                                   className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                                  placeholder="Custom shade or finish note"
+                                  placeholder="Optional custom shade or finish note"
                                 />
                               </div>
                             </label>
@@ -5720,7 +7510,7 @@ export function SellerCatalogueEditor({
                             <label className="block">
                               <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Scent</span>
                               <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                              <div className="grid gap-2 sm:grid-cols-[minmax(0,170px)_1fr]">
+                              <div className="grid gap-2">
                                 <select
                                   value={BEAUTY_SCENT_OPTIONS.includes(variantDraft.scent) ? variantDraft.scent : (variantDraft.scent ? "Custom" : "")}
                                   onChange={(event) => {
@@ -5744,7 +7534,7 @@ export function SellerCatalogueEditor({
                                   value={variantDraft.scent}
                                   onChange={(event) => setVariantDraft((current) => ({ ...current, scent: event.target.value }))}
                                   className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                                  placeholder="Fragrance family or scent note"
+                                  placeholder="Optional fragrance family or scent note"
                                 />
                               </div>
                             </label>
@@ -5753,7 +7543,7 @@ export function SellerCatalogueEditor({
                             <label className="block">
                               <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Skin type</span>
                               <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                              <div className="grid gap-2 sm:grid-cols-[minmax(0,170px)_1fr]">
+                              <div className="grid gap-2">
                                 <select
                                   value={BEAUTY_SKIN_TYPE_OPTIONS.includes(variantDraft.skinType) ? variantDraft.skinType : (variantDraft.skinType ? "Custom" : "")}
                                   onChange={(event) => {
@@ -5777,7 +7567,7 @@ export function SellerCatalogueEditor({
                                   value={variantDraft.skinType}
                                   onChange={(event) => setVariantDraft((current) => ({ ...current, skinType: event.target.value }))}
                                   className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                                  placeholder="Custom skin type note"
+                                  placeholder="Optional skin type note"
                                 />
                               </div>
                             </label>
@@ -5786,7 +7576,7 @@ export function SellerCatalogueEditor({
                             <label className="block">
                               <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Hair type</span>
                               <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                              <div className="grid gap-2 sm:grid-cols-[minmax(0,170px)_1fr]">
+                              <div className="grid gap-2">
                                 <select
                                   value={BEAUTY_HAIR_TYPE_OPTIONS.includes(variantDraft.hairType) ? variantDraft.hairType : (variantDraft.hairType ? "Custom" : "")}
                                   onChange={(event) => {
@@ -5810,7 +7600,7 @@ export function SellerCatalogueEditor({
                                   value={variantDraft.hairType}
                                   onChange={(event) => setVariantDraft((current) => ({ ...current, hairType: event.target.value }))}
                                   className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                                  placeholder="Custom hair type note"
+                                  placeholder="Optional hair type note"
                                 />
                               </div>
                             </label>
@@ -5819,6 +7609,435 @@ export function SellerCatalogueEditor({
                         <p className="text-[11px] leading-[1.4] text-[#57636c]">
                           Piessang keeps the logistics clean while still showing beauty-specific details like shade, scent, and skin or hair fit on the variant.
                         </p>
+                      </div>
+                    ) : isElectronicsProductDraft ? (
+                      <div className="space-y-4">
+                        <div className="rounded-[10px] border border-[rgba(144,125,76,0.16)] bg-[rgba(144,125,76,0.05)] p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Optional variant specs</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                                Add these if they help shoppers compare electronics variants. Leave them blank if they do not apply.
+                              </p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_12px_rgba(20,24,27,0.06)]">
+                              Optional
+                            </span>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
+                            <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                            <input
+                              type="number"
+                              min="1"
+                              value={variantDraft.unitCount}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, unitCount: event.target.value }))}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Storage</span>
+                            <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                            <div className="grid gap-2">
+                              <select
+                                value={ELECTRONICS_STORAGE_OPTIONS.includes(variantDraft.storageCapacity) ? variantDraft.storageCapacity : (variantDraft.storageCapacity ? "Custom" : "")}
+                                onChange={(event) => {
+                                  const nextValue = event.target.value;
+                                  setVariantDraft((current) => ({
+                                    ...current,
+                                    storageCapacity: nextValue === "Custom" ? current.storageCapacity : nextValue,
+                                  }));
+                                }}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              >
+                                <option value="">Select storage</option>
+                                {ELECTRONICS_STORAGE_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="text"
+                                value={variantDraft.storageCapacity}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, storageCapacity: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                                placeholder="Optional custom storage note"
+                              />
+                            </div>
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Memory (RAM)</span>
+                            <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                            <div className="grid gap-2">
+                              <select
+                                value={ELECTRONICS_MEMORY_OPTIONS.includes(variantDraft.memoryRam) ? variantDraft.memoryRam : (variantDraft.memoryRam ? "Custom" : "")}
+                                onChange={(event) => {
+                                  const nextValue = event.target.value;
+                                  setVariantDraft((current) => ({
+                                    ...current,
+                                    memoryRam: nextValue === "Custom" ? current.memoryRam : nextValue,
+                                  }));
+                                }}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              >
+                                <option value="">Select RAM</option>
+                                {ELECTRONICS_MEMORY_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="text"
+                                value={variantDraft.memoryRam}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, memoryRam: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                                placeholder="Optional custom memory note"
+                              />
+                            </div>
+                          </label>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Connectivity</span>
+                            <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                            <div className="grid gap-2">
+                              <select
+                                value={ELECTRONICS_CONNECTIVITY_OPTIONS.includes(variantDraft.connectivity) ? variantDraft.connectivity : (variantDraft.connectivity ? "Custom" : "")}
+                                onChange={(event) => {
+                                  const nextValue = event.target.value;
+                                  setVariantDraft((current) => ({
+                                    ...current,
+                                    connectivity: nextValue === "Custom" ? current.connectivity : nextValue,
+                                  }));
+                                }}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              >
+                                <option value="">Select connectivity</option>
+                                {ELECTRONICS_CONNECTIVITY_OPTIONS.map((option) => (
+                                  <option key={option} value={option}>
+                                    {option}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="text"
+                                value={variantDraft.connectivity}
+                                onChange={(event) => setVariantDraft((current) => ({ ...current, connectivity: event.target.value }))}
+                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                                placeholder="Optional note like ports, wireless standard or network support"
+                              />
+                            </div>
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Compatibility</span>
+                            <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                            <input
+                              type="text"
+                              value={variantDraft.compatibility}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, compatibility: event.target.value }))}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              placeholder="iPhone, Android, Windows, PlayStation 5"
+                            />
+                          </label>
+                        </div>
+                        <p className="text-[11px] leading-[1.4] text-[#57636c]">
+                          Electronics variants should focus on specs like storage, RAM, connectivity and compatibility instead of clothing-style size options.
+                        </p>
+                      </div>
+                    ) : isFootwearProductDraft ? (
+                      <div className="space-y-4">
+                        <div className="rounded-[10px] border border-[rgba(144,125,76,0.16)] bg-[rgba(144,125,76,0.05)] p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Variant sizing</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                                Use these fields to describe footwear sizing clearly. Add a custom note only if the standard system is not enough.
+                              </p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_12px_rgba(20,24,27,0.06)]">
+                              Optional
+                            </span>
+                          </div>
+                        </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Size</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <input
+                            type="text"
+                            value={variantDraft.size}
+                            onChange={(event) => setVariantDraft((current) => ({ ...current, size: event.target.value }))}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="UK 8"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Size system</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <div className="grid gap-2">
+                            <select
+                              value={FOOTWEAR_SIZE_SYSTEM_OPTIONS.includes(variantDraft.sizeSystem) ? variantDraft.sizeSystem : (variantDraft.sizeSystem ? "Custom" : "")}
+                              onChange={(event) => {
+                                const nextValue = event.target.value;
+                                setVariantDraft((current) => ({
+                                  ...current,
+                                  sizeSystem: nextValue === "Custom" ? current.sizeSystem : nextValue,
+                                }));
+                              }}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            >
+                              <option value="">System</option>
+                              {FOOTWEAR_SIZE_SYSTEM_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={variantDraft.sizeSystem}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, sizeSystem: event.target.value }))}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              placeholder="Optional sizing note"
+                            />
+                          </div>
+                        </label>
+                      </div>
+                      </div>
+                    ) : isJewelleryProductDraft ? (
+                      <div className="space-y-4">
+                        <div className="rounded-[10px] border border-[rgba(144,125,76,0.16)] bg-[rgba(144,125,76,0.05)] p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Optional variant specs</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                                Add material, ring size or chain length when they meaningfully distinguish one jewellery variant from another.
+                              </p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_12px_rgba(20,24,27,0.06)]">
+                              Optional
+                            </span>
+                          </div>
+                        </div>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Material</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <input
+                            type="text"
+                            value={variantDraft.material}
+                            onChange={(event) => setVariantDraft((current) => ({ ...current, material: event.target.value }))}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="Sterling silver"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Ring size</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <input
+                            type="text"
+                            value={variantDraft.ringSize}
+                            onChange={(event) => setVariantDraft((current) => ({ ...current, ringSize: event.target.value }))}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="N"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Strap or chain length</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <input
+                            type="text"
+                            value={variantDraft.strapLength}
+                            onChange={(event) => setVariantDraft((current) => ({ ...current, strapLength: event.target.value }))}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="45 cm"
+                          />
+                        </label>
+                      </div>
+                      </div>
+                    ) : isBookMediaProductDraft ? (
+                      <div className="space-y-4">
+                        <div className="rounded-[10px] border border-[rgba(144,125,76,0.16)] bg-[rgba(144,125,76,0.05)] p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Optional variant specs</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                                Add format and language if they help shoppers distinguish editions or media types.
+                              </p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_12px_rgba(20,24,27,0.06)]">
+                              Optional
+                            </span>
+                          </div>
+                        </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Format</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <div className="grid gap-2">
+                            <select
+                              value={BOOK_FORMAT_OPTIONS.includes(variantDraft.bookFormat) ? variantDraft.bookFormat : (variantDraft.bookFormat ? "Custom" : "")}
+                              onChange={(event) => {
+                                const nextValue = event.target.value;
+                                setVariantDraft((current) => ({
+                                  ...current,
+                                  bookFormat: nextValue === "Custom" ? current.bookFormat : nextValue,
+                                }));
+                              }}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            >
+                              <option value="">Select format</option>
+                              {BOOK_FORMAT_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={variantDraft.bookFormat}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, bookFormat: event.target.value }))}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              placeholder="Optional format note"
+                            />
+                          </div>
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Language</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <div className="grid gap-2">
+                            <select
+                              value={LANGUAGE_OPTIONS.includes(variantDraft.language) ? variantDraft.language : (variantDraft.language ? "Custom" : "")}
+                              onChange={(event) => {
+                                const nextValue = event.target.value;
+                                setVariantDraft((current) => ({
+                                  ...current,
+                                  language: nextValue === "Custom" ? current.language : nextValue,
+                                }));
+                              }}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            >
+                              <option value="">Select language</option>
+                              {LANGUAGE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={variantDraft.language}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, language: event.target.value }))}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              placeholder="Optional language note"
+                            />
+                          </div>
+                        </label>
+                      </div>
+                      </div>
+                    ) : isBabyProductDraft ? (
+                      <div className="space-y-4">
+                        <div className="rounded-[10px] border border-[rgba(144,125,76,0.16)] bg-[rgba(144,125,76,0.05)] p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Optional variant specs</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                                Add age range when it helps explain who this baby or toddler variant is intended for.
+                              </p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_12px_rgba(20,24,27,0.06)]">
+                              Optional
+                            </span>
+                          </div>
+                        </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <input
+                            type="number"
+                            min="1"
+                            value={variantDraft.unitCount}
+                            onChange={(event) => setVariantDraft((current) => ({ ...current, unitCount: event.target.value }))}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Age range</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <div className="grid gap-2">
+                            <select
+                              value={BABY_AGE_RANGE_OPTIONS.includes(variantDraft.ageRange) ? variantDraft.ageRange : (variantDraft.ageRange ? "Custom" : "")}
+                              onChange={(event) => {
+                                const nextValue = event.target.value;
+                                setVariantDraft((current) => ({
+                                  ...current,
+                                  ageRange: nextValue === "Custom" ? current.ageRange : nextValue,
+                                }));
+                              }}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            >
+                              <option value="">Select age range</option>
+                              {BABY_AGE_RANGE_OPTIONS.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              type="text"
+                              value={variantDraft.ageRange}
+                              onChange={(event) => setVariantDraft((current) => ({ ...current, ageRange: event.target.value }))}
+                              className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                              placeholder="Optional age note"
+                            />
+                          </div>
+                        </label>
+                      </div>
+                      </div>
+                    ) : isFitmentProductDraft ? (
+                      <div className="space-y-4">
+                        <div className="rounded-[10px] border border-[rgba(144,125,76,0.16)] bg-[rgba(144,125,76,0.05)] p-4">
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Optional variant specs</p>
+                              <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+                                Add fitment and compatibility notes when they help shoppers confirm the correct part or tool.
+                              </p>
+                            </div>
+                            <span className="inline-flex w-fit rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_12px_rgba(20,24,27,0.06)]">
+                              Optional
+                            </span>
+                          </div>
+                        </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Model fitment</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <input
+                            type="text"
+                            value={variantDraft.modelFitment}
+                            onChange={(event) => setVariantDraft((current) => ({ ...current, modelFitment: event.target.value }))}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="Ford Ranger 2019-2023"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Compatibility</span>
+                          <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                          <input
+                            type="text"
+                            value={variantDraft.compatibility}
+                            onChange={(event) => setVariantDraft((current) => ({ ...current, compatibility: event.target.value }))}
+                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                            placeholder="2.0 BiTurbo, left-hand rear door"
+                          />
+                        </label>
+                      </div>
                       </div>
                     ) : (
                       <div className="grid gap-3 sm:grid-cols-3">
@@ -6120,6 +8339,18 @@ export function SellerCatalogueEditor({
                 ) : null}
 
                 <div className="mt-4 space-y-2">
+                  {variantAxisMatrix.axes.length ? (
+                    <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Saved option groups</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {variantAxisMatrix.axes.map((axis) => (
+                          <span key={axis.key} className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-[#57636c] shadow-[0_4px_12px_rgba(20,24,27,0.04)]">
+                            {axis.label}: {axis.options.map((option) => option.label).join(", ")}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   {variantItems.length ? (
                     variantItems.map((variant, index) => (
                       <div key={`${variant.variant_id ?? index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/5 bg-white px-3 py-2">
@@ -6129,26 +8360,7 @@ export function SellerCatalogueEditor({
                             {variant.variant_id ? `Code ${variant.variant_id}` : "No code"}
                           </p>
                           <p className="mt-1 text-[11px] text-[#57636c]">
-                            {variant.color ? `Color ${variant.color}` : "No color"}
-                            {String((variant as any)?.size ?? "").trim() ? ` • Size ${String((variant as any).size).trim()}` : ""}
-                            {String((variant as any)?.shade ?? "").trim() ? ` • Shade ${String((variant as any).shade).trim()}` : ""}
-                            {String((variant as any)?.scent ?? "").trim() ? ` • ${String((variant as any).scent).trim()}` : ""}
-                            {String((variant as any)?.skinType ?? "").trim() ? ` • ${String((variant as any).skinType).trim()} skin` : ""}
-                            {String((variant as any)?.hairType ?? "").trim() ? ` • ${String((variant as any).hairType).trim()} hair` : ""}
-                            {String((variant as any)?.flavor ?? "").trim() ? ` • ${String((variant as any).flavor).trim()}` : ""}
-                            {String((variant as any)?.abv ?? "").trim() ? ` • ${String((variant as any).abv).trim()}% ABV` : ""}
-                            {String((variant as any)?.storageCapacity ?? "").trim() ? ` • ${String((variant as any).storageCapacity).trim()}` : ""}
-                            {String((variant as any)?.memoryRam ?? "").trim() ? ` • ${String((variant as any).memoryRam).trim()} RAM` : ""}
-                            {String((variant as any)?.connectivity ?? "").trim() ? ` • ${String((variant as any).connectivity).trim()}` : ""}
-                            {String((variant as any)?.compatibility ?? "").trim() ? ` • ${String((variant as any).compatibility).trim()}` : ""}
-                            {String((variant as any)?.sizeSystem ?? "").trim() ? ` • ${String((variant as any).sizeSystem).trim()}` : ""}
-                            {String((variant as any)?.material ?? "").trim() ? ` • ${String((variant as any).material).trim()}` : ""}
-                            {String((variant as any)?.ringSize ?? "").trim() ? ` • Ring ${String((variant as any).ringSize).trim()}` : ""}
-                            {String((variant as any)?.strapLength ?? "").trim() ? ` • ${String((variant as any).strapLength).trim()}` : ""}
-                            {String((variant as any)?.bookFormat ?? "").trim() ? ` • ${String((variant as any).bookFormat).trim()}` : ""}
-                            {String((variant as any)?.language ?? "").trim() ? ` • ${String((variant as any).language).trim()}` : ""}
-                            {String((variant as any)?.ageRange ?? "").trim() ? ` • ${String((variant as any).ageRange).trim()}` : ""}
-                            {String((variant as any)?.modelFitment ?? "").trim() ? ` • ${String((variant as any).modelFitment).trim()}` : ""}
+                            {buildVariantAxisPreviewText(variant)}
                             {!String((variant as any)?.size ?? "").trim() && variant.pack?.volume_unit ? ` • ${variant.pack.volume_unit}` : ""}
                             {Array.isArray(variant.media?.images) && variant.media.images.length > 0
                               ? ` • ${variant.media.images.length} image${variant.media.images.length === 1 ? "" : "s"}`

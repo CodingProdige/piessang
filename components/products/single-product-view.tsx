@@ -3,10 +3,12 @@
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import {
+  hasPreciseShopperDeliveryArea,
   readShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
@@ -16,6 +18,14 @@ import { RenderWhenVisible } from "@/components/shared/render-when-visible";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
+import {
+  buildVariantOptionMatrix,
+  formatVariantAxisValue,
+  getAvailableVariantIndexForOption,
+  getVariantSelectionFromVariant,
+  isOptionAvailableForSelection,
+  type VariantAxis,
+} from "@/lib/catalogue/variant-options";
 import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
 
 type ProductVariant = {
@@ -80,6 +90,8 @@ type ProductVariant = {
     total_units_sold?: number;
   };
   total_in_stock_items_available?: number;
+  checkout_reserved_qty?: number;
+  checkout_reserved_unavailable?: boolean;
   logistics?: {
     parcel_preset?: string | null;
     shipping_class?: string | null;
@@ -362,11 +374,11 @@ function prefersLiteProductExperience() {
 
 function splitCurrencyParts(formattedValue?: string | null) {
   if (!formattedValue) return null;
-  const normalized = String(formattedValue).replace(/\s/g, "");
-  const match = normalized.match(/^([^0-9-]*)(-?[0-9.,]+)$/);
+  const normalized = String(formattedValue).trim();
+  const match = normalized.match(/^([^0-9-]*)(-?[0-9\s.,]+)$/);
   if (!match) return null;
-  const symbol = match[1] || "";
-  const numeric = match[2] || "";
+  const symbol = (match[1] || "").trimEnd();
+  const numeric = (match[2] || "").trim();
   const lastSeparatorIndex = Math.max(numeric.lastIndexOf("."), numeric.lastIndexOf(","));
   if (lastSeparatorIndex === -1) return { whole: `${symbol}${numeric}`, cents: "00" };
   const whole = `${symbol}${numeric.slice(0, lastSeparatorIndex)}`;
@@ -540,6 +552,27 @@ function getVariantLabel(variant?: ProductVariant | null) {
   return variant?.label?.trim() || "Default variant";
 }
 
+function isHexColor(value?: string | null) {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value ?? "").trim());
+}
+
+function formatColorLabel(value?: string | null) {
+  return formatVariantAxisValue("color", value);
+}
+
+function isApparelLikeVariant(variant?: ProductVariant | null) {
+  if (!variant) return false;
+  return Boolean(
+    String(variant.size ?? "").trim() &&
+      !String(variant.storageCapacity ?? "").trim() &&
+      !String(variant.memoryRam ?? "").trim() &&
+      !String(variant.connectivity ?? "").trim() &&
+      !String(variant.compatibility ?? "").trim() &&
+      !String(variant.bookFormat ?? "").trim() &&
+      !String(variant.modelFitment ?? "").trim(),
+  );
+}
+
 function getVariantImages(item: ProductItem, variant?: ProductVariant | null) {
   const images = [
     ...(variant?.media?.images ?? []),
@@ -559,6 +592,9 @@ function getStockLabel(variant?: ProductVariant | null, item?: ProductItem) {
   }
   if (variant?.placement?.track_inventory !== true || variant?.placement?.continue_selling_out_of_stock) {
     return { label: "In stock", tone: "success" as const, hideQty: true };
+  }
+  if (variant?.checkout_reserved_unavailable) {
+    return { label: "Reserved in another shopper's checkout.", tone: "warning" as const, hideQty: false };
   }
   if (typeof variant?.total_in_stock_items_available === "number") {
     if (variant.total_in_stock_items_available <= 0) {
@@ -582,16 +618,39 @@ function getStockLabel(variant?: ProductVariant | null, item?: ProductItem) {
   return { label: "Stock unknown", tone: "neutral" as const, hideQty: false };
 }
 
+function getVariantAvailableQuantity(variant?: ProductVariant | null) {
+  if (!variant) return null;
+  if (variant?.placement?.track_inventory !== true || variant?.placement?.continue_selling_out_of_stock) {
+    return null;
+  }
+  if (typeof variant?.total_in_stock_items_available === "number" && Number.isFinite(variant.total_in_stock_items_available)) {
+    return Math.max(0, Math.trunc(variant.total_in_stock_items_available));
+  }
+  const inventoryTotal = Array.isArray(variant.inventory)
+    ? variant.inventory.reduce((sum, row) => sum + Math.max(0, Number(row?.in_stock_qty ?? 0) || 0), 0)
+    : 0;
+  return Math.max(0, Math.trunc(inventoryTotal));
+}
+
 function getVariantSummary(variant?: ProductVariant | null) {
   if (!variant) return null;
   const parts: string[] = [];
-  if (variant.pack?.unit_count != null) parts.push(`${variant.pack.unit_count} units`);
-  if (variant.pack?.volume != null) parts.push(`${variant.pack.volume}${variant.pack.volume_unit ?? ""}`);
+  const isApparelLike = isApparelLikeVariant(variant);
+  if (!isApparelLike && variant.pack?.unit_count != null) {
+    const count = Number(variant.pack.unit_count);
+    if (Number.isFinite(count) && count > 0) {
+      parts.push(`${count} ${count === 1 ? "unit" : "units"}`);
+    }
+  }
+  if (!isApparelLike && variant.pack?.volume != null && Number(variant.pack.volume) > 0) {
+    parts.push(`${variant.pack.volume}${variant.pack.volume_unit ?? ""}`);
+  }
   return parts.join(" • ") || null;
 }
 
 function getVariantExtraDetails(variant?: ProductVariant | null) {
   if (!variant) return [];
+  const isApparelLike = isApparelLikeVariant(variant);
   const entries: Array<{ label: string; value: string }> = [];
   const push = (label: string, value?: string | number | null, suffix = "") => {
     const text = String(value ?? "").trim();
@@ -599,8 +658,10 @@ function getVariantExtraDetails(variant?: ProductVariant | null) {
     entries.push({ label, value: `${text}${suffix}` });
   };
 
-  push("Color", variant.color);
-  push("Size", variant.size);
+  if (!isApparelLike) {
+    push("Color", formatColorLabel(variant.color));
+    push("Size", variant.size);
+  }
   push("Size system", variant.sizeSystem);
   push("Shade", variant.shade);
   push("Scent", variant.scent);
@@ -622,6 +683,17 @@ function getVariantExtraDetails(variant?: ProductVariant | null) {
   push("Fitment", variant.modelFitment);
 
   return entries;
+}
+
+function getVariantHighlightDetails(variant?: ProductVariant | null) {
+  if (!variant) return [];
+  if (isApparelLikeVariant(variant)) {
+    const highlights: Array<{ label: string; value: string }> = [];
+    const colorLabel = formatColorLabel(variant.color);
+    if (colorLabel) highlights.push({ label: "Color", value: colorLabel });
+    return highlights;
+  }
+  return getVariantExtraDetails(variant).slice(0, 4);
 }
 
 function isPreLovedCategory(category?: string | null) {
@@ -697,7 +769,7 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
     variant,
     platformLabel: "Piessang handles shipping for this item",
     missingProfileLabel: shopperArea
-      ? "Check delivery with this seller"
+      ? "Delivery availability confirmed at checkout"
       : "Set your shipping location to check availability",
   });
 }
@@ -712,6 +784,7 @@ export function SingleProductView({
   selectedVariantId?: string | null;
   recommendationRails?: RecommendationRailsState;
 }) {
+  const router = useRouter();
   const { profile, isAuthenticated, openAuthModal, favoriteIds, refreshProfile, syncFavoriteState, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const variants = item.data?.variants ?? [];
@@ -748,10 +821,10 @@ export function SingleProductView({
     setActiveImageIndex(0);
     setZoomPoint(null);
     setSelectedQty(1);
+    setHoveredVariantIndex(null);
   }, [activeIndex]);
 
   const activeVariant = variants[activeIndex] ?? initialVariant ?? null;
-  const activeImages = getVariantImages(item, activeVariant);
   const priceInclVat = getVariantPriceInclVat(activeVariant ?? undefined);
   const compareAtPriceInclVat = getCompareAtVariantPriceInclVat(activeVariant ?? undefined);
   const saleActive = Boolean(
@@ -767,9 +840,23 @@ export function SingleProductView({
   const soldCountLabel = formatSoldCount(totalUnitsSold);
   const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
   const stock = getStockLabel(activeVariant, item);
-  const deliveryPromise = getDeliveryPromise(item, shopperArea, activeVariant);
-  const sellerDeliveryMessage = getSellerDeliveryMessage(item, shopperArea, activeVariant);
+  const availableQty = getVariantAvailableQuantity(activeVariant);
+  const hasDeliveryEstimateLocation = Boolean(shopperArea?.country && hasPreciseShopperDeliveryArea(shopperArea));
+  const deliveryPromise = hasDeliveryEstimateLocation ? getDeliveryPromise(item, shopperArea, activeVariant) : null;
+  const sellerDeliveryMessage = hasDeliveryEstimateLocation ? getSellerDeliveryMessage(item, shopperArea, activeVariant) : null;
   const activeVariantExtraDetails = getVariantExtraDetails(activeVariant);
+  const activeVariantHighlightDetails = getVariantHighlightDetails(activeVariant);
+  const variantMatrix = useMemo(() => buildVariantOptionMatrix(variants), [variants]);
+  const variantAxes = variantMatrix.axes;
+  const hasStructuredVariantAxes = variantAxes.length > 0;
+  const activeSelection = useMemo(
+    () => getVariantSelectionFromVariant(activeVariant, variantAxes),
+    [activeVariant, variantAxes],
+  );
+  const [hoveredVariantIndex, setHoveredVariantIndex] = useState<number | null>(null);
+  const previewVariant = hoveredVariantIndex != null ? variants[hoveredVariantIndex] ?? null : null;
+  const displayVariant = previewVariant ?? activeVariant;
+  const activeImages = getVariantImages(item, displayVariant);
   const overview = item.data?.product?.overview ?? null;
   const description = item.data?.product?.description ?? "No description available.";
   const oftenBoughtItems = Array.isArray(resolvedRecommendationRails?.oftenBought?.items)
@@ -825,6 +912,11 @@ export function SingleProductView({
     setShopperArea(readShopperDeliveryArea());
     return subscribeToShopperDeliveryArea(setShopperArea);
   }, []);
+
+  useEffect(() => {
+    if (typeof availableQty !== "number") return;
+    setSelectedQty((current) => Math.min(Math.max(1, current), Math.max(1, availableQty)));
+  }, [availableQty]);
 
   useEffect(() => {
     setLiteExperience(prefersLiteProductExperience());
@@ -1019,12 +1111,29 @@ export function SingleProductView({
     }
   }
 
-  async function addToCart() {
+  async function addToCart(options?: { redirectToCheckout?: boolean }) {
+    const redirectToCheckout = options?.redirectToCheckout === true;
     if (!isAuthenticated || !profile?.uid) {
-      openAuthModal("Sign in to add products to your cart.");
+      openAuthModal(redirectToCheckout ? "Sign in to continue to checkout." : "Sign in to add products to your cart.");
       return;
     }
     if (!activeVariant?.variant_id) return;
+    if (typeof availableQty === "number" && availableQty <= 0) {
+      setCartMessage("This variant is out of stock.");
+      setSnackbarMessage("This variant is out of stock.");
+      return;
+    }
+    const requestedQty = typeof availableQty === "number" ? Math.min(selectedQty, Math.max(1, availableQty)) : selectedQty;
+    if (requestedQty !== selectedQty) {
+      setSelectedQty(requestedQty);
+      const stockMessage =
+        requestedQty === 1
+          ? "Only 1 item is available, so we updated your quantity."
+          : `Only ${requestedQty} items are available, so we updated your quantity.`;
+      setCartMessage(stockMessage);
+      setSnackbarMessage(stockMessage);
+      if (!redirectToCheckout) return;
+    }
     setCartSubmitting(true);
     setCartMessage(null);
     try {
@@ -1036,12 +1145,18 @@ export function SingleProductView({
           product: item.data,
           variant_id: activeVariant.variant_id,
           mode: "change",
-          qty: selectedQty,
+          qty: requestedQty,
         }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload?.ok === false) throw new Error(payload?.message || "Unable to add the product to your cart.");
       syncCartState(payload?.data?.cart ?? null);
+      if (redirectToCheckout) {
+        setCartMessage("Taking you to checkout...");
+        setSnackbarMessage("Taking you to checkout...");
+        router.push("/checkout");
+        return;
+      }
       setCartMessage("Added to cart.");
       setSnackbarMessage("Added to cart.");
     } catch (cause) {
@@ -1084,6 +1199,164 @@ export function SingleProductView({
       setFavoriteSubmitting(false);
       window.setTimeout(() => setFavoriteMessage(null), 1800);
     }
+  }
+
+  function renderVariantAxis(axis: VariantAxis) {
+    const selectedKey = activeSelection[axis.key] ?? "";
+    const selectedOption = axis.options.find((option) => option.key === selectedKey) ?? null;
+    const axisHasPriceVariance = axis.options.some((option) => {
+      const representative = variants[option.representativeVariantIndex];
+      return getVariantPriceInclVat(representative) !== priceInclVat;
+    });
+
+    return (
+      <div key={axis.key} className="space-y-3">
+        <p className="text-[14px] font-medium text-[#57636c]">
+          {axis.label}: <span className="font-semibold text-[#202020]">{selectedOption?.label || "Select"}</span>
+        </p>
+        <div className={axis.display === "pill" ? "flex flex-wrap gap-3" : "flex flex-wrap gap-3"}>
+          {axis.options.map((option) => {
+            const selected = option.key === selectedKey;
+            const available = isOptionAvailableForSelection(variants, variantAxes, activeSelection, axis.key, option.key);
+            const resolvedIndex = getAvailableVariantIndexForOption(variants, variantAxes, activeSelection, axis.key, option.key);
+            const previewIndex = resolvedIndex >= 0 ? resolvedIndex : option.representativeVariantIndex;
+            const representativeVariant = variants[previewIndex] ?? variants[option.representativeVariantIndex] ?? null;
+            const optionImages = representativeVariant ? getVariantImages(item, representativeVariant) : [];
+            const optionImage = optionImages[0] ?? null;
+            const optionPrice = getVariantPriceInclVat(representativeVariant ?? undefined);
+            const optionCompareAtPrice = getCompareAtVariantPriceInclVat(representativeVariant ?? undefined);
+            const optionOnSale = hasMeaningfulSale(optionCompareAtPrice, optionPrice);
+
+            const handleSelect = () => {
+              if (resolvedIndex >= 0) {
+                setActiveIndex(resolvedIndex);
+                setHoveredVariantIndex(null);
+              }
+            };
+
+            const handlePreviewStart = () => {
+              if (previewIndex >= 0 && axis.display === "image_tile") setHoveredVariantIndex(previewIndex);
+            };
+
+            const handlePreviewEnd = () => {
+              if (axis.display === "image_tile") setHoveredVariantIndex(null);
+            };
+
+            if (axis.display === "pill") {
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={handleSelect}
+                  disabled={!available}
+                  className={
+                    selected
+                      ? "inline-flex min-w-[92px] items-center justify-center rounded-full border-2 border-[#1da1ff] bg-white px-6 py-3 text-[18px] font-semibold text-[#202020] shadow-[0_8px_20px_rgba(29,161,255,0.14)]"
+                      : available
+                        ? "inline-flex min-w-[92px] items-center justify-center rounded-full border border-black/12 bg-white px-6 py-3 text-[18px] font-medium text-[#202020] transition-all hover:-translate-y-0.5 hover:border-black/20 hover:shadow-[0_10px_24px_rgba(32,32,32,0.08)]"
+                        : "inline-flex min-w-[92px] items-center justify-center rounded-full border border-dashed border-black/10 bg-[#fafafa] px-6 py-3 text-[18px] font-medium text-[#a0a7b0] opacity-70"
+                  }
+                  aria-label={`Select ${axis.label} ${option.label}`}
+                  aria-pressed={selected}
+                >
+                  {option.label}
+                </button>
+              );
+            }
+
+            if (axis.display === "image_tile") {
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={handleSelect}
+                  onMouseEnter={handlePreviewStart}
+                  onMouseLeave={handlePreviewEnd}
+                  onFocus={handlePreviewStart}
+                  onBlur={handlePreviewEnd}
+                  disabled={!available}
+                  className={
+                    selected
+                      ? "group relative flex w-[104px] flex-col overflow-hidden rounded-[22px] border-2 border-[#1da1ff] bg-white p-0 text-left shadow-[0_8px_20px_rgba(29,161,255,0.18)]"
+                      : available
+                        ? "group relative flex w-[104px] flex-col overflow-hidden rounded-[22px] border border-black/12 bg-white p-0 text-left transition-all hover:-translate-y-0.5 hover:border-black/20 hover:shadow-[0_10px_24px_rgba(32,32,32,0.08)]"
+                        : "group relative flex w-[104px] flex-col overflow-hidden rounded-[22px] border border-dashed border-black/10 bg-[#fafafa] p-0 text-left opacity-65"
+                  }
+                  aria-label={`Select ${axis.label} ${option.label}`}
+                  aria-pressed={selected}
+                >
+                  <span className="relative block h-[104px] w-full overflow-hidden bg-[#f6f6f6]">
+                    {optionImage?.imageUrl ? (
+                      <BlurhashImage
+                        src={optionImage.imageUrl}
+                        blurHash={optionImage.blurHashUrl}
+                        alt={option.label}
+                        className="h-full w-full"
+                        imageClassName="object-cover"
+                      />
+                    ) : (
+                      <span
+                        className="block h-full w-full"
+                        style={{ backgroundColor: isHexColor(option.rawValue) ? option.rawValue : undefined }}
+                      />
+                    )}
+                    {selected ? (
+                      <span className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-[rgba(29,161,255,0.14)] to-transparent" />
+                    ) : null}
+                  </span>
+                  <span className="flex items-center justify-between gap-2 border-t border-black/6 px-3 py-2">
+                    <span className="min-w-0 truncate text-[12px] font-medium text-[#202020]">{option.label}</span>
+                    {isHexColor(option.rawValue) ? (
+                      <span
+                        className="h-3.5 w-3.5 shrink-0 rounded-full border border-black/10"
+                        style={{ backgroundColor: option.rawValue }}
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                  </span>
+                </button>
+              );
+            }
+
+            return (
+              <button
+                key={option.key}
+                type="button"
+                onClick={handleSelect}
+                onMouseEnter={handlePreviewStart}
+                onMouseLeave={handlePreviewEnd}
+                onFocus={handlePreviewStart}
+                onBlur={handlePreviewEnd}
+                disabled={!available}
+                className={
+                  selected
+                    ? "w-[152px] rounded-[14px] border-2 border-[#1da1ff] bg-white p-3 text-left shadow-[0_8px_20px_rgba(29,161,255,0.14)]"
+                    : available
+                      ? "w-[152px] rounded-[14px] border border-black/12 bg-white p-3 text-left transition-all hover:-translate-y-0.5 hover:border-black/20 hover:shadow-[0_10px_24px_rgba(32,32,32,0.08)]"
+                      : "w-[152px] rounded-[14px] border border-dashed border-black/10 bg-[#fafafa] p-3 text-left opacity-70"
+                }
+                aria-label={`Select ${axis.label} ${option.label}`}
+                aria-pressed={selected}
+              >
+                <p className="text-[15px] font-semibold leading-tight text-[#202020]">{option.label}</p>
+                {axisHasPriceVariance && typeof optionPrice === "number" ? (
+                  <div className="mt-2">
+                    <StorefrontPrice value={optionPrice} tone={optionOnSale ? "sale" : "default"} size="md" />
+                    {optionOnSale && typeof optionCompareAtPrice === "number" ? (
+                      <p className="mt-1 text-[11px] text-[#8b94a3] line-through">{formatMoney(optionCompareAtPrice)}</p>
+                    ) : null}
+                  </div>
+                ) : available ? (
+                  <p className="mt-2 text-[12px] font-medium text-[#57636c]">Available</p>
+                ) : (
+                  <p className="mt-2 text-[12px] font-medium text-[#a0a7b0]">Unavailable</p>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -1361,7 +1634,14 @@ export function SingleProductView({
             </div>
           ) : null}
 
-          {deliveryPromise ? (
+          {!hasDeliveryEstimateLocation ? (
+            <div className="inline-flex w-full max-w-[360px] items-center gap-2 rounded-full bg-[rgba(144,125,76,0.08)] px-3 py-2 text-left text-[12px] font-semibold text-[#907d4c]">
+              <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                <path d="M10 1.8a5.9 5.9 0 0 1 5.9 5.9c0 4.1-4.7 9.4-5.2 9.9a1 1 0 0 1-1.4 0c-.5-.5-5.2-5.8-5.2-9.9A5.9 5.9 0 0 1 10 1.8Zm0 8a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2Z" />
+              </svg>
+              <span>Set your address in the header to see delivery estimation.</span>
+            </div>
+          ) : deliveryPromise ? (
             <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#1a8553]">
               <span className="inline-flex items-center gap-1">
                 <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
@@ -1372,6 +1652,15 @@ export function SingleProductView({
               {deliveryPromise.cutoffText ? (
                 <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span>
               ) : null}
+            </div>
+          ) : sellerDeliveryMessage ? (
+            <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#57636c]">
+              <span className="inline-flex items-center gap-1">
+                <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                  <path d="M10 1.8a5.9 5.9 0 0 1 5.9 5.9c0 4.1-4.7 9.4-5.2 9.9a1 1 0 0 1-1.4 0c-.5-.5-5.2-5.8-5.2-9.9A5.9 5.9 0 0 1 10 1.8Zm0 8a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2Z" />
+                </svg>
+                {sellerDeliveryMessage.label}
+              </span>
             </div>
           ) : null}
 
@@ -1415,15 +1704,29 @@ export function SingleProductView({
             </p>
           ) : null}
 
-          <div className="border-t border-black/5 pt-3">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Selected variant</p>
-            <p className="mt-1 text-[13px] font-semibold text-[#202020]">{getVariantLabel(activeVariant)}</p>
-            {getVariantSummary(activeVariant) ? (
-              <p className="mt-1 text-[11px] text-[#57636c]">{getVariantSummary(activeVariant)}</p>
-            ) : null}
-          </div>
+          {!hasStructuredVariantAxes ? (
+            <div className="border-t border-black/5 pt-3">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Selected variant</p>
+              <p className="mt-1 text-[13px] font-semibold text-[#202020]">{getVariantLabel(activeVariant)}</p>
+              {getVariantSummary(activeVariant) ? (
+                <p className="mt-1 text-[11px] text-[#57636c]">{getVariantSummary(activeVariant)}</p>
+              ) : null}
+              {activeVariantHighlightDetails.length ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {activeVariantHighlightDetails.map((entry) => (
+                    <span
+                      key={`${entry.label}:${entry.value}`}
+                      className="rounded-full bg-[rgba(144,125,76,0.08)] px-2.5 py-1 text-[11px] font-medium text-[#5f6773]"
+                    >
+                      {entry.label}: {entry.value}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
-          {activeVariantExtraDetails.length ? (
+          {activeVariantExtraDetails.length && !hasStructuredVariantAxes ? (
             <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Extra details</p>
               <div className="mt-2 grid gap-x-4 gap-y-2 sm:grid-cols-2">
@@ -1437,8 +1740,13 @@ export function SingleProductView({
             </div>
           ) : null}
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Select variant</p>
+            {hasStructuredVariantAxes ? (
+              <div className="space-y-5">
+                {variantAxes.map((axis) => renderVariantAxis(axis))}
+              </div>
+            ) : (
             <div className="grid gap-3 sm:grid-cols-2">
               {variants.map((variant, index) => {
                 const selected = index === activeIndex;
@@ -1450,6 +1758,8 @@ export function SingleProductView({
                   ? getDiscountPercent(variantCompareAtPrice, variantSalePrice)
                   : null;
                 const stockMeta = getStockLabel(variant, item);
+                const variantImages = getVariantImages(item, variant);
+                const variantImage = variantImages[0] ?? null;
                 return (
                   <button
                     key={String(variant.variant_id ?? index)}
@@ -1463,11 +1773,24 @@ export function SingleProductView({
                     }
                   >
                     <div className="flex items-start justify-between gap-3">
-                      <div>
+                      <div className="flex min-w-0 items-start gap-3">
+                        {variantImage?.imageUrl ? (
+                          <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-[8px] border border-black/8 bg-[#f6f6f6]">
+                            <BlurhashImage
+                              src={variantImage.imageUrl}
+                              blurHash={variantImage.blurHashUrl}
+                              alt={getVariantLabel(variant)}
+                              className="h-full w-full"
+                              imageClassName="object-cover"
+                            />
+                          </div>
+                        ) : null}
+                        <div className="min-w-0">
                         <p className="text-[13px] font-semibold text-[#202020]">{getVariantLabel(variant)}</p>
                         {getVariantSummary(variant) ? (
                           <p className="mt-1 text-[11px] text-[#57636c]">{getVariantSummary(variant)}</p>
                         ) : null}
+                        </div>
                       </div>
                       <div className="text-right">
                         {variantDiscountPercent ? (
@@ -1484,9 +1807,7 @@ export function SingleProductView({
                     </div>
                     {typeof variantSalePrice === "number" ? (
                       <div className="mt-2.5 flex flex-wrap items-end gap-2">
-                        <p className={`text-[16px] font-semibold leading-none ${variantOnSale ? "text-[#ff5963]" : "text-[#202020]"}`}>
-                          {formatMoney(variantSalePrice)}
-                        </p>
+                        <StorefrontPrice value={variantSalePrice} tone={variantOnSale ? "sale" : "default"} size="md" />
                         {variantOnSale && typeof variantCompareAtPrice === "number" ? (
                           <p className="text-[11px] font-medium leading-none text-[#8b94a3] line-through">
                             {formatMoney(variantCompareAtPrice)}
@@ -1508,30 +1829,43 @@ export function SingleProductView({
                       >
                         {stockMeta.label}
                       </span>
+                      {getVariantHighlightDetails(variant).slice(0, 2).map((entry) => (
+                        <span
+                          key={`${variant.variant_id}:${entry.label}:${entry.value}`}
+                          className="rounded-full bg-[rgba(95,103,115,0.08)] px-2.5 py-1 font-medium text-[#57636c]"
+                        >
+                          {entry.value}
+                        </span>
+                      ))}
                     </div>
                   </button>
                 );
               })}
             </div>
+            )}
           </div>
 
           <div className="hidden space-y-2 lg:block">
             <div className="space-y-3">
-              <div>
-                <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Quantity</p>
-                <div className="inline-flex h-12 items-center overflow-hidden rounded-[8px] border border-black/10 bg-white">
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Quantity</p>
+              <div className="flex items-stretch gap-3">
+                <div className="inline-flex h-12 shrink-0 items-center overflow-hidden rounded-[8px] border border-black/10 bg-white">
                   <button type="button" onClick={() => setSelectedQty((current) => Math.max(1, current - 1))} className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020]" aria-label="Decrease quantity">
                     −
                   </button>
                   <span className="inline-flex h-full min-w-10 items-center justify-center border-x border-black/10 px-3 text-[14px] font-semibold text-[#202020]">
                     {selectedQty}
                   </span>
-                  <button type="button" onClick={() => setSelectedQty((current) => current + 1)} className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020]" aria-label="Increase quantity">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedQty((current) => (typeof availableQty === "number" ? Math.min(availableQty, current + 1) : current + 1))}
+                    disabled={typeof availableQty === "number" && selectedQty >= availableQty}
+                    className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Increase quantity"
+                  >
                     +
                   </button>
                 </div>
-              </div>
-              <div className="flex items-stretch gap-3">
                 <button
                   type="button"
                   onClick={() => void addToCart()}
@@ -1555,6 +1889,14 @@ export function SingleProductView({
                   <HeartIcon filled={isFavorite} />
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={() => void addToCart({ redirectToCheckout: true })}
+                disabled={cartSubmitting || stock.tone === "danger"}
+                className="inline-flex h-12 w-full items-center justify-center rounded-[8px] bg-[#202020] px-5 text-[14px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {cartSubmitting ? "Adding..." : "Buy now"}
+              </button>
             </div>
             {cartMessage ? <p className="text-[12px] text-[#57636c]">{cartMessage}</p> : null}
             {favoriteMessage ? <p className="text-[12px] text-[#57636c]">{favoriteMessage}</p> : null}
@@ -1563,12 +1905,52 @@ export function SingleProductView({
               <p className="mt-2 text-[13px] leading-[1.7] text-[#57636c]">
                 Buy through Piessang with visible delivery, returns, payments, and support information before and after checkout.
               </p>
-              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-[#57636c]">
-                <Link href="/delivery" className="transition-colors hover:text-[#202020]">Delivery info</Link>
-                <Link href="/returns" className="transition-colors hover:text-[#202020]">Returns</Link>
-                <Link href="/payments" className="transition-colors hover:text-[#202020]">Payments</Link>
-                <Link href="/contact" className="transition-colors hover:text-[#202020]">Need help?</Link>
-                <Link href="/about" className="transition-colors hover:text-[#202020]">About Piessang</Link>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Link
+                  href="/delivery"
+                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12px] font-semibold text-[#57636c] underline decoration-[rgba(144,125,76,0.35)] underline-offset-4 transition-colors hover:text-[#202020]"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current text-[#907d4c]">
+                    <path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h8a1.5 1.5 0 0 1 1.5 1.5V6H15a2 2 0 0 1 1.6.8l1.6 2.13c.2.26.3.58.3.91v2.68A1.5 1.5 0 0 1 17 14h-.55a2.45 2.45 0 0 1-4.9 0H8.45a2.45 2.45 0 0 1-4.9 0H3A1.5 1.5 0 0 1 1.5 12.5v-5A2 2 0 0 1 2.5 5.5ZM14 8v2h2.56l-1.2-1.6A.5.5 0 0 0 14.96 8H14Zm-9.5 6a.95.95 0 1 0 0-1.9.95.95 0 0 0 0 1.9Zm9 0a.95.95 0 1 0 0-1.9.95.95 0 0 0 0 1.9Z" />
+                  </svg>
+                  Delivery info
+                </Link>
+                <Link
+                  href="/returns"
+                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12px] font-semibold text-[#57636c] underline decoration-[rgba(144,125,76,0.35)] underline-offset-4 transition-colors hover:text-[#202020]"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current text-[#907d4c]">
+                    <path d="M10 2a8 8 0 1 0 5.66 2.34l1.13-1.13a1 1 0 1 1 1.42 1.42l-1.13 1.13A8 8 0 0 0 10 2Zm-.75 3a1 1 0 0 1 2 0v4.59l1.7 1.7a1 1 0 0 1-1.4 1.42l-2-2A1 1 0 0 1 9.25 10V5Z" />
+                  </svg>
+                  Returns
+                </Link>
+                <Link
+                  href="/payments"
+                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12px] font-semibold text-[#57636c] underline decoration-[rgba(144,125,76,0.35)] underline-offset-4 transition-colors hover:text-[#202020]"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current text-[#907d4c]">
+                    <path d="M3 4.5A2.5 2.5 0 0 1 5.5 2h9A2.5 2.5 0 0 1 17 4.5v11a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 3 15.5v-11Zm2 1.5v1h10V6H5Zm0 3v6.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V9H5Zm2.5 1.5h2.75a1 1 0 1 1 0 2H7.5a1 1 0 1 1 0-2Z" />
+                  </svg>
+                  Payments
+                </Link>
+                <Link
+                  href="/contact"
+                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12px] font-semibold text-[#57636c] underline decoration-[rgba(144,125,76,0.35)] underline-offset-4 transition-colors hover:text-[#202020]"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current text-[#907d4c]">
+                    <path d="M10 2.5a7.5 7.5 0 1 0 4.6 13.43l2.92.75a.75.75 0 0 0 .91-.91l-.75-2.92A7.5 7.5 0 0 0 10 2.5Zm0 10.25a1.1 1.1 0 1 1 0-2.2 1.1 1.1 0 0 1 0 2.2Zm1-4.82v.32a1 1 0 0 1-2 0V7.6a1.74 1.74 0 1 1 2.78 1.4c-.42.32-.78.6-.78.93Z" />
+                  </svg>
+                  Need help?
+                </Link>
+                <Link
+                  href="/about"
+                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[12px] font-semibold text-[#57636c] underline decoration-[rgba(144,125,76,0.35)] underline-offset-4 transition-colors hover:text-[#202020]"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current text-[#907d4c]">
+                    <path d="M10 2a8 8 0 1 0 8 8 8 8 0 0 0-8-8Zm0 3a1.1 1.1 0 1 1-1.1 1.1A1.1 1.1 0 0 1 10 5Zm1.25 9h-2.5a1 1 0 1 1 0-2h.25V9.5h-.25a1 1 0 1 1 0-2h1.25A1 1 0 0 1 11 8.5V12h.25a1 1 0 1 1 0 2Z" />
+                  </svg>
+                  About Piessang
+                </Link>
               </div>
             </div>
             <div className="rounded-[8px] bg-[#fafafa] px-3 py-3">
@@ -1595,7 +1977,13 @@ export function SingleProductView({
               <span className="inline-flex h-full min-w-9 items-center justify-center border-x border-black/10 px-2 text-[13px] font-semibold text-[#202020]">
                 {selectedQty}
               </span>
-              <button type="button" onClick={() => setSelectedQty((current) => current + 1)} className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020]" aria-label="Increase quantity">
+              <button
+                type="button"
+                onClick={() => setSelectedQty((current) => (typeof availableQty === "number" ? Math.min(availableQty, current + 1) : current + 1))}
+                disabled={typeof availableQty === "number" && selectedQty >= availableQty}
+                className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
+                aria-label="Increase quantity"
+              >
                 +
               </button>
             </div>
@@ -1789,6 +2177,7 @@ export function SingleProductView({
           </div>
         </div>
       ) : null}
+
 
       <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />
     </div>

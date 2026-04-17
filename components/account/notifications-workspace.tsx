@@ -110,6 +110,10 @@ export function AccountNotificationsWorkspace() {
         <div className="mt-5 rounded-[8px] border border-black/6 bg-[rgba(32,32,32,0.02)] px-4 py-8 text-[13px] text-[#57636c]">
           Loading notifications...
         </div>
+      ) : error ? (
+        <div className="mt-5 rounded-[8px] border border-dashed border-[#f0c7cb] bg-[#fff7f8] px-4 py-8 text-[13px] text-[#b91c1c]">
+          Notifications are unavailable right now.
+        </div>
       ) : visibleItems.length ? (
         <div className="mt-5 space-y-3">
           {visibleItems.map((item) => (

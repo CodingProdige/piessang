@@ -3,6 +3,7 @@ export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { releaseVariantCheckoutReservationsForItems, reserveVariantCheckoutQuantity } from "@/lib/cart/checkout-reservations";
 import { releaseStockLotReservations, reserveStockLotsFifo } from "@/lib/warehouse/stock-lots";
 import { recordLiveCommerceEvent } from "@/lib/analytics/live-commerce";
 
@@ -45,6 +46,22 @@ export async function POST(request) {
       const fulfillmentMode = String(product?.fulfillment?.mode || "").trim().toLowerCase();
       const isSaleLine = Boolean(variant?.sale?.is_on_sale);
       const desiredQty = Math.max(0, Number(item?.quantity || 0));
+      const productId = String(product?.product?.unique_id || product?.docId || item?.product_unique_id || "").trim();
+      const variantId = String(variant?.variant_id || item?.selected_variant_id || "").trim();
+
+      if (productId && variantId && desiredQty > 0) {
+        const genericReserve = await reserveVariantCheckoutQuantity({
+          productId,
+          variantId,
+          quantity: desiredQty,
+          cartId: customerId,
+        });
+        if (genericReserve?.ok === false) {
+          await releaseVariantCheckoutReservationsForItems(nextItems, customerId);
+          return err(409, "Reserved", "Reserved in another shopper's checkout.");
+        }
+      }
+
       const existingReservations = normalizeActiveCartLotReservations(variant?.warehouse_lot_reservations);
       const reservedQty = existingReservations.reduce((sum, entry) => sum + Math.max(0, Number(entry?.quantity || 0)), 0);
 
@@ -66,7 +83,8 @@ export async function POST(request) {
           cartId: customerId,
         });
         if (reserve?.ok === false) {
-          return err(409, "Out of Stock", "One or more Piessang-fulfilled items are no longer available in the quantity requested.");
+          await releaseVariantCheckoutReservationsForItems([...nextItems, item], customerId);
+          return err(409, "Reserved", "Reserved in another shopper's checkout.");
         }
         nextReservations = [...existingReservations, ...(reserve.allocations || [])];
       } else if (desiredQty < reservedQty) {
@@ -119,7 +137,7 @@ export async function POST(request) {
       reservedItemCount,
       message: reservedItemCount
         ? "Checkout stock hold created for Piessang-fulfilled items."
-        : "Checkout is ready. No stock hold was needed for the current cart.",
+        : "Checkout stock hold created.",
     });
   } catch (error) {
     console.error("CHECKOUT RESERVE ERROR:", error);

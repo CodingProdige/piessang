@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEve
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import {
+  hasPreciseShopperDeliveryArea,
   readShopperDeliveryArea,
   saveShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
@@ -74,6 +75,7 @@ type ProductVariant = {
   };
   placement?: {
     is_default?: boolean;
+    track_inventory?: boolean;
     continue_selling_out_of_stock?: boolean;
   };
   inventory?: Array<{
@@ -91,6 +93,8 @@ type ProductVariant = {
     total_units_sold?: number;
   };
   total_in_stock_items_available?: number;
+  checkout_reserved_qty?: number;
+  checkout_reserved_unavailable?: boolean;
 };
 
 export type ProductItem = {
@@ -381,11 +385,11 @@ function getCampaignSessionId(uid?: string | null) {
 
 function splitCurrencyParts(formattedValue?: string | null) {
   if (!formattedValue) return null;
-  const normalized = String(formattedValue).replace(/\s/g, "");
-  const match = normalized.match(/^([^0-9-]*)(-?[0-9.,]+)$/);
+  const normalized = String(formattedValue).trim();
+  const match = normalized.match(/^([^0-9-]*)(-?[0-9\s.,]+)$/);
   if (!match) return null;
-  const symbol = match[1] || "";
-  const numeric = match[2] || "";
+  const symbol = (match[1] || "").trimEnd();
+  const numeric = (match[2] || "").trim();
   const lastSeparatorIndex = Math.max(numeric.lastIndexOf("."), numeric.lastIndexOf(","));
   if (lastSeparatorIndex === -1) return { whole: `${symbol}${numeric}`, cents: "00" };
   const whole = `${symbol}${numeric.slice(0, lastSeparatorIndex)}`;
@@ -528,6 +532,24 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
     platformLabel: "Piessang shipping available",
     missingProfileLabel: shopperArea ? "Delivery availability confirmed at checkout" : "Set your shipping location",
   });
+}
+
+function getVariantCardMeta(variant?: ProductVariant | null) {
+  if (!variant) return [];
+  const entries = [
+    variant.storageCapacity ? `Storage ${String(variant.storageCapacity).trim()}` : "",
+    variant.memoryRam ? `${String(variant.memoryRam).trim()} RAM` : "",
+    variant.connectivity ? String(variant.connectivity).trim() : "",
+    variant.compatibility ? String(variant.compatibility).trim() : "",
+    variant.material ? String(variant.material).trim() : "",
+    variant.bookFormat ? String(variant.bookFormat).trim() : "",
+    variant.language ? String(variant.language).trim() : "",
+    variant.ageRange ? String(variant.ageRange).trim() : "",
+    variant.modelFitment ? String(variant.modelFitment).trim() : "",
+    variant.containerType ? String(variant.containerType).trim() : "",
+    variant.flavor ? String(variant.flavor).trim() : "",
+  ].filter(Boolean);
+  return entries.slice(0, 2);
 }
 
 function HeartIcon({ filled = false }: { filled?: boolean }) {
@@ -781,8 +803,11 @@ function getStockState(variant?: ProductVariant, item?: ProductItem) {
     return { label: "Supplier out of stock", tone: "neutral" as const, hideQuantity: true };
   }
 
-  if (variant?.placement?.continue_selling_out_of_stock) {
+  if (variant?.placement?.track_inventory !== true || variant?.placement?.continue_selling_out_of_stock) {
     return { label: "In stock", tone: "success" as const, hideQuantity: true };
+  }
+  if (variant?.checkout_reserved_unavailable) {
+    return { label: "Reserved in another shopper's checkout.", tone: "warning" as const, hideQuantity: false };
   }
 
   if (item?.data?.has_in_stock_variants === false) {
@@ -971,6 +996,7 @@ export function BrowseProductCard({
   const variantCount = getVariantCount(item);
   const sellerOfferCount = Number(item.data?.seller_offer_count || 0);
   const selectedVariantLabel = getSelectedVariantLabel(item);
+  const selectedVariantMeta = getVariantCardMeta(defaultVariant);
   const imageCount = getImageCount(item);
   const salePercent = getSalePercent(item);
   const totalUnitsSold = Number(
@@ -984,8 +1010,13 @@ export function BrowseProductCard({
   const isPreLoved = isPreLovedProduct(item);
   const isSponsored = item.ad?.sponsored === true;
   const resolvedShopperArea = shopperArea ?? null;
-  const deliveryPromise = getDeliveryPromise(item, resolvedShopperArea, defaultVariant);
-  const sellerDeliveryMessage = getSellerDeliveryMessage(item, resolvedShopperArea, defaultVariant);
+  const hasDeliveryEstimateLocation = Boolean(
+    resolvedShopperArea?.country && hasPreciseShopperDeliveryArea(resolvedShopperArea),
+  );
+  const deliveryPromise = hasDeliveryEstimateLocation ? getDeliveryPromise(item, resolvedShopperArea, defaultVariant) : null;
+  const sellerDeliveryMessage = hasDeliveryEstimateLocation
+    ? getSellerDeliveryMessage(item, resolvedShopperArea, defaultVariant)
+    : null;
   const deliveryLabel = deliveryPromise?.label ?? sellerDeliveryMessage?.label ?? null;
   const deliveryCutoffText = deliveryPromise?.cutoffText ?? null;
   const deliveryTone: "success" | "danger" | "warning" | "neutral" =
@@ -1378,6 +1409,11 @@ export function BrowseProductCard({
               {selectedVariantLabel}
             </p>
           ) : null}
+          {selectedVariantMeta.length ? (
+            <p className="text-[11px] leading-[1.4] text-[#57636c]">
+              {selectedVariantMeta.join(" • ")}
+            </p>
+          ) : null}
 
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-normal leading-none">
               {renderBrandLink ? (
@@ -1557,6 +1593,9 @@ export function BrowseProductCard({
 
             {selectedVariantLabel ? (
               <p className="text-[10px] font-medium leading-none text-[#8b94a3] sm:text-[11px]">{selectedVariantLabel}</p>
+            ) : null}
+            {selectedVariantMeta.length ? (
+              <p className="text-[10px] leading-[1.4] text-[#57636c] sm:text-[11px]">{selectedVariantMeta.join(" • ")}</p>
             ) : null}
 
             {resolvedBrandLabel || resolvedVendorLabel ? (
@@ -1751,6 +1790,28 @@ export function ProductsResults({
     return subscribeToShopperDeliveryArea(setShopperArea);
   }, []);
 
+  const shopperAreaKey = useMemo(
+    () =>
+      JSON.stringify({
+        country: shopperArea?.country || "",
+        city: shopperArea?.city || "",
+        province: shopperArea?.province || "",
+        suburb: shopperArea?.suburb || "",
+        postalCode: shopperArea?.postalCode || "",
+        latitude: shopperArea?.latitude ?? null,
+        longitude: shopperArea?.longitude ?? null,
+      }),
+    [
+      shopperArea?.city,
+      shopperArea?.country,
+      shopperArea?.latitude,
+      shopperArea?.longitude,
+      shopperArea?.postalCode,
+      shopperArea?.province,
+      shopperArea?.suburb,
+    ],
+  );
+
   useEffect(() => {
     setItems(initialItems.filter(hasShopperFacingProductImage));
   }, [initialItems]);
@@ -1824,7 +1885,7 @@ export function ProductsResults({
         priceRange?.min,
         priceRange?.max,
       ),
-    [activeAttributeFilters, items, minRating, priceRange?.min, priceRange?.max, shopperArea?.country],
+    [activeAttributeFilters, items, minRating, priceRange?.min, priceRange?.max, shopperArea?.country, shopperAreaKey],
   );
   const displayItems = useMemo(() => {
     if (!filteredItems.length || !sponsoredItems.length || !sponsoredPlacement) return filteredItems;

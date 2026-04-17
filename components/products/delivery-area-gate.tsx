@@ -157,7 +157,7 @@ export function DeliveryAreaGate({
   const [province, setProvince] = useState("");
   const [suburb, setSuburb] = useState("");
   const [postalCode, setPostalCode] = useState("");
-  const [country, setCountry] = useState("South Africa");
+  const [country, setCountry] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
@@ -171,7 +171,7 @@ export function DeliveryAreaGate({
     setProvince(stored?.province || "");
     setSuburb(stored?.suburb || "");
     setPostalCode(stored?.postalCode || "");
-    setCountry(stored?.country || "South Africa");
+    setCountry(stored?.country || "");
     onChangeRef.current?.(stored);
   }, []);
 
@@ -275,7 +275,7 @@ export function DeliveryAreaGate({
                   setProvince("");
                   setSuburb("");
                   setPostalCode("");
-                  setCountry("South Africa");
+                  setCountry("");
                   saveShopperDeliveryArea(null);
                   onChangeRef.current?.(null);
                   setEditing(false);
@@ -309,7 +309,7 @@ export function DeliveryAreaGate({
         setProvince(nextArea.province);
         setSuburb(nextArea.suburb);
         setPostalCode(nextArea.postalCode);
-        setCountry(nextArea.country || "South Africa");
+        setCountry(nextArea.country || "");
         saveShopperDeliveryArea(nextArea);
         onChangeRef.current?.(nextArea);
         setPickerOpen(false);

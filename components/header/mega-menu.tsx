@@ -10,7 +10,6 @@ import { DisplayCurrencySelector } from "@/components/currency/display-currency-
 import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import {
-  detectShopperCountryFromBrowser,
   DeliveryAreaGate,
   formatPreciseShopperDeliveryArea,
   hasPreciseShopperDeliveryArea,
@@ -178,26 +177,7 @@ function HeaderDeliveryLocationControl({
 
   useEffect(() => {
     const stored = readShopperDeliveryArea();
-    if (stored?.country) {
-      setArea(stored);
-    } else {
-      const detectedCountry = detectShopperCountryFromBrowser();
-      if (detectedCountry) {
-        const nextArea = {
-          city: "",
-          province: "",
-          suburb: "",
-          postalCode: "",
-          country: detectedCountry,
-          latitude: null,
-          longitude: null,
-        };
-        saveShopperDeliveryArea(nextArea);
-        setArea(nextArea);
-      } else {
-        setArea(stored);
-      }
-    }
+    setArea(stored);
     return subscribeToShopperDeliveryArea(setArea);
   }, []);
 
@@ -222,19 +202,22 @@ function HeaderDeliveryLocationControl({
               if (!nextCountry) {
                 saveShopperDeliveryArea(null);
                 setArea(null);
+                router.refresh();
                 return;
               }
+              const countryChanged = String(area?.country || "").trim() !== nextCountry;
               const nextArea = {
-                city: area?.city || "",
-                province: area?.province || "",
-                suburb: area?.suburb || "",
-                postalCode: area?.postalCode || "",
+                city: countryChanged ? "" : area?.city || "",
+                province: countryChanged ? "" : area?.province || "",
+                suburb: countryChanged ? "" : area?.suburb || "",
+                postalCode: countryChanged ? "" : area?.postalCode || "",
                 country: nextCountry,
-                latitude: area?.latitude ?? null,
-                longitude: area?.longitude ?? null,
+                latitude: countryChanged ? null : area?.latitude ?? null,
+                longitude: countryChanged ? null : area?.longitude ?? null,
               };
               saveShopperDeliveryArea(nextArea);
               setArea(nextArea);
+              router.refresh();
             }}
             className="max-w-[120px] appearance-none rounded-[8px] border border-black/10 bg-white py-2 pl-2 pr-7 text-[11px] font-semibold text-[#202020] outline-none sm:max-w-none sm:pl-3 sm:pr-8 sm:text-[12px]"
             aria-label="Choose delivery country"
@@ -287,6 +270,7 @@ function HeaderDeliveryLocationControl({
                 compact
                 onChange={(nextArea) => {
                   setArea(nextArea);
+                  router.refresh();
                 }}
               />
             </div>
@@ -310,9 +294,13 @@ function buildProductsHref(params: {
   return query ? `${PRODUCTS_PAGE}?${query}` : PRODUCTS_PAGE;
 }
 
-async function fetchDepartments(): Promise<Department[]> {
+async function fetchDepartments(shopperCountry = ""): Promise<Department[]> {
   try {
-    const response = await fetch(CATEGORIES_ENDPOINT);
+    const url = new URL(CATEGORIES_ENDPOINT, window.location.origin);
+    if (shopperCountry) {
+      url.searchParams.set("country", shopperCountry);
+    }
+    const response = await fetch(url.toString());
     if (!response.ok) throw new Error("Unable to load categories");
 
     const payload = (await response.json()) as { items?: CatalogueCategory[] };
@@ -350,10 +338,13 @@ function MenuItemCount({ count }: { count: number }) {
   return <span className="mt-0.5 block text-[11px] font-medium text-[#7b8390]">{formatCategoryProductCount(count)}</span>;
 }
 
-async function fetchSubcategories(categorySlug: string): Promise<SubCategory[]> {
+async function fetchSubcategories(categorySlug: string, shopperCountry = ""): Promise<SubCategory[]> {
   try {
     const url = new URL(SUBCATEGORIES_ENDPOINT, window.location.origin);
     url.searchParams.set("category", categorySlug);
+    if (shopperCountry) {
+      url.searchParams.set("country", shopperCountry);
+    }
     const response = await fetch(url.toString());
     if (!response.ok) throw new Error("Unable to load subcategories");
 
@@ -455,6 +446,7 @@ async function fetchBrands(categorySlug: string, subCategorySlug?: string): Prom
 
 function useCatalogueMenu(enabled = true): MenuState {
   const [allDepartments, setAllDepartments] = useState<Department[]>([]);
+  const [shopperCountry, setShopperCountry] = useState("");
   const [hoveredSlug, setHoveredSlug] = useState("");
   const [hoveredSubcategorySlug, setHoveredSubcategorySlug] = useState("");
   const [subcategoriesByCategory, setSubcategoriesByCategory] = useState<Record<string, SubCategory[]>>(
@@ -467,10 +459,17 @@ function useCatalogueMenu(enabled = true): MenuState {
   const brandRequestId = useRef(0);
 
   useEffect(() => {
+    setShopperCountry(String(readShopperDeliveryArea()?.country || "").trim());
+    return subscribeToShopperDeliveryArea((area) => {
+      setShopperCountry(String(area?.country || "").trim());
+    });
+  }, []);
+
+  useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
 
-    void fetchDepartments().then((items) => {
+    void fetchDepartments(shopperCountry).then((items) => {
       if (cancelled) return;
       setAllDepartments(items);
     });
@@ -478,7 +477,7 @@ function useCatalogueMenu(enabled = true): MenuState {
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, shopperCountry]);
 
   const departments = allDepartments;
 
@@ -498,7 +497,7 @@ function useCatalogueMenu(enabled = true): MenuState {
     const requestId = ++subcategoryRequestId.current;
     setSubcategoriesLoading(true);
 
-    void fetchSubcategories(categorySlug).then((items) => {
+    void fetchSubcategories(categorySlug, shopperCountry).then((items) => {
       if (subcategoryRequestId.current !== requestId) return;
       setSubcategoriesByCategory((current) => ({
         ...current,
@@ -506,7 +505,7 @@ function useCatalogueMenu(enabled = true): MenuState {
       }));
       setSubcategoriesLoading(false);
     });
-  }, [hoveredSlug, enabled]);
+  }, [hoveredSlug, enabled, shopperCountry]);
 
   const displayCategorySlug = hoveredSlug;
   const activeSubcategories = displayCategorySlug ? subcategoriesByCategory[displayCategorySlug] ?? [] : [];

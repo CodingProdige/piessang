@@ -16,6 +16,7 @@ type MobileFilterOptions = {
   attributeFilters?: Array<{
     key: string;
     title: string;
+    group?: string;
     items: string[];
   }>;
   priceRange?: {
@@ -200,6 +201,48 @@ function RatingSection({
   );
 }
 
+function AttributeFilterSectionGroup({
+  title,
+  filters,
+  currentAttributeFilters,
+  counts,
+  pathname,
+  params,
+  onClose,
+}: {
+  title: string;
+  filters: Array<{ key: string; title: string; group?: string; items: string[] }>;
+  currentAttributeFilters: Record<string, string>;
+  counts?: Record<string, FilterCountMap>;
+  pathname: string;
+  params: URLSearchParams;
+  onClose: () => void;
+}) {
+  if (!filters.length) return null;
+
+  return (
+    <section className="border-b border-black/5 pb-4">
+      <h3 className="text-[12px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">{title}</h3>
+      <div className="mt-3 space-y-4">
+        {filters.map((filter) => (
+          <FilterSection
+            key={filter.key}
+            title={filter.title}
+            items={filter.items}
+            currentValue={currentAttributeFilters[filter.key] ?? ""}
+            counts={counts?.[filter.key]}
+            pathname={pathname}
+            params={params}
+            paramKey={filter.key}
+            onClose={onClose}
+            formatItemLabel={(value) => value}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function MobileProductFilters({
   options,
   currentCategory,
@@ -247,6 +290,16 @@ export function MobileProductFilters({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const params = useMemo(() => new URLSearchParams(searchParams.toString()), [searchParams]);
+  const groupedAttributeFilters = useMemo(() => {
+    const byGroup = new Map<string, Array<{ key: string; title: string; group?: string; items: string[] }>>();
+    for (const filter of options.attributeFilters ?? []) {
+      const group = String(filter.group || "Core options");
+      const current = byGroup.get(group) ?? [];
+      current.push(filter);
+      byGroup.set(group, current);
+    }
+    return Array.from(byGroup.entries()).map(([group, filters]) => ({ group, filters }));
+  }, [options.attributeFilters]);
 
   return (
     <div className="lg:hidden">
@@ -336,18 +389,16 @@ export function MobileProductFilters({
               onClose={() => setOpen(false)}
               formatItemLabel={(value) => value}
             />
-            {(options.attributeFilters ?? []).map((filter) => (
-              <FilterSection
-                key={filter.key}
-                title={filter.title}
-                items={filter.items}
-                currentValue={currentAttributeFilters[filter.key] ?? ""}
-                counts={counts?.attributes?.[filter.key]}
+            {groupedAttributeFilters.map((entry) => (
+              <AttributeFilterSectionGroup
+                key={entry.group}
+                title={entry.group}
+                filters={entry.filters}
+                currentAttributeFilters={currentAttributeFilters}
+                counts={counts?.attributes}
                 pathname={pathname}
                 params={params}
-                paramKey={filter.key}
                 onClose={() => setOpen(false)}
-                formatItemLabel={(value) => value}
               />
             ))}
             <RatingSection

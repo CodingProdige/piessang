@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { computeCatalogueMenuCounts } from "@/lib/catalogue/menu-counts";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -19,6 +20,7 @@ export async function GET(req){
     const { searchParams } = new URL(req.url);
     const category = (searchParams.get("category")||"").trim();
     const isActive = toBool(searchParams.get("isActive"));
+    const shopperCountry = String(searchParams.get("country") || "").trim();
 
     let queryRef = db.collection("sub_categories");
     if (category) queryRef = queryRef.where("grouping.category","==", category);
@@ -31,13 +33,20 @@ export async function GET(req){
       const bp = Number(b?.placement?.position ?? Number.POSITIVE_INFINITY);
       return ap - bp;
     });
+    let localizedCounts = null;
+    if (shopperCountry) {
+      localizedCounts = (await computeCatalogueMenuCounts(db, shopperCountry)).subCategoryCounts;
+    }
+
     const items = rows.map(d => ({
       slug:  d?.subCategory?.slug ?? null,
       kind:  d?.subCategory?.kind ?? null,
       title: d?.subCategory?.title ?? null,
       category: d?.grouping?.category ?? null,
       isActive: d?.placement?.isActive ?? null,
-      productCount: Number(d?.productCount ?? 0),
+      productCount: Number(
+        localizedCounts?.[`${d?.grouping?.category ?? ""}::${d?.subCategory?.slug ?? ""}`] ?? d?.productCount ?? 0,
+      ),
     }));
 
     return ok({ count: items.length, items });

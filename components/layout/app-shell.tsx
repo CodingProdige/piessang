@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import dynamic from "next/dynamic";
 import { usePathname, useSearchParams } from "next/navigation";
 import { ClientTitleSync } from "@/components/layout/client-title-sync";
+import { SiteBreadcrumbs } from "@/components/layout/site-breadcrumbs";
 import { PiessangFooter } from "@/components/footer/site-footer";
 import { AuthProvider } from "@/components/auth/auth-provider";
 import { DisplayCurrencyProvider } from "@/components/currency/display-currency-provider";
@@ -87,6 +88,7 @@ function AppShellFrame({
     <div className="flex min-h-screen flex-col">
       <ClientTitleSync />
       {!hideHeader ? <PiessangHeader showMegaMenu={isHome} /> : null}
+      {!hideHeader ? <SiteBreadcrumbs /> : null}
       <div className="flex-1">{children}</div>
       {!hideFooter ? <PiessangFooter /> : null}
     </div>

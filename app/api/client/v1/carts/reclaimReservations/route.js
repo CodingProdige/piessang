@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
+import { reclaimExpiredVariantCheckoutReservations } from "@/lib/cart/checkout-reservations";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { releaseStockLotReservations } from "@/lib/warehouse/stock-lots";
 
@@ -22,6 +23,8 @@ export async function GET() {
   try {
     const db = getAdminDb();
     if (!db) return err(500, "Reclaim Failed", "Admin database is unavailable.");
+
+    const genericReclaimed = await reclaimExpiredVariantCheckoutReservations();
 
     const snap = await db.collection("carts").get();
     const reclaimed = [];
@@ -72,6 +75,7 @@ export async function GET() {
     return ok({
       message: "Expired cart reservations reclaimed.",
       reclaimed,
+      genericReclaimed,
     });
   } catch (e) {
     console.error(e);
@@ -80,4 +84,3 @@ export async function GET() {
     });
   }
 }
-

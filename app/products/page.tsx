@@ -15,6 +15,11 @@ import { ResultsCount } from "@/components/products/results-count";
 import { SingleProductView } from "@/components/products/single-product-view";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
+import {
+  getAttributeFilterGroup,
+  getRelevantAttributeFilterKeys,
+  VARIANT_METADATA_GROUP_ORDER,
+} from "@/lib/catalogue/variant-context";
 import { buildSeoMetadata } from "@/lib/seo/page-overrides";
 
 export const revalidate = 300;
@@ -34,18 +39,64 @@ type ProductVariant = {
   flavor?: string | null;
   abv?: string | null;
   containerType?: string | null;
+  caffeineLevel?: string | null;
+  sweetenerType?: string | null;
   storageCapacity?: string | null;
   memoryRam?: string | null;
   connectivity?: string | null;
   compatibility?: string | null;
+  fit?: string | null;
+  lengthSpec?: string | null;
+  sleeveLength?: string | null;
+  neckline?: string | null;
+  rise?: string | null;
+  pattern?: string | null;
   sizeSystem?: string | null;
   material?: string | null;
   ringSize?: string | null;
   strapLength?: string | null;
+  heelHeight?: string | null;
+  stoneType?: string | null;
   bookFormat?: string | null;
   language?: string | null;
+  readingAge?: string | null;
+  subtitleLanguage?: string | null;
+  editionType?: string | null;
+  gamePlatform?: string | null;
+  gameEdition?: string | null;
+  genre?: string | null;
+  regionCode?: string | null;
+  ageRating?: string | null;
+  petSize?: string | null;
+  petLifeStage?: string | null;
+  breedSize?: string | null;
+  petFoodType?: string | null;
+  activityLevel?: string | null;
+  luggageSize?: string | null;
+  shellType?: string | null;
+  wheelCount?: string | null;
+  closureType?: string | null;
+  cameraMount?: string | null;
+  sensorFormat?: string | null;
+  lensMount?: string | null;
+  stabilization?: string | null;
+  megapixels?: string | null;
+  instrumentType?: string | null;
+  stringCount?: string | null;
+  bodySize?: string | null;
+  pickupType?: string | null;
   ageRange?: string | null;
   modelFitment?: string | null;
+  sizeRange?: string | null;
+  feedingStage?: string | null;
+  safetyStandard?: string | null;
+  sidePosition?: string | null;
+  axlePosition?: string | null;
+  vehicleMake?: string | null;
+  energyRating?: string | null;
+  installationType?: string | null;
+  fuelType?: string | null;
+  noiseLevel?: string | null;
   pack?: {
     unit_count?: number;
     volume?: number;
@@ -64,6 +115,8 @@ type ProductVariant = {
   };
   placement?: {
     is_default?: boolean;
+    track_inventory?: boolean;
+    continue_selling_out_of_stock?: boolean;
   };
   inventory?: Array<{
     location_id?: string;
@@ -191,7 +244,33 @@ type AttributeFilterConfig = {
   key: string;
   title: string;
   variantKey: keyof ProductVariant;
+  group?: string;
 };
+
+const FILTER_OPTION_SETS: Partial<Record<keyof ProductVariant, string[]>> = {
+  size: ["XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "One Size"],
+  shade: ["Light", "Medium", "Tan", "Deep", "Clear", "Universal"],
+  scent: ["Floral", "Fresh", "Citrus", "Woody", "Sweet", "Unscented"],
+  skinType: ["All skin types", "Dry", "Oily", "Combination", "Sensitive", "Mature"],
+  hairType: ["All hair types", "Straight", "Wavy", "Curly", "Coily", "Dry or damaged"],
+  flavor: ["Flavorless", "Original", "Vanilla", "Chocolate", "Berry", "Lemon", "Mixed fruit"],
+  containerType: ["Bottle", "Can", "Carton", "Glass bottle", "Multipack"],
+  storageCapacity: ["32GB", "64GB", "128GB", "256GB", "512GB", "1TB"],
+  memoryRam: ["2GB", "4GB", "8GB", "16GB", "32GB", "64GB"],
+  connectivity: ["Wi-Fi", "4G", "5G", "Bluetooth", "Wired"],
+  sizeSystem: ["UK", "US", "EU", "CM"],
+  material: ["Leather", "Gold", "Silver", "Stainless steel", "Cotton", "Synthetic", "Wood"],
+  bookFormat: ["Paperback", "Hardcover", "eBook", "Audiobook", "DVD", "Blu-ray", "CD"],
+  language: ["English", "Afrikaans", "Zulu", "Xhosa", "French", "Portuguese"],
+  ageRange: ["0-3 months", "3-6 months", "6-12 months", "12-24 months", "2-4 years"],
+};
+
+const FILTER_OPTION_LOOKUPS: Partial<Record<keyof ProductVariant, Map<string, string>>> = Object.fromEntries(
+  Object.entries(FILTER_OPTION_SETS).map(([key, values]) => [
+    key,
+    new Map((values ?? []).map((value) => [value.trim().toLowerCase(), value])),
+  ]),
+) as Partial<Record<keyof ProductVariant, Map<string, string>>>;
 
 type ProductsPayload = {
   ok?: boolean;
@@ -284,16 +363,63 @@ const ATTRIBUTE_FILTERS: AttributeFilterConfig[] = [
   { key: "flavor", title: "Flavour", variantKey: "flavor" },
   { key: "abv", title: "ABV", variantKey: "abv" },
   { key: "containerType", title: "Container", variantKey: "containerType" },
+  { key: "caffeineLevel", title: "Caffeine", variantKey: "caffeineLevel" },
+  { key: "sweetenerType", title: "Sweetener", variantKey: "sweetenerType" },
   { key: "storageCapacity", title: "Storage", variantKey: "storageCapacity" },
   { key: "memoryRam", title: "Memory", variantKey: "memoryRam" },
   { key: "connectivity", title: "Connectivity", variantKey: "connectivity" },
   { key: "compatibility", title: "Compatibility", variantKey: "compatibility" },
+  { key: "fit", title: "Fit", variantKey: "fit" },
+  { key: "lengthSpec", title: "Length", variantKey: "lengthSpec" },
+  { key: "sleeveLength", title: "Sleeve length", variantKey: "sleeveLength" },
+  { key: "neckline", title: "Neckline", variantKey: "neckline" },
+  { key: "rise", title: "Rise", variantKey: "rise" },
+  { key: "pattern", title: "Pattern", variantKey: "pattern" },
   { key: "ringSize", title: "Ring size", variantKey: "ringSize" },
   { key: "strapLength", title: "Strap length", variantKey: "strapLength" },
+  { key: "heelHeight", title: "Heel height", variantKey: "heelHeight" },
+  { key: "stoneType", title: "Stone type", variantKey: "stoneType" },
+  { key: "sizeSystem", title: "Size system", variantKey: "sizeSystem" },
   { key: "bookFormat", title: "Format", variantKey: "bookFormat" },
   { key: "language", title: "Language", variantKey: "language" },
+  { key: "readingAge", title: "Reading age", variantKey: "readingAge" },
+  { key: "subtitleLanguage", title: "Subtitle language", variantKey: "subtitleLanguage" },
+  { key: "editionType", title: "Edition", variantKey: "editionType" },
+  { key: "gamePlatform", title: "Platform", variantKey: "gamePlatform" },
+  { key: "gameEdition", title: "Edition", variantKey: "gameEdition" },
+  { key: "genre", title: "Genre", variantKey: "genre" },
+  { key: "regionCode", title: "Region", variantKey: "regionCode" },
+  { key: "ageRating", title: "Age rating", variantKey: "ageRating" },
+  { key: "petSize", title: "Pet size", variantKey: "petSize" },
+  { key: "petLifeStage", title: "Life stage", variantKey: "petLifeStage" },
+  { key: "breedSize", title: "Breed size", variantKey: "breedSize" },
+  { key: "petFoodType", title: "Food type", variantKey: "petFoodType" },
+  { key: "activityLevel", title: "Activity level", variantKey: "activityLevel" },
+  { key: "luggageSize", title: "Luggage size", variantKey: "luggageSize" },
+  { key: "shellType", title: "Shell type", variantKey: "shellType" },
+  { key: "wheelCount", title: "Wheel count", variantKey: "wheelCount" },
+  { key: "closureType", title: "Closure type", variantKey: "closureType" },
+  { key: "cameraMount", title: "Camera mount", variantKey: "cameraMount" },
+  { key: "sensorFormat", title: "Sensor format", variantKey: "sensorFormat" },
+  { key: "lensMount", title: "Lens mount", variantKey: "lensMount" },
+  { key: "stabilization", title: "Stabilization", variantKey: "stabilization" },
+  { key: "megapixels", title: "Megapixels", variantKey: "megapixels" },
+  { key: "instrumentType", title: "Instrument type", variantKey: "instrumentType" },
+  { key: "stringCount", title: "String count", variantKey: "stringCount" },
+  { key: "bodySize", title: "Body size", variantKey: "bodySize" },
+  { key: "pickupType", title: "Pickup type", variantKey: "pickupType" },
   { key: "ageRange", title: "Age range", variantKey: "ageRange" },
   { key: "modelFitment", title: "Fitment", variantKey: "modelFitment" },
+  { key: "sizeRange", title: "Size range", variantKey: "sizeRange" },
+  { key: "feedingStage", title: "Feeding stage", variantKey: "feedingStage" },
+  { key: "safetyStandard", title: "Safety standard", variantKey: "safetyStandard" },
+  { key: "sidePosition", title: "Side / position", variantKey: "sidePosition" },
+  { key: "axlePosition", title: "Axle", variantKey: "axlePosition" },
+  { key: "vehicleMake", title: "Vehicle make", variantKey: "vehicleMake" },
+  { key: "energyRating", title: "Energy rating", variantKey: "energyRating" },
+  { key: "installationType", title: "Installation type", variantKey: "installationType" },
+  { key: "fuelType", title: "Fuel type", variantKey: "fuelType" },
+  { key: "noiseLevel", title: "Noise level", variantKey: "noiseLevel" },
 ];
 
 function humanizeSlug(value: string) {
@@ -307,6 +433,46 @@ function humanizeSlug(value: string) {
 
 function normalizeFilterValue(value: unknown) {
   return String(value ?? "").trim();
+}
+
+function titleCaseFilterValue(value: string) {
+  return value
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function normalizeVariantFilterValue(key: keyof ProductVariant, value: unknown) {
+  const raw = normalizeFilterValue(value);
+  if (!raw) return "";
+
+  const compact = raw.replace(/\s+/g, " ").trim();
+  const lookup = FILTER_OPTION_LOOKUPS[key];
+  const exactKnown = lookup?.get(compact.toLowerCase());
+  if (exactKnown) return exactKnown;
+
+  if (key === "storageCapacity" || key === "memoryRam") {
+    const normalized = compact.toUpperCase().replace(/\s+/g, "");
+    const known = lookup?.get(normalized.toLowerCase());
+    return known || normalized;
+  }
+
+  if (key === "abv") {
+    const normalized = compact.replace(/\s*abv$/i, "").replace(/\s+/g, "");
+    return normalized ? normalized.toUpperCase() : "";
+  }
+
+  if (key === "color") {
+    return compact.startsWith("#") ? compact.toUpperCase() : titleCaseFilterValue(compact);
+  }
+
+  if (key === "ringSize" || key === "strapLength" || key === "compatibility") {
+    return compact;
+  }
+
+  return titleCaseFilterValue(compact);
 }
 
 function sortFilterValues(values: string[]) {
@@ -680,6 +846,10 @@ function getPackUnit(item: ProductItem) {
 }
 
 function getStockState(variant?: ProductVariant, item?: ProductItem) {
+  if (variant?.placement?.track_inventory !== true || variant?.placement?.continue_selling_out_of_stock) {
+    return { label: "In stock", tone: "success" as const };
+  }
+
   if (item?.data?.has_in_stock_variants === false) {
     return { label: "Out of stock", tone: "danger" as const };
   }
@@ -816,14 +986,19 @@ function getVariantAttributeValues(item: ProductItem, key: keyof ProductVariant)
   return Array.from(
     new Set(
       values
-        .map((variant) => normalizeFilterValue(variant?.[key]))
+        .map((variant) => normalizeVariantFilterValue(key, variant?.[key]))
         .filter(Boolean),
     ),
   );
 }
 
-function buildAttributeFilterData(items: ProductItem[]) {
-  return ATTRIBUTE_FILTERS
+function buildAttributeFilterData(items: ProductItem[], category?: string, subCategory?: string) {
+  const relevantKeys = getRelevantAttributeFilterKeys(category, subCategory);
+  const configs = relevantKeys
+    ? ATTRIBUTE_FILTERS.filter((config) => relevantKeys.has(config.key))
+    : ATTRIBUTE_FILTERS;
+
+  return configs
     .map((config) => {
       const counts = items.reduce<FilterCountMap>((acc, item) => {
         for (const value of getVariantAttributeValues(item, config.variantKey)) {
@@ -835,6 +1010,7 @@ function buildAttributeFilterData(items: ProductItem[]) {
       if (!entries.length) return null;
       return {
         ...config,
+        group: getAttributeFilterGroup(config.key),
         items: entries,
         counts,
       };
@@ -1076,6 +1252,40 @@ function RatingFilterGroup({
         })}
       </div>
     </details>
+  );
+}
+
+function AttributeFilterGroupSection({
+  title,
+  filters,
+  currentAttributeFilters,
+  baseParams,
+}: {
+  title: string;
+  filters: Array<AttributeFilterConfig & { items: string[]; counts: FilterCountMap; group?: string }>;
+  currentAttributeFilters: Record<string, string>;
+  baseParams: Record<string, SearchParamValue>;
+}) {
+  if (!filters.length) return null;
+
+  return (
+    <section className="border-b border-black/5 pb-5 last:border-b-0 last:pb-0">
+      <h3 className="text-[13px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{title}</h3>
+      <div className="mt-3 space-y-5">
+        {filters.map((config) => (
+          <FilterGroup
+            key={config.key}
+            title={config.title}
+            items={config.items}
+            currentValue={currentAttributeFilters[config.key]}
+            baseParams={baseParams}
+            paramKey={config.key}
+            counts={config.counts}
+            formatItemLabel={(value) => value}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1361,22 +1571,22 @@ export async function ProductsPage({
   const placement = currentParam(resolvedSearchParams, "search") ? "search_results" : "category_grid";
   const displayItems = items;
   const countItems = catalogItems.filter((item): item is ProductItem => Boolean(item?.data));
+  const facetItems = displayItems;
   const options = payload.options ?? {};
   const title = payload.data?.product?.title ?? getPageTitle(resolvedSearchParams);
   const totalCount = payload.total ?? displayItems.length;
   const count = payload.count ?? displayItems.length;
   const derivedPriceRange = getProductsPriceRange(displayItems);
-  const categoryCounts = countBy(countItems, (item) => item.data?.grouping?.category ?? "");
-  const subCategoryCounts = countBy(countItems, (item) => item.data?.grouping?.subCategory ?? "");
-  const brandCounts = countBy(countItems, (item) => item.data?.grouping?.brand ?? item.data?.brand?.slug ?? "");
-  const kindCounts = countBy(countItems, (item) => item.data?.grouping?.kind ?? "");
-  const packUnitCounts = countBy(countItems, (item) => getPackUnit(item));
-  const attributeFilters = buildAttributeFilterData(countItems);
+  const categoryCounts = countBy(facetItems, (item) => item.data?.grouping?.category ?? "");
+  const subCategoryCounts = countBy(facetItems, (item) => item.data?.grouping?.subCategory ?? "");
+  const brandCounts = countBy(facetItems, (item) => item.data?.grouping?.brand ?? item.data?.brand?.slug ?? "");
+  const kindCounts = countBy(facetItems, (item) => item.data?.grouping?.kind ?? "");
+  const packUnitCounts = countBy(facetItems, (item) => getPackUnit(item));
   const ratingCounts: FilterCountMap = {
-    4: countRatings(countItems, 4),
-    3: countRatings(countItems, 3),
-    2: countRatings(countItems, 2),
-    1: countRatings(countItems, 1),
+    4: countRatings(facetItems, 4),
+    3: countRatings(facetItems, 3),
+    2: countRatings(facetItems, 2),
+    1: countRatings(facetItems, 1),
   };
 
   const currentCategory = currentParam(resolvedSearchParams, "category");
@@ -1384,6 +1594,7 @@ export async function ProductsPage({
   const currentBrand = currentParam(resolvedSearchParams, "brand");
   const currentKind = currentParam(resolvedSearchParams, "kind");
   const currentPackUnit = currentParam(resolvedSearchParams, "packUnit");
+  const attributeFilters = buildAttributeFilterData(facetItems, currentCategory, currentSubCategory);
   const currentAttributeFilters = Object.fromEntries(
     ATTRIBUTE_FILTERS.map((config) => [config.key, currentParam(resolvedSearchParams, config.key) ?? ""]),
   ) as Record<string, string>;
@@ -1399,6 +1610,10 @@ export async function ProductsPage({
   const imageSearchLabel = currentParam(resolvedSearchParams, "imageLabel");
   const currentBrandCount = currentBrand ? brandCounts[currentBrand] ?? 0 : 0;
   const baseParams = resolvedSearchParams;
+  const groupedAttributeFilters = VARIANT_METADATA_GROUP_ORDER.map((group) => ({
+    group,
+    filters: attributeFilters.filter((config) => config.group === group),
+  })).filter((entry) => entry.filters.length > 0);
   const optionPriceRange =
     options.priceRange?.min != null && options.priceRange?.max != null
       ? {
@@ -1659,16 +1874,13 @@ export async function ProductsPage({
               counts={packUnitCounts}
               formatItemLabel={(value) => value}
             />
-            {attributeFilters.map((config) => (
-              <FilterGroup
-                key={config.key}
-                title={config.title}
-                items={config.items}
-                currentValue={currentAttributeFilters[config.key]}
+            {groupedAttributeFilters.map((entry) => (
+              <AttributeFilterGroupSection
+                key={entry.group}
+                title={entry.group}
+                filters={entry.filters}
+                currentAttributeFilters={currentAttributeFilters}
                 baseParams={baseParams}
-                paramKey={config.key}
-                counts={config.counts}
-                formatItemLabel={(value) => value}
               />
             ))}
             <RatingFilterGroup

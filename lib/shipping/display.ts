@@ -168,6 +168,13 @@ export function getShopperFacingDeliveryMessage({
     };
   }
 
+  if (shopperArea?.country && !hasPreciseShopperArea(shopperArea)) {
+    return {
+      label: missingProfileLabel || "Delivery availability confirmed at checkout",
+      tone: "warning",
+    };
+  }
+
   const resolved = resolveShopperDelivery(profile, sellerBaseLocation || "", shopperArea, variant);
   if (!resolved) {
     return { label: missingProfileLabel || "Check delivery with seller", tone: "neutral" };
@@ -196,13 +203,6 @@ export function getShopperFacingDeliveryMessage({
             ? `Ships to ${shopperArea.country}`
             : "Shipping available",
       tone: "success",
-    };
-  }
-
-  if (shopperArea?.country && !hasPreciseShopperArea(shopperArea)) {
-    return {
-      label: "Delivery availability confirmed at checkout",
-      tone: "warning",
     };
   }
 

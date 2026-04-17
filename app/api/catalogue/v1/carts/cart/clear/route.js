@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
+import { releaseVariantCheckoutReservationsForItems } from "@/lib/cart/checkout-reservations";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { releaseStockLotReservations } from "@/lib/warehouse/stock-lots";
 
@@ -63,6 +64,8 @@ export async function POST(req) {
       const cart = snap.data();
       const items = Array.isArray(cart.items) ? cart.items : [];
       const warnings = { global: [], items: [] };
+
+      await releaseVariantCheckoutReservationsForItems(items, customerId);
 
       for (const it of items) {
         const vSnap = it?.selected_variant_snapshot;

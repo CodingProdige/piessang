@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } from "@/lib/marketplace/fees";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { releaseVariantCheckoutReservationsForItems } from "@/lib/cart/checkout-reservations";
 import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
 import { consumeReservedStockLots, consumeStockLotsFifo } from "@/lib/warehouse/stock-lots";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
@@ -1025,6 +1026,7 @@ export async function POST(req) {
     if (!replayed && createdOrderId && Array.isArray(cart?.items) && cart.items.length) {
       if (adminDb) {
         await consumeMarketplaceProductStock(adminDb, cart.items);
+        await releaseVariantCheckoutReservationsForItems(cart.items, cartId);
 
         const lotAllocationsByVariant = new Map();
 

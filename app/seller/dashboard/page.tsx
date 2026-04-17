@@ -15,6 +15,7 @@ import { SellerAccountsWorkspace } from "@/components/seller/admin-seller-accoun
 import { SellerAdminOrdersWorkspace } from "@/components/seller/admin-orders-workspace";
 import { SellerBrandRequestsWorkspace } from "@/components/seller/brand-requests-workspace";
 import { SellerFeesWorkspace } from "@/components/seller/fees-workspace";
+import { SellerVariantMetadataOptionsWorkspace } from "@/components/seller/variant-metadata-options-workspace";
 import { SellerLiveCommerceWorkspace } from "@/components/seller/live-commerce-workspace";
 import { SellerNewslettersWorkspace } from "@/components/seller/newsletters-workspace";
 import { SellerNotificationsWorkspace } from "@/components/seller/notifications-workspace";
@@ -76,6 +77,7 @@ type SidebarSection =
   | "product-reports"
   | "admin-returns"
   | "fees"
+  | "variant-metadata"
   | "create-product"
   | "inventory"
   | "collections"
@@ -227,6 +229,7 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   "product-reports": ["admin"],
   "admin-returns": ["admin"],
   fees: ["admin"],
+  "variant-metadata": ["admin"],
   "create-product": ["admin", "manager", "catalogue"],
   inventory: ["admin", "manager", "catalogue"],
   collections: ["admin", "manager", "catalogue"],
@@ -679,7 +682,7 @@ function SidebarMenu({
   onClose?: () => void;
   onBackToMySeller?: () => void;
 }) {
-  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "integrations", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-google-analytics", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-google-merchant-countries", "admin-google-merchant", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "product-reports", "product-reviews"];
+  const blockedAllowedSections: SidebarSection[] = ["home", "settings", "integrations", "team", "notifications", "admin", "admin-analytics", "admin-live-view", "admin-google-analytics", "admin-landing-builder", "admin-landing-seo", "admin-newsletters", "admin-orders", "admin-platform-delivery", "admin-google-merchant-countries", "admin-google-merchant", "admin-payouts", "admin-support", "admin-campaign-reviews", "admin-returns", "fees", "variant-metadata", "product-reports", "product-reviews"];
   const handleNavigate = (nextSection: SidebarSection) => {
     if (sellerBlocked && !blockedAllowedSections.includes(nextSection)) return;
     if (!canAccessSellerSection(sellerRole, nextSection)) return;
@@ -1045,6 +1048,13 @@ function SidebarMenu({
               active={activeSection === "fees"}
               collapsed={compactDesktop}
               onClick={() => handleNavigate("fees")}
+            />
+            <SidebarButton
+              label="Variant metadata"
+              icon="list"
+              active={activeSection === "variant-metadata"}
+              collapsed={compactDesktop}
+              onClick={() => handleNavigate("variant-metadata")}
             />
             </div>
           </section>
@@ -1585,7 +1595,7 @@ function SellerDashboardContent() {
   const sellerBlockedFixHint = getSellerBlockReasonFix(sellerBlockedReasonCode);
   const sectionLocked = sellerUnavailable
     ? blockedSections.includes(activeSection)
-      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "admin-google-analytics" || activeSection === "admin-landing-builder" || activeSection === "admin-landing-seo" || activeSection === "admin-newsletters" || activeSection === "admin-orders" || activeSection === "admin-platform-delivery" || activeSection === "admin-google-merchant-countries" || activeSection === "admin-google-merchant" || activeSection === "admin-payouts" || activeSection === "admin-support" || activeSection === "admin-campaign-reviews" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "warehouse-calendar"
+      : activeSection === "admin" || activeSection === "brand-requests" || activeSection === "admin-analytics" || activeSection === "admin-live-view" || activeSection === "admin-google-analytics" || activeSection === "admin-landing-builder" || activeSection === "admin-landing-seo" || activeSection === "admin-newsletters" || activeSection === "admin-orders" || activeSection === "admin-platform-delivery" || activeSection === "admin-google-merchant-countries" || activeSection === "admin-google-merchant" || activeSection === "admin-payouts" || activeSection === "admin-support" || activeSection === "admin-campaign-reviews" || activeSection === "product-reviews" || activeSection === "product-reports" || activeSection === "admin-returns" || activeSection === "fees" || activeSection === "variant-metadata" || activeSection === "warehouse-calendar"
         ? !canManageSellerDashboard
         : !canAccessSellerSection(activeSellerRole, activeSection);
   const firstAllowedSection = useMemo(() => {
@@ -1677,7 +1687,7 @@ function SellerDashboardContent() {
   }, [activeSection, currentUrl, pathname, searchParams]);
 
   function setSection(nextSection: SidebarSection) {
-    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-google-analytics" || nextSection === "admin-landing-builder" || nextSection === "admin-landing-seo" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-google-merchant-countries" || nextSection === "admin-google-merchant" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
+    if ((nextSection === "admin" || nextSection === "brand-requests" || nextSection === "admin-analytics" || nextSection === "admin-live-view" || nextSection === "admin-google-analytics" || nextSection === "admin-landing-builder" || nextSection === "admin-landing-seo" || nextSection === "admin-newsletters" || nextSection === "admin-orders" || nextSection === "admin-platform-delivery" || nextSection === "admin-google-merchant-countries" || nextSection === "admin-google-merchant" || nextSection === "admin-payouts" || nextSection === "admin-support" || nextSection === "admin-campaign-reviews" || nextSection === "product-reviews" || nextSection === "product-reports" || nextSection === "admin-returns" || nextSection === "fees" || nextSection === "variant-metadata" || nextSection === "warehouse-calendar") && !canManageSellerDashboard) return;
     if (!canAccessSellerSection(activeSellerRole, nextSection)) return;
     setActiveSection(nextSection);
     setMobileMenuOpen(false);
@@ -1777,6 +1787,8 @@ function SellerDashboardContent() {
         return "Returns";
       case "fees":
         return "Marketplace fees";
+      case "variant-metadata":
+        return "Variant metadata";
       case "inventory":
         return "Inventory";
       case "collections":
@@ -2131,6 +2143,8 @@ function SellerDashboardContent() {
               <SellerReturnsWorkspace adminMode />
             ) : activeSection === "fees" && canManageSellerDashboard ? (
               <SellerFeesWorkspace />
+            ) : activeSection === "variant-metadata" && canManageSellerDashboard ? (
+              <SellerVariantMetadataOptionsWorkspace />
             ) : activeSection === "warehouse-calendar" && canManageSellerDashboard ? (
               <SellerWarehouseWorkspace
                 vendorName={activeVendorName}
