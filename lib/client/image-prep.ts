@@ -30,14 +30,27 @@ type PreparedImageAsset = {
   height: number;
 };
 
+function getTargetMimeType(format: "webp" | "jpeg" | "png") {
+  if (format === "jpeg") return "image/jpeg";
+  if (format === "png") return "image/png";
+  return "image/webp";
+}
+
+function getTargetExtension(format: "webp" | "jpeg" | "png") {
+  if (format === "jpeg") return "jpg";
+  return format;
+}
+
 export async function prepareImageAsset(
   file: File,
   {
     maxDimension = 2200,
     quality = 0.86,
+    format = "webp",
   }: {
     maxDimension?: number;
     quality?: number;
+    format?: "webp" | "jpeg" | "png";
   } = {},
 ): Promise<PreparedImageAsset> {
   if (!file.type.startsWith("image/")) {
@@ -74,21 +87,24 @@ export async function prepareImageAsset(
   const blurHashUrl = encode(blurImageData.data, blurImageData.width, blurImageData.height, 4, 3);
 
   const blob = await new Promise<Blob>((resolve, reject) => {
+    const mimeType = getTargetMimeType(format);
     canvas.toBlob(
       (nextBlob) => {
         if (nextBlob) resolve(nextBlob);
         else reject(new Error("Unable to convert this image for the web."));
       },
-      "image/webp",
+      mimeType,
       quality,
     );
   });
 
   const safeStem = makeSafeFileStem(file.name) || "image";
-  const webpFile = new File([blob], `${safeStem}.webp`, { type: "image/webp" });
+  const outputExtension = getTargetExtension(format);
+  const outputMimeType = getTargetMimeType(format);
+  const outputFile = new File([blob], `${safeStem}.${outputExtension}`, { type: outputMimeType });
 
   return {
-    file: webpFile,
+    file: outputFile,
     blurHashUrl,
     altText: sanitizeFileName(file.name) || "Image",
     width: targetWidth,

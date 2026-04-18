@@ -19,6 +19,7 @@ import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
 import { formatCurrency } from "@/lib/seller/delivery-profile";
 import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
 import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
+import { getBadgeColorStyle } from "@/lib/analytics/product-engagement-badge-colors";
 
 export const PRODUCT_CARD_LIST_IMAGE_SIZES = "(max-width: 640px) calc(100vw - 2rem), 180px";
 export const PRODUCT_CARD_GRID_IMAGE_SIZES = "(max-width: 640px) 72vw, (max-width: 1024px) 40vw, 280px";
@@ -329,6 +330,72 @@ function SparkIcon() {
       <path d="M10 1.5c.4 0 .7.2.9.6l1.5 3.6 3.9.3c.4 0 .8.3.9.7.1.4 0 .8-.4 1.1l-3 2.6.9 3.8c.1.4-.1.8-.4 1.1-.3.2-.8.3-1.2 0L10 13.4l-3.3 1.9c-.4.2-.8.2-1.2 0-.3-.3-.5-.7-.4-1.1l.9-3.8-3-2.6c-.3-.3-.5-.7-.4-1.1.1-.4.5-.7.9-.7l3.9-.3 1.5-3.6c.2-.4.5-.6.9-.6Z" />
     </svg>
   );
+}
+
+function CursorClickIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current">
+      <path d="M6.4 2.8c.3 0 .5.2.7.4l4.9 7.8c.2.3.2.7 0 1-.2.3-.5.5-.9.5l-2.3.2 1.8 3.3c.3.5.1 1.1-.4 1.4-.5.3-1.1.1-1.4-.4L7 13.8l-1.7 1.7c-.3.3-.7.4-1 .2-.4-.2-.6-.5-.6-.9V3.8c0-.4.2-.7.6-.9.1-.1.3-.1.5-.1Z" />
+    </svg>
+  );
+}
+
+function RisingStarIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current">
+      <path d="M10 2.2 11.8 6l4.2.6-3 2.9.7 4.1-3.7-2-3.8 2 .7-4.1-3-2.9 4.2-.6L10 2.2Zm0 9.9 1.7.9-.3-1.9 1.4-1.4-1.9-.3-.9-1.7-.9 1.7-1.9.3 1.4 1.4-.3 1.9 1.7-.9Z" />
+    </svg>
+  );
+}
+
+function BestSellerIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current">
+      <path d="M6 2.5h8v3.2l-1.5 2.3a5 5 0 1 1-5 0L6 5.7V2.5Zm2 1.8v.9l1.7 2.5-.7.4A3.2 3.2 0 1 0 11 8l-.7-.4L12 5.2v-.9H8Z" />
+    </svg>
+  );
+}
+
+function TrendingNowIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current">
+      <path d="M4 13.5 8 9.5l2.5 2.5L16 6.5V10h1.5V4H11v1.5h3.4l-3.9 3.9L8 6.9 3 11.9l1 1.6Z" />
+    </svg>
+  );
+}
+
+function BoltIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true" className="h-3.5 w-3.5 fill-current">
+      <path d="M11.4 1.8c.4 0 .7.2.9.5.2.3.2.7.1 1l-1.4 4h4c.4 0 .8.2.9.6.2.4.1.8-.2 1.1l-7 8.2a1 1 0 0 1-1.8-.9l1.4-4.1H4.4c-.4 0-.8-.2-.9-.6-.2-.4-.1-.8.2-1.1l7-8.2c.2-.3.4-.5.7-.5Z" />
+    </svg>
+  );
+}
+
+function ProductBadgeIcon({
+  iconKey,
+  iconUrl,
+  badge,
+  hasHighClicks = false,
+}: {
+  iconKey?: string | null;
+  iconUrl?: string | null;
+  badge?: string | null;
+  hasHighClicks?: boolean;
+}) {
+  if (iconUrl) {
+    return <img src={iconUrl} alt="" className="h-3.5 w-3.5 object-contain" aria-hidden="true" />;
+  }
+  if (iconKey === "cursor") return <CursorClickIcon />;
+  if (iconKey === "trophy") return <BestSellerIcon />;
+  if (iconKey === "trend") return <TrendingNowIcon />;
+  if (iconKey === "star") return <RisingStarIcon />;
+  if (iconKey === "bolt") return <BoltIcon />;
+  if (iconKey === "spark") return <SparkIcon />;
+  if (badge === "best_seller") return <BestSellerIcon />;
+  if (badge === "popular" || hasHighClicks) return <CursorClickIcon />;
+  if (badge === "trending_now") return <TrendingNowIcon />;
+  return <RisingStarIcon />;
 }
 
 function buildHref(
@@ -1009,6 +1076,32 @@ export function BrowseProductCard({
   const isNewArrival = item.data?.is_new_arrival === true;
   const isPreLoved = isPreLovedProduct(item);
   const isSponsored = item.ad?.sponsored === true;
+  const engagementBadge = String((item.data as any)?.analytics?.badge || "").trim().toLowerCase();
+  const engagementBadgeIconKey = String((item.data as any)?.analytics?.badgeIconKey || "").trim().toLowerCase();
+  const engagementBadgeIconUrl = String((item.data as any)?.analytics?.badgeIconUrl || "").trim();
+  const engagementBadgeColorKey = String((item.data as any)?.analytics?.badgeColorKey || "").trim().toLowerCase();
+  const engagementBadgeBackgroundColor = String((item.data as any)?.analytics?.badgeBackgroundColor || "").trim();
+  const engagementBadgeForegroundColor = String((item.data as any)?.analytics?.badgeForegroundColor || "").trim();
+  const hasHighClicks = (item.data as any)?.analytics?.hasHighClicks === true;
+  const engagementBadgeStyle = getBadgeColorStyle({
+    presetKey: engagementBadgeColorKey,
+    backgroundColor: engagementBadgeBackgroundColor,
+    foregroundColor: engagementBadgeForegroundColor,
+    fallbackPreset:
+      engagementBadge === "best_seller"
+        ? "green"
+        : engagementBadge === "popular"
+          ? "blue"
+          : engagementBadge === "trending_now"
+            ? "slate"
+            : "amber",
+  });
+  const leadingNewBadgeCount = [Boolean(salePercent), isPreLoved].filter(Boolean).length;
+  const leadingLeftBadgeCount = [Boolean(salePercent), isPreLoved, isNewArrival].filter(Boolean).length;
+  const engagementBadgePositionStyle = {
+    ...engagementBadgeStyle,
+    top: `${0.5 + leadingLeftBadgeCount * 2}rem`,
+  } as const;
   const resolvedShopperArea = shopperArea ?? null;
   const hasDeliveryEstimateLocation = Boolean(
     resolvedShopperArea?.country && hasPreciseShopperDeliveryArea(resolvedShopperArea),
@@ -1300,9 +1393,33 @@ export function BrowseProductCard({
         </span>
       ) : null}
       {isNewArrival ? (
-        <span className={`absolute left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)] ${salePercent || isPreLoved ? "top-[4.5rem]" : "top-10"}`}>
+        <span className={`absolute left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)] ${leadingNewBadgeCount ? "top-[4.5rem]" : "top-2"}`}>
           <SparkIcon />
           New
+        </span>
+      ) : null}
+      {engagementBadge ? (
+        <span
+          title={
+            engagementBadge === "best_seller"
+              ? "Best seller: strong sales in the recent badge window."
+              : engagementBadge === "popular"
+              ? "Popular: strong shopper engagement in the recent badge window."
+              : engagementBadge === "trending_now"
+                ? "Trending now: sales are accelerating in the recent badge window."
+              : "Rising star: growing shopper engagement in the recent badge window."
+          }
+          className="absolute left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full px-2 text-[9px] font-semibold uppercase tracking-[0.08em] shadow-[0_4px_12px_rgba(20,24,27,0.14)]"
+          style={engagementBadgePositionStyle}
+        >
+          <ProductBadgeIcon iconKey={engagementBadgeIconKey} iconUrl={engagementBadgeIconUrl} badge={engagementBadge} hasHighClicks={hasHighClicks} />
+          {engagementBadge === "best_seller"
+            ? "Best seller"
+            : engagementBadge === "popular" || hasHighClicks
+              ? "Popular"
+              : engagementBadge === "trending_now"
+                ? "Trending now"
+                : "Rising star"}
         </span>
       ) : null}
       <button

@@ -13,6 +13,7 @@ import {
   RecommendedForYouRail,
   RecentlyViewedRail,
   SearchHistoryRail,
+  TrendingProductsRail,
 } from "@/components/cms/personalized-landing-sections";
 import {
   renderSharedLandingSectionContent,
@@ -328,6 +329,7 @@ function getDeferredSectionMinHeight(section: LandingSection) {
     case "featured_duo":
     case "recently_viewed_rail":
     case "search_history_rail":
+    case "trending_products_rail":
     case "recommended_for_you":
       return 480;
     case "category_rail":
@@ -808,6 +810,19 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
           title={toStr(section.props?.title, "Inspired by your searches")}
           subtitle={toStr(section.props?.subtitle, "Products related to recent shopper searches.")}
           limit={Math.max(1, toNum(section.props?.limit) || 8)}
+        />
+      );
+    }
+
+    if (section.type === "trending_products_rail") {
+      block = (
+        <TrendingProductsRail
+          key={section.id}
+          title={toStr(section.props?.title, "Trending on Piessang")}
+          subtitle={toStr(section.props?.subtitle, "Marketplace-wide products rising from shopper searches, clicks, and views.")}
+          limit={Math.max(1, toNum(section.props?.limit) || 8)}
+          days={Math.max(1, Math.min(90, toNum(section.props?.days) || 30))}
+          mode={toStr(section.props?.mode, "blended") as "blended" | "clicked" | "viewed" | "searched"}
         />
       );
     }

@@ -24,6 +24,30 @@ function mapProduct(item: ProductGetItem): ProductItem | null {
   };
 }
 
+function withAnalyticsMeta(
+  products: ProductItem[],
+  analyticsById: Map<string, { clicks: number; productViews: number; hasHighClicks: boolean; metric: string }>,
+) {
+  return products.map((product) => {
+    const productId = toStr(product?.id);
+    const analytics = analyticsById.get(productId);
+    if (!analytics) return product;
+    return {
+      ...product,
+      data: {
+        ...(product?.data || {}),
+        analytics: {
+          ...((product?.data as any)?.analytics || {}),
+          clicks: analytics.clicks,
+          productViews: analytics.productViews,
+          hasHighClicks: analytics.hasHighClicks,
+          metric: analytics.metric,
+        },
+      },
+    };
+  });
+}
+
 async function loadProductsBySearchTerms(searchTerms: string[], limit: number) {
   const queries = searchTerms.slice(0, 3);
   const results = await Promise.all(
@@ -189,6 +213,128 @@ export function SearchHistoryRail({
       viewAllHref={
         products.length
           ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=search-history`
+          : "/products"
+      }
+    />
+  );
+}
+
+export function TrendingProductsRail({
+  title,
+  subtitle,
+  limit = 8,
+  days = 30,
+  mode = "blended",
+}: {
+  title: string;
+  subtitle: string;
+  limit?: number;
+  days?: number;
+  mode?: "blended" | "clicked" | "viewed" | "searched";
+}) {
+  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        if (mode === "searched") {
+          const searchResponse = await fetch("/api/client/v1/search/queries", { cache: "no-store" });
+          const searchPayload = await searchResponse.json().catch(() => ({}));
+          const searchTerms = (
+            Array.isArray(searchPayload?.data?.items)
+              ? searchPayload.data.items
+              : Array.isArray(searchPayload?.items)
+                ? searchPayload.items
+                : []
+          )
+            .map((item: any) => toStr(item?.query))
+            .filter(Boolean)
+            .slice(0, 3);
+          const searchedProducts = searchTerms.length ? await loadProductsBySearchTerms(searchTerms, limit) : [];
+          if (!cancelled) setProducts(searchedProducts.slice(0, limit));
+          return;
+        }
+
+        const [engagementPayload, searchPayload] = await Promise.all([
+          fetch(
+            `/api/client/v1/analytics/product-engagement/top-products?limit=${encodeURIComponent(String(limit))}&days=${encodeURIComponent(String(days))}&metric=${encodeURIComponent(mode)}`,
+            { cache: "no-store" },
+          ).then((response) => response.json().catch(() => ({}))),
+          mode === "blended"
+            ? fetch("/api/client/v1/search/queries", { cache: "no-store" }).then((response) => response.json().catch(() => ({})))
+            : Promise.resolve({}),
+        ]);
+        const engagementItems = (
+          Array.isArray(engagementPayload?.data?.items)
+            ? engagementPayload.data.items
+            : Array.isArray(engagementPayload?.items)
+              ? engagementPayload.items
+              : []
+        ).slice(0, limit);
+        const engagementIds = engagementItems.map((item: any) => toStr(item?.productId)).filter(Boolean);
+        const engagementProducts = engagementIds.length ? await loadProductsByIds(engagementIds) : [];
+        const analyticsById = new Map<string, { clicks: number; productViews: number; hasHighClicks: boolean; metric: string }>(
+          engagementItems.map((item: any) => [
+            toStr(item?.productId),
+            {
+              clicks: Number(item?.clicks || 0),
+              productViews: Number(item?.productViews || 0),
+              hasHighClicks: Boolean(item?.hasHighClicks),
+              metric: mode,
+            },
+          ]),
+        );
+
+        let nextProducts = withAnalyticsMeta(engagementProducts, analyticsById);
+
+        const searchTerms =
+          mode === "blended"
+            ? (
+                Array.isArray(searchPayload?.data?.items)
+                  ? searchPayload.data.items
+                  : Array.isArray(searchPayload?.items)
+                    ? searchPayload.items
+                    : []
+              )
+                .map((item: any) => toStr(item?.query))
+                .filter(Boolean)
+                .slice(0, 3)
+            : [];
+
+        if (mode === "blended" && nextProducts.length < limit && searchTerms.length) {
+          const searchedProducts = await loadProductsBySearchTerms(searchTerms, limit);
+          const existing = new Set(nextProducts.map((item) => item.id));
+          searchedProducts.forEach((item) => {
+            if (!existing.has(item.id) && nextProducts.length < limit) nextProducts.push(item);
+          });
+        }
+
+        if (!cancelled) setProducts(nextProducts.slice(0, limit));
+      } catch {
+      } finally {
+        if (!cancelled) setReady(true);
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [days, limit, mode]);
+
+  if (ready && !products.length) return null;
+
+  return (
+    <PersonalizedRailShell
+      title={title}
+      subtitle={subtitle}
+      products={products}
+      emptyMessage="This rail will populate as shoppers search, click, and view products."
+      viewAllHref={
+        products.length
+          ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=${encodeURIComponent(mode)}`
           : "/products"
       }
     />

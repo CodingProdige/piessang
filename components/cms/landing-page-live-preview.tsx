@@ -12,6 +12,7 @@ import {
   RecommendedForYouRail,
   RecentlyViewedRail,
   SearchHistoryRail,
+  TrendingProductsRail,
 } from "@/components/cms/personalized-landing-sections";
 import {
   renderSharedLandingSectionContent,
@@ -929,6 +930,27 @@ export function LandingPageLivePreview({
                 title={toStr(section.props?.title, "Inspired by your searches")}
                 subtitle={toStr(section.props?.subtitle, "Products related to recent shopper searches.")}
                 limit={Math.max(1, toNum(section.props?.limit) || 8)}
+              />
+            </PreviewSelectableShell>
+          );
+        }
+
+        if (section.type === "trending_products_rail") {
+          return (
+            <PreviewSelectableShell
+              key={section.id}
+              blockId={section.id}
+              label={label}
+              selected={isSelected}
+              onSelect={onSelectBlock}
+              controls={controls}
+            >
+              <TrendingProductsRail
+                title={toStr(section.props?.title, "Trending on Piessang")}
+                subtitle={toStr(section.props?.subtitle, "Marketplace-wide products rising from shopper searches, clicks, and views.")}
+                limit={Math.max(1, toNum(section.props?.limit) || 8)}
+                days={Math.max(1, Math.min(90, toNum(section.props?.days) || 30))}
+                mode={toStr(section.props?.mode, "blended") as "blended" | "clicked" | "viewed" | "searched"}
               />
             </PreviewSelectableShell>
           );

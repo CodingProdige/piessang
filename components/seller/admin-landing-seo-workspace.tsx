@@ -157,7 +157,11 @@ export function SellerAdminLandingSeoWorkspace() {
     if (!selectedPage || !file) return;
     setUploadingOgImage(true);
     try {
-      const prepared = await prepareImageAsset(file, { maxDimension: 2400, quality: 0.86 });
+      const prepared = await prepareImageAsset(file, {
+        maxDimension: 2400,
+        quality: 0.9,
+        format: "jpeg",
+      });
       const formData = new FormData();
       formData.append("action", "upload-og-image");
       formData.append("pageKey", selectedPage.key);

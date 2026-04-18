@@ -17,6 +17,7 @@ export type LandingSectionType =
   | "text_block"
   | "recently_viewed_rail"
   | "search_history_rail"
+  | "trending_products_rail"
   | "recommended_for_you";
 
 export type LandingPromoTile = {
@@ -178,6 +179,17 @@ export function makeDefaultLandingSections(): LandingSection[] {
         title: "Recommended for you",
         subtitle: "A personalized rail based on what shoppers have been viewing and searching.",
         limit: 8,
+      },
+    },
+    {
+      id: nextId("trending"),
+      type: "trending_products_rail",
+      props: {
+        title: "Trending on Piessang",
+        subtitle: "Marketplace-wide products rising from shopper searches, clicks, and views.",
+        limit: 8,
+        days: 30,
+        mode: "blended",
       },
     },
     {

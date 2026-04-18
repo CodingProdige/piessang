@@ -175,6 +175,8 @@ type ProductVariantItem = {
   barcodeImageUrl?: string | null;
   color?: string | null;
   metadataNotes?: VariantMetadataNotes;
+  customMetadata?: Record<string, string>;
+  customMetadataNotes?: Record<string, string>;
   media?: {
     images?: ProductImage[];
   };
@@ -367,15 +369,18 @@ type VariantDraft = {
   heightCm: string;
   monthlySales30d: string;
   metadataNotes: Partial<Record<VariantMetadataKey, string>>;
+  customMetadata: Record<string, string>;
+  customMetadataNotes: Record<string, string>;
 };
 
-type VariantMetadataKey = Exclude<VariantAxisKey, "color"> | "abv";
-type VariantMetadataNotes = Partial<Record<VariantMetadataKey, string>>;
+type VariantMetadataKey = string;
+type VariantMetadataNotes = Partial<Record<string, string>>;
 
 type VariantMetadataFieldDefinition = {
   key: VariantMetadataKey;
   label: string;
   group: string;
+  options?: string[];
 };
 
 type SellerContextItem = {
@@ -1421,11 +1426,20 @@ function formatVariantSize(value: string) {
   return normalized;
 }
 
-function getSelectedVariantMetadataKeysFromDraft(input: Partial<VariantDraft> | Partial<ProductVariantItem>): VariantMetadataKey[] {
-  const keys = VARIANT_METADATA_FIELDS
+function getSelectedVariantMetadataKeysFromDraft(
+  input: Partial<VariantDraft> | Partial<ProductVariantItem>,
+  fields: VariantMetadataFieldDefinition[] = VARIANT_METADATA_FIELDS,
+): VariantMetadataKey[] {
+  const builtInKeys = fields
     .filter((field) => String(input[field.key as keyof typeof input] ?? "").trim())
     .map((field) => field.key);
-  return Array.from(new Set(keys));
+  const customKeys =
+    input && typeof input === "object" && input.customMetadata && typeof input.customMetadata === "object"
+      ? Object.entries(input.customMetadata)
+          .filter(([, value]) => String(value ?? "").trim())
+          .map(([key]) => key)
+      : [];
+  return Array.from(new Set([...builtInKeys, ...customKeys]));
 }
 
 function clearVariantMetadataField(draft: VariantDraft, key: VariantMetadataKey): VariantDraft {
@@ -1434,6 +1448,14 @@ function clearVariantMetadataField(draft: VariantDraft, key: VariantMetadataKey)
     [key]: "",
     metadataNotes: {
       ...draft.metadataNotes,
+      [key]: "",
+    },
+    customMetadata: {
+      ...(draft.customMetadata || {}),
+      [key]: "",
+    },
+    customMetadataNotes: {
+      ...(draft.customMetadataNotes || {}),
       [key]: "",
     },
   };
@@ -2259,6 +2281,20 @@ export function SellerCatalogueEditor({
         setVariantMetadataSelectOptions(
           sanitizeVariantMetadataSelectOptionsConfig(payload?.config ?? payload?.options ?? {}),
         );
+        setCustomVariantMetadataFields(
+          Array.isArray(payload?.customFields)
+            ? payload.customFields
+                .map((field: any) => ({
+                  key: String(field?.key ?? "").trim(),
+                  label: String(field?.label ?? "").trim(),
+                  group: String(field?.group ?? "Core options").trim() || "Core options",
+                  options: Array.isArray(field?.options)
+                    ? field.options.map((option: any) => String(option ?? "").trim()).filter(Boolean)
+                    : [],
+                }))
+                .filter((field: VariantMetadataFieldDefinition) => Boolean(field.key && field.label))
+            : [],
+        );
       } catch {
         // Keep default in-code options when the managed config is unavailable.
       }
@@ -2289,6 +2325,7 @@ export function SellerCatalogueEditor({
   const [variantMetadataSelectOptions, setVariantMetadataSelectOptions] = useState<VariantMetadataSelectOptionsConfig>(
     DEFAULT_VARIANT_METADATA_SELECT_OPTIONS,
   );
+  const [customVariantMetadataFields, setCustomVariantMetadataFields] = useState<VariantMetadataFieldDefinition[]>([]);
   const [variantDraft, setVariantDraft] = useState<VariantDraft>({
     variantId: "",
     label: "",
@@ -2415,6 +2452,8 @@ export function SellerCatalogueEditor({
     heightCm: "",
     monthlySales30d: "",
     metadataNotes: {},
+    customMetadata: {},
+    customMetadataNotes: {},
   });
   const [selectedVariantMetadataKeys, setSelectedVariantMetadataKeys] = useState<VariantMetadataKey[]>([]);
   const [variantMetadataFieldToAdd, setVariantMetadataFieldToAdd] = useState("");
@@ -2521,13 +2560,21 @@ export function SellerCatalogueEditor({
     () => (hasVariantCategoryContext ? getRelevantVariantMetadataGroups(category, subCategory) : new Set<string>()),
     [category, hasVariantCategoryContext, subCategory],
   );
+  const mergedVariantMetadataFields = useMemo(
+    () => [...VARIANT_METADATA_FIELDS, ...customVariantMetadataFields],
+    [customVariantMetadataFields],
+  );
+  const mergedVariantMetadataFieldMap = useMemo(
+    () => Object.fromEntries(mergedVariantMetadataFields.map((field) => [field.key, field])) as Record<string, VariantMetadataFieldDefinition>,
+    [mergedVariantMetadataFields],
+  );
   const variantMetadataFieldsByGroup = useMemo(
     () =>
       VARIANT_METADATA_GROUP_ORDER.map((group) => ({
         group,
-        fields: VARIANT_METADATA_FIELDS.filter((field) => field.group === group && relevantVariantMetadataGroups.has(field.group)),
+        fields: mergedVariantMetadataFields.filter((field) => field.group === group && relevantVariantMetadataGroups.has(field.group)),
       })).filter((entry) => entry.fields.length > 0),
-    [relevantVariantMetadataGroups],
+    [mergedVariantMetadataFields, relevantVariantMetadataGroups],
   );
   const availableVariantMetadataFieldsByGroup = useMemo(
     () =>
@@ -4961,6 +5008,8 @@ export function SellerCatalogueEditor({
       heightCm: "",
       monthlySales30d: "",
       metadataNotes: {},
+      customMetadata: {},
+      customMetadataNotes: {},
     });
   }
 
@@ -4968,7 +5017,7 @@ export function SellerCatalogueEditor({
     setEditingVariantIndex(index);
     setVariantFormOpen(true);
     setVariantImages(Array.isArray(variant.media?.images) ? variant.media.images : []);
-    setSelectedVariantMetadataKeys(getSelectedVariantMetadataKeysFromDraft(variant));
+    setSelectedVariantMetadataKeys(getSelectedVariantMetadataKeysFromDraft(variant, mergedVariantMetadataFields));
     setVariantMetadataFieldToAdd("");
     setVariantDraft({
       variantId: String(variant.variant_id ?? "").trim(),
@@ -5100,6 +5149,18 @@ export function SellerCatalogueEditor({
           ? Object.fromEntries(
               Object.entries(variant.metadataNotes).map(([key, value]) => [key, String(value ?? "").trim()]),
             ) as VariantMetadataNotes
+          : {},
+      customMetadata:
+        variant.customMetadata && typeof variant.customMetadata === "object"
+          ? Object.fromEntries(
+              Object.entries(variant.customMetadata).map(([key, value]) => [key, String(value ?? "").trim()]),
+            )
+          : {},
+      customMetadataNotes:
+        variant.customMetadataNotes && typeof variant.customMetadataNotes === "object"
+          ? Object.fromEntries(
+              Object.entries(variant.customMetadataNotes).map(([key, value]) => [key, String(value ?? "").trim()]),
+            )
           : {},
     });
   }
@@ -5349,6 +5410,16 @@ export function SellerCatalogueEditor({
             .map(([key, value]) => [key, String(value ?? "").trim()])
             .filter(([, value]) => Boolean(value)),
         ) as VariantMetadataNotes,
+        customMetadata: Object.fromEntries(
+          Object.entries(variantDraft.customMetadata || {})
+            .map(([key, value]) => [key, String(value ?? "").trim()])
+            .filter(([, value]) => Boolean(value)),
+        ),
+        customMetadataNotes: Object.fromEntries(
+          Object.entries(variantDraft.customMetadataNotes || {})
+            .map(([key, value]) => [key, String(value ?? "").trim()])
+            .filter(([, value]) => Boolean(value)),
+        ),
         placement: {
           is_default: variantDraft.isDefault,
           isActive: variantDraft.isActive,
@@ -7185,7 +7256,8 @@ export function SellerCatalogueEditor({
                           {selectedVariantMetadataKeys.length ? (
                             <div className="mt-3 space-y-3">
                               {selectedVariantMetadataKeys.map((fieldKey) => {
-                                const field = VARIANT_METADATA_FIELD_MAP[fieldKey];
+                                const field = mergedVariantMetadataFieldMap[fieldKey];
+                                const isCustomField = customVariantMetadataFields.some((entry) => entry.key === fieldKey);
                                 const isSelectWithCustom = [
                                   "size",
                                   "shade",
@@ -7254,12 +7326,19 @@ export function SellerCatalogueEditor({
                                   "installationType",
                                   "fuelType",
                                   "noiseLevel",
-                                ].includes(fieldKey);
-                                const selectOptions = isSelectWithCustom
-                                  ? (variantMetadataSelectOptions[fieldKey as SelectableVariantMetadataKey] ?? [])
-                                  : [];
-                                const fieldValue = variantDraft[fieldKey];
-                                const fieldNote = variantDraft.metadataNotes?.[fieldKey] ?? "";
+                                ].includes(fieldKey) || isCustomField;
+                                const selectOptions = isCustomField
+                                  ? (field?.options ?? [])
+                                  : isSelectWithCustom
+                                    ? (variantMetadataSelectOptions[fieldKey as SelectableVariantMetadataKey] ?? [])
+                                    : [];
+                                const builtInFieldValue = String((variantDraft as any)?.[fieldKey] ?? "");
+                                const fieldValue = isCustomField
+                                  ? (variantDraft.customMetadata?.[fieldKey] ?? "")
+                                  : builtInFieldValue;
+                                const fieldNote = isCustomField
+                                  ? (variantDraft.customMetadataNotes?.[fieldKey] ?? "")
+                                  : (variantDraft.metadataNotes?.[fieldKey] ?? "");
                                 const selectedSelectValue = selectOptions.includes(fieldValue) ? fieldValue : (fieldValue ? "Custom" : "");
                                 return (
                                   <div key={fieldKey} className="rounded-[8px] border border-black/10 bg-white p-3">
@@ -7289,10 +7368,22 @@ export function SellerCatalogueEditor({
                                               const nextValue = event.target.value;
                                               setVariantDraft((current) => ({
                                                 ...current,
-                                                [fieldKey]:
-                                                  nextValue === "Custom"
-                                                    ? (selectOptions.includes(current[fieldKey]) ? "" : current[fieldKey])
-                                                    : nextValue,
+                                                ...(isCustomField
+                                                  ? {
+                                                      customMetadata: {
+                                                        ...(current.customMetadata || {}),
+                                                        [fieldKey]:
+                                                          nextValue === "Custom"
+                                                            ? (selectOptions.includes(current.customMetadata?.[fieldKey] ?? "") ? "" : (current.customMetadata?.[fieldKey] ?? ""))
+                                                            : nextValue,
+                                                      },
+                                                    }
+                                                  : {
+                                                      [fieldKey]:
+                                                          nextValue === "Custom"
+                                                            ? (selectOptions.includes((current as any)[fieldKey]) ? "" : String((current as any)[fieldKey] ?? ""))
+                                                            : nextValue,
+                                                    }),
                                               }));
                                             }}
                                             className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
@@ -7310,13 +7401,28 @@ export function SellerCatalogueEditor({
                                             onChange={(event) =>
                                               setVariantDraft((current) => ({
                                                 ...current,
-                                                [fieldKey]: selectedSelectValue === "Custom" ? event.target.value : current[fieldKey],
-                                                metadataNotes: {
-                                                  ...(current.metadataNotes || {}),
-                                                  [fieldKey]: selectedSelectValue === "Custom"
-                                                    ? (current.metadataNotes?.[fieldKey] ?? "")
-                                                    : event.target.value,
-                                                },
+                                                ...(isCustomField
+                                                  ? {
+                                                      customMetadata: {
+                                                        ...(current.customMetadata || {}),
+                                                        [fieldKey]:
+                                                          selectedSelectValue === "Custom" ? event.target.value : (current.customMetadata?.[fieldKey] ?? ""),
+                                                      },
+                                                      customMetadataNotes: {
+                                                        ...(current.customMetadataNotes || {}),
+                                                        [fieldKey]:
+                                                          selectedSelectValue === "Custom" ? (current.customMetadataNotes?.[fieldKey] ?? "") : event.target.value,
+                                                      },
+                                                    }
+                                                  : {
+                                                      [fieldKey]: selectedSelectValue === "Custom" ? event.target.value : String((current as any)[fieldKey] ?? ""),
+                                                      metadataNotes: {
+                                                        ...(current.metadataNotes || {}),
+                                                        [fieldKey]: selectedSelectValue === "Custom"
+                                                          ? (current.metadataNotes?.[fieldKey] ?? "")
+                                                          : event.target.value,
+                                                      },
+                                                    }),
                                               }))
                                             }
                                             className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
@@ -7331,7 +7437,19 @@ export function SellerCatalogueEditor({
                                         <input
                                           type="text"
                                           value={fieldValue}
-                                          onChange={(event) => setVariantDraft((current) => ({ ...current, [fieldKey]: event.target.value }))}
+                                          onChange={(event) =>
+                                            setVariantDraft((current) => ({
+                                              ...current,
+                                              ...(isCustomField
+                                                ? {
+                                                    customMetadata: {
+                                                      ...(current.customMetadata || {}),
+                                                      [fieldKey]: event.target.value,
+                                                    },
+                                                  }
+                                                : { [fieldKey]: event.target.value }),
+                                            }))
+                                          }
                                           className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
                                           placeholder={
                                             fieldKey === "abv"

@@ -143,6 +143,9 @@ function toIso(value: any) {
 function toAbsolutePath(value: string) {
   const src = toStr(value);
   if (!src) return "";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(src) || src.startsWith("//")) {
+    return src;
+  }
   return src.startsWith("/") ? src : `/${src}`;
 }
 

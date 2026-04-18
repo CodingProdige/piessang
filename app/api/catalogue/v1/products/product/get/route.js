@@ -4,7 +4,10 @@ export const preferredRegion = "fra1";
 // app/api/catalogue/v1/products/product/get/route.js
 import { NextResponse } from "next/server";
 import { loadActiveCheckoutReservationMap } from "@/lib/cart/checkout-reservations";
+import { getMarketplaceProductEngagementBadgeMap } from "@/lib/analytics/product-engagement";
+import { PRODUCT_ENGAGEMENT_BADGE_CONFIG } from "@/lib/analytics/product-engagement-badges";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadProductEngagementBadgeSettings } from "@/lib/platform/product-engagement-badge-settings";
 import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import {
@@ -420,6 +423,78 @@ function annotateItemsWithOfferGroupContext(items) {
   });
 }
 
+function getBadgeIconKeyForType(badge, badgeSettings) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerIcon || null;
+  if (badge === "popular") return badgeSettings?.popularIcon || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowIcon || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarIcon || null;
+  return null;
+}
+
+function getBadgeIconUrlForType(badge, badgeSettings) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerIconUrl || null;
+  if (badge === "popular") return badgeSettings?.popularIconUrl || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowIconUrl || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarIconUrl || null;
+  return null;
+}
+
+function getBadgeColorKeyForType(badge, badgeSettings) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerColor || null;
+  if (badge === "popular") return badgeSettings?.popularColor || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowColor || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarColor || null;
+  return null;
+}
+
+function getBadgeBackgroundColorForType(badge, badgeSettings) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerBackgroundColor || null;
+  if (badge === "popular") return badgeSettings?.popularBackgroundColor || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowBackgroundColor || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarBackgroundColor || null;
+  return null;
+}
+
+function getBadgeForegroundColorForType(badge, badgeSettings) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerForegroundColor || null;
+  if (badge === "popular") return badgeSettings?.popularForegroundColor || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowForegroundColor || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarForegroundColor || null;
+  return null;
+}
+
+function applyEngagementBadges(items, badgeMap = new Map(), badgeSettings = null) {
+  return items.map((item) => {
+    const productId = normStr(item?.data?.product?.unique_id || item?.id);
+    const engagement = badgeMap.get(productId);
+    if (!engagement) return item;
+    return {
+      ...item,
+      data: {
+        ...item.data,
+        analytics: {
+          ...(item?.data?.analytics && typeof item.data.analytics === "object" ? item.data.analytics : {}),
+          clicks: engagement.clicks,
+          productViews: engagement.productViews,
+          hovers: engagement.hovers,
+          score: engagement.score,
+          recentSalesUnits: engagement.recentSalesUnits || 0,
+          previousSalesUnits: engagement.previousSalesUnits || 0,
+          salesGrowthMultiplier: engagement.salesGrowthMultiplier || 0,
+          hasHighClicks: engagement.hasHighClicks === true,
+          badge: engagement.badge || null,
+          badgeLabel: engagement.badgeLabel || null,
+          badgeIconKey: getBadgeIconKeyForType(engagement.badge, badgeSettings),
+          badgeIconUrl: getBadgeIconUrlForType(engagement.badge, badgeSettings),
+          badgeColorKey: getBadgeColorKeyForType(engagement.badge, badgeSettings),
+          badgeBackgroundColor: getBadgeBackgroundColorForType(engagement.badge, badgeSettings),
+          badgeForegroundColor: getBadgeForegroundColorForType(engagement.badge, badgeSettings),
+        },
+      },
+    };
+  });
+}
+
 async function buildAlternateOffersForBarcode(db, barcode, includeUnavailable = false) {
   const normalizedBarcode = normStr(barcode).toUpperCase();
   if (!normalizedBarcode) return [];
@@ -515,6 +590,11 @@ export async function GET(req){
 
     const { searchParams } = new URL(req.url);
     const includeUnavailable = toBool(searchParams.get("includeUnavailable")) === true;
+    const badgeSettings = includeUnavailable
+      ? null
+      : await loadProductEngagementBadgeSettings().catch(() => ({
+          ...PRODUCT_ENGAGEMENT_BADGE_CONFIG,
+        }));
     const idsRaw = normStr(searchParams.get("ids"));
 
     if (idsRaw) {
@@ -533,6 +613,9 @@ export async function GET(req){
       );
 
       const items = [];
+      const badgeMap = includeUnavailable
+        ? new Map()
+        : await getMarketplaceProductEngagementBadgeMap({ days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays }).catch(() => new Map());
       for (const snap of snapshots) {
         if (!snap.exists) continue;
         const rawData = normalizeTimestamps(snap.data() || {});
@@ -586,7 +669,7 @@ export async function GET(req){
       return ok({
         total: items.length,
         count: items.length,
-        items,
+        items: applyEngagementBadges(items, badgeMap, badgeSettings),
       });
     }
 
@@ -652,6 +735,10 @@ export async function GET(req){
       const alternateOffers = includeUnavailable
         ? []
         : await buildAlternateOffersForBarcode(db, getCanonicalOfferBarcode(dataWithVariantAvailability), includeUnavailable);
+      const badgeMap = includeUnavailable
+        ? new Map()
+        : await getMarketplaceProductEngagementBadgeMap({ days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays }).catch(() => new Map());
+      const engagement = badgeMap.get(normStr(dataWithVariantAvailability?.product?.unique_id || snap.id));
       return ok({
         id: snap.id,
         data: {
@@ -673,6 +760,25 @@ export async function GET(req){
             sellerIdentifier && productMissingSellerDeliverySettings(dataWithVariantAvailability, singleSellerOwner)
               ? "This self-fulfilled product is hidden until delivery settings are completed."
               : null,
+          analytics: engagement
+            ? {
+                clicks: engagement.clicks,
+                productViews: engagement.productViews,
+                hovers: engagement.hovers,
+                score: engagement.score,
+                recentSalesUnits: engagement.recentSalesUnits || 0,
+                previousSalesUnits: engagement.previousSalesUnits || 0,
+                salesGrowthMultiplier: engagement.salesGrowthMultiplier || 0,
+                hasHighClicks: engagement.hasHighClicks === true,
+                badge: engagement.badge || null,
+                badgeLabel: engagement.badgeLabel || null,
+                badgeIconKey: getBadgeIconKeyForType(engagement.badge, badgeSettings),
+                badgeIconUrl: getBadgeIconUrlForType(engagement.badge, badgeSettings),
+                badgeColorKey: getBadgeColorKeyForType(engagement.badge, badgeSettings),
+                badgeBackgroundColor: getBadgeBackgroundColorForType(engagement.badge, badgeSettings),
+                badgeForegroundColor: getBadgeForegroundColorForType(engagement.badge, badgeSettings),
+              }
+            : null,
         }
       });
     }
@@ -907,6 +1013,11 @@ export async function GET(req){
 
     if (!includeUnavailable) {
       items = groupItemsByCanonicalBarcode(items);
+    }
+
+    if (!includeUnavailable && items.length) {
+      const badgeMap = await getMarketplaceProductEngagementBadgeMap({ days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays }).catch(() => new Map());
+      items = applyEngagementBadges(items, badgeMap, badgeSettings);
     }
 
     // 4) Optional fuzzy search on product.title (after filters)

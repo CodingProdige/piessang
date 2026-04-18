@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { loadVariantMetadataSelectOptionsConfig } from "@/lib/catalogue/variant-metadata-options-store";
+import { loadCustomVariantMetadataFields } from "@/lib/catalogue/variant-metadata-custom-fields";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
@@ -11,7 +12,8 @@ const err = (status, title, message, extra = {}) => NextResponse.json({ ok: fals
 export async function GET() {
   try {
     const config = await loadVariantMetadataSelectOptionsConfig();
-    return ok({ config });
+    const customFields = await loadCustomVariantMetadataFields();
+    return ok({ config, customFields });
   } catch (e) {
     console.error("variant-metadata/options get failed:", e);
     return err(500, "Unexpected Error", "Unable to load variant metadata options.", {

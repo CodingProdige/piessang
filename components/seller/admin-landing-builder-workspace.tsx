@@ -50,6 +50,7 @@ const SECTION_TYPES: LandingSectionType[] = [
   "recommended_for_you",
   "recently_viewed_rail",
   "search_history_rail",
+  "trending_products_rail",
   "category_rail",
   "promo_tiles",
   "text_block",
@@ -67,7 +68,7 @@ const SECTION_GROUPS: Array<{
   },
   {
     title: "Product discovery",
-    types: ["product_rail", "featured_duo", "recommended_for_you", "recently_viewed_rail", "search_history_rail"],
+    types: ["product_rail", "featured_duo", "recommended_for_you", "recently_viewed_rail", "search_history_rail", "trending_products_rail"],
   },
   {
     title: "Navigation & promos",
@@ -113,6 +114,8 @@ function iconForSectionType(type: LandingSectionType) {
       return "↺";
     case "search_history_rail":
       return "⌕";
+    case "trending_products_rail":
+      return "↗";
     case "category_rail":
       return "▤";
     case "promo_tiles":
@@ -126,6 +129,10 @@ function iconForSectionType(type: LandingSectionType) {
 
 function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
+}
+
+function toInputValue(value: unknown, fallback = "") {
+  return value == null ? fallback : String(value);
 }
 
 function normalizeFixedHeroEntry(entry: unknown) {
@@ -355,6 +362,13 @@ function createSection(type: LandingSectionType): LandingSection {
       props: { title: "Inspired by your searches", subtitle: "Products related to recent shopper search history.", limit: 8 },
     };
   }
+  if (type === "trending_products_rail") {
+    return {
+      id: nextId("trending"),
+      type,
+      props: { title: "Trending on Piessang", subtitle: "Marketplace-wide products rising from shopper searches, clicks, and views.", limit: 8, days: 30, mode: "blended" },
+    };
+  }
   if (type === "category_rail") {
     return {
       id: nextId("categories"),
@@ -405,7 +419,7 @@ function SectionTypeSkeletonPreview({ type }: { type: LandingSectionType }) {
     );
   }
 
-  if (type === "product_rail" || type === "recommended_for_you" || type === "recently_viewed_rail" || type === "search_history_rail") {
+  if (type === "product_rail" || type === "recommended_for_you" || type === "recently_viewed_rail" || type === "search_history_rail" || type === "trending_products_rail") {
     return (
       <div className="rounded-[18px] border border-black/6 bg-white p-4">
         <div className="flex items-end justify-between gap-3">
@@ -1407,7 +1421,7 @@ export function SellerAdminLandingBuilderWorkspace() {
               <label className="block">
                 <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Section title</span>
                 <input
-                  value={toStr(selectedSection.props?.title || selectedSection.props?.headline)}
+                  value={toInputValue(selectedSection.props?.title ?? selectedSection.props?.headline)}
                   onChange={(event) =>
                     updateSection({
                       ...selectedSection,
@@ -1679,23 +1693,63 @@ export function SellerAdminLandingBuilderWorkspace() {
                 </>
               ) : null}
 
-              {selectedSection.type === "recommended_for_you" || selectedSection.type === "recently_viewed_rail" || selectedSection.type === "search_history_rail" ? (
-                <label className="block">
-                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Products to show</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={12}
-                    value={String(Number(selectedSection.props?.limit || 8))}
-                    onChange={(event) =>
-                      updateSection({
-                        ...selectedSection,
-                        props: { ...selectedSection.props, limit: Math.max(1, Math.min(12, Number(event.target.value || 8))) },
-                      })
-                    }
-                    className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
-                  />
-                </label>
+              {selectedSection.type === "recommended_for_you" || selectedSection.type === "recently_viewed_rail" || selectedSection.type === "search_history_rail" || selectedSection.type === "trending_products_rail" ? (
+                <>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Products to show</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={12}
+                      value={String(Number(selectedSection.props?.limit || 8))}
+                      onChange={(event) =>
+                        updateSection({
+                          ...selectedSection,
+                          props: { ...selectedSection.props, limit: Math.max(1, Math.min(12, Number(event.target.value || 8))) },
+                        })
+                      }
+                      className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                    />
+                  </label>
+                  {selectedSection.type === "trending_products_rail" ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Ranking mode</span>
+                        <select
+                          value={toStr(selectedSection.props?.mode, "blended")}
+                          onChange={(event) =>
+                            updateSection({
+                              ...selectedSection,
+                              props: { ...selectedSection.props, mode: event.target.value },
+                            })
+                          }
+                          className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                        >
+                          <option value="blended">Blended trending</option>
+                          <option value="clicked">Most clicked</option>
+                          <option value="viewed">Most viewed</option>
+                          <option value="searched">Top searched</option>
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Timeframe (days)</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={90}
+                          value={String(Number(selectedSection.props?.days || 30))}
+                          onChange={(event) =>
+                            updateSection({
+                              ...selectedSection,
+                              props: { ...selectedSection.props, days: Math.max(1, Math.min(90, Number(event.target.value || 30))) },
+                            })
+                          }
+                          className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                </>
               ) : null}
 
               {selectedSection.type === "facebook_rail" ? (

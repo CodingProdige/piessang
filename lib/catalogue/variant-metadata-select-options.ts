@@ -216,9 +216,19 @@ export const VARIANT_METADATA_SELECT_FIELD_DEFS: Array<{
 export function sanitizeVariantMetadataSelectOptionsConfig(input?: Partial<Record<string, unknown>>) {
   const result = { ...DEFAULT_VARIANT_METADATA_SELECT_OPTIONS } as VariantMetadataSelectOptionsConfig;
   for (const [key, defaults] of Object.entries(DEFAULT_VARIANT_METADATA_SELECT_OPTIONS) as Array<[SelectableVariantMetadataKey, string[]]>) {
-    const source = Array.isArray(input?.[key]) ? (input?.[key] as unknown[]) : defaults;
-    const next = source.map((item) => String(item ?? "").trim()).filter(Boolean);
-    result[key] = next.length ? next : defaults;
+    const hasManagedValue = Array.isArray(input?.[key]);
+    const source = hasManagedValue ? (input?.[key] as unknown[]) : defaults;
+    const seen = new Set<string>();
+    const next = source
+      .map((item) => String(item ?? "").trim())
+      .filter((item) => {
+        if (!item) return false;
+        const normalized = item.toLowerCase();
+        if (seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      });
+    result[key] = hasManagedValue ? next : defaults;
   }
   return result;
 }

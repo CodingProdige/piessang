@@ -30,6 +30,8 @@ async function uploadSeoAsset(file: File, folder = "general") {
   const storage = getStorage(app);
   const bucketName = process.env.NEXT_PUBLIC_PIESSANG_FIREBASE_STORAGE_BUCKET;
   const bucket = bucketName ? storage.bucket(bucketName) : storage.bucket();
+  const normalizedContentType = toStr(file.type).toLowerCase();
+  const contentType = normalizedContentType.startsWith("image/") ? normalizedContentType : "image/jpeg";
   const safeName = toStr(file.name, "asset")
     .replace(/\s+/g, "-")
     .replace(/[^a-zA-Z0-9._-]/g, "");
@@ -39,8 +41,10 @@ async function uploadSeoAsset(file: File, folder = "general") {
   const buffer = Buffer.from(await file.arrayBuffer());
 
   await fileRef.save(buffer, {
-    contentType: file.type || "image/webp",
+    contentType,
     metadata: {
+      contentType,
+      cacheControl: "public, max-age=31536000, immutable",
       metadata: {
         firebaseStorageDownloadTokens: token,
       },

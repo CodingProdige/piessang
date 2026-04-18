@@ -115,7 +115,7 @@ const INTEGRATIONS: IntegrationCard[] = [
     category: "Commerce",
     description: "Sync catalogue, stock, and pricing from Shopify into Piessang.",
     accent: "from-[#edf8dc] via-[#f8fcec] to-white",
-    available: false,
+    available: true,
   },
   {
     id: "meta",
@@ -372,7 +372,7 @@ export function SellerIntegrationsWorkspace({
               {connection?.connected ? "1 active integration" : "No active integrations yet"}
             </div>
             <div className="inline-flex items-center rounded-full bg-[rgba(15,128,195,0.08)] px-4 py-2 text-[12px] font-semibold text-[#0f80c3]">
-              Shopify coming soon
+              Shopify available
             </div>
           </div>
         </div>
@@ -452,28 +452,39 @@ export function SellerIntegrationsWorkspace({
         </div>
       </section>
 
-      {selectedCard.id === "shopify" ? (
+      {selectedCard.id === "shopify" && !drawerOpen ? (
         <section className="rounded-[24px] border border-black/6 bg-white p-5 shadow-[0_20px_45px_rgba(20,24,27,0.07)]">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <p className="text-[22px] font-semibold tracking-[-0.03em] text-[#202020]">Shopify</p>
               <p className="mt-2 max-w-[720px] text-[13px] leading-[1.7] text-[#67727d]">
-                This integration is being prepared for launch and will stay hidden behind a coming-soon guard until Shopify approval is complete.
+                Connect a Shopify store to preview products, prepare imports, and manage ongoing sync settings from one place.
               </p>
             </div>
-            <span className="inline-flex h-10 items-center rounded-full bg-[#f4f5fb] px-4 text-[12px] font-semibold text-[#6c7280]">
-              Coming soon
-            </span>
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(true)}
+              className="inline-flex h-10 items-center rounded-full bg-[#6f55f6] px-4 text-[12px] font-semibold text-white shadow-[0_10px_24px_rgba(111,85,246,0.22)]"
+            >
+              Open Shopify
+            </button>
           </div>
 
           <div className="mt-5 rounded-[20px] border border-dashed border-black/10 bg-[#fbfbfe] px-5 py-8 text-center">
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[18px] bg-white shadow-[0_12px_24px_rgba(20,24,27,0.08)]">
               <IntegrationLogo id="shopify" />
             </div>
-            <p className="mt-4 text-[18px] font-semibold text-[#202020]">Coming soon</p>
+            <p className="mt-4 text-[18px] font-semibold text-[#202020]">Shopify integration</p>
             <p className="mx-auto mt-2 max-w-[620px] text-[13px] leading-[1.7] text-[#67727d]">
-              Shopify connection is temporarily hidden while the Piessang Shopify app completes approval. We&apos;ll reopen this integration once it&apos;s ready for sellers to use.
+              Sellers can connect Shopify, verify the connected shop, review preview products, and prepare a draft import into Piessang.
             </p>
+            <button
+              type="button"
+              onClick={() => setDrawerOpen(true)}
+              className="mt-5 inline-flex h-11 items-center rounded-full border border-black/8 bg-white px-5 text-[13px] font-semibold text-[#202020]"
+            >
+              Open connection settings
+            </button>
           </div>
         </section>
       ) : null}
