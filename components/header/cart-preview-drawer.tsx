@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CartActionStack } from "@/components/cart/cart-actions";
 import { CartItemCard } from "@/components/cart/cart-item-card";
 import { DisplayCurrencySelector, useDisplayCurrency } from "@/components/currency/display-currency-provider";
@@ -51,15 +51,80 @@ type CartPreviewItem = {
   };
 };
 
+function applyCartPreviewAction(
+  currentCart: {
+    items?: CartPreviewItem[];
+    totals?: { final_payable_incl?: number; final_incl?: number };
+    cart?: { item_count?: number };
+  } | null,
+  item: CartPreviewItem,
+  action: "increment" | "decrement" | "remove",
+) {
+  if (!currentCart) return currentCart;
+  const targetProductId =
+    String(item?.product_snapshot?.product?.unique_id || "") || String(item?.product_unique_id || "");
+  const targetVariantId = String(item?.selected_variant_snapshot?.variant_id || "");
+  const targetKey = String(item?.cart_item_key || `${targetProductId}::${targetVariantId}`);
+  const items = Array.isArray(currentCart.items) ? currentCart.items.map((entry) => ({ ...entry })) : [];
+  const index = items.findIndex((entry) => {
+    const productId =
+      String(entry?.product_snapshot?.product?.unique_id || "") || String(entry?.product_unique_id || "");
+    const variantId = String(entry?.selected_variant_snapshot?.variant_id || "");
+    const entryKey = String(entry?.cart_item_key || `${productId}::${variantId}`);
+    return entryKey === targetKey;
+  });
+  if (index < 0) return currentCart;
+
+  if (action === "remove") {
+    items.splice(index, 1);
+  } else {
+    const entry = items[index];
+    const currentQty = Math.max(0, Number(entry?.quantity ?? entry?.qty ?? 0) || 0);
+    const nextQty = action === "increment" ? currentQty + 1 : Math.max(1, currentQty - 1);
+    const currentLineIncl = Number(entry?.line_totals?.final_incl || 0);
+    const currentLineExcl = Number(entry?.line_totals?.final_excl || 0);
+    const unitIncl = currentQty > 0 ? currentLineIncl / currentQty : 0;
+    const unitExcl = currentQty > 0 ? currentLineExcl / currentQty : 0;
+    items[index] = {
+      ...entry,
+      qty: nextQty,
+      quantity: nextQty,
+      regular_qty: nextQty,
+      line_totals: {
+        ...(entry?.line_totals || {}),
+        final_incl: unitIncl * nextQty,
+        final_excl: unitExcl * nextQty,
+      },
+    };
+  }
+
+  const itemCount = items.reduce((sum, entry) => sum + Math.max(0, Number(entry?.quantity ?? entry?.qty ?? 0) || 0), 0);
+  const finalIncl = items.reduce((sum, entry) => sum + Math.max(0, Number(entry?.line_totals?.final_incl || 0) || 0), 0);
+
+  return {
+    ...currentCart,
+    items,
+    totals: {
+      ...(currentCart.totals || {}),
+      final_incl: finalIncl,
+      final_payable_incl: finalIncl,
+    },
+    cart: {
+      ...(currentCart.cart || {}),
+      item_count: itemCount,
+    },
+  };
+}
+
 export function CartPreviewDrawer({
   open,
   onClose,
-  uid,
+  cartOwnerId,
   onCartChange,
 }: {
   open: boolean;
   onClose: () => void;
-  uid: string | null;
+  cartOwnerId: string | null;
   onCartChange?: (cart: unknown) => void;
 }) {
   const { formatMoney } = useDisplayCurrency();
@@ -67,6 +132,10 @@ export function CartPreviewDrawer({
   const [hasLoaded, setHasLoaded] = useState(false);
   const [lineBusyKey, setLineBusyKey] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
+  const cartRef = useRef<typeof cart>(null);
+  const lineSyncTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const lineBaselineCartRef = useRef<Record<string, typeof cart>>({});
+  const lineLatestCartRef = useRef<Record<string, typeof cart>>({});
   const [cart, setCart] = useState<{
     items?: CartPreviewItem[];
     totals?: { final_payable_incl?: number; final_incl?: number };
@@ -74,14 +143,18 @@ export function CartPreviewDrawer({
   } | null>(null);
 
   useEffect(() => {
-    if (!open || !uid) return;
+    cartRef.current = cart;
+  }, [cart]);
+
+  useEffect(() => {
+    if (!open || !cartOwnerId) return;
 
     let mounted = true;
     setLoading(true);
     fetch("/api/client/v1/carts/get", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uid }),
+      body: JSON.stringify({ cartOwnerId }),
     })
       .then((response) => response.json())
       .then((payload) => {
@@ -104,7 +177,7 @@ export function CartPreviewDrawer({
     return () => {
       mounted = false;
     };
-  }, [onCartChange, open, uid]);
+  }, [cartOwnerId, onCartChange, open]);
 
   const items = Array.isArray(cart?.items) ? cart.items : [];
   const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
@@ -125,7 +198,7 @@ export function CartPreviewDrawer({
     item: CartPreviewItem,
     action: "increment" | "decrement" | "remove",
   ) => {
-    if (!uid) return;
+    if (!cartOwnerId) return;
     const productId =
       String(item?.product_snapshot?.product?.unique_id || "") ||
       String(item?.product_unique_id || "");
@@ -133,32 +206,76 @@ export function CartPreviewDrawer({
     if (!productId || !variantId) return;
 
     const busyKey = String(item?.cart_item_key || `${productId}::${variantId}`);
-    setLineBusyKey(busyKey);
-    try {
-      const endpoint = action === "remove" ? "/api/client/v1/carts/removeItem" : "/api/client/v1/carts/update";
-      const payload =
-        action === "remove"
-          ? { uid, unique_id: productId, variant_id: variantId }
-          : { uid, productId, variantId, mode: "change", qty: action === "increment" ? 1 : -1 };
-
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const json = await response.json().catch(() => ({}));
-      if (!response.ok || json?.ok === false) throw new Error(json?.message || "Unable to update cart.");
-      const nextCart = (json?.data?.cart ?? null) as typeof cart;
-      setCart(nextCart);
-      onCartChange?.(nextCart);
-      setSnackbarMessage(action === "remove" ? "Item removed from your cart." : "Cart quantity updated.");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to update your cart.";
-      setSnackbarMessage(message);
-    } finally {
-      setLineBusyKey(null);
+    if (lineSyncTimersRef.current[busyKey]) {
+      clearTimeout(lineSyncTimersRef.current[busyKey]);
+    } else {
+      lineBaselineCartRef.current[busyKey] = cartRef.current;
     }
+    const optimisticCart = applyCartPreviewAction(cartRef.current, item, action);
+    if (optimisticCart) {
+      setCart(optimisticCart);
+      onCartChange?.(optimisticCart);
+      cartRef.current = optimisticCart;
+      lineLatestCartRef.current[busyKey] = optimisticCart;
+    }
+    setLineBusyKey(busyKey);
+    lineSyncTimersRef.current[busyKey] = setTimeout(async () => {
+      try {
+        const latestCart = lineLatestCartRef.current[busyKey] ?? optimisticCart;
+        const latestItems = Array.isArray(latestCart?.items) ? latestCart.items : [];
+        const latestLine = latestItems.find((entry) => {
+          const entryProductId =
+            String(entry?.product_snapshot?.product?.unique_id || "") || String(entry?.product_unique_id || "");
+          const entryVariantId = String(entry?.selected_variant_snapshot?.variant_id || "");
+          const entryKey = String(entry?.cart_item_key || `${entryProductId}::${entryVariantId}`);
+          return entryKey === busyKey;
+        });
+
+        const endpoint = latestLine ? "/api/client/v1/carts/update" : "/api/client/v1/carts/removeItem";
+        const payload = latestLine
+          ? {
+              cartOwnerId,
+              productId,
+              variantId,
+              mode: "set",
+              qty: Math.max(0, Number(latestLine?.quantity ?? latestLine?.qty ?? 0) || 0),
+              cart_item_key: latestLine?.cart_item_key || item?.cart_item_key || null,
+            }
+          : { cartOwnerId, unique_id: productId, variant_id: variantId };
+
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok || json?.ok === false) throw new Error(json?.message || "Unable to update cart.");
+        const nextCart = (json?.data?.cart ?? null) as typeof cart;
+        setCart(nextCart);
+        onCartChange?.(nextCart);
+        cartRef.current = nextCart;
+        setSnackbarMessage(latestLine ? "Cart quantity updated." : "Item removed from your cart.");
+      } catch (error) {
+        const fallbackCart = lineBaselineCartRef.current[busyKey] ?? null;
+        setCart(fallbackCart);
+        onCartChange?.(fallbackCart);
+        cartRef.current = fallbackCart;
+        const message = error instanceof Error ? error.message : "Unable to update your cart.";
+        setSnackbarMessage(message);
+      } finally {
+        delete lineSyncTimersRef.current[busyKey];
+        delete lineBaselineCartRef.current[busyKey];
+        delete lineLatestCartRef.current[busyKey];
+        setLineBusyKey((current) => (current === busyKey ? null : current));
+      }
+    }, 220);
   };
+
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(lineSyncTimersRef.current)) clearTimeout(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!snackbarMessage) return undefined;

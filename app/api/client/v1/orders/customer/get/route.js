@@ -52,31 +52,46 @@ function getCustomerCode(order) {
   );
 }
 
-function matchesCustomer(order, userId, customerCode) {
+function getCustomerEmail(order) {
+  return toStr(
+    order?.customer?.email ||
+      order?.customer_snapshot?.email ||
+      order?.customer_snapshot?.account?.email ||
+      order?.customer_snapshot?.personal?.email,
+  ).toLowerCase();
+}
+
+function matchesCustomer(order, userId, customerCode, email) {
   const orderCustomerId = getCustomerId(order);
   const snapshotCustomerId = order?.customer_snapshot?.customerId || null;
   const orderedFor = order?.meta?.orderedFor || null;
   const accountCode = getCustomerCode(order);
+  const normalizedEmail = toStr(email).toLowerCase();
+  const orderEmail = getCustomerEmail(order);
 
-  if (
-    userId &&
-    orderCustomerId !== userId &&
-    snapshotCustomerId !== userId &&
-    orderedFor !== userId
-  )
-    return false;
+  let matched = false;
 
-  if (customerCode) {
-    if (
-      accountCode !== customerCode &&
-      orderCustomerId !== customerCode &&
-      snapshotCustomerId !== customerCode
-    ) {
-      return false;
-    }
+  if (userId) {
+    matched =
+      matched ||
+      orderCustomerId === userId ||
+      snapshotCustomerId === userId ||
+      orderedFor === userId;
   }
 
-  return true;
+  if (customerCode) {
+    matched =
+      matched ||
+      accountCode === customerCode ||
+      orderCustomerId === customerCode ||
+      snapshotCustomerId === customerCode;
+  }
+
+  if (normalizedEmail) {
+    matched = matched || orderEmail === normalizedEmail;
+  }
+
+  return matched;
 }
 
 function matchesFilters(order, filters) {
@@ -528,6 +543,7 @@ export async function POST(req) {
     const {
       customerCode: rawCustomerCode,
       userId: rawUserId,
+      email: rawEmail,
       filters: rawFilters,
       ordersPage: rawOrdersPage,
       sortOrder: rawSortOrder
@@ -535,13 +551,14 @@ export async function POST(req) {
 
     const customerCode = isEmpty(rawCustomerCode) ? null : rawCustomerCode;
     const userId = isEmpty(rawUserId) ? null : rawUserId;
+    const email = isEmpty(rawEmail) ? null : rawEmail;
     const filters = isEmpty(rawFilters) ? null : rawFilters;
     const paginate = !isEmpty(rawOrdersPage);
     const page = paginate ? rawOrdersPage : 1;
     const sortOrder = isEmpty(rawSortOrder) ? "desc" : rawSortOrder;
 
-    if (!customerCode && !userId) {
-      return err(400, "Missing Parameters", "customerCode or userId is required.");
+    if (!customerCode && !userId && !email) {
+      return err(400, "Missing Parameters", "customerCode, userId, or email is required.");
     }
 
     const orderSnap = await db.collection("orders_v2").get();
@@ -559,7 +576,7 @@ export async function POST(req) {
     );
 
     const filtered = orders.filter(o => {
-      if (!matchesCustomer(o, userId, customerCode)) return false;
+      if (!matchesCustomer(o, userId, customerCode, email)) return false;
       return matchesFilters(o, filters);
     });
 

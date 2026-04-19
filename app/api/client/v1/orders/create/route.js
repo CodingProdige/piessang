@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } from "@/lib/marketplace/fees";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { markCheckoutSessionPaymentPending } from "@/lib/checkout/sessions";
 import { releaseVariantCheckoutReservationsForItems } from "@/lib/cart/checkout-reservations";
 import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
 import { consumeReservedStockLots, consumeStockLotsFifo } from "@/lib/warehouse/stock-lots";
@@ -14,6 +15,7 @@ import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { buildPlatformOrderDocument } from "@/lib/orders/platform-order";
+import { createGuestOrderAccessToken } from "@/lib/orders/guest-access";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
 import { resolveDeliveryQuote } from "@/lib/shipping/rating";
 
@@ -507,6 +509,10 @@ function getUserPhone(user = {}) {
   );
 }
 
+function isGuestCartCustomerId(value) {
+  return String(value || "").trim().toLowerCase().startsWith("cart_guest_");
+}
+
 function isOperationalTeamRole(role) {
   return ["owner", "admin", "manager", "orders"].includes(normalizeSellerTeamRole(String(role || "")));
 }
@@ -578,6 +584,8 @@ export async function POST(req) {
       deliveryAddress = null,
       onBehalfOfCustomerId = null,
       pickupSelections = [],
+      checkoutSessionId = null,
+      customerEmail = null,
     } = await req.json();
 
     const safeOnBehalfOf = String(onBehalfOfCustomerId || "").trim();
@@ -591,16 +599,48 @@ export async function POST(req) {
 
     const userRef = adminDb.collection("users").doc(targetCustomerId);
     const userSnap = await userRef.get();
+    const normalizedCustomerEmail = firstNonEmptyString(customerEmail).toLowerCase();
+    const isGuestCustomer = isGuestCartCustomerId(targetCustomerId);
+    const fallbackRecipientName = firstNonEmptyString(
+      deliveryAddress?.recipientName,
+      deliveryAddress?.locationName,
+      "Guest shopper",
+    );
+    const fallbackPhone = firstNonEmptyString(
+      deliveryAddress?.phoneNumber,
+      deliveryAddress?.mobileNumber,
+    );
 
-    if (!userSnap.exists) {
+    let user = null;
+    if (userSnap.exists) {
+      user = userSnap.data();
+    } else if (isGuestCustomer) {
+      if (!normalizedCustomerEmail) {
+        return err(400, "Missing Email Address", "Guest checkout requires an email address.");
+      }
+      user = {
+        email: normalizedCustomerEmail,
+        customerId: targetCustomerId,
+        account: {
+          accountName: fallbackRecipientName,
+          email: normalizedCustomerEmail,
+          phoneNumber: fallbackPhone || null,
+        },
+        personal: {
+          fullName: fallbackRecipientName,
+          email: normalizedCustomerEmail,
+          phoneNumber: fallbackPhone || null,
+        },
+      };
+    } else {
       return err(404, "User Not Found", "Customer does not exist.");
     }
 
-    const user = userSnap.data();
     const resolvedAccountName = firstNonEmptyString(
       user?.account?.accountName,
       user?.business?.companyName,
-      user?.personal?.fullName
+      user?.personal?.fullName,
+      fallbackRecipientName,
     );
     if (!resolvedAccountName) {
       return err(
@@ -915,6 +955,9 @@ export async function POST(req) {
         deliveryFeeData,
       });
       orderDoc.meta.createIntentKey = createIntentKey;
+      if (checkoutSessionId) {
+        orderDoc.meta.checkoutSessionId = String(checkoutSessionId).trim();
+      }
 
       const noteUpdates = [];
       if (creditAllocations.length > 0) {
@@ -1023,6 +1066,25 @@ export async function POST(req) {
     }
     replayed = transactionResult?.replayed === true;
 
+    const guestOrderAccessToken = isGuestCustomer
+      ? createGuestOrderAccessToken({
+          orderId: String(createdOrderId || ""),
+          email: normalizedCustomerEmail || getUserEmail(user),
+        })
+      : "";
+    const guestOrderAccessUrl =
+      guestOrderAccessToken && origin
+        ? `${origin}/guest/orders/${encodeURIComponent(guestOrderAccessToken)}`
+        : "";
+
+    if (checkoutSessionId) {
+      await markCheckoutSessionPaymentPending({
+        sessionId: String(checkoutSessionId).trim(),
+        orderId: String(createdOrderId || ""),
+        merchantTransactionId: String(merchantTransactionId || ""),
+      }).catch(() => null);
+    }
+
     if (!replayed && createdOrderId && Array.isArray(cart?.items) && cart.items.length) {
       if (adminDb) {
         await consumeMarketplaceProductStock(adminDb, cart.items);
@@ -1106,7 +1168,9 @@ export async function POST(req) {
       orderNumber,
       merchantTransactionId,
       status: transactionResult?.status || "payment_pending",
-      replayed
+      replayed,
+      guestOrderAccessToken: guestOrderAccessToken || null,
+      guestOrderAccessUrl: guestOrderAccessUrl || null,
     });
 
   } catch (e) {

@@ -6,7 +6,7 @@ import { PageBody } from "@/components/layout/page-body";
 import { CustomerOrdersWorkspace } from "@/components/account/orders-workspace";
 
 export default function AccountOrdersPage() {
-  const { uid } = useAuth();
+  const { uid, profile } = useAuth();
   const [payload, setPayload] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +21,7 @@ export default function AccountOrdersPage() {
         const response = await fetch("/api/client/v1/orders/customer/get", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: uid }),
+          body: JSON.stringify({ userId: uid, email: profile?.email || null }),
         });
         const next = await response.json().catch(() => ({}));
         if (!response.ok || next?.ok === false) {
@@ -44,7 +44,7 @@ export default function AccountOrdersPage() {
     return () => {
       cancelled = true;
     };
-  }, [uid]);
+  }, [profile?.email, uid]);
 
   if (!uid) {
     return (

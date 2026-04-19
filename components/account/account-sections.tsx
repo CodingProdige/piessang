@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useAuth } from "@/components/auth/auth-provider";
 import { ProductLink } from "@/components/products/product-link";
 import { useEffect, useMemo, useState } from "react";
 import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
@@ -187,6 +188,7 @@ function WorkspaceShell({
 }
 
 export function AccountOrdersWorkspace({ uid }: { uid: string }) {
+  const { profile } = useAuth();
   const [payload, setPayload] = useState<OrdersPayload>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -200,7 +202,7 @@ export function AccountOrdersWorkspace({ uid }: { uid: string }) {
         const response = await fetch("/api/client/v1/orders/customer/get", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: uid }),
+          body: JSON.stringify({ userId: uid, email: profile?.email || null }),
         });
         const next = await response.json().catch(() => ({}));
         if (!response.ok || next?.ok === false) {
@@ -223,7 +225,7 @@ export function AccountOrdersWorkspace({ uid }: { uid: string }) {
     return () => {
       cancelled = true;
     };
-  }, [uid]);
+  }, [profile?.email, uid]);
 
   const items = Array.isArray(payload.items) ? payload.items : [];
   const totals = payload.analytics?.totals || {};

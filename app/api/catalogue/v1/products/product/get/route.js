@@ -4,7 +4,7 @@ export const preferredRegion = "fra1";
 // app/api/catalogue/v1/products/product/get/route.js
 import { NextResponse } from "next/server";
 import { loadActiveCheckoutReservationMap } from "@/lib/cart/checkout-reservations";
-import { getMarketplaceProductEngagementBadgeMap } from "@/lib/analytics/product-engagement";
+import { getMarketplaceProductEngagementBadgeSnapshotMap } from "@/lib/analytics/product-engagement";
 import { PRODUCT_ENGAGEMENT_BADGE_CONFIG } from "@/lib/analytics/product-engagement-badges";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { loadProductEngagementBadgeSettings } from "@/lib/platform/product-engagement-badge-settings";
@@ -615,7 +615,10 @@ export async function GET(req){
       const items = [];
       const badgeMap = includeUnavailable
         ? new Map()
-        : await getMarketplaceProductEngagementBadgeMap({ days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays }).catch(() => new Map());
+        : await getMarketplaceProductEngagementBadgeSnapshotMap({
+            productIds: items.map((item) => normStr(item?.data?.product?.unique_id || item?.id)).filter(Boolean),
+            days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays,
+          }).catch(() => new Map());
       for (const snap of snapshots) {
         if (!snap.exists) continue;
         const rawData = normalizeTimestamps(snap.data() || {});
@@ -737,7 +740,10 @@ export async function GET(req){
         : await buildAlternateOffersForBarcode(db, getCanonicalOfferBarcode(dataWithVariantAvailability), includeUnavailable);
       const badgeMap = includeUnavailable
         ? new Map()
-        : await getMarketplaceProductEngagementBadgeMap({ days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays }).catch(() => new Map());
+        : await getMarketplaceProductEngagementBadgeSnapshotMap({
+            productIds: [normStr(dataWithVariantAvailability?.product?.unique_id || snap.id)].filter(Boolean),
+            days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays,
+          }).catch(() => new Map());
       const engagement = badgeMap.get(normStr(dataWithVariantAvailability?.product?.unique_id || snap.id));
       return ok({
         id: snap.id,
@@ -1015,11 +1021,6 @@ export async function GET(req){
       items = groupItemsByCanonicalBarcode(items);
     }
 
-    if (!includeUnavailable && items.length) {
-      const badgeMap = await getMarketplaceProductEngagementBadgeMap({ days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays }).catch(() => new Map());
-      items = applyEngagementBadges(items, badgeMap, badgeSettings);
-    }
-
     // 4) Optional fuzzy search on product.title (after filters)
     const search = normText(searchRaw);
     if (search){
@@ -1118,6 +1119,14 @@ export async function GET(req){
 
     // 5) Apply limit if any
     if (!noTopLimit && lim != null) items = items.slice(0, lim);
+
+    if (!includeUnavailable && items.length) {
+      const badgeMap = await getMarketplaceProductEngagementBadgeSnapshotMap({
+        productIds: items.map((item) => normStr(item?.data?.product?.unique_id || item?.id)).filter(Boolean),
+        days: badgeSettings?.windowDays || PRODUCT_ENGAGEMENT_BADGE_CONFIG.windowDays,
+      }).catch(() => new Map());
+      items = applyEngagementBadges(items, badgeMap, badgeSettings);
+    }
 
     const count = items.length;
 

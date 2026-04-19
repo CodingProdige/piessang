@@ -719,41 +719,41 @@ function NotificationsButton({
 }
 
 function CartButton({
-  isAuthenticated,
+  canAccessCart,
   cartItemCount,
-  onRequireAuth,
+  cartPulseKey,
   onOpenCartPreview,
 }: {
-  isAuthenticated: boolean;
+  canAccessCart: boolean;
   cartItemCount: number;
-  onRequireAuth: () => void;
+  cartPulseKey: number;
   onOpenCartPreview: () => void;
 }) {
-  if (!isAuthenticated) {
-    return (
-      <button
-        type="button"
-        onClick={onRequireAuth}
-        className="ml-4 inline-flex h-9 items-center gap-2 rounded-full bg-[#4a4545] px-3 text-white shadow-[0_8px_18px_rgba(74,69,69,0.16)]"
-        aria-label="Cart"
-      >
-        <CartIcon />
-        <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[11px] font-semibold leading-none text-[#4a4545]">
-          {cartItemCount}
-        </span>
-      </button>
-    );
-  }
+  const [isPulsing, setIsPulsing] = useState(false);
+
+  useEffect(() => {
+    if (!cartPulseKey) return undefined;
+    setIsPulsing(true);
+    const timeout = window.setTimeout(() => setIsPulsing(false), 520);
+    return () => window.clearTimeout(timeout);
+  }, [cartPulseKey]);
+
+  const badgeClassName = `inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[11px] font-semibold leading-none text-[#4a4545] transition-transform duration-300 ${
+    isPulsing ? "scale-[1.18]" : "scale-100"
+  }`;
+  const buttonClassName = `ml-4 inline-flex h-9 items-center gap-2 rounded-full bg-[#4a4545] px-3 text-white shadow-[0_8px_18px_rgba(74,69,69,0.16)] transition-transform duration-300 ${
+    isPulsing ? "scale-[1.03]" : "scale-100"
+  }`;
 
   return (
     <button
       type="button"
-      onClick={onOpenCartPreview}
-      className="ml-4 inline-flex h-9 items-center gap-2 rounded-full bg-[#4a4545] px-3 text-white shadow-[0_8px_18px_rgba(74,69,69,0.16)]"
+      onClick={canAccessCart ? onOpenCartPreview : () => {}}
+      className={buttonClassName}
       aria-label="Cart"
     >
       <CartIcon />
-      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[11px] font-semibold leading-none text-[#4a4545]">
+      <span className={badgeClassName}>
         {cartItemCount}
       </span>
     </button>
@@ -842,6 +842,8 @@ function useHeaderAuthControlsState() {
     isSeller,
     favoriteCount,
     cartItemCount,
+    cartOwnerId,
+    cartPulseKey,
     openAuthModal,
     refreshProfile,
     signOut,
@@ -925,6 +927,8 @@ function useHeaderAuthControlsState() {
     isSeller,
     favoriteCount,
     cartItemCount,
+    cartOwnerId,
+    cartPulseKey,
     notificationUnreadCount,
     favoritesHref,
     notificationsHref,
@@ -949,6 +953,8 @@ function DesktopHeaderAuthControls({
     isSeller,
     favoriteCount,
     cartItemCount,
+    cartOwnerId,
+    cartPulseKey,
     notificationUnreadCount,
     favoritesHref,
     notificationsHref,
@@ -1024,9 +1030,9 @@ function DesktopHeaderAuthControls({
         onClearFavorites={() => void handleClearFavorites()}
       />
       <CartButton
-        isAuthenticated={showAuthenticatedActions}
+        canAccessCart={Boolean(cartOwnerId)}
         cartItemCount={cartItemCount}
-        onRequireAuth={() => openAuthModal("Sign in to manage your cart.")}
+        cartPulseKey={cartPulseKey}
         onOpenCartPreview={onOpenCartPreview}
       />
     </div>
@@ -1066,10 +1072,20 @@ function MobileHeaderAuthActions({
   const {
     showAuthenticatedActions,
     cartItemCount,
+    cartOwnerId,
+    cartPulseKey,
     notificationUnreadCount,
     notificationsHref,
     openAuthModal,
   } = authState;
+  const [isCartPulsing, setIsCartPulsing] = useState(false);
+
+  useEffect(() => {
+    if (!cartPulseKey) return undefined;
+    setIsCartPulsing(true);
+    const timeout = window.setTimeout(() => setIsCartPulsing(false), 520);
+    return () => window.clearTimeout(timeout);
+  }, [cartPulseKey]);
 
   return (
     <>
@@ -1094,17 +1110,17 @@ function MobileHeaderAuthActions({
       </button>
       <button
         type="button"
-        onClick={
-          showAuthenticatedActions
-            ? onOpenCartPreview
-            : () => openAuthModal("Sign in to manage your cart.")
-        }
+        onClick={cartOwnerId ? onOpenCartPreview : () => {}}
         className="relative inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
         aria-label="Cart"
       >
         <CartIcon />
-        {showAuthenticatedActions && cartItemCount > 0 ? (
-          <span className="absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)]">
+        {cartItemCount > 0 ? (
+          <span
+            className={`absolute -right-1 -top-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#4a4545] px-1 text-[10px] font-semibold leading-none text-white shadow-[0_6px_12px_rgba(20,24,27,0.16)] transition-transform duration-300 ${
+              isCartPulsing ? "scale-[1.16]" : "scale-100"
+            }`}
+          >
             {cartItemCount}
           </span>
         ) : null}
@@ -1120,11 +1136,18 @@ function HeaderCartPreviewBridge({
   open: boolean;
   onClose: () => void;
 }) {
-  const { uid, syncCartState } = useAuth();
+  const { uid, cartOwnerId, syncCartState } = useAuth();
 
   if (!open) return null;
 
-  return <CartPreviewDrawer open={open} onClose={onClose} uid={uid} onCartChange={syncCartState} />;
+  return (
+    <CartPreviewDrawer
+      open={open}
+      onClose={onClose}
+      cartOwnerId={cartOwnerId || uid}
+      onCartChange={syncCartState}
+    />
+  );
 }
 
 function DesktopHero({ hero }: { hero?: FixedHeroConfig | null }) {

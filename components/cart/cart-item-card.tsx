@@ -204,7 +204,7 @@ export function CartItemCard({
                 <button
                   type="button"
                   onClick={onDecrement}
-                  disabled={busy || !canDecrease}
+                  disabled={!canDecrease}
                   className="inline-flex h-8 w-8 items-center justify-center text-[16px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="Decrease quantity"
                 >
@@ -216,7 +216,6 @@ export function CartItemCard({
                 <button
                   type="button"
                   onClick={onIncrement}
-                  disabled={busy}
                   className="inline-flex h-8 w-8 items-center justify-center text-[16px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="Increase quantity"
                 >

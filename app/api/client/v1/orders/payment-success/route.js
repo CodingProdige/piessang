@@ -15,6 +15,9 @@ import { normalizeMoneyAmount } from "@/lib/money";
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 import { stripeRequest } from "@/lib/payments/stripe";
 import { buildCardPresentationMetadata } from "@/lib/payments/card-presentation";
+import { recordProductSalesMetrics } from "@/lib/analytics/product-engagement";
+import { markCheckoutSessionCompleted } from "@/lib/checkout/sessions";
+import { createGuestOrderAccessToken } from "@/lib/orders/guest-access";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -466,6 +469,15 @@ export async function POST(req) {
 
     await ref.update(updatePayload);
 
+    const checkoutSessionId = toStr(order?.meta?.checkoutSessionId || "");
+    if (checkoutSessionId) {
+      await markCheckoutSessionCompleted({
+        sessionId: checkoutSessionId,
+        orderId,
+        merchantTransactionId: toStr(payment?.merchantTransactionId || order?.order?.merchantTransactionId || ""),
+      }).catch(() => null);
+    }
+
     if (provider === "stripe") {
       const customerId = toStr(
         order?.payment?.stripeCustomerId ||
@@ -568,6 +580,10 @@ export async function POST(req) {
       );
     }
 
+    await recordProductSalesMetrics(items, { reason: "payment_success" }).catch((metricsError) => {
+      console.error("product sales metrics update failed:", metricsError);
+    });
+
     await syncOrderSellerSettlements({
       orderId,
       orderNumber: order?.order?.orderNumber || null,
@@ -594,6 +610,16 @@ export async function POST(req) {
       toStr(order?.customer_snapshot?.business?.companyName) ||
       toStr(order?.customer_snapshot?.personal?.fullName) ||
       "Customer";
+    const guestOrderAccessToken =
+      toStr(order?.order?.customerId).toLowerCase().startsWith("cart_guest_") && customerEmail
+        ? createGuestOrderAccessToken({
+            orderId,
+            email: customerEmail,
+          })
+        : "";
+    const guestOrderAccessUrl = guestOrderAccessToken
+      ? `${originBase}/guest/orders/${encodeURIComponent(guestOrderAccessToken)}`
+      : "";
 
     if (customerEmail) {
       fetch(`${originBase}/api/client/v1/notifications/email`, {
@@ -610,6 +636,7 @@ export async function POST(req) {
             amount: normalizeMoneyAmount(payment?.amount_incl ?? order?.payment?.amount_incl ?? 0).toFixed(2),
             currency: toStr(payment?.currency || order?.payment?.currency || "ZAR").toUpperCase(),
             message: "Your order has been received and your payment was confirmed successfully.",
+            guestOrderAccessUrl: guestOrderAccessUrl || null,
           },
         }),
       }).catch((notificationError) => {

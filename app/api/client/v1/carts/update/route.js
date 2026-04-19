@@ -7,6 +7,10 @@ import { findCartLineByProductVariant, normalizeCartForClient, readCartDoc } fro
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
+function resolveCartOwnerId(body) {
+  return String(body?.cartOwnerId || body?.customerId || body?.uid || "").trim();
+}
+
 function normalizeLegacyMode(mode, hasExistingLine, qty) {
   const normalizedMode = String(mode || "").toLowerCase();
   if (normalizedMode === "change") {
@@ -24,18 +28,21 @@ function normalizeLegacyMode(mode, hasExistingLine, qty) {
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
-    const uid = String(body?.uid || "").trim();
+    const cartOwnerId = resolveCartOwnerId(body);
     const productUniqueId = String(body?.product?.product?.unique_id || body?.productId || "").trim();
     const variantId = String(body?.variant_id || body?.variantId || "").trim();
     const qty = Number(body?.qty ?? body?.quantity ?? 0);
 
-    if (!uid || !productUniqueId || !variantId || !Number.isFinite(qty)) {
-      return err(400, "Invalid Request", "uid, product unique id, variant id, and qty are required.");
+    if (!cartOwnerId || !productUniqueId || !variantId || !Number.isFinite(qty)) {
+      return err(400, "Invalid Request", "cartOwnerId, product unique id, variant id, and qty are required.");
     }
 
-    const existingCart = await readCartDoc(uid);
+    const existingCart = await readCartDoc(cartOwnerId);
     const existingLine = findCartLineByProductVariant(existingCart, productUniqueId, variantId);
-    const nextMode = normalizeLegacyMode(body?.mode, Boolean(existingLine), qty);
+    const requestedMode = String(body?.mode || "").toLowerCase().trim();
+    const nextMode = normalizeLegacyMode(requestedMode, Boolean(existingLine), qty);
+    const explicitKey = String(body?.cart_item_key || body?.cartItemKey || "").trim();
+    const resolvedCartItemKey = explicitKey || String(existingLine?.cart_item_key || "").trim() || null;
 
     const origin = new URL(req.url).origin;
     const response = await fetch(new URL("/api/catalogue/v1/carts/cart/updateAtomic", origin), {
@@ -43,12 +50,12 @@ export async function POST(req) {
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
       body: JSON.stringify({
-        customerId: uid,
+        customerId: cartOwnerId,
         productId: productUniqueId,
         variantId,
         quantity: Math.abs(qty),
         mode: nextMode,
-        cart_item_key: existingLine?.cart_item_key || null,
+        cart_item_key: resolvedCartItemKey,
         channel: "storefront",
       }),
     });
@@ -65,7 +72,7 @@ export async function POST(req) {
 
     return ok({
       data: {
-        cart: normalizeCartForClient(payload?.data?.cart ?? null, uid),
+        cart: normalizeCartForClient(payload?.data?.cart ?? null, cartOwnerId),
         generatedKey: payload?.data?.generatedKey ?? null,
       },
       ui: payload?.ui ?? null,
@@ -77,4 +84,3 @@ export async function POST(req) {
     });
   }
 }
-

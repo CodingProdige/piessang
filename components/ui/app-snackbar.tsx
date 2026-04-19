@@ -1,5 +1,8 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+
 export function AppSnackbar({
   notice,
   onClose,
@@ -7,14 +10,22 @@ export function AppSnackbar({
   notice: { tone?: "info" | "success" | "error"; message: string } | null;
   onClose?: () => void;
 }) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    return () => setMounted(false);
+  }, []);
+
   if (!notice?.message) return null;
+  if (!mounted || typeof document === "undefined") return null;
 
   const tone = notice.tone || "info";
   const borderClass =
     tone === "success" ? "border-[#1f8f55]/30" : tone === "error" ? "border-[#b91c1c]/30" : "border-[#1d4ed8]/30";
   const dotClass = tone === "success" ? "bg-[#22c55e]" : tone === "error" ? "bg-[#ef4444]" : "bg-[#3b82f6]";
 
-  return (
+  return createPortal(
     <div className="fixed inset-x-4 bottom-4 z-[190] flex justify-center md:inset-x-auto md:right-4 md:justify-end">
       <div className={`flex w-full max-w-[380px] items-start justify-between gap-3 rounded-[16px] border bg-[#202020] px-4 py-3 text-white shadow-[0_16px_36px_rgba(20,24,27,0.28)] ${borderClass}`}>
         <div className="flex min-w-0 items-start gap-3">
@@ -32,6 +43,7 @@ export function AppSnackbar({
           </button>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

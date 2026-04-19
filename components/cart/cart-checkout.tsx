@@ -3,11 +3,12 @@
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useEmblaCarousel from "embla-carousel-react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
+import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
 import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
@@ -45,11 +46,17 @@ type CartItem = {
     fulfillment?: {
       mode?: string | null;
     };
+    media?: {
+      images?: Array<{ imageUrl?: string | null; blurHashUrl?: string | null }>;
+    };
   };
   selected_variant_snapshot?: {
     label?: string | null;
     variant_id?: string | null;
     id?: string | null;
+    media?: {
+      images?: Array<{ imageUrl?: string | null; blurHashUrl?: string | null }>;
+    };
     logistics?: {
       parcel_preset?: string | null;
       shipping_class?: string | null;
@@ -100,6 +107,10 @@ type CartPayload = {
     }>;
     delivery_fee_incl?: number;
     delivery_fee_excl?: number;
+  };
+  cart?: {
+    cart_id?: string;
+    item_count?: number;
   };
 };
 
@@ -161,6 +172,7 @@ type AddressDraft = {
 
 type CheckoutContactDraft = {
   recipientName: string;
+  email: string;
   phoneCountryCode: string;
   phoneNumber: string;
 };
@@ -172,6 +184,7 @@ type StripeCheckoutState = {
   orderId: string;
   orderNumber: string;
   merchantTransactionId: string;
+  guestOrderAccessToken?: string;
 };
 
 type PaymentOverlayState = {
@@ -188,6 +201,10 @@ type CheckoutDeliveryBlockState = {
   sellers: string[];
   reasons: string[];
 };
+
+function RequiredMark() {
+  return <span className="ml-1 text-[#b91c1c]">*</span>;
+}
 
 let stripeJsPromise: Promise<any> | null = null;
 const STRIPE_CHECKOUT_STORAGE_KEY = "piessang-stripe-checkout-state";
@@ -238,8 +255,9 @@ function readPersistedStripeCheckoutState(): StripeCheckoutState | null {
     const orderId = String(parsed?.orderId || "").trim();
     const orderNumber = String(parsed?.orderNumber || "").trim();
     const merchantTransactionId = String(parsed?.merchantTransactionId || "").trim();
+    const guestOrderAccessToken = String(parsed?.guestOrderAccessToken || "").trim();
     if (!paymentIntentId || !clientSecret || !publishableKey || !orderId) return null;
-    return { paymentIntentId, clientSecret, publishableKey, orderId, orderNumber, merchantTransactionId };
+    return { paymentIntentId, clientSecret, publishableKey, orderId, orderNumber, merchantTransactionId, guestOrderAccessToken };
   } catch {
     return null;
   }
@@ -655,7 +673,9 @@ function togglePickupSelection(current: string[], sellerKey: string, enabled: bo
 
 export function CartCheckout() {
   const router = useRouter();
-  const { isAuthenticated, uid, profile, openAuthModal, refreshCart, syncCartState } = useAuth();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { isAuthenticated, uid, cartOwnerId, profile, openAuthModal, refreshCart, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const stripePublishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || "";
   const stripeRef = useRef<any>(null);
@@ -676,6 +696,7 @@ export function CartCheckout() {
   const [pickupSelections, setPickupSelections] = useState<string[]>([]);
   const [contactDraft, setContactDraft] = useState<CheckoutContactDraft>({
     recipientName: "",
+    email: String(profile?.email || "").trim(),
     phoneCountryCode: "27",
     phoneNumber: "",
   });
@@ -725,7 +746,8 @@ export function CartCheckout() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [deliveryBlockError, setDeliveryBlockError] = useState<CheckoutDeliveryBlockState | null>(null);
-  const [successState, setSuccessState] = useState<{ orderNumber: string; orderId: string } | null>(null);
+  const [checkoutSessionLoading, setCheckoutSessionLoading] = useState(false);
+  const [successState, setSuccessState] = useState<{ orderNumber: string; orderId: string; guestOrderAccessToken?: string } | null>(null);
 
   useEffect(() => {
     return () => {
@@ -740,7 +762,12 @@ export function CartCheckout() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated || !uid) return;
+    if (!isAuthenticated || !uid) {
+      setCards([]);
+      setPaymentMode("new");
+      setLoading(false);
+      return;
+    }
     let mounted = true;
     setLoading(true);
     Promise.all([
@@ -786,21 +813,24 @@ export function CartCheckout() {
   }, [isAuthenticated, profile?.accountName, profile?.displayName, uid]);
 
   const selectedLocation = locations[selectedLocationIndex] || null;
+  const requestedCheckoutSessionId = String(searchParams?.get("session") || "").trim();
 
   useEffect(() => {
     const nextPhone = splitPhoneNumber(
       String(selectedLocation?.phoneNumber || "").trim(),
       String(selectedLocation?.phoneCountryCode || "27"),
     );
-    setContactDraft({
+    setContactDraft((current) => ({
       recipientName: String(selectedLocation?.recipientName || profile?.accountName || profile?.displayName || "").trim(),
+      email: current.email || String(profile?.email || "").trim(),
       phoneCountryCode: nextPhone.countryCode,
       phoneNumber: nextPhone.localNumber,
-    });
-  }, [selectedLocation?.phoneCountryCode, selectedLocation?.phoneNumber, selectedLocation?.recipientName, profile?.accountName, profile?.displayName]);
+    }));
+  }, [selectedLocation?.phoneCountryCode, selectedLocation?.phoneNumber, selectedLocation?.recipientName, profile?.accountName, profile?.displayName, profile?.email]);
 
   useEffect(() => {
-    if (!uid) return;
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    if (!activeCartOwnerId) return;
     let mounted = true;
     setDeliveryFeeLoading(true);
     setCheckoutReserveLoading(true);
@@ -808,7 +838,7 @@ export function CartCheckout() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          uid,
+          cartOwnerId: activeCartOwnerId,
           deliveryAddress: selectedLocation,
           pickupSelections,
         }),
@@ -820,7 +850,7 @@ export function CartCheckout() {
         const reserveResponse = await fetch("/api/client/v1/carts/checkout-reserve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uid }),
+          body: JSON.stringify({ cartOwnerId: activeCartOwnerId }),
         }).catch(() => null);
         const reservePayload = reserveResponse ? await reserveResponse.json().catch(() => ({})) : null;
         if (!mounted) return;
@@ -832,7 +862,7 @@ export function CartCheckout() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            uid,
+            cartOwnerId: activeCartOwnerId,
             deliveryAddress: selectedLocation,
             pickupSelections,
           }),
@@ -858,11 +888,18 @@ export function CartCheckout() {
     return () => {
       mounted = false;
     };
-  }, [pickupSelections, selectedLocation, uid]);
+  }, [cartOwnerId, pickupSelections, selectedLocation, uid]);
 
   useEffect(() => {
     setAddressDraft(defaultAddressDraft(profile ?? undefined));
   }, [profile?.accountName, profile?.displayName]);
+
+  useEffect(() => {
+    if (!isAuthenticated && locations.length === 0) {
+      setShowAddAddress(true);
+      setPaymentMode("new");
+    }
+  }, [isAuthenticated, locations.length]);
 
   useEffect(() => {
     if (!snackbarMessage) return undefined;
@@ -871,11 +908,83 @@ export function CartCheckout() {
   }, [snackbarMessage]);
 
   useEffect(() => {
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    const currentCartId = String(cart?.cart?.cart_id || "").trim();
+    if (!activeCartOwnerId || !currentCartId || loading || deliveryFeeLoading || checkoutReserveLoading || !cartItems.length) {
+      setCheckoutSessionLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setCheckoutSessionLoading(true);
+
+    fetch("/api/client/v1/checkout/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cartOwnerId: activeCartOwnerId,
+        cartId: currentCartId,
+        sessionId: requestedCheckoutSessionId || null,
+      }),
+    })
+      .then((response) => response.json().catch(() => ({})))
+      .then((payload) => {
+        if (cancelled) return;
+        if (payload?.ok === false) {
+          throw new Error(payload?.message || "We could not prepare your checkout.");
+        }
+        const resolvedSessionId = String(payload?.data?.session?.sessionId || "").trim();
+        if (!resolvedSessionId) {
+          throw new Error("We could not resolve a checkout session.");
+        }
+        if (resolvedSessionId !== requestedCheckoutSessionId) {
+          const nextParams = new URLSearchParams(searchParams?.toString() || "");
+          nextParams.set("session", resolvedSessionId);
+          router.replace(`${pathname}?${nextParams.toString()}`, { scroll: false });
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "We could not prepare your checkout.";
+        setErrorMessage(message);
+      })
+      .finally(() => {
+        if (!cancelled) setCheckoutSessionLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    cart?.cart?.cart_id,
+    Array.isArray(cart?.items) ? cart.items.length : 0,
+    cartOwnerId,
+    deliveryFeeLoading,
+    checkoutReserveLoading,
+    loading,
+    pathname,
+    requestedCheckoutSessionId,
+    router,
+    searchParams,
+    uid,
+  ]);
+
+  useEffect(() => {
     if (paymentMode !== "new" || !stripePublishableKey) return undefined;
     let cancelled = false;
+    let frameId = 0;
 
     async function mountCardElements() {
       try {
+        const numberHost = document.getElementById("piessang-card-number");
+        const expiryHost = document.getElementById("piessang-card-expiry");
+        const cvcHost = document.getElementById("piessang-card-cvc");
+        if (!numberHost || !expiryHost || !cvcHost) {
+          frameId = window.requestAnimationFrame(() => {
+            if (!cancelled) void mountCardElements();
+          });
+          return;
+        }
         const Stripe = await loadStripeJs();
         if (!Stripe) throw new Error("Stripe.js is not available.");
         cardNumberRef.current?.unmount?.();
@@ -928,8 +1037,10 @@ export function CartCheckout() {
       } catch (error) {
         if (cancelled) return;
         const message = error instanceof Error ? error.message : "We could not open secure payment.";
-        setErrorMessage(message);
-        setSnackbarMessage(message);
+        if (!message.includes("applies to no DOM elements")) {
+          setErrorMessage(message);
+          setSnackbarMessage(message);
+        }
       } finally {
         if (!cancelled) setStripeLoading(false);
       }
@@ -940,6 +1051,7 @@ export function CartCheckout() {
 
     return () => {
       cancelled = true;
+      if (frameId) window.cancelAnimationFrame(frameId);
       cardNumberRef.current?.unmount?.();
       cardExpiryRef.current?.unmount?.();
       cardCvcRef.current?.unmount?.();
@@ -997,18 +1109,38 @@ export function CartCheckout() {
   const unavailableItems = cartItems.filter(
     (item) => String(item?.availability?.status || "").trim().toLowerCase() === "out_of_stock",
   );
-  const blockedSellerKeys = new Set([
-    ...unavailableSellerDeliveryGroups.map((entry) => String(entry?.seller_key || "").trim()).filter(Boolean),
-    ...unavailableLocalSellerGroups.map((entry) => String(entry?.sellerKey || "").trim()).filter(Boolean),
-  ]);
+  const hasSelectedDeliveryAddress = Boolean(
+    selectedLocation
+    && (
+      String(selectedLocation?.streetAddress || "").trim()
+      || String(selectedLocation?.city || "").trim()
+      || String(selectedLocation?.suburb || "").trim()
+      || String(selectedLocation?.postalCode || "").trim()
+      || (
+        Number.isFinite(Number(selectedLocation?.latitude))
+        && Number.isFinite(Number(selectedLocation?.longitude))
+      )
+    ),
+  );
+  const blockedSellerKeys = new Set(
+    hasSelectedDeliveryAddress
+      ? [
+          ...unavailableSellerDeliveryGroups.map((entry) => String(entry?.seller_key || "").trim()).filter(Boolean),
+          ...unavailableLocalSellerGroups.map((entry) => String(entry?.sellerKey || "").trim()).filter(Boolean),
+        ]
+      : [],
+  );
   const checkoutBlocked = unavailableItems.length > 0 || blockedSellerKeys.size > 0;
   const deliveryBlocked = blockedSellerKeys.size > 0;
   const canUseSavedCard = paymentMode === "saved" && Boolean(selectedCard?.id);
   const canUseNewCard = paymentMode === "new" && newCard.holder.trim().length > 1;
   const hasCheckoutContactDetails = Boolean(
     contactDraft.recipientName.trim() &&
+      (isAuthenticated || contactDraft.email.trim()) &&
       combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
   );
+  const cartIsResolving = loading || deliveryFeeLoading || checkoutReserveLoading || checkoutSessionLoading;
+  const cartIsEmpty = !cartIsResolving && cartItems.length === 0;
   const cardErrors = {
     holder: newCard.holder.trim().length > 1 ? "" : "Enter the name exactly as it appears on the card.",
     number: "",
@@ -1043,7 +1175,7 @@ export function CartCheckout() {
   );
   const successRedirectHref =
     successState?.orderId && successState?.orderNumber
-      ? `/checkout/success?orderId=${encodeURIComponent(successState.orderId)}&orderNumber=${encodeURIComponent(successState.orderNumber)}`
+      ? `/checkout/success?orderId=${encodeURIComponent(successState.orderId)}&orderNumber=${encodeURIComponent(successState.orderNumber)}${successState?.guestOrderAccessToken ? `&guest=${encodeURIComponent(successState.guestOrderAccessToken)}` : ""}`
       : "";
 
   const [emblaRef, emblaApi] = useEmblaCarousel({
@@ -1145,10 +1277,14 @@ export function CartCheckout() {
   }, [emblaApi, cards.length, selectedCardIndex]);
 
   async function completeSuccessfulStripeCheckout(currentCheckout: StripeCheckoutState) {
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    if (!activeCartOwnerId) {
+      throw new Error("Your payment went through, but we could not locate your cart.");
+    }
     const clearCartResponse = await fetch("/api/client/v1/carts/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ uid }),
+      body: JSON.stringify({ cartOwnerId: activeCartOwnerId }),
     });
     const clearCartPayload = await clearCartResponse.json().catch(() => ({}));
     if (!clearCartResponse.ok || clearCartPayload?.ok === false) {
@@ -1159,7 +1295,11 @@ export function CartCheckout() {
     await refreshCart();
     setStripeCheckout(null);
     persistStripeCheckoutState(null);
-    setSuccessState({ orderNumber: currentCheckout.orderNumber, orderId: currentCheckout.orderId });
+    setSuccessState({
+      orderNumber: currentCheckout.orderNumber,
+      orderId: currentCheckout.orderId,
+      guestOrderAccessToken: currentCheckout.guestOrderAccessToken || "",
+    });
     setCart({ items: [], totals: { final_incl: 0, final_payable_incl: 0 } });
     setSnackbarMessage("Payment successful.");
     setPaymentOverlay({
@@ -1170,7 +1310,10 @@ export function CartCheckout() {
       detail: "You can continue now or wait a few seconds while we take you to your success page automatically.",
     });
     await new Promise((resolve) => window.setTimeout(resolve, PAYMENT_SUCCESS_REDIRECT_MS));
-    router.replace(`/checkout/success?orderId=${encodeURIComponent(currentCheckout.orderId)}&orderNumber=${encodeURIComponent(currentCheckout.orderNumber)}`);
+    const guestQuery = currentCheckout.guestOrderAccessToken
+      ? `&guest=${encodeURIComponent(currentCheckout.guestOrderAccessToken)}`
+      : "";
+    router.replace(`/checkout/success?orderId=${encodeURIComponent(currentCheckout.orderId)}&orderNumber=${encodeURIComponent(currentCheckout.orderNumber)}${guestQuery}`);
   }
 
   async function waitForOrderFinalization(currentCheckout: StripeCheckoutState) {
@@ -1479,10 +1622,38 @@ export function CartCheckout() {
   }
 
   async function handleCreateAddress() {
-    if (!uid) return;
     if (!addressDraft.locationName.trim() || !addressDraft.streetAddress.trim()) {
       setErrorMessage("Add a name for this address and a street address before saving it.");
       setSnackbarMessage("Please complete the required address fields.");
+      return;
+    }
+
+    if (!isAuthenticated || !uid) {
+      const nextLocation = {
+        id: `guest-${Date.now()}`,
+        locationName: addressDraft.locationName.trim(),
+        label: addressDraft.locationName.trim(),
+        recipientName: contactDraft.recipientName.trim(),
+        streetAddress: addressDraft.streetAddress.trim(),
+        addressLine2: addressDraft.addressLine2.trim(),
+        suburb: addressDraft.suburb.trim(),
+        city: addressDraft.city.trim(),
+        stateProvinceRegion: addressDraft.stateProvinceRegion.trim(),
+        province: addressDraft.stateProvinceRegion.trim(),
+        postalCode: addressDraft.postalCode.trim(),
+        country: addressDraft.country.trim(),
+        phoneCountryCode: contactDraft.phoneCountryCode.trim(),
+        phoneNumber: combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
+        deliveryInstructions: addressDraft.instructions.trim(),
+        instructions: addressDraft.instructions.trim(),
+        is_default: false,
+        latitude: Number.isFinite(Number(addressDraft.latitude)) ? Number(addressDraft.latitude) : null,
+        longitude: Number.isFinite(Number(addressDraft.longitude)) ? Number(addressDraft.longitude) : null,
+      };
+      setLocations([nextLocation]);
+      setSelectedLocationIndex(0);
+      setShowAddAddress(false);
+      setSnackbarMessage("Address ready for this order.");
       return;
     }
 
@@ -1496,7 +1667,7 @@ export function CartCheckout() {
           userId: uid,
           location: {
             locationName: addressDraft.locationName.trim(),
-            recipientName: addressDraft.recipientName.trim(),
+            recipientName: contactDraft.recipientName.trim(),
             streetAddress: addressDraft.streetAddress.trim(),
             addressLine2: addressDraft.addressLine2.trim(),
             suburb: addressDraft.suburb.trim(),
@@ -1504,8 +1675,8 @@ export function CartCheckout() {
             stateProvinceRegion: addressDraft.stateProvinceRegion.trim(),
             postalCode: addressDraft.postalCode.trim(),
             country: addressDraft.country.trim(),
-            phoneCountryCode: addressDraft.phoneCountryCode.trim(),
-            phoneNumber: combinePhoneNumber(addressDraft.phoneCountryCode, addressDraft.phoneNumber).trim(),
+            phoneCountryCode: contactDraft.phoneCountryCode.trim(),
+            phoneNumber: combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
             deliveryInstructions: addressDraft.instructions.trim(),
             is_default: addressDraft.is_default,
             latitude: Number.isFinite(Number(addressDraft.latitude)) ? Number(addressDraft.latitude) : null,
@@ -1555,7 +1726,7 @@ export function CartCheckout() {
           updates: {
             locationName: addressDraft.locationName.trim(),
             label: addressDraft.locationName.trim(),
-            recipientName: addressDraft.recipientName.trim(),
+            recipientName: contactDraft.recipientName.trim(),
             streetAddress: addressDraft.streetAddress.trim(),
             addressLine2: addressDraft.addressLine2.trim(),
             suburb: addressDraft.suburb.trim(),
@@ -1564,8 +1735,8 @@ export function CartCheckout() {
             province: addressDraft.stateProvinceRegion.trim(),
             postalCode: addressDraft.postalCode.trim(),
             country: addressDraft.country.trim(),
-            phoneCountryCode: addressDraft.phoneCountryCode.trim(),
-            phoneNumber: combinePhoneNumber(addressDraft.phoneCountryCode, addressDraft.phoneNumber).trim(),
+            phoneCountryCode: contactDraft.phoneCountryCode.trim(),
+            phoneNumber: combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
             deliveryInstructions: addressDraft.instructions.trim(),
             instructions: addressDraft.instructions.trim(),
             is_default: addressDraft.is_default,
@@ -1597,7 +1768,8 @@ export function CartCheckout() {
   }
 
   async function removeSellerGroupItems(groupItems: CartItem[], sellerName: string) {
-    if (!uid || !groupItems.length) return;
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    if (!activeCartOwnerId || !groupItems.length) return;
     setSubmitting(true);
     setErrorMessage(null);
     try {
@@ -1607,7 +1779,7 @@ export function CartCheckout() {
         const response = await fetch("/api/client/v1/carts/removeItem", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uid, unique_id: productId, variant_id: variantId }),
+          body: JSON.stringify({ cartOwnerId: activeCartOwnerId, unique_id: productId, variant_id: variantId }),
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload?.ok === false) {
@@ -1619,7 +1791,7 @@ export function CartCheckout() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          uid,
+          cartOwnerId: activeCartOwnerId,
           deliveryAddress: selectedLocation,
           pickupSelections,
         }),
@@ -1640,8 +1812,8 @@ export function CartCheckout() {
   }
 
   async function handleCheckout() {
-    if (!uid) {
-      openAuthModal("Sign in to continue to checkout.");
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    if (!activeCartOwnerId) {
       return;
     }
     if (!selectedLocation) {
@@ -1649,7 +1821,11 @@ export function CartCheckout() {
       return;
     }
     if (!hasCheckoutContactDetails) {
-      setErrorMessage("Add the delivery contact name and phone number before placing your order.");
+      setErrorMessage(
+        isAuthenticated
+          ? "Add the delivery contact name and phone number before placing your order."
+          : "Add your email, delivery contact name, and phone number before placing your order.",
+      );
       setSnackbarMessage("Delivery contact details are required before checkout.");
       return;
     }
@@ -1709,8 +1885,10 @@ export function CartCheckout() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cartId: uid,
-          customerId: uid,
+          cartId: activeCartOwnerId,
+          customerId: activeCartOwnerId,
+          checkoutSessionId: requestedCheckoutSessionId || null,
+          customerEmail: contactDraft.email.trim() || null,
           deliveryAddress: {
             ...(selectedLocation || {}),
             recipientName: contactDraft.recipientName.trim(),
@@ -1757,6 +1935,7 @@ export function CartCheckout() {
       const orderId = String(createPayload?.data?.orderId || "");
       const orderNumber = String(createPayload?.data?.orderNumber || "");
       const merchantTransactionId = String(createPayload?.data?.merchantTransactionId || "");
+      const guestOrderAccessToken = String(createPayload?.data?.guestOrderAccessToken || "").trim();
       if (!orderId || !merchantTransactionId) {
         throw new Error("The order was created without the payment details we expected.");
       }
@@ -1768,10 +1947,10 @@ export function CartCheckout() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: uid,
+          userId: activeCartOwnerId,
           orderId,
-          savePaymentMethod: paymentMode === "new" ? newCard.saveCard : false,
-          selectedPaymentMethodId: paymentMode === "saved" ? String(selectedCard?.id || "") : "",
+          savePaymentMethod: isAuthenticated && paymentMode === "new" ? newCard.saveCard : false,
+          selectedPaymentMethodId: isAuthenticated && paymentMode === "saved" ? String(selectedCard?.id || "") : "",
         }),
       });
       const chargeJson = await chargeResponse.json().catch(() => ({}));
@@ -1793,6 +1972,7 @@ export function CartCheckout() {
         orderId,
         orderNumber: orderNumber || merchantTransactionId,
         merchantTransactionId,
+        guestOrderAccessToken,
       };
       setStripeCheckout(nextCheckout);
       await handleStripePaymentSubmit(nextCheckout);
@@ -1817,25 +1997,6 @@ export function CartCheckout() {
     }
   }
 
-  if (!isAuthenticated) {
-    return (
-      <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Checkout</p>
-        <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Sign in to continue</h1>
-        <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
-          We need your account to load saved addresses, payment methods, and your live cart.
-        </p>
-        <button
-          type="button"
-          onClick={() => openAuthModal("Sign in to continue to checkout.")}
-          className="brand-button mt-5 inline-flex items-center rounded-[8px] px-4 py-2.5 text-[13px] font-semibold"
-        >
-          Sign in
-        </button>
-      </section>
-    );
-  }
-
   if (successState) {
     return (
       <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -1851,6 +2012,50 @@ export function CartCheckout() {
           <Link href="/products" className="inline-flex h-11 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]">
             Continue shopping
           </Link>
+        </div>
+      </section>
+    );
+  }
+
+  if (cartIsResolving) {
+    return (
+      <section className="space-y-5">
+        <div className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Checkout</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Loading your cart</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            We&apos;re pulling in your latest cart items, delivery options, and totals before checkout.
+          </p>
+        </div>
+        <div className="space-y-4">
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+              <div className="h-4 w-28 animate-pulse rounded bg-[#ece8df]" />
+              <div className="mt-4 h-16 animate-pulse rounded-[8px] bg-[#eef1f4]" />
+            </div>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  if (cartIsEmpty) {
+    return (
+      <section className="space-y-5">
+        <div className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Checkout</p>
+          <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Your cart is empty</h1>
+          <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
+            Add a few products before heading to checkout.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Link href="/products" className="inline-flex h-11 items-center justify-center rounded-[8px] bg-[#202020] px-5 text-[13px] font-semibold text-white">
+              Continue shopping
+            </Link>
+            <Link href="/cart" className="inline-flex h-11 items-center justify-center rounded-[8px] border border-black/10 bg-white px-5 text-[13px] font-semibold text-[#202020]">
+              View cart
+            </Link>
+          </div>
         </div>
       </section>
     );
@@ -1917,20 +2122,43 @@ export function CartCheckout() {
         </p>
       </div>
 
-      <div className="rounded-[8px] border border-[#e5dcc7] bg-[#fbf7ef] px-5 py-4 text-[14px] font-medium text-[#6b5b34] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
-        Stock is reserved for a brief period while you complete checkout!
+      {!isAuthenticated ? (
+        <div className="rounded-[8px] border border-[#d6cffb] bg-[rgba(111,85,246,0.06)] px-5 py-4 text-[14px] text-[#4c3fb3] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+          <p className="font-semibold text-[#202020]">Guest checkout is available</p>
+          <p className="mt-1 leading-[1.6]">
+            You can finish this order without an account. If you’d rather save addresses and payment methods, sign in or create an account first.
+          </p>
+          <button
+            type="button"
+            onClick={() => openAuthModal("Sign in or create an account for faster checkout next time.")}
+            className="mt-3 inline-flex h-10 items-center rounded-[8px] border border-[#6f55f6]/20 bg-white px-4 text-[12px] font-semibold text-[#4c3fb3]"
+          >
+            Sign in or create account
+          </button>
+        </div>
+      ) : null}
+
+      <div className="rounded-[8px] border border-[#b7e4c7] bg-[#effaf3] px-5 py-4 text-[14px] text-[#1f6b43] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+        <div className="flex items-center gap-3">
+          <span
+            aria-hidden="true"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#d9f3e3] text-[#198754]"
+          >
+            <svg viewBox="0 0 24 24" className="h-4.5 w-4.5 fill-none stroke-current" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 10V7a4 4 0 1 1 8 0v3" />
+              <rect x="5" y="10" width="14" height="10" rx="2" />
+              <path d="m9.5 15 1.7 1.7L15 13" />
+            </svg>
+          </span>
+          <div>
+            <p className="font-semibold text-[#165c39]">Stock reserved for checkout</p>
+            <p className="mt-0.5 leading-[1.5] text-[#2f7a54]">
+              Your items are being held for a short time while you complete payment.
+            </p>
+          </div>
+        </div>
       </div>
 
-      {loading ? (
-        <div className="space-y-4">
-          {[0, 1, 2].map((index) => (
-            <div key={index} className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-              <div className="h-4 w-28 animate-pulse rounded bg-[#ece8df]" />
-              <div className="mt-4 h-16 animate-pulse rounded-[8px] bg-[#eef1f4]" />
-            </div>
-          ))}
-        </div>
-      ) : (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_380px]">
           <div className="space-y-5">
             <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
@@ -1944,7 +2172,7 @@ export function CartCheckout() {
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Recipient name</label>
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Recipient name<RequiredMark /></label>
                   <input
                     value={contactDraft.recipientName}
                     onChange={(event) => setContactDraft((current) => ({ ...current, recipientName: event.target.value }))}
@@ -1952,8 +2180,21 @@ export function CartCheckout() {
                     placeholder="Who should receive or collect this order?"
                   />
                 </div>
+                {!isAuthenticated ? (
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Email address<RequiredMark /></label>
+                    <input
+                      type="email"
+                      value={contactDraft.email}
+                      onChange={(event) => setContactDraft((current) => ({ ...current, email: event.target.value }))}
+                      className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                      placeholder="Where should we send your order updates?"
+                      autoComplete="email"
+                    />
+                  </div>
+                ) : null}
                 <PhoneInput
-                  label="Mobile number"
+                  label="Mobile number *"
                   countryCode={contactDraft.phoneCountryCode}
                   localNumber={contactDraft.phoneNumber}
                   onCountryCodeChange={(value) => setContactDraft((current) => ({ ...current, phoneCountryCode: value }))}
@@ -1964,23 +2205,30 @@ export function CartCheckout() {
             </section>
 
             <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-[18px] font-semibold text-[#202020]">Delivery address</h2>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-[18px] font-semibold text-[#202020]">Delivery address{!selectedLocation ? <RequiredMark /> : null}</h2>
+                  <p className="mt-1 text-[12px] text-[#57636c]">
+                    Choose where this order should be delivered, or add a new address below.
+                  </p>
+                </div>
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={() => setShowAddAddress((current) => !current)}
                     className="text-[12px] font-semibold text-[#907d4c]"
                   >
-                    {showAddAddress ? "Close" : "Add new address"}
+                    {showAddAddress ? "Hide address form" : isAuthenticated ? "Add new address" : "Add delivery address"}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setAddressesModalOpen(true)}
-                    className="text-[12px] font-semibold text-[#907d4c]"
-                  >
-                    Manage addresses
-                  </button>
+                  {isAuthenticated ? (
+                    <button
+                      type="button"
+                      onClick={() => setAddressesModalOpen(true)}
+                      className="text-[12px] font-semibold text-[#907d4c]"
+                    >
+                      Manage addresses
+                    </button>
+                  ) : null}
                 </div>
               </div>
               {checkoutBlocked ? (
@@ -1988,154 +2236,6 @@ export function CartCheckout() {
                   {deliveryBlocked
                     ? "One or more seller-delivered items cannot be delivered to this address. Remove the affected seller items or choose a different delivery address before continuing."
                     : "One or more items in your cart are now out of stock. Remove them from your cart before continuing."}
-                </div>
-              ) : null}
-              {showAddAddress ? (
-                <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="sm:col-span-2 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => setAddressPickerOpen(true)}
-                        className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020]"
-                      >
-                        Search address on map
-                      </button>
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address name</label>
-                      <input
-                        value={addressDraft.locationName}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, locationName: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Home, Work, Office"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Recipient name</label>
-                      <input
-                        value={addressDraft.recipientName}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, recipientName: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Who will receive the order?"
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <PhoneInput
-                        label="Mobile number"
-                        countryCode={addressDraft.phoneCountryCode}
-                        localNumber={addressDraft.phoneNumber}
-                        onCountryCodeChange={(value) => setAddressDraft((current) => ({ ...current, phoneCountryCode: value }))}
-                        onLocalNumberChange={(value) => setAddressDraft((current) => ({ ...current, phoneNumber: value }))}
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address</label>
-                      <input
-                        value={addressDraft.streetAddress}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Street number and street name"
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address line 2</label>
-                      <input
-                        value={addressDraft.addressLine2}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, addressLine2: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Apartment, unit, building, floor"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suburb</label>
-                      <input
-                        value={addressDraft.suburb}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, suburb: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Suburb"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">City</label>
-                      <input
-                        value={addressDraft.city}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, city: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="City"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Province</label>
-                      <input
-                        value={addressDraft.stateProvinceRegion}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, stateProvinceRegion: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Province"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Postal code</label>
-                      <input
-                        value={addressDraft.postalCode}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, postalCode: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Postal code"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Country</label>
-                      <input
-                        value={addressDraft.country}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, country: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Country"
-                      />
-                    </div>
-                    <div className="sm:col-span-2 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[12px] text-[#57636c]">
-                      {addressDraft.latitude && addressDraft.longitude
-                        ? `Pinned location: ${addressDraft.latitude}, ${addressDraft.longitude}`
-                        : "No map pin selected yet. Use the map search above for more accurate delivery matching."}
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Delivery notes</label>
-                      <input
-                        value={addressDraft.instructions}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, instructions: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Anything the driver should know?"
-                      />
-                    </div>
-                  </div>
-                  <label className="mt-3 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
-                    <input
-                      type="checkbox"
-                      checked={addressDraft.is_default}
-                      onChange={(event) => setAddressDraft((current) => ({ ...current, is_default: event.target.checked }))}
-                      className="h-4 w-4 rounded border-black/20"
-                    />
-                    Set this as my default delivery address
-                  </label>
-                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => void handleCreateAddress()}
-                      disabled={addressSaving}
-                      className="inline-flex h-11 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {addressSaving ? "Saving..." : "Save address"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAddAddress(false);
-                        setAddressDraft(defaultAddressDraft(profile ?? undefined));
-                      }}
-                      className="inline-flex h-11 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-                    >
-                      Cancel
-                    </button>
-                  </div>
                 </div>
               ) : null}
               {locations.length ? (
@@ -2171,18 +2271,153 @@ export function CartCheckout() {
                   You do not have a saved delivery address yet.
                 </div>
               )}
+              {showAddAddress ? (
+                <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="sm:col-span-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setAddressPickerOpen(true)}
+                        className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020]"
+                      >
+                        Search address on map
+                      </button>
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address name<RequiredMark /></label>
+                      <input
+                        value={addressDraft.locationName}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, locationName: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Home, Work, Office"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address<RequiredMark /></label>
+                      <input
+                        value={addressDraft.streetAddress}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Street number and street name"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address line 2</label>
+                      <input
+                        value={addressDraft.addressLine2}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, addressLine2: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Apartment, unit, building, floor"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suburb<RequiredMark /></label>
+                      <input
+                        value={addressDraft.suburb}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, suburb: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Suburb"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">City<RequiredMark /></label>
+                      <input
+                        value={addressDraft.city}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, city: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="City"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Province<RequiredMark /></label>
+                      <input
+                        value={addressDraft.stateProvinceRegion}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, stateProvinceRegion: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Province"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Postal code<RequiredMark /></label>
+                      <input
+                        value={addressDraft.postalCode}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, postalCode: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Postal code"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Country<RequiredMark /></label>
+                      <input
+                        value={addressDraft.country}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, country: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Country"
+                      />
+                    </div>
+                    <div className="sm:col-span-2 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[12px] text-[#57636c]">
+                      {addressDraft.latitude && addressDraft.longitude
+                        ? `Pinned location: ${addressDraft.latitude}, ${addressDraft.longitude}`
+                        : "No map pin selected yet. Use the map search above for more accurate delivery matching."}
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Delivery notes</label>
+                      <input
+                        value={addressDraft.instructions}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, instructions: event.target.value }))}
+                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder="Anything the driver should know?"
+                      />
+                    </div>
+                  </div>
+                  <label className="mt-3 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
+                    <input
+                      type="checkbox"
+                      checked={addressDraft.is_default}
+                      onChange={(event) => setAddressDraft((current) => ({ ...current, is_default: event.target.checked }))}
+                      className="h-4 w-4 rounded border-black/20"
+                      disabled={!isAuthenticated}
+                    />
+                    {isAuthenticated ? "Set this as my default delivery address" : "Use this address for this order"}
+                  </label>
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void handleCreateAddress()}
+                      disabled={addressSaving}
+                      className="inline-flex h-11 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {addressSaving ? "Saving..." : isAuthenticated ? "Save address" : "Use this address"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddAddress(false);
+                        setAddressDraft(defaultAddressDraft(profile ?? undefined));
+                      }}
+                      className="inline-flex h-11 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
               <div className="flex items-center justify-between gap-3">
-                <h2 className="text-[18px] font-semibold text-[#202020]">Payment method</h2>
-                <button
-                  type="button"
-                  onClick={() => setCardsModalOpen(true)}
-                  className="text-[12px] font-semibold text-[#907d4c]"
-                >
-                  Manage cards
-                </button>
+                <h2 className="text-[18px] font-semibold text-[#202020]">Payment method{!canUseSavedCard ? <RequiredMark /> : null}</h2>
+                {isAuthenticated ? (
+                  <button
+                    type="button"
+                    onClick={() => setCardsModalOpen(true)}
+                    className="text-[12px] font-semibold text-[#907d4c]"
+                  >
+                    Manage cards
+                  </button>
+                ) : (
+                  <span className="text-[12px] font-semibold text-[#7a8594]">Guest payment</span>
+                )}
               </div>
               <div className="mt-4 inline-flex rounded-[8px] bg-[#f6f3eb] p-1">
                 <button
@@ -2324,7 +2559,7 @@ export function CartCheckout() {
                     </div>
                   </div>
                   <div className="sm:col-span-2">
-                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Card holder</label>
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Card holder<RequiredMark /></label>
                     <input
                       value={newCard.holder}
                       onChange={(event) => setNewCard((current) => ({ ...current, holder: event.target.value }))}
@@ -2335,20 +2570,20 @@ export function CartCheckout() {
                     {cardTouched.holder && cardErrors.holder ? <p className="mt-2 text-[12px] text-[#b91c1c]">{cardErrors.holder}</p> : null}
                   </div>
                   <div className="sm:col-span-2">
-                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Card number</label>
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Card number<RequiredMark /></label>
                     <div className="mt-2 flex h-11 w-full items-center rounded-[10px] border border-black/10 bg-white px-3">
                       <div id="piessang-card-number" className="w-full" />
                     </div>
                     <p className="mt-2 text-[12px] text-[#7a7a7a]">Securely captured by Stripe inside Piessang</p>
                   </div>
                   <div>
-                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Expiry</label>
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Expiry<RequiredMark /></label>
                     <div className="mt-2 flex h-11 w-full items-center rounded-[10px] border border-black/10 bg-white px-3">
                       <div id="piessang-card-expiry" className="w-full" />
                     </div>
                   </div>
                   <div>
-                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">CVV</label>
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">CVV<RequiredMark /></label>
                     <div className="mt-2 flex h-11 w-full items-center rounded-[10px] border border-black/10 bg-white px-3">
                       <div id="piessang-card-cvc" className="w-full" />
                     </div>
@@ -2385,7 +2620,7 @@ export function CartCheckout() {
                   <div key={group.seller} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
                     {(() => {
                       const summary = getSellerDeliverySummary(group.items, selectedLocation, pickupSelections);
-                      const sellerBlockedByDelivery = summary && !summary.isPickup && summary.isUnavailable === true;
+                      const sellerBlockedByDelivery = hasSelectedDeliveryAddress && summary && !summary.isPickup && summary.isUnavailable === true;
                       return sellerBlockedByDelivery ? (
                         <div className="mb-4 rounded-[10px] border border-[#fecaca] bg-[#fff1f2] px-4 py-3">
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2425,7 +2660,7 @@ export function CartCheckout() {
                         <p className="text-[16px] font-semibold text-[#202020]">{group.seller}</p>
                         <div className="text-right">
                           <p className="text-[12px] text-[#57636c]">{getSellerFulfillmentSummary(group.items)}</p>
-                          {getSellerDeliverySummary(group.items, selectedLocation, pickupSelections) ? (
+                          {hasSelectedDeliveryAddress && getSellerDeliverySummary(group.items, selectedLocation, pickupSelections) ? (
                             <p className="mt-1 text-[12px] font-semibold text-[#202020]">
                               {getSellerDeliverySummary(group.items, selectedLocation, pickupSelections)?.label}
                             </p>
@@ -2452,9 +2687,33 @@ export function CartCheckout() {
                       {group.items.map((item, index) => (
                         <div key={`${item?.product_snapshot?.product?.title || "item"}-${index}`} className="rounded-[8px] border border-black/5 bg-white p-4">
                           <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="text-[14px] font-semibold text-[#202020]">{item?.product_snapshot?.product?.title || "Product"}</p>
-                              <p className="mt-1 text-[12px] text-[#57636c]">{item?.selected_variant_snapshot?.label || "Selected variant"}</p>
+                            <div className="flex min-w-0 items-start gap-3">
+                              <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa]">
+                                <BlurhashImage
+                                  src={
+                                    item?.selected_variant_snapshot?.media?.images?.[0]?.imageUrl ||
+                                    item?.product_snapshot?.media?.images?.[0]?.imageUrl ||
+                                    null
+                                  }
+                                  blurHash={
+                                    item?.selected_variant_snapshot?.media?.images?.[0]?.blurHashUrl ||
+                                    item?.product_snapshot?.media?.images?.[0]?.blurHashUrl ||
+                                    null
+                                  }
+                                  alt={item?.product_snapshot?.product?.title || "Product"}
+                                  sizes="64px"
+                                  className="h-full w-full"
+                                  imageClassName="object-cover"
+                                />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-[14px] font-semibold text-[#202020]">
+                                  {item?.product_snapshot?.product?.title || "Product"}
+                                </p>
+                                <p className="mt-1 text-[12px] text-[#57636c]">
+                                  {item?.selected_variant_snapshot?.label || "Selected variant"}
+                                </p>
+                              </div>
                             </div>
                             <div className="text-right">
                               <p className="text-[12px] text-[#57636c]">Qty {Math.max(0, Number(item?.qty ?? item?.quantity ?? 0))}</p>
@@ -2507,7 +2766,7 @@ export function CartCheckout() {
                   {deliveryFeeLoading || checkoutReserveLoading ? "Calculating..." : formatMoney(sellerDeliveryAmount)}
                 </span>
               </div>
-              {sellerDeliverySummaries.length ? (
+              {hasSelectedDeliveryAddress && sellerDeliverySummaries.length ? (
                 <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Seller delivery</p>
                   <div className="mt-2 space-y-2">
@@ -2671,7 +2930,6 @@ export function CartCheckout() {
             </Link>
           </aside>
         </div>
-      )}
     </section>
     {paymentOverlay.open ? (
       <div className="fixed inset-0 z-[180] flex items-center justify-center bg-[rgba(20,24,27,0.55)] px-4 py-6" role="dialog" aria-modal="true">
@@ -2969,32 +3227,15 @@ export function CartCheckout() {
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address name</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address name<RequiredMark /></label>
                       <input
                         value={addressDraft.locationName}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, locationName: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
                       />
                     </div>
-                    <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Recipient name</label>
-                      <input
-                        value={addressDraft.recipientName}
-                        onChange={(event) => setAddressDraft((current) => ({ ...current, recipientName: event.target.value }))}
-                        className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                      />
-                    </div>
                     <div className="sm:col-span-2">
-                      <PhoneInput
-                        label="Mobile number"
-                        countryCode={addressDraft.phoneCountryCode}
-                        localNumber={addressDraft.phoneNumber}
-                        onCountryCodeChange={(value) => setAddressDraft((current) => ({ ...current, phoneCountryCode: value }))}
-                        onLocalNumberChange={(value) => setAddressDraft((current) => ({ ...current, phoneNumber: value }))}
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address<RequiredMark /></label>
                       <input
                         value={addressDraft.streetAddress}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
@@ -3010,7 +3251,7 @@ export function CartCheckout() {
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suburb</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suburb<RequiredMark /></label>
                       <input
                         value={addressDraft.suburb}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, suburb: event.target.value }))}
@@ -3018,7 +3259,7 @@ export function CartCheckout() {
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">City</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">City<RequiredMark /></label>
                       <input
                         value={addressDraft.city}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, city: event.target.value }))}
@@ -3026,7 +3267,7 @@ export function CartCheckout() {
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Province</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Province<RequiredMark /></label>
                       <input
                         value={addressDraft.stateProvinceRegion}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, stateProvinceRegion: event.target.value }))}
@@ -3034,7 +3275,7 @@ export function CartCheckout() {
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Postal code</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Postal code<RequiredMark /></label>
                       <input
                         value={addressDraft.postalCode}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, postalCode: event.target.value }))}
@@ -3042,7 +3283,7 @@ export function CartCheckout() {
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Country</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Country<RequiredMark /></label>
                       <input
                         value={addressDraft.country}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, country: event.target.value }))}

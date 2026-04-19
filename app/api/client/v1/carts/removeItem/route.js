@@ -7,23 +7,27 @@ import { findCartLineByProductVariant, normalizeCartForClient, readCartDoc } fro
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
+function resolveCartOwnerId(body) {
+  return String(body?.cartOwnerId || body?.customerId || body?.uid || "").trim();
+}
+
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
-    const uid = String(body?.uid || "").trim();
+    const cartOwnerId = resolveCartOwnerId(body);
     const productUniqueId = String(body?.unique_id || body?.productId || "").trim();
     const variantId = String(body?.variant_id || body?.variantId || "").trim();
 
-    if (!uid || !productUniqueId || !variantId) {
-      return err(400, "Invalid Request", "uid, unique_id, and variant_id are required.");
+    if (!cartOwnerId || !productUniqueId || !variantId) {
+      return err(400, "Invalid Request", "cartOwnerId, unique_id, and variant_id are required.");
     }
 
-    const cart = await readCartDoc(uid);
+    const cart = await readCartDoc(cartOwnerId);
     const line = findCartLineByProductVariant(cart, productUniqueId, variantId);
     if (!line?.cart_item_key) {
       return ok({
         data: {
-          cart: normalizeCartForClient(cart, uid),
+          cart: normalizeCartForClient(cart, cartOwnerId),
           message: "Item not found in cart.",
         },
       });
@@ -35,7 +39,7 @@ export async function POST(req) {
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
       body: JSON.stringify({
-        customerId: uid,
+        customerId: cartOwnerId,
         productId: productUniqueId,
         variantId,
         mode: "remove",
@@ -56,7 +60,7 @@ export async function POST(req) {
 
     return ok({
       data: {
-        cart: normalizeCartForClient(payload?.data?.cart ?? null, uid),
+        cart: normalizeCartForClient(payload?.data?.cart ?? null, cartOwnerId),
         message: "Item removed from cart.",
       },
       ui: payload?.ui ?? null,
@@ -68,4 +72,3 @@ export async function POST(req) {
     });
   }
 }
-

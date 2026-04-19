@@ -35,6 +35,23 @@ function labelForSegment(segment: string) {
 }
 
 function buildVisibleCrumbs(pathname: string, searchParams: URLSearchParams) {
+  if (pathname === "/checkout") {
+    return [
+      { href: "/", label: "Home" },
+      { href: "/cart", label: "Cart" },
+      { label: "Checkout" },
+    ];
+  }
+
+  if (pathname === "/checkout/success") {
+    return [
+      { href: "/", label: "Home" },
+      { href: "/cart", label: "Cart" },
+      { href: "/checkout", label: "Checkout" },
+      { label: "Success" },
+    ];
+  }
+
   const segments = pathname.split("/").filter(Boolean);
   const crumbs: Crumb[] = [{ href: "/", label: "Home" }];
 

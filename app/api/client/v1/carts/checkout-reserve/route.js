@@ -23,7 +23,7 @@ function normalizeActiveCartLotReservations(entries) {
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const customerId = String(body?.customerId || body?.uid || "").trim();
+    const customerId = String(body?.customerId || body?.cartOwnerId || body?.uid || "").trim();
     if (!customerId) return err(400, "Missing Input", "customerId is required.");
 
     const adminDb = getAdminDb();

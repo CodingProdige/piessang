@@ -8,12 +8,16 @@ import { recordLiveCommerceEvent } from "@/lib/analytics/live-commerce";
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
+function resolveCartOwnerId(body) {
+  return String(body?.cartOwnerId || body?.customerId || body?.uid || "").trim();
+}
+
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
-    const uid = String(body?.uid || "").trim();
-    if (!uid) {
-      return err(400, "Invalid Request", "uid is required.");
+    const cartOwnerId = resolveCartOwnerId(body);
+    if (!cartOwnerId) {
+      return err(400, "Invalid Request", "cartOwnerId is required.");
     }
 
     const origin = new URL(req.url).origin;
@@ -22,7 +26,7 @@ export async function POST(req) {
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
       body: JSON.stringify({
-        customerId: uid,
+        customerId: cartOwnerId,
         channel: "storefront",
       }),
     });
@@ -37,14 +41,14 @@ export async function POST(req) {
     }
 
     await recordLiveCommerceEvent("cart_cleared", {
-      customerId: uid,
+      customerId: cartOwnerId,
       itemCount: 0,
       cartStatus: "empty",
     });
 
     return ok({
       data: {
-        cart: normalizeCartForClient(payload?.data?.cart ?? null, uid),
+        cart: normalizeCartForClient(payload?.data?.cart ?? null, cartOwnerId),
         message: "Cart cleared.",
       },
     });

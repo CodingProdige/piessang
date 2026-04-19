@@ -8,14 +8,18 @@ import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
+function resolveCartOwnerId(body) {
+  return String(body?.cartOwnerId || body?.customerId || body?.uid || "").trim();
+}
+
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
-    const uid = String(body?.uid || "").trim();
+    const cartOwnerId = resolveCartOwnerId(body);
     const deliveryAddressInput = body?.deliveryAddress && typeof body.deliveryAddress === "object" ? body.deliveryAddress : null;
     const deliveryAddress = deliveryAddressInput ? await enrichLocationWithGeocode(deliveryAddressInput) : null;
     const pickupSelections = Array.isArray(body?.pickupSelections) ? body.pickupSelections : [];
-    if (!uid) return err(400, "Invalid Request", "uid is required.");
+    if (!cartOwnerId) return err(400, "Invalid Request", "cartOwnerId is required.");
 
     const origin = new URL(req.url).origin;
     const response = await fetch(new URL("/api/catalogue/v1/carts/cart/fetchCart", origin), {
@@ -23,8 +27,8 @@ export async function POST(req) {
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
       body: JSON.stringify({
-        customerId: uid,
-        userId: uid,
+        customerId: cartOwnerId,
+        userId: cartOwnerId,
         deliveryAddress,
         pickupSelections,
       }),
@@ -42,7 +46,7 @@ export async function POST(req) {
 
     return ok({
       data: {
-        cart: normalizeCartForClient(payload?.data?.cart ?? null, uid),
+        cart: normalizeCartForClient(payload?.data?.cart ?? null, cartOwnerId),
         warnings: payload?.data?.warnings || { global: [], items: [] },
       },
     });

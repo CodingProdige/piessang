@@ -785,7 +785,7 @@ export function SingleProductView({
   recommendationRails?: RecommendationRailsState;
 }) {
   const router = useRouter();
-  const { profile, isAuthenticated, openAuthModal, favoriteIds, refreshProfile, syncFavoriteState, syncCartState } = useAuth();
+  const { profile, cartOwnerId, isAuthenticated, openAuthModal, favoriteIds, refreshProfile, refreshCart, syncFavoriteState, syncCartState, optimisticAddToCart } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const variants = item.data?.variants ?? [];
   const defaultIndex = Math.max(
@@ -897,6 +897,7 @@ export function SingleProductView({
   const [cartSubmitting, setCartSubmitting] = useState(false);
   const [selectedQty, setSelectedQty] = useState(1);
   const [cartMessage, setCartMessage] = useState<string | null>(null);
+  const [cartAddedFlash, setCartAddedFlash] = useState(false);
   const [favoriteSubmitting, setFavoriteSubmitting] = useState(false);
   const [favoriteMessage, setFavoriteMessage] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
@@ -917,6 +918,12 @@ export function SingleProductView({
     if (typeof availableQty !== "number") return;
     setSelectedQty((current) => Math.min(Math.max(1, current), Math.max(1, availableQty)));
   }, [availableQty]);
+
+  useEffect(() => {
+    if (!cartAddedFlash) return undefined;
+    const timeout = window.setTimeout(() => setCartAddedFlash(false), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [cartAddedFlash]);
 
   useEffect(() => {
     setLiteExperience(prefersLiteProductExperience());
@@ -1113,11 +1120,11 @@ export function SingleProductView({
 
   async function addToCart(options?: { redirectToCheckout?: boolean }) {
     const redirectToCheckout = options?.redirectToCheckout === true;
-    if (!isAuthenticated || !profile?.uid) {
-      openAuthModal(redirectToCheckout ? "Sign in to continue to checkout." : "Sign in to add products to your cart.");
-      return;
-    }
+    const activeCartOwnerId = cartOwnerId || profile?.uid || null;
+    if (!activeCartOwnerId) return;
     if (!activeVariant?.variant_id) return;
+    const activeVariantId = String(activeVariant.variant_id || "").trim();
+    if (!activeVariantId) return;
     if (typeof availableQty === "number" && availableQty <= 0) {
       setCartMessage("This variant is out of stock.");
       setSnackbarMessage("This variant is out of stock.");
@@ -1135,15 +1142,18 @@ export function SingleProductView({
       if (!redirectToCheckout) return;
     }
     setCartSubmitting(true);
-    setCartMessage(null);
+    setCartAddedFlash(false);
+    setCartMessage(redirectToCheckout ? "Preparing checkout..." : "Adding to cart...");
+    setSnackbarMessage(redirectToCheckout ? "Preparing checkout..." : "Adding to cart...");
+    optimisticAddToCart(productId, activeVariantId, requestedQty);
     try {
       const response = await fetch("/api/client/v1/carts/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          uid: profile.uid,
+          cartOwnerId: activeCartOwnerId,
           product: item.data,
-          variant_id: activeVariant.variant_id,
+          variant_id: activeVariantId,
           mode: "change",
           qty: requestedQty,
         }),
@@ -1157,9 +1167,11 @@ export function SingleProductView({
         router.push("/checkout");
         return;
       }
+      setCartAddedFlash(true);
       setCartMessage("Added to cart.");
       setSnackbarMessage("Added to cart.");
     } catch (cause) {
+      void refreshCart();
       setCartMessage(cause instanceof Error ? cause.message : "Unable to add to cart.");
       setSnackbarMessage(cause instanceof Error ? cause.message : "Unable to add to cart.");
     } finally {
@@ -1870,9 +1882,11 @@ export function SingleProductView({
                   type="button"
                   onClick={() => void addToCart()}
                   disabled={cartSubmitting || stock.tone === "danger"}
-                  className="inline-flex h-12 flex-1 items-center justify-center rounded-[8px] bg-[#1a8553] px-5 text-[14px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  className={`inline-flex h-12 flex-1 items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    cartAddedFlash ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]" : "bg-[#1a8553]"
+                  }`}
                 >
-                  {cartSubmitting ? "Adding..." : "Add to cart"}
+                  {cartSubmitting ? "Adding..." : cartAddedFlash ? "Added to cart" : "Add to cart"}
                 </button>
                 <button
                   type="button"
@@ -1893,9 +1907,11 @@ export function SingleProductView({
                 type="button"
                 onClick={() => void addToCart({ redirectToCheckout: true })}
                 disabled={cartSubmitting || stock.tone === "danger"}
-                className="inline-flex h-12 w-full items-center justify-center rounded-[8px] bg-[#202020] px-5 text-[14px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className={`inline-flex h-12 w-full items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  cartAddedFlash ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]" : "bg-[#202020]"
+                }`}
               >
-                {cartSubmitting ? "Adding..." : "Buy now"}
+                {cartSubmitting ? "Adding..." : cartAddedFlash ? "Added to cart" : "Buy now"}
               </button>
             </div>
             {cartMessage ? <p className="text-[12px] text-[#57636c]">{cartMessage}</p> : null}
@@ -1993,9 +2009,11 @@ export function SingleProductView({
               type="button"
               onClick={() => void addToCart()}
               disabled={cartSubmitting || stock.tone === "danger"}
-              className="inline-flex h-12 flex-1 items-center justify-center rounded-[8px] bg-[#1a8553] px-5 text-[14px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              className={`inline-flex h-12 flex-1 items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                cartAddedFlash ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]" : "bg-[#1a8553]"
+              }`}
             >
-              {cartSubmitting ? "Adding..." : "Add to cart"}
+              {cartSubmitting ? "Adding..." : cartAddedFlash ? "Added to cart" : "Add to cart"}
             </button>
             <button
               type="button"

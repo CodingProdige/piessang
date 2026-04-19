@@ -41,3 +41,9 @@
     Total: <strong><%= amount %> <%= currency %></strong>
   </p>
 <% } %>
+<% if (typeof guestOrderAccessUrl !== "undefined" && guestOrderAccessUrl) { %>
+  <p>
+    Track your order without an account:
+    <a href="<%= guestOrderAccessUrl %>"><%= guestOrderAccessUrl %></a>
+  </p>
+<% } %>

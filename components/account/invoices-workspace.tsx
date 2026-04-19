@@ -56,7 +56,7 @@ function formatDateTime(value?: string) {
 }
 
 export function CustomerInvoicesWorkspace() {
-  const { uid } = useAuth();
+  const { uid, profile } = useAuth();
   const [items, setItems] = useState<InvoiceOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +79,7 @@ export function CustomerInvoicesWorkspace() {
         const response = await fetch("/api/client/v1/orders/customer/get", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userId: uid }),
+          body: JSON.stringify({ userId: uid, email: profile?.email || null }),
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || payload?.ok === false) {
@@ -99,7 +99,7 @@ export function CustomerInvoicesWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [uid]);
+  }, [profile?.email, uid]);
 
   useEffect(() => {
     if (!uid) return;

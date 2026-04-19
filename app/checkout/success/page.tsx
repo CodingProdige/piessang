@@ -4,6 +4,7 @@ import { PageBody } from "@/components/layout/page-body";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { GoogleAdsPurchaseConversion } from "@/components/analytics/google-ads-purchase-conversion";
+import { GuestOrderAccountPrompt } from "@/components/cart/guest-order-account-prompt";
 
 export const metadata: Metadata = {
   title: "Order Placed",
@@ -22,6 +23,7 @@ export default async function CheckoutSuccessPage({
   const params = await searchParams;
   const orderId = typeof params.orderId === "string" ? params.orderId.trim() : "";
   const orderNumber = typeof params.orderNumber === "string" ? params.orderNumber.trim() : "";
+  const guestToken = typeof params.guest === "string" ? params.guest.trim() : "";
   const conversionId = "AW-18066581333";
   const conversionLabel = "UbKbCJeYipgcENXO6KZD";
 
@@ -80,12 +82,22 @@ export default async function CheckoutSuccessPage({
           </div>
 
           <div className="mt-6 grid gap-3 sm:grid-cols-2">
-            <Link
-              href={orderId ? `/account/orders/${encodeURIComponent(orderId)}` : "/account/orders"}
-              className="inline-flex h-12 items-center justify-center rounded-[10px] bg-[#202020] px-5 text-[14px] font-semibold text-white"
-            >
-              View order
-            </Link>
+            {guestToken ? (
+              <Link
+                href={`/guest/orders/${encodeURIComponent(guestToken)}`}
+                className="inline-flex h-12 items-center justify-center rounded-[10px] bg-[#202020] px-5 text-[14px] font-semibold text-white"
+              >
+                Track order as guest
+              </Link>
+            ) : (
+              <Link
+                href={orderId ? `/account/orders/${encodeURIComponent(orderId)}` : "/account/orders"}
+                className="inline-flex h-12 items-center justify-center rounded-[10px] bg-[#202020] px-5 text-[14px] font-semibold text-white"
+              >
+                View order
+              </Link>
+            )}
+            {guestToken ? <GuestOrderAccountPrompt /> : null}
             <Link
               href="/products"
               className="inline-flex h-12 items-center justify-center rounded-[10px] border border-black/10 bg-white px-5 text-[14px] font-semibold text-[#202020]"

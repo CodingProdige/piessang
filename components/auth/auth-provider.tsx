@@ -99,6 +99,7 @@ type AuthContextValue = {
   user: FirebaseUser | null;
   profile: AuthProfile | null;
   uid: string | null;
+  cartOwnerId: string | null;
   isAuthenticated: boolean;
   authReady: boolean;
   isSeller: boolean;
@@ -124,6 +125,7 @@ type AuthContextValue = {
   cartItemCount: number;
   cartProductCounts: Record<string, number>;
   cartVariantCounts: Record<string, number>;
+  cartPulseKey: number;
   openAuthModal: (message?: string) => void;
   closeAuthModal: () => void;
   signInWithGoogle: () => Promise<void>;
@@ -132,6 +134,7 @@ type AuthContextValue = {
   refreshCart: () => Promise<void>;
   syncFavoriteState: (productId: string, isFavorite: boolean) => void;
   syncCartState: (cart: unknown) => void;
+  optimisticAddToCart: (productId: string, variantId: string, qty?: number) => void;
   leaveSellerTeam: (sellerSlug?: string) => Promise<void>;
 };
 
@@ -168,6 +171,85 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const DEFAULT_MODAL_MESSAGE = "Sign in to continue.";
 const DEFAULT_SELLER_MESSAGE = "Register your seller account to unlock catalogue tools.";
+const GUEST_CART_STORAGE_KEY = "piessang_guest_cart_token";
+const GUEST_CART_COOKIE_KEY = "piessang_guest_cart_token";
+
+function writeGuestCartCookie(value: string) {
+  if (typeof document === "undefined") return;
+  const safeValue = encodeURIComponent(String(value || "").trim());
+  const maxAge = 60 * 60 * 24 * 30;
+  document.cookie = `${GUEST_CART_COOKIE_KEY}=${safeValue}; path=/; max-age=${maxAge}; samesite=lax`;
+}
+
+function readGuestCartCookie() {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie
+    .split(";")
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(`${GUEST_CART_COOKIE_KEY}=`));
+  if (!match) return "";
+  return decodeURIComponent(match.slice(GUEST_CART_COOKIE_KEY.length + 1)).trim();
+}
+
+function persistGuestCartToken(value: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(GUEST_CART_STORAGE_KEY, value);
+  writeGuestCartCookie(value);
+}
+
+function createGuestCartToken() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `cart_guest_${crypto.randomUUID()}`;
+  }
+  return `cart_guest_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getOrCreateGuestCartId() {
+  if (typeof window === "undefined") return null;
+  const current =
+    window.localStorage.getItem(GUEST_CART_STORAGE_KEY)?.trim() ||
+    readGuestCartCookie();
+  if (current) return current;
+  const next = createGuestCartToken();
+  persistGuestCartToken(next);
+  return next;
+}
+
+function resetGuestCartId() {
+  if (typeof window === "undefined") return null;
+  const next = createGuestCartToken();
+  persistGuestCartToken(next);
+  return next;
+}
+
+function applyOptimisticCartIncrement(
+  current: CartState,
+  productId: string,
+  variantId: string,
+  qty = 1,
+): CartState {
+  const normalizedProductId = String(productId || "").trim();
+  const normalizedVariantId = String(variantId || "").trim();
+  const safeQty = Math.max(1, Number(qty) || 1);
+  if (!normalizedProductId || !normalizedVariantId) return current;
+
+  const nextProductCounts = {
+    ...current.productCounts,
+    [normalizedProductId]: Math.max(0, Number(current.productCounts[normalizedProductId] || 0)) + safeQty,
+  };
+  const variantKey = `${normalizedProductId}::${normalizedVariantId}`;
+  const nextVariantCounts = {
+    ...current.variantCounts,
+    [variantKey]: Math.max(0, Number(current.variantCounts[variantKey] || 0)) + safeQty,
+  };
+
+  return {
+    itemCount: Math.max(0, Number(current.itemCount || 0)) + safeQty,
+    productCounts: nextProductCounts,
+    variantCounts: nextVariantCounts,
+  };
+}
+
 function inferAccountName(user: FirebaseUser | null) {
   return user?.displayName ?? user?.email?.split("@")[0] ?? "Piessang user";
 }
@@ -500,6 +582,8 @@ export function AuthProvider({
     productCounts: bootstrap.productCounts ?? {},
     variantCounts: bootstrap.variantCounts ?? {},
   });
+  const [cartPulseKey, setCartPulseKey] = useState(0);
+  const [guestCartId, setGuestCartId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [authReady, setAuthReady] = useState(hasAuthBootstrapData(bootstrap));
   const [pendingSellerRegistration, setPendingSellerRegistration] = useState(false);
@@ -524,6 +608,10 @@ export function AuthProvider({
   useEffect(() => {
     authReadyRef.current = authReady;
   }, [authReady]);
+
+  useEffect(() => {
+    setGuestCartId(getOrCreateGuestCartId());
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -564,13 +652,36 @@ export function AuthProvider({
 
   const refreshCart = useCallback(async () => {
     const activeUser = clientAuth.currentUser ?? user;
-    const bootstrap = activeUser ? await loadAuthBootstrapForUser(activeUser) : EMPTY_AUTH_BOOTSTRAP;
-    setCartState({
-      itemCount: bootstrap.itemCount,
-      productCounts: bootstrap.productCounts,
-      variantCounts: bootstrap.variantCounts,
-    });
-  }, []);
+    if (activeUser) {
+      const bootstrap = await loadAuthBootstrapForUser(activeUser);
+      setCartState({
+        itemCount: bootstrap.itemCount,
+        productCounts: bootstrap.productCounts,
+        variantCounts: bootstrap.variantCounts,
+      });
+      return;
+    }
+
+    const activeGuestCartId = guestCartId || getOrCreateGuestCartId();
+    if (!activeGuestCartId) {
+      setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/client/v1/carts/get", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cartOwnerId: activeGuestCartId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const nextCart = payload?.data?.cart ?? null;
+      setCartState(deriveCartStateFromCart(nextCart));
+    } catch {
+      setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
+    }
+  }, [guestCartId, user]);
 
   const syncFavoriteState = useCallback((productId: string, isFavorite: boolean) => {
     const normalizedId = String(productId ?? "").trim();
@@ -592,7 +703,69 @@ export function AuthProvider({
 
   const syncCartState = useCallback((cart: unknown) => {
     setCartState(deriveCartStateFromCart(cart));
+    setCartPulseKey(Date.now());
   }, []);
+
+  const optimisticAddToCart = useCallback((productId: string, variantId: string, qty = 1) => {
+    setCartState((current) => applyOptimisticCartIncrement(current, productId, variantId, qty));
+    setCartPulseKey(Date.now());
+  }, []);
+
+  const mergeGuestCartIntoUser = useCallback(
+    async (targetUid: string) => {
+      const activeGuestCartId = guestCartId || getOrCreateGuestCartId();
+      const normalizedTargetUid = String(targetUid || "").trim();
+      if (!activeGuestCartId || !normalizedTargetUid || activeGuestCartId === normalizedTargetUid) return;
+
+      try {
+        const guestCartResponse = await fetch("/api/client/v1/carts/get", {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cartOwnerId: activeGuestCartId }),
+        });
+        const guestCartPayload = await guestCartResponse.json().catch(() => ({}));
+        const guestCart = guestCartPayload?.data?.cart ?? null;
+        const guestItems = Array.isArray(guestCart?.items) ? guestCart.items : [];
+        if (!guestItems.length) return;
+
+        for (const item of guestItems) {
+          const productSnapshot = item?.product_snapshot ?? null;
+          const variantId = String(
+            item?.selected_variant_snapshot?.variant_id ||
+              item?.selected_variant?.variant_id ||
+              item?.selected_variant_id ||
+              "",
+          ).trim();
+          const quantity = Math.max(1, Number(item?.quantity ?? item?.qty ?? 0) || 1);
+          if (!productSnapshot || !variantId) continue;
+
+          await fetch("/api/client/v1/carts/update", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              cartOwnerId: normalizedTargetUid,
+              product: productSnapshot,
+              variant_id: variantId,
+              mode: "change",
+              qty: quantity,
+            }),
+          });
+        }
+
+        await fetch("/api/client/v1/carts/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cartOwnerId: activeGuestCartId }),
+        }).catch(() => null);
+
+        setGuestCartId(resetGuestCartId());
+      } catch {
+        // Keep sign-in resilient even if cart merge fails.
+      }
+    },
+    [guestCartId],
+  );
 
   useEffect(() => {
     const unsubscribe = onIdTokenChanged(clientAuth, async (nextUser) => {
@@ -646,6 +819,12 @@ export function AuthProvider({
 
     return () => unsubscribe();
   }, [router]);
+
+  useEffect(() => {
+    const activeUid = profile?.uid ?? user?.uid ?? clientAuth.currentUser?.uid ?? null;
+    if (activeUid || !guestCartId) return;
+    void refreshCart();
+  }, [guestCartId, profile?.uid, refreshCart, user?.uid]);
 
   useEffect(() => {
     if (!pendingSellerRegistration) return;
@@ -725,12 +904,13 @@ export function AuthProvider({
       provider.setCustomParameters({ prompt: "select_account" });
       const credential = await signInWithPopup(clientAuth, provider);
       await syncServerSession(credential.user);
+      await mergeGuestCartIntoUser(credential.user.uid);
       await refreshProfile();
       closeAuthModal();
     } finally {
       setBusy(false);
     }
-  }, [closeAuthModal, refreshProfile]);
+  }, [closeAuthModal, mergeGuestCartIntoUser, refreshProfile]);
 
   const handleSignOut = useCallback(async () => {
     setBusy(true);
@@ -778,11 +958,13 @@ export function AuthProvider({
         const credential = await createUserWithEmailAndPassword(clientAuth, trimmedEmail, trimmedPassword);
         await updateProfile(credential.user, { displayName: trimmedDisplayName });
         await syncServerSession(credential.user);
+        await mergeGuestCartIntoUser(credential.user.uid);
         await refreshProfile();
         closeAuthModal();
       } else {
         const credential = await signInWithEmailAndPassword(clientAuth, trimmedEmail, trimmedPassword);
         await syncServerSession(credential.user);
+        await mergeGuestCartIntoUser(credential.user.uid);
         await refreshProfile();
         closeAuthModal();
       }
@@ -796,7 +978,7 @@ export function AuthProvider({
     } finally {
       setBusy(false);
     }
-  }, [closeAuthModal, displayName, email, mode, password, refreshProfile]);
+  }, [closeAuthModal, displayName, email, mergeGuestCartIntoUser, mode, password, refreshProfile]);
 
   const sellerFormIsValid = useMemo(() => {
     const vendorName = sanitizeVendorNameInput(sellerModal.vendorName);
@@ -1042,6 +1224,7 @@ export function AuthProvider({
       user,
       profile,
       uid: profile?.uid ?? user?.uid ?? null,
+      cartOwnerId: profile?.uid ?? user?.uid ?? guestCartId ?? null,
       isAuthenticated: Boolean(profile?.uid ?? user?.uid),
       authReady,
       isSeller: profile?.isSeller ?? false,
@@ -1065,6 +1248,7 @@ export function AuthProvider({
       cartItemCount: cartState.itemCount,
       cartProductCounts: cartState.productCounts,
       cartVariantCounts: cartState.variantCounts,
+      cartPulseKey,
       openAuthModal,
       closeAuthModal,
       openSellerRegistrationModal,
@@ -1075,6 +1259,7 @@ export function AuthProvider({
       refreshCart,
       syncFavoriteState,
       syncCartState,
+      optimisticAddToCart,
       leaveSellerTeam,
     }),
     [
@@ -1088,10 +1273,13 @@ export function AuthProvider({
       refreshProfile,
       syncFavoriteState,
       syncCartState,
+      optimisticAddToCart,
       leaveSellerTeam,
       signInWithGoogle,
       user,
       cartState,
+      cartPulseKey,
+      guestCartId,
     ],
   );
 

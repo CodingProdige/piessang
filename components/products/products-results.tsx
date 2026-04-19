@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type TouchEvent, type FocusEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type TouchEvent, type FocusEvent, type CSSProperties, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import {
@@ -1028,9 +1028,11 @@ export function BrowseProductCard({
   const {
     isAuthenticated,
     uid,
+    cartOwnerId,
     openAuthModal,
     refreshProfile,
     refreshCart,
+    optimisticAddToCart,
     cartProductCounts,
     cartVariantCounts,
     favoriteIds,
@@ -1038,6 +1040,7 @@ export function BrowseProductCard({
   const [isFavorite, setIsFavorite] = useState(Boolean(item.data?.is_favorite));
   const [favoriteBusy, setFavoriteBusy] = useState(false);
   const [cartBusy, setCartBusy] = useState(false);
+  const [cartJustAdded, setCartJustAdded] = useState(false);
   const defaultVariant = pickDisplayVariant(item.data?.variants) ?? undefined;
   const productUniqueId = String(item.id ?? item.data?.docId ?? item.data?.product?.unique_id ?? "").trim();
   const sellerCode = String(item.data?.product?.sellerCode ?? item.data?.seller?.sellerCode ?? "").trim();
@@ -1096,12 +1099,6 @@ export function BrowseProductCard({
             ? "slate"
             : "amber",
   });
-  const leadingNewBadgeCount = [Boolean(salePercent), isPreLoved].filter(Boolean).length;
-  const leadingLeftBadgeCount = [Boolean(salePercent), isPreLoved, isNewArrival].filter(Boolean).length;
-  const engagementBadgePositionStyle = {
-    ...engagementBadgeStyle,
-    top: `${0.5 + leadingLeftBadgeCount * 2}rem`,
-  } as const;
   const resolvedShopperArea = shopperArea ?? null;
   const hasDeliveryEstimateLocation = Boolean(
     resolvedShopperArea?.country && hasPreciseShopperDeliveryArea(resolvedShopperArea),
@@ -1143,7 +1140,7 @@ export function BrowseProductCard({
   const cartProductCount = productUniqueId ? cartProductCounts[productUniqueId] ?? 0 : 0;
   const cartVariantCount =
     productUniqueId && defaultVariantId ? cartVariantCounts[`${productUniqueId}::${defaultVariantId}`] ?? 0 : 0;
-  const cartCount = cartProductCount || cartVariantCount;
+  const cartCount = cartVariantCount || cartProductCount;
   const handleCartSuccess = onAddToCartSuccess ?? (() => {});
   const hasPrefetchedHrefRef = useRef(false);
 
@@ -1190,6 +1187,11 @@ export function BrowseProductCard({
   useEffect(() => {
     setHoveredImageIndex(0);
   }, [productUniqueId]);
+  useEffect(() => {
+    if (!cartJustAdded) return undefined;
+    const timeout = window.setTimeout(() => setCartJustAdded(false), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [cartJustAdded]);
   const favoriteVisible = isAuthenticated;
 
   const handleImagePointerMove = (event: MouseEvent<HTMLElement>) => {
@@ -1271,29 +1273,33 @@ export function BrowseProductCard({
   const handleAddDefaultVariantToCart = async (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
-
-    if (!isAuthenticated || !uid) {
-      openAuthModal("Sign in to add products to your cart.");
-      return;
-    }
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    if (!activeCartOwnerId) return;
 
     if (!defaultVariant || !productUniqueId) {
+      openAuthModal("Please open the product to choose a variant first.");
+      return;
+    }
+    const defaultVariantId = String(defaultVariant.variant_id || "").trim();
+    if (!defaultVariantId) {
       openAuthModal("Please open the product to choose a variant first.");
       return;
     }
 
     if (cartBusy) return;
     setCartBusy(true);
+    setCartJustAdded(false);
+    optimisticAddToCart(productUniqueId, defaultVariantId, 1);
 
     try {
       const response = await fetch("/api/client/v1/carts/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          uid,
+          cartOwnerId: activeCartOwnerId,
           product: item.data,
-          variant_id: defaultVariant.variant_id,
-          mode: cartCount > 0 ? "change" : "set",
+          variant_id: defaultVariantId,
+          mode: cartVariantCount > 0 ? "increment" : "add",
           qty: 1,
         }),
       });
@@ -1301,10 +1307,11 @@ export function BrowseProductCard({
       if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.message || "Unable to update cart.");
       }
-      await refreshCart();
+      setCartJustAdded(true);
       handleCartSuccess((payload?.data?.cart ?? null) as CartPreview | null);
     } catch {
-      openAuthModal("We could not update your cart right now.");
+      void refreshCart();
+      setCartJustAdded(false);
     } finally {
       setCartBusy(false);
     }
@@ -1369,6 +1376,83 @@ export function BrowseProductCard({
     WebkitLineClamp: 2,
     overflow: "hidden",
   } as const;
+  const leftTopBadges = [
+    salePercent
+      ? {
+          key: "sale",
+          title: null,
+          className:
+            "inline-flex h-6 items-center rounded-full bg-[#1a8553] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+          content: <>{salePercent}% off</>,
+          style: undefined,
+        }
+      : null,
+    isPreLoved
+      ? {
+          key: "pre-loved",
+          title: null,
+          className:
+            "inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+          content: <>Pre-Loved</>,
+          style: undefined,
+        }
+      : null,
+    isNewArrival
+      ? {
+          key: "new",
+          title: null,
+          className:
+            "inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+          content: (
+            <>
+              <SparkIcon />
+              New
+            </>
+          ),
+          style: undefined,
+        }
+      : null,
+    engagementBadge
+      ? {
+          key: "engagement",
+          title:
+            engagementBadge === "best_seller"
+              ? "Best seller: strong sales in the recent badge window."
+              : engagementBadge === "popular"
+                ? "Popular: strong shopper engagement in the recent badge window."
+                : engagementBadge === "trending_now"
+                  ? "Trending now: sales are accelerating in the recent badge window."
+                  : "Rising star: growing shopper engagement in the recent badge window.",
+          className:
+            "inline-flex h-6 items-center gap-1 rounded-full px-2 text-[9px] font-semibold uppercase tracking-[0.08em] shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+          content: (
+            <>
+              <ProductBadgeIcon
+                iconKey={engagementBadgeIconKey}
+                iconUrl={engagementBadgeIconUrl}
+                badge={engagementBadge}
+                hasHighClicks={hasHighClicks}
+              />
+              {engagementBadge === "best_seller"
+                ? "Best seller"
+                : engagementBadge === "popular" || hasHighClicks
+                  ? "Popular"
+                  : engagementBadge === "trending_now"
+                    ? "Trending now"
+                    : "Rising star"}
+            </>
+          ),
+          style: engagementBadgeStyle,
+        }
+      : null,
+  ].filter(Boolean) as Array<{
+    key: string;
+    title: string | null;
+    className: string;
+    content: ReactNode;
+    style?: CSSProperties;
+  }>;
+
   const imageBadges = (
     <>
       {imageCount > 0 ? (
@@ -1377,49 +1461,18 @@ export function BrowseProductCard({
           <span>{imageCount}</span>
         </span>
       ) : null}
-      {salePercent ? (
-        <span className="absolute left-2 top-2 z-10 inline-flex h-6 items-center rounded-full bg-[#1a8553] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
-          {salePercent}% off
-        </span>
-      ) : null}
-      {isPreLoved ? (
-        <span className={`absolute left-2 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)] ${salePercent ? "top-10" : "top-2"}`}>
-          Pre-Loved
-        </span>
+      {leftTopBadges.length ? (
+        <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-4rem)] flex-col gap-2">
+          {leftTopBadges.map((badge) => (
+            <span key={badge.key} title={badge.title ?? undefined} className={badge.className} style={badge.style}>
+              {badge.content}
+            </span>
+          ))}
+        </div>
       ) : null}
       {isSponsored ? (
         <span className="absolute right-10 top-2 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
           {item.ad?.label || "Sponsored"}
-        </span>
-      ) : null}
-      {isNewArrival ? (
-        <span className={`absolute left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)] ${leadingNewBadgeCount ? "top-[4.5rem]" : "top-2"}`}>
-          <SparkIcon />
-          New
-        </span>
-      ) : null}
-      {engagementBadge ? (
-        <span
-          title={
-            engagementBadge === "best_seller"
-              ? "Best seller: strong sales in the recent badge window."
-              : engagementBadge === "popular"
-              ? "Popular: strong shopper engagement in the recent badge window."
-              : engagementBadge === "trending_now"
-                ? "Trending now: sales are accelerating in the recent badge window."
-              : "Rising star: growing shopper engagement in the recent badge window."
-          }
-          className="absolute left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full px-2 text-[9px] font-semibold uppercase tracking-[0.08em] shadow-[0_4px_12px_rgba(20,24,27,0.14)]"
-          style={engagementBadgePositionStyle}
-        >
-          <ProductBadgeIcon iconKey={engagementBadgeIconKey} iconUrl={engagementBadgeIconUrl} badge={engagementBadge} hasHighClicks={hasHighClicks} />
-          {engagementBadge === "best_seller"
-            ? "Best seller"
-            : engagementBadge === "popular" || hasHighClicks
-              ? "Popular"
-              : engagementBadge === "trending_now"
-                ? "Trending now"
-                : "Rising star"}
         </span>
       ) : null}
       <button
@@ -1647,12 +1700,16 @@ export function BrowseProductCard({
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={handleAddDefaultVariantToCart}
                 disabled={cartBusy}
-                className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
+                className={`relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-wait disabled:opacity-70 ${
+                  cartJustAdded
+                    ? "border-[#1a8553] bg-[#1a8553] text-white shadow-[0_10px_24px_rgba(26,133,83,0.18)]"
+                    : "border-black/20 bg-transparent text-[#202020] hover:border-[#cbb26b] hover:text-[#cbb26b]"
+                }`}
                 aria-label="Add default variant to cart"
               >
                 <CartPlusIcon />
-                <span className="whitespace-nowrap sm:hidden">Add</span>
-                <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
+                <span className="whitespace-nowrap sm:hidden">{cartBusy ? "Adding" : cartJustAdded ? "Added" : "Add"}</span>
+                <span className="hidden whitespace-nowrap sm:inline">{cartBusy ? "Adding..." : cartJustAdded ? "Added to cart" : "Add to cart"}</span>
                 {cartCount > 0 ? (
                   <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
                     {cartCount}
@@ -1829,12 +1886,16 @@ export function BrowseProductCard({
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={handleAddDefaultVariantToCart}
                 disabled={cartBusy}
-                className="relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-black/20 bg-transparent px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] disabled:cursor-wait disabled:opacity-70"
+                className={`relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-wait disabled:opacity-70 ${
+                  cartJustAdded
+                    ? "border-[#1a8553] bg-[#1a8553] text-white shadow-[0_10px_24px_rgba(26,133,83,0.18)]"
+                    : "border-black/20 bg-transparent text-[#202020] hover:border-[#cbb26b] hover:text-[#cbb26b]"
+                }`}
                 aria-label="Add default variant to cart"
               >
                 <CartPlusIcon />
-                <span className="whitespace-nowrap sm:hidden">Add</span>
-                <span className="hidden whitespace-nowrap sm:inline">Add to cart</span>
+                <span className="whitespace-nowrap sm:hidden">{cartBusy ? "Adding" : cartJustAdded ? "Added" : "Add"}</span>
+                <span className="hidden whitespace-nowrap sm:inline">{cartBusy ? "Adding..." : cartJustAdded ? "Added to cart" : "Add to cart"}</span>
                 {cartCount > 0 ? (
                   <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
                     {cartCount}
@@ -1885,7 +1946,7 @@ export function ProductsResults({
   const [cartBurstKey, setCartBurstKey] = useState<number>(0);
   const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const { uid, isAuthenticated, favoriteCount, refreshProfile, openAuthModal, syncCartState } = useAuth();
+  const { uid, cartOwnerId, isAuthenticated, favoriteCount, refreshProfile, refreshCart, openAuthModal, syncCartState } = useAuth();
   const pathname = usePathname();
   const liveSearchParams = useSearchParams();
   const filterParams = useMemo(() => new URLSearchParams(liveSearchParams.toString()), [liveSearchParams]);
@@ -2140,21 +2201,7 @@ export function ProductsResults({
   }
 
   const handleAddToCartSuccess = async (cart: CartPreview | null) => {
-    let nextCart = cart;
-    if (uid) {
-      try {
-        const response = await fetch("/api/client/v1/carts/get", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uid }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        nextCart = (payload?.data?.cart ?? nextCart ?? null) as CartPreview | null;
-      } catch {
-        nextCart = nextCart ?? null;
-      }
-    }
-
+    const nextCart = (cart ?? null) as CartPreview | null;
     syncCartState(nextCart);
     setCartPreview(nextCart);
     setCartDrawerOpen(true);

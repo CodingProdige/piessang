@@ -41,6 +41,14 @@
     {
       "path": "/api/cron/catalogue-menu-counts",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/product-engagement-badges",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/checkout-lifecycle",
+      "schedule": "*/10 * * * *"
     }
   ]
 }
