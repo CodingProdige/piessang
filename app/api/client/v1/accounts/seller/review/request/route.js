@@ -145,7 +145,7 @@ export async function POST(req) {
       await sendSellerNotificationEmails({
         origin: new URL(req.url).origin,
         type: "seller-review-request-internal",
-        to: ["support@piessang.com"],
+        to: ["admin@piessang.com"],
         data: {
           vendorName: ownerSeller?.vendorName || "Piessang seller",
           sellerSlug,

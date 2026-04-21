@@ -78,7 +78,7 @@ export async function POST(req) {
     await messageRef.set(ticketMessage);
 
     const origin = new URL(req.url).origin;
-    const internalEmails = await collectSystemAdminNotificationEmails({ fallbackEmails: ["support@piessang.com"] });
+    const internalEmails = await collectSystemAdminNotificationEmails({ fallbackEmails: ["admin@piessang.com"] });
     await sendSellerNotificationEmails({
       origin,
       type: "support-ticket-created-internal",

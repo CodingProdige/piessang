@@ -93,7 +93,7 @@ export async function POST(req) {
     });
 
     if (process.env.SENDGRID_API_KEY?.startsWith("SG.")) {
-      const recipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["support@piessang.com"] });
+      const recipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["admin@piessang.com"] });
       if (recipients.length) {
         await sendSellerNotificationEmails({
           origin: new URL(req.url).origin,

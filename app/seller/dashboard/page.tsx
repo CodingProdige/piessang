@@ -2238,6 +2238,7 @@ function SellerDashboardContent() {
             ) : activeSection === "products" ? (
               <SellerProductsWorkspace
                 vendorName={activeVendorName}
+                sellerCode={activeSellerContext?.sellerCode || profile?.sellerCode || ""}
                 sellerSlug={resolvedSellerSlug}
                 onCreateProduct={() => setSection("create-product")}
                 onEditProduct={openProductEditor}

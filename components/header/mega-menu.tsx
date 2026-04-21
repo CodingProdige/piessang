@@ -614,10 +614,10 @@ function PiessangLogo() {
   return (
     <Link href="/" className="flex items-center">
       <Image
-        src="/logo/Piessang%20Logo.png"
+        src="/logo/Piessang Logo Full - Clipped.png"
         alt="Piessang"
-        width={180}
-        height={44}
+        width={220}
+        height={52}
         priority
         className="h-8 w-auto sm:h-9 lg:h-10"
       />
@@ -1764,8 +1764,8 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         </div>
         </PageBody>
 
-        <div className="flex w-full items-center justify-between px-3 py-4 lg:hidden lg:px-4">
-          <div className="relative flex w-full items-center justify-between">
+        <div className="flex w-full items-center px-3 py-4 lg:hidden lg:px-4">
+          <div className="grid w-full grid-cols-[40px_minmax(0,1fr)_88px] items-start gap-2">
             <button
               type="button"
               className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
@@ -1775,37 +1775,24 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
               <MenuIcon />
             </button>
 
-            <div className="absolute left-1/2 flex -translate-x-1/2 flex-col items-center gap-0.5">
+            <div className="flex min-w-0 flex-col items-center gap-0.5 pt-0.5">
               <Link href="/">
                 <Image
-                  src="/logo/Piessang%20Logo.png"
+                  src="/logo/Piessang Logo Full - Clipped.png"
                   alt="Piessang"
-                  width={132}
-                  height={34}
+                  width={164}
+                  height={40}
                   priority
-                  className="h-8 w-auto"
+                  className="h-8 w-auto max-w-full"
                 />
               </Link>
               <LogoMeaningLink onClick={() => setLogoMeaningOpen(true)} compact />
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  const trigger = document.getElementById("piessang-mobile-delivery-trigger");
-                  trigger?.click();
-                }}
-                className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
-                aria-label="Choose delivery location"
-              >
-                <svg viewBox="0 0 20 20" className="h-5 w-5 fill-current" aria-hidden="true">
-                  <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="inline-flex h-10 w-10 items-center justify-center text-[#4b5563]"
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center text-[#4b5563]"
                 aria-label="Search"
                 onClick={() => setMobileSearchOpen(true)}
               >

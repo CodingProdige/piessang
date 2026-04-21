@@ -18,6 +18,7 @@ import { RenderWhenVisible } from "@/components/shared/render-when-visible";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
+import { clampRequestedCartQty, getCartQuantityGuard, getVariantAvailableQuantity } from "@/lib/cart/interaction-guards";
 import {
   buildVariantOptionMatrix,
   formatVariantAxisValue,
@@ -618,20 +619,6 @@ function getStockLabel(variant?: ProductVariant | null, item?: ProductItem) {
   return { label: "Stock unknown", tone: "neutral" as const, hideQty: false };
 }
 
-function getVariantAvailableQuantity(variant?: ProductVariant | null) {
-  if (!variant) return null;
-  if (variant?.placement?.track_inventory !== true || variant?.placement?.continue_selling_out_of_stock) {
-    return null;
-  }
-  if (typeof variant?.total_in_stock_items_available === "number" && Number.isFinite(variant.total_in_stock_items_available)) {
-    return Math.max(0, Math.trunc(variant.total_in_stock_items_available));
-  }
-  const inventoryTotal = Array.isArray(variant.inventory)
-    ? variant.inventory.reduce((sum, row) => sum + Math.max(0, Number(row?.in_stock_qty ?? 0) || 0), 0)
-    : 0;
-  return Math.max(0, Math.trunc(inventoryTotal));
-}
-
 function getVariantSummary(variant?: ProductVariant | null) {
   if (!variant) return null;
   const parts: string[] = [];
@@ -785,7 +772,19 @@ export function SingleProductView({
   recommendationRails?: RecommendationRailsState;
 }) {
   const router = useRouter();
-  const { profile, cartOwnerId, isAuthenticated, openAuthModal, favoriteIds, refreshProfile, refreshCart, syncFavoriteState, syncCartState, optimisticAddToCart } = useAuth();
+  const {
+    profile,
+    cartOwnerId,
+    isAuthenticated,
+    openAuthModal,
+    favoriteIds,
+    refreshProfile,
+    refreshCart,
+    syncFavoriteState,
+    syncCartState,
+    optimisticAddToCart,
+    cartVariantCounts,
+  } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const variants = item.data?.variants ?? [];
   const defaultIndex = Math.max(
@@ -839,8 +838,20 @@ export function SingleProductView({
   );
   const soldCountLabel = formatSoldCount(totalUnitsSold);
   const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
+  const productId = String(item.data?.product?.unique_id ?? item.id ?? "").trim();
   const stock = getStockLabel(activeVariant, item);
-  const availableQty = getVariantAvailableQuantity(activeVariant);
+  const activeVariantId = String(activeVariant?.variant_id || "").trim();
+  const cartVariantCount =
+    productId && activeVariantId ? cartVariantCounts[`${productId}::${activeVariantId}`] ?? 0 : 0;
+  const quantityGuard = getCartQuantityGuard({
+    variant: activeVariant,
+    currentCartQty: cartVariantCount,
+    unavailable: stock.label === "Out of stock",
+  });
+  const availableQty = quantityGuard.availableQuantity;
+  const isCheckoutReserved = quantityGuard.isCheckoutReserved;
+  const maxAddableQty = quantityGuard.maxAddableQty;
+  const blockedCartMessage = quantityGuard.message;
   const hasDeliveryEstimateLocation = Boolean(shopperArea?.country && hasPreciseShopperDeliveryArea(shopperArea));
   const deliveryPromise = hasDeliveryEstimateLocation ? getDeliveryPromise(item, shopperArea, activeVariant) : null;
   const sellerDeliveryMessage = hasDeliveryEstimateLocation ? getSellerDeliveryMessage(item, shopperArea, activeVariant) : null;
@@ -873,7 +884,6 @@ export function SingleProductView({
         : "Suggested from matching products in our catalog";
   const brandLabel = getBrandLabel(item);
   const vendorLabel = getVendorLabel(item);
-  const productId = String(item.data?.product?.unique_id ?? item.id ?? "").trim();
   const alternateOffers = (Array.isArray(item.data?.alternate_offers) ? item.data.alternate_offers : [])
     .filter((offer) => String(offer?.productId ?? "").trim() && String(offer?.productId ?? "").trim() !== productId)
     .sort((a, b) => {
@@ -894,7 +904,7 @@ export function SingleProductView({
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [shareMessage, setShareMessage] = useState<string | null>(null);
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
-  const [cartSubmitting, setCartSubmitting] = useState(false);
+  const [cartSubmittingAction, setCartSubmittingAction] = useState<"cart" | "checkout" | null>(null);
   const [selectedQty, setSelectedQty] = useState(1);
   const [cartMessage, setCartMessage] = useState<string | null>(null);
   const [cartAddedFlash, setCartAddedFlash] = useState(false);
@@ -903,6 +913,28 @@ export function SingleProductView({
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [liveViewerCount, setLiveViewerCount] = useState(0);
   const isFavorite = favoriteState;
+  const addToCartLabel = cartSubmittingAction === "cart"
+    ? "Adding..."
+    : cartAddedFlash
+      ? "Added to cart"
+      : quantityGuard.reason === "reserved_in_checkout"
+        ? "Reserved"
+        : quantityGuard.reason === "max_in_cart"
+          ? "Max reached"
+          : quantityGuard.reason === "out_of_stock"
+            ? "Out of stock"
+            : "Add to cart";
+  const buyNowLabel = cartSubmittingAction === "checkout"
+    ? "Preparing checkout..."
+    : cartAddedFlash
+      ? "Buy now"
+      : quantityGuard.reason === "reserved_in_checkout"
+        ? "Reserved"
+        : quantityGuard.reason === "max_in_cart"
+          ? "Max reached"
+          : quantityGuard.reason === "out_of_stock"
+            ? "Out of stock"
+            : "Buy now";
 
   const categoryLabel = item.data?.grouping?.category ? String(item.data.grouping.category).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Products";
   const subCategoryLabel = item.data?.grouping?.subCategory ? String(item.data.grouping.subCategory).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "";
@@ -915,9 +947,9 @@ export function SingleProductView({
   }, []);
 
   useEffect(() => {
-    if (typeof availableQty !== "number") return;
-    setSelectedQty((current) => Math.min(Math.max(1, current), Math.max(1, availableQty)));
-  }, [availableQty]);
+    if (typeof maxAddableQty !== "number") return;
+    setSelectedQty((current) => Math.min(Math.max(1, current), Math.max(1, maxAddableQty)));
+  }, [maxAddableQty]);
 
   useEffect(() => {
     if (!cartAddedFlash) return undefined;
@@ -964,6 +996,15 @@ export function SingleProductView({
   useEffect(() => {
     setFavoriteState(Boolean(item.data?.is_favorite) || Boolean(favoriteIds?.includes(productId)));
   }, [favoriteIds, item.data?.is_favorite, productId]);
+
+  useEffect(() => {
+    const activeImageUrl = String(activeImages[activeImageIndex]?.imageUrl || "").trim();
+    if (!activeImageUrl || typeof window === "undefined") return;
+    const preloadImage = new window.Image();
+    preloadImage.decoding = "async";
+    preloadImage.loading = "eager";
+    preloadImage.src = activeImageUrl;
+  }, [activeImageIndex, activeImages]);
 
   useEffect(() => {
     if (liteExperience) return;
@@ -1123,14 +1164,14 @@ export function SingleProductView({
     const activeCartOwnerId = cartOwnerId || profile?.uid || null;
     if (!activeCartOwnerId) return;
     if (!activeVariant?.variant_id) return;
-    const activeVariantId = String(activeVariant.variant_id || "").trim();
     if (!activeVariantId) return;
-    if (typeof availableQty === "number" && availableQty <= 0) {
-      setCartMessage("This variant is out of stock.");
-      setSnackbarMessage("This variant is out of stock.");
+    if (!quantityGuard.canAdd) {
+      const stockMessage = quantityGuard.message || "This variant is unavailable right now.";
+      setCartMessage(stockMessage);
+      setSnackbarMessage(stockMessage);
       return;
     }
-    const requestedQty = typeof availableQty === "number" ? Math.min(selectedQty, Math.max(1, availableQty)) : selectedQty;
+    const requestedQty = clampRequestedCartQty(selectedQty, maxAddableQty);
     if (requestedQty !== selectedQty) {
       setSelectedQty(requestedQty);
       const stockMessage =
@@ -1141,7 +1182,7 @@ export function SingleProductView({
       setSnackbarMessage(stockMessage);
       if (!redirectToCheckout) return;
     }
-    setCartSubmitting(true);
+    setCartSubmittingAction(redirectToCheckout ? "checkout" : "cart");
     setCartAddedFlash(false);
     setCartMessage(redirectToCheckout ? "Preparing checkout..." : "Adding to cart...");
     setSnackbarMessage(redirectToCheckout ? "Preparing checkout..." : "Adding to cart...");
@@ -1175,7 +1216,7 @@ export function SingleProductView({
       setCartMessage(cause instanceof Error ? cause.message : "Unable to add to cart.");
       setSnackbarMessage(cause instanceof Error ? cause.message : "Unable to add to cart.");
     } finally {
-      setCartSubmitting(false);
+      setCartSubmittingAction(null);
       window.setTimeout(() => setCartMessage(null), 1800);
     }
   }
@@ -1374,30 +1415,7 @@ export function SingleProductView({
   return (
     <div data-safe-stack className="space-y-4 pb-28 lg:pb-0">
       <section data-safe-card="header" className="rounded-[8px] bg-white px-5 py-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="flex flex-wrap items-center gap-2 text-[13px] text-[#57636c]">
-            <Link href="/products" className="transition-colors hover:text-[#202020]">Products</Link>
-            <span className="text-[#d6d6d6]">/</span>
-            <Link href={`/products?category=${encodeURIComponent(String(item.data?.grouping?.category || ""))}`} className="transition-colors hover:text-[#202020]">
-              {categoryLabel}
-            </Link>
-            {subCategoryLabel ? (
-              <>
-                <span className="text-[#d6d6d6]">/</span>
-                <Link
-                  href={`/products?category=${encodeURIComponent(String(item.data?.grouping?.category || ""))}&subCategory=${encodeURIComponent(String(item.data?.grouping?.subCategory || ""))}`}
-                  className="transition-colors hover:text-[#202020]"
-                >
-                  {subCategoryLabel}
-                </Link>
-              </>
-            ) : null}
-            <span className="text-[#d6d6d6]">/</span>
-            <span className="font-medium text-[#202020]">
-              {item.data?.product?.title ?? "Product"}
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-4 text-[13px] font-medium text-[#202020]">
+        <div className="flex flex-wrap items-center justify-end gap-4 text-[13px] font-medium text-[#202020]">
             <button type="button" onClick={() => setShareModalOpen(true)} className="inline-flex items-center gap-2 transition-colors hover:text-[#907d4c]">
               <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
                 <path d="M13 3a1 1 0 0 0 0 2h1.59l-5.8 5.8a1 1 0 1 0 1.42 1.4L16 6.41V8a1 1 0 1 0 2 0V3z" />
@@ -1411,7 +1429,6 @@ export function SingleProductView({
               </svg>
               <span>Report this product</span>
             </button>
-          </div>
         </div>
         {shareMessage ? <p className="mt-3 text-[12px] text-[#57636c]">{shareMessage}</p> : null}
         {reportFeedback ? <p className="mt-3 text-[12px] text-[#57636c]">{reportFeedback}</p> : null}
@@ -1482,7 +1499,7 @@ export function SingleProductView({
                           <button
                             type="button"
                             onClick={() => setActiveImageIndex((current) => (current === 0 ? activeImages.length - 1 : current - 1))}
-                            className="absolute left-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
+                            className="absolute left-3 top-1/2 z-20 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
                             aria-label="Previous image"
                           >
                             ‹
@@ -1490,12 +1507,12 @@ export function SingleProductView({
                           <button
                             type="button"
                             onClick={() => setActiveImageIndex((current) => (current === activeImages.length - 1 ? 0 : current + 1))}
-                            className="absolute right-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
+                            className="absolute right-3 top-1/2 z-20 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
                             aria-label="Next image"
                           >
                             ›
                           </button>
-                          <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-[rgba(20,24,27,0.56)] px-3 py-1.5">
+                          <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-[rgba(20,24,27,0.56)] px-3 py-1.5">
                             {activeImages.map((_, index) => (
                               <span
                                 key={`indicator-${index}`}
@@ -1507,7 +1524,7 @@ export function SingleProductView({
                       ) : null}
                       {zoomPoint && activeImages[activeImageIndex]?.imageUrl ? (
                         <div
-                          className="pointer-events-none absolute hidden h-32 w-32 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-2 border-white/90 shadow-[0_12px_32px_rgba(20,24,27,0.24)] lg:block"
+                          className="pointer-events-none absolute z-10 hidden h-36 w-36 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-2 border-white/90 bg-white shadow-[0_12px_32px_rgba(20,24,27,0.24)] lg:block"
                           style={{ left: `${zoomPoint.x}%`, top: `${zoomPoint.y}%` }}
                         >
                           <div
@@ -1515,8 +1532,9 @@ export function SingleProductView({
                             style={{
                               backgroundImage: `url(${activeImages[activeImageIndex].imageUrl})`,
                               backgroundRepeat: "no-repeat",
-                              backgroundSize: "240%",
+                              backgroundSize: "320%",
                               backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%`,
+                              willChange: "background-position",
                             }}
                           />
                         </div>
@@ -1870,8 +1888,8 @@ export function SingleProductView({
                   </span>
                   <button
                     type="button"
-                    onClick={() => setSelectedQty((current) => (typeof availableQty === "number" ? Math.min(availableQty, current + 1) : current + 1))}
-                    disabled={typeof availableQty === "number" && selectedQty >= availableQty}
+                    onClick={() => setSelectedQty((current) => (typeof maxAddableQty === "number" ? Math.min(maxAddableQty, current + 1) : current + 1))}
+                    disabled={typeof maxAddableQty === "number" && selectedQty >= maxAddableQty}
                     className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
                     aria-label="Increase quantity"
                   >
@@ -1881,12 +1899,18 @@ export function SingleProductView({
                 <button
                   type="button"
                   onClick={() => void addToCart()}
-                  disabled={cartSubmitting || stock.tone === "danger"}
+                  disabled={cartSubmittingAction !== null}
+                  aria-disabled={!quantityGuard.canAdd}
+                  title={blockedCartMessage || undefined}
                   className={`inline-flex h-12 flex-1 items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    cartAddedFlash ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]" : "bg-[#1a8553]"
+                    cartAddedFlash
+                      ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]"
+                      : !quantityGuard.canAdd
+                        ? "bg-[#dfe4df] text-[#6b7280]"
+                        : "bg-[#1a8553]"
                   }`}
                 >
-                  {cartSubmitting ? "Adding..." : cartAddedFlash ? "Added to cart" : "Add to cart"}
+                  {addToCartLabel}
                 </button>
                 <button
                   type="button"
@@ -1906,12 +1930,18 @@ export function SingleProductView({
               <button
                 type="button"
                 onClick={() => void addToCart({ redirectToCheckout: true })}
-                disabled={cartSubmitting || stock.tone === "danger"}
+                disabled={cartSubmittingAction !== null}
+                aria-disabled={!quantityGuard.canAdd}
+                title={blockedCartMessage || undefined}
                 className={`inline-flex h-12 w-full items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                  cartAddedFlash ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]" : "bg-[#202020]"
+                  cartAddedFlash
+                    ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]"
+                    : !quantityGuard.canAdd
+                      ? "bg-[#dfe4df] text-[#6b7280]"
+                      : "bg-[#202020]"
                 }`}
               >
-                {cartSubmitting ? "Adding..." : cartAddedFlash ? "Added to cart" : "Buy now"}
+                {buyNowLabel}
               </button>
             </div>
             {cartMessage ? <p className="text-[12px] text-[#57636c]">{cartMessage}</p> : null}
@@ -1987,19 +2017,19 @@ export function SingleProductView({
           <div>
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Quantity</p>
             <div className="inline-flex h-12 items-center overflow-hidden rounded-[8px] border border-black/10 bg-white">
-              <button type="button" onClick={() => setSelectedQty((current) => Math.max(1, current - 1))} className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020]" aria-label="Decrease quantity">
+                  <button type="button" onClick={() => setSelectedQty((current) => Math.max(1, current - 1))} className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020]" aria-label="Decrease quantity">
                 −
               </button>
               <span className="inline-flex h-full min-w-9 items-center justify-center border-x border-black/10 px-2 text-[13px] font-semibold text-[#202020]">
                 {selectedQty}
               </span>
-              <button
-                type="button"
-                onClick={() => setSelectedQty((current) => (typeof availableQty === "number" ? Math.min(availableQty, current + 1) : current + 1))}
-                disabled={typeof availableQty === "number" && selectedQty >= availableQty}
-                className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
-                aria-label="Increase quantity"
-              >
+                  <button
+                    type="button"
+                    onClick={() => setSelectedQty((current) => (typeof maxAddableQty === "number" ? Math.min(maxAddableQty, current + 1) : current + 1))}
+                    disabled={typeof maxAddableQty === "number" && selectedQty >= maxAddableQty}
+                    className="inline-flex h-full w-10 items-center justify-center text-[18px] text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="Increase quantity"
+                  >
                 +
               </button>
             </div>
@@ -2008,12 +2038,18 @@ export function SingleProductView({
             <button
               type="button"
               onClick={() => void addToCart()}
-              disabled={cartSubmitting || stock.tone === "danger"}
+              disabled={cartSubmittingAction !== null}
+              aria-disabled={!quantityGuard.canAdd}
+              title={blockedCartMessage || undefined}
               className={`inline-flex h-12 flex-1 items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                cartAddedFlash ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]" : "bg-[#1a8553]"
+                cartAddedFlash
+                  ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]"
+                  : !quantityGuard.canAdd
+                    ? "bg-[#dfe4df] text-[#6b7280]"
+                    : "bg-[#1a8553]"
               }`}
             >
-              {cartSubmitting ? "Adding..." : cartAddedFlash ? "Added to cart" : "Add to cart"}
+              {addToCartLabel}
             </button>
             <button
               type="button"

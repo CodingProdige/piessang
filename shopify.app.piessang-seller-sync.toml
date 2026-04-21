@@ -1,0 +1,25 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "a0c001d7d8ca505853afa844233c6242"
+name = "Piessang Seller Sync"
+application_url = "https://piessang.com/shopify/app"
+embedded = false
+
+[webhooks]
+api_version = "2026-04"
+
+[[webhooks.subscriptions]]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "https://piessang.com/api/client/v1/accounts/seller/shopify/webhook"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_inventory,read_locations,read_product_listings,read_products"
+optional_scopes = [ ]
+use_legacy_install_flow = true
+
+[auth]
+redirect_urls = [
+  "https://piessang.com/api/client/v1/accounts/seller/shopify/callback",
+  "http://localhost:3000/api/client/v1/accounts/seller/shopify/callback"
+]

@@ -36,10 +36,6 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/", request.url));
   }
 
-  if (pathname === "/cart" && !hasSession) {
-    return NextResponse.redirect(new URL("/", request.url));
-  }
-
   if (pathname.startsWith("/seller/") && pathname !== "/seller/team/accept" && !hasSession) {
     return NextResponse.redirect(new URL("/", request.url));
   }

@@ -11,6 +11,7 @@ import {
   normalizeShopDomain,
   registerSellerShopifyWebhooks,
   saveSellerShopifyConnection,
+  saveSellerShopifyConnectionPending,
   updateSellerShopifyConnectionState,
 } from "@/lib/integrations/shopify-onboarding";
 
@@ -57,17 +58,47 @@ export async function GET(req) {
       redirectUri: callbackUrl,
     });
 
-    const connection = await saveSellerShopifyConnection({
-      sellerSlug: toStr(savedState?.seller?.sellerSlug),
-      sellerCode: toStr(savedState?.seller?.sellerCode),
-      vendorName: toStr(savedState?.seller?.vendorName),
-      shopDomain: shop,
-      adminAccessToken: oauth.accessToken,
-      syncMode: toStr(savedState?.settings?.syncMode || "import_once"),
-      importStatus: toStr(savedState?.settings?.importStatus || "draft"),
-      autoSyncPriceStock: savedState?.settings?.autoSyncPriceStock !== false,
-      autoImportNewProducts: savedState?.settings?.autoImportNewProducts === true,
-    });
+    let connection = null;
+    try {
+      connection = await saveSellerShopifyConnection({
+        sellerSlug: toStr(savedState?.seller?.sellerSlug),
+        sellerCode: toStr(savedState?.seller?.sellerCode),
+        vendorName: toStr(savedState?.seller?.vendorName),
+        shopDomain: shop,
+        adminAccessToken: oauth.accessToken,
+        refreshToken: oauth.refreshToken,
+        accessTokenExpiresIn: oauth.expiresIn,
+        refreshTokenExpiresIn: oauth.refreshTokenExpiresIn,
+        syncMode: toStr(savedState?.settings?.syncMode || "import_once"),
+        importStatus: toStr(savedState?.settings?.importStatus || "draft"),
+        autoSyncPriceStock: savedState?.settings?.autoSyncPriceStock !== false,
+        autoImportNewProducts: savedState?.settings?.autoImportNewProducts === true,
+      });
+    } catch (verificationError) {
+      console.error("shopify connection verification failed:", verificationError);
+      await saveSellerShopifyConnectionPending({
+        sellerSlug: toStr(savedState?.seller?.sellerSlug),
+        sellerCode: toStr(savedState?.seller?.sellerCode),
+        vendorName: toStr(savedState?.seller?.vendorName),
+        shopDomain: shop,
+        adminAccessToken: oauth.accessToken,
+        refreshToken: oauth.refreshToken,
+        accessTokenExpiresIn: oauth.expiresIn,
+        refreshTokenExpiresIn: oauth.refreshTokenExpiresIn,
+        syncMode: toStr(savedState?.settings?.syncMode || "import_once"),
+        importStatus: toStr(savedState?.settings?.importStatus || "draft"),
+        autoSyncPriceStock: savedState?.settings?.autoSyncPriceStock !== false,
+        autoImportNewProducts: savedState?.settings?.autoImportNewProducts === true,
+        lastError: toStr(verificationError?.message || "Shopify verification failed after install."),
+      });
+
+      const redirectTo = toStr(savedState?.redirectTo) || "/seller/dashboard?section=integrations";
+      const redirectUrl = new URL(redirectTo, req.url);
+      redirectUrl.searchParams.set("shopifyError", "verification_failed");
+      redirectUrl.searchParams.set("shopifyDetails", toStr(verificationError?.message || "").slice(0, 160));
+      redirectUrl.searchParams.set("shop", shop);
+      return NextResponse.redirect(redirectUrl);
+    }
 
     let webhookResults = [];
     try {

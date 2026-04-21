@@ -586,6 +586,7 @@ export function AuthProvider({
   const [guestCartId, setGuestCartId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [authReady, setAuthReady] = useState(hasAuthBootstrapData(bootstrap));
+  const [hasHydratedClient, setHasHydratedClient] = useState(false);
   const [pendingSellerRegistration, setPendingSellerRegistration] = useState(false);
   const [sellerModal, setSellerModal] = useState<SellerRegistrationState>(() =>
     buildSellerRegistrationDefaults(null),
@@ -604,13 +605,25 @@ export function AuthProvider({
   const sellerOwnsSellerAccount = useMemo(() => ownsSellerAccount(profile), [profile]);
   const lastAuthUidRef = useRef<string | null>(bootstrap.user?.uid ?? null);
   const authReadyRef = useRef(hasAuthBootstrapData(bootstrap));
+  const isSigningOutRef = useRef(false);
 
   useEffect(() => {
     authReadyRef.current = authReady;
   }, [authReady]);
 
   useEffect(() => {
+    setHasHydratedClient(true);
+  }, []);
+
+  useEffect(() => {
     setGuestCartId(getOrCreateGuestCartId());
+  }, []);
+
+  const applySignedOutState = useCallback(() => {
+    setUser(null);
+    setProfile(null);
+    setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
+    setAuthReady(true);
   }, []);
 
   useEffect(() => {
@@ -775,11 +788,14 @@ export function AuthProvider({
       setUser(nextUser);
 
       if (!nextUser) {
+        if (isSigningOutRef.current) {
+          applySignedOutState();
+          return;
+        }
+
         const didSignOut = Boolean(previousUid);
         if (didSignOut) {
-          setProfile(null);
-          setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
-          setAuthReady(true);
+          applySignedOutState();
           await syncServerSession(null);
           router.refresh();
           return;
@@ -818,7 +834,7 @@ export function AuthProvider({
     });
 
     return () => unsubscribe();
-  }, [router]);
+  }, [applySignedOutState, router]);
 
   useEffect(() => {
     const activeUid = profile?.uid ?? user?.uid ?? clientAuth.currentUser?.uid ?? null;
@@ -914,6 +930,9 @@ export function AuthProvider({
 
   const handleSignOut = useCallback(async () => {
     setBusy(true);
+    isSigningOutRef.current = true;
+    applySignedOutState();
+    closeAuthModal();
     try {
       const pushToken = typeof window !== "undefined" ? window.localStorage.getItem("piessang_push_token") : null;
       if (pushToken) {
@@ -925,15 +944,14 @@ export function AuthProvider({
         window.localStorage.removeItem("piessang_push_token");
       }
       await signOut(clientAuth);
-      setProfile(null);
-      setCartState({ itemCount: 0, productCounts: {}, variantCounts: {} });
-      closeAuthModal();
+      await syncServerSession(null);
       router.replace("/");
       router.refresh();
     } finally {
+      isSigningOutRef.current = false;
       setBusy(false);
     }
-  }, [closeAuthModal, router]);
+  }, [applySignedOutState, closeAuthModal, router]);
 
   const handleEmailAuth = useCallback(async () => {
     setBusy(true);
@@ -1403,78 +1421,86 @@ export function AuthProvider({
                 </div>
               ) : null}
 
-              <form
-                className="mt-5 space-y-3"
-                suppressHydrationWarning
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void handleEmailAuth();
-                }}
-              >
-                {mode === "sign-up" ? (
-                  <div className="block" suppressHydrationWarning>
-                    <label htmlFor="auth-display-name" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                      Display name <span className="text-[#d11c1c]">*</span>
+              {hasHydratedClient ? (
+                <form
+                  className="mt-5 space-y-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleEmailAuth();
+                  }}
+                >
+                  {mode === "sign-up" ? (
+                    <div className="block">
+                      <label htmlFor="auth-display-name" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                        Display name <span className="text-[#d11c1c]">*</span>
+                      </label>
+                      <input
+                        id="auth-display-name"
+                        required
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
+                        placeholder="Your name"
+                      />
+                    </div>
+                  ) : null}
+
+                  <div className="block">
+                    <label htmlFor="auth-email" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                      Email address <span className="text-[#d11c1c]">*</span>
                     </label>
                     <input
-                      id="auth-display-name"
-                      required
-                      value={displayName}
-                      onChange={(event) => setDisplayName(event.target.value)}
+                      id="auth-email"
+                      type="email"
+                      autoComplete="email"
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value.replace(/\s+/g, ""))}
                       className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
-                      placeholder="Your name"
+                      placeholder="you@example.com"
                     />
                   </div>
-                ) : null}
 
-                <div className="block" suppressHydrationWarning>
-                  <label htmlFor="auth-email" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                    Email address <span className="text-[#d11c1c]">*</span>
-                  </label>
-                  <input
-                    id="auth-email"
-                    type="email"
-                    autoComplete="email"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value.replace(/\s+/g, ""))}
-                    className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
-                    placeholder="you@example.com"
-                  />
-                </div>
-
-                <div className="block" suppressHydrationWarning>
-                  <label htmlFor="auth-password" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                    Password <span className="text-[#d11c1c]">*</span>
-                  </label>
-                  <input
-                    id="auth-password"
-                    type="password"
-                    autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
-                    placeholder="••••••••"
-                  />
-                </div>
-
-                {authMessage ? (
-                  <div className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
-                    {authMessage}
+                  <div className="block">
+                    <label htmlFor="auth-password" className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                      Password <span className="text-[#d11c1c]">*</span>
+                    </label>
+                    <input
+                      id="auth-password"
+                      type="password"
+                      autoComplete={mode === "sign-up" ? "new-password" : "current-password"}
+                      data-lpignore="true"
+                      data-1p-ignore="true"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
+                      placeholder="••••••••"
+                    />
                   </div>
-                ) : null}
 
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="flex w-full items-center justify-center rounded-[8px] bg-[#202020] px-4 py-3 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-wait disabled:opacity-70"
-                >
-                  {mode === "sign-up" ? "Create account" : "Sign in"}
-                </button>
-              </form>
+                  {authMessage ? (
+                    <div className="rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
+                      {authMessage}
+                    </div>
+                  ) : null}
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="flex w-full items-center justify-center rounded-[8px] bg-[#202020] px-4 py-3 text-[13px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {mode === "sign-up" ? "Create account" : "Sign in"}
+                  </button>
+                </form>
+              ) : (
+                <div className="mt-5 space-y-3" aria-hidden="true">
+                  {mode === "sign-up" ? <div className="h-[74px] animate-pulse rounded-[8px] bg-[#f3f4f6]" /> : null}
+                  <div className="h-[74px] animate-pulse rounded-[8px] bg-[#f3f4f6]" />
+                  <div className="h-[74px] animate-pulse rounded-[8px] bg-[#f3f4f6]" />
+                  <div className="h-[48px] animate-pulse rounded-[8px] bg-[#ece8df]" />
+                </div>
+              )}
 
               <div className="mt-4">
                 <button

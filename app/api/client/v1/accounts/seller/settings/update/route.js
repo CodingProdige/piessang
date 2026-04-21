@@ -14,12 +14,81 @@ import { encryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
 import { enqueueGoogleSyncForSeller } from "@/lib/integrations/google-sync-queue";
 import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
 
 function toStr(value, fallback = "") {
   return value == null ? fallback : String(value).trim();
+}
+
+async function propagateSellerDisplayFieldsToProducts(db, {
+  sellerCode = "",
+  sellerSlug = "",
+  vendorName = "",
+  vendorDescription = "",
+}) {
+  const normalizedSellerCode = toStr(sellerCode);
+  const normalizedSellerSlug = toStr(sellerSlug);
+  const updatedIds = new Set();
+  let updatedCount = 0;
+
+  const applySnapshot = async (snap) => {
+    if (!snap || snap.empty) return;
+    let batch = db.batch();
+    let ops = 0;
+
+    for (const docSnap of snap.docs) {
+      if (!docSnap.exists) continue;
+      if (updatedIds.has(docSnap.id)) continue;
+      updatedIds.add(docSnap.id);
+
+      batch.update(docSnap.ref, {
+        "product.vendorName": vendorName || null,
+        "product.vendorDescription": vendorDescription || null,
+        "seller.vendorName": vendorName || null,
+        "seller.vendorDescription": vendorDescription || null,
+        "seller.sellerCode": normalizedSellerCode || null,
+        "seller.activeSellerCode": normalizedSellerCode || null,
+        "seller.groupSellerCode": normalizedSellerCode || null,
+        "seller.sellerSlug": normalizedSellerSlug || null,
+        "seller.activeSellerSlug": normalizedSellerSlug || null,
+        "seller.groupSellerSlug": normalizedSellerSlug || null,
+        "timestamps.updatedAt": FieldValue.serverTimestamp(),
+      });
+      ops += 1;
+      updatedCount += 1;
+
+      if (ops === 400) {
+        await batch.commit();
+        batch = db.batch();
+        ops = 0;
+      }
+    }
+
+    if (ops > 0) await batch.commit();
+  };
+
+  if (normalizedSellerCode) {
+    await applySnapshot(
+      await db.collection("products_v2").where("product.sellerCode", "==", normalizedSellerCode).get(),
+    );
+    await applySnapshot(
+      await db.collection("products_v2").where("seller.sellerCode", "==", normalizedSellerCode).get(),
+    );
+  }
+
+  if (normalizedSellerSlug) {
+    await applySnapshot(
+      await db.collection("products_v2").where("product.sellerSlug", "==", normalizedSellerSlug).get(),
+    );
+    await applySnapshot(
+      await db.collection("products_v2").where("seller.sellerSlug", "==", normalizedSellerSlug).get(),
+    );
+  }
+
+  return updatedCount;
 }
 
 function sanitizeUrl(value) {
@@ -397,6 +466,12 @@ export async function POST(req) {
       "seller.media": branding,
       "timestamps.updatedAt": new Date(),
     });
+    const propagatedProducts = await propagateSellerDisplayFieldsToProducts(db, {
+      sellerCode,
+      sellerSlug,
+      vendorName: nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
+      vendorDescription: nextVendorDescription,
+    });
     await enqueueGoogleSyncForSeller({
       sellerCode,
       sellerSlug,
@@ -410,6 +485,7 @@ export async function POST(req) {
         vendorDescription: nextVendorDescription,
         sellerCode,
       },
+      propagatedProducts,
       branding,
       deliveryProfile,
       shippingWeightRequirements,

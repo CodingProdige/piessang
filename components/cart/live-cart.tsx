@@ -193,7 +193,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { uid, cartOwnerId, syncCartState } = useAuth();
+  const { uid, cartOwnerId, authReady, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const [cart, setCart] = useState<CartPayload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -225,6 +225,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
   }, [cart?.cart?.cart_id, pathname, router, searchParams, shareToken]);
 
   useEffect(() => {
+    if (!authReady) return;
     if (!shareToken) {
       setSharedCart(null);
       setSharedCartLoading(false);
@@ -268,17 +269,21 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
     return () => {
       mounted = false;
     };
-  }, [cartOwnerId, shareToken, uid]);
+  }, [authReady, cartOwnerId, shareToken, uid]);
 
   useEffect(() => {
+    if (!authReady) return;
     const activeCartOwnerId = cartOwnerId || uid || null;
     if (!activeCartOwnerId) {
       setCart(null);
+      setHasLoaded(true);
+      setLoading(false);
       return;
     }
 
     let mounted = true;
     setLoading(true);
+    setHasLoaded(false);
 
     fetch("/api/client/v1/carts/get", {
       method: "POST",
@@ -306,7 +311,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
     return () => {
       mounted = false;
     };
-  }, [cartOwnerId, syncCartState, uid]);
+  }, [authReady, cartOwnerId, syncCartState, uid]);
 
   const items = Array.isArray(cart?.items) ? cart.items : [];
   const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
@@ -316,7 +321,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
   const displayedItems = Array.isArray(displayedCart?.items) ? displayedCart.items : [];
   const displayedItemCount = displayedCart?.cart?.item_count ?? displayedItems.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const displayedTotalIncl = displayedCart?.totals?.final_payable_incl ?? displayedCart?.totals?.final_incl ?? 0;
-  const showCartLoading = (loading && !hasLoaded) || sharedCartLoading;
+  const showCartLoading = !authReady || (loading && !hasLoaded) || sharedCartLoading;
   const sellerGroups = items.reduce<Array<{ seller: string; items: CartItem[] }>>((groups, item) => {
     const seller = getSellerGroupLabel(item);
     const existing = groups.find((group) => group.seller === seller);
@@ -603,6 +608,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
                       onIncrement={showSharedCartView ? undefined : () => void updateLine(item, "increment")}
                       onDecrement={showSharedCartView ? undefined : () => void updateLine(item, "decrement")}
                       onRemove={showSharedCartView ? undefined : () => void updateLine(item, "remove")}
+                      onIncrementBlocked={showSharedCartView ? undefined : (message) => setSnackbarMessage(message)}
                       busy={!showSharedCartView && lineBusyKey === busyKey}
                     />
                   );

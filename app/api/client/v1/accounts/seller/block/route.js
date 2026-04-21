@@ -189,7 +189,7 @@ export async function POST(req) {
       const internalEmailPromise = sendSellerNotificationEmails({
         origin,
         type: "seller-account-blocked-internal",
-        to: ["support@piessang.com"],
+        to: ["admin@piessang.com"],
         data: {
           vendorName: seller?.vendorName || owner.data?.seller?.vendorName || "Piessang seller",
           sellerSlug,

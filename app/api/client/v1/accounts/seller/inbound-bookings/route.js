@@ -336,7 +336,7 @@ export async function POST(req) {
         await sendSellerNotificationEmails({
           origin: new URL(req.url).origin,
           type: "seller-inbound-booking-internal",
-          to: ["support@piessang.com"],
+          to: ["admin@piessang.com"],
           data: {
             vendorName: toStr(product?.product?.vendorName || product?.seller?.vendorName || product?.product?.sellerSlug || "Piessang seller"),
             sellerCode: toStr(product?.product?.sellerCode || product?.seller?.sellerCode || ""),

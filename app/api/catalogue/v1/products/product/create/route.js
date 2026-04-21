@@ -379,7 +379,7 @@ export async function POST(req){
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: "brand-request-internal",
-          to: "support@piessang.com",
+          to: "admin@piessang.com",
           data: {
             brandTitle: resolvedBrand.title,
             brandSlug: resolvedBrand.slug,

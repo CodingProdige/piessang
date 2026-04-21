@@ -3,6 +3,7 @@
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import { ProductLink } from "@/components/products/product-link";
+import { getCartQuantityGuard } from "@/lib/cart/interaction-guards";
 import { normalizeMoneyAmount } from "@/lib/money";
 
 type CartItem = {
@@ -39,6 +40,15 @@ type CartItem = {
   selected_variant_snapshot?: {
     variant_id?: string | number | null;
     label?: string | null;
+    total_in_stock_items_available?: number;
+    checkout_reserved_unavailable?: boolean;
+    placement?: {
+      track_inventory?: boolean;
+      continue_selling_out_of_stock?: boolean;
+    };
+    inventory?: Array<{
+      in_stock_qty?: number;
+    }>;
     media?: {
       images?: Array<{ imageUrl?: string | null; blurHashUrl?: string | null }>;
     };
@@ -74,6 +84,7 @@ export function CartItemCard({
   onIncrement,
   onDecrement,
   onRemove,
+  onIncrementBlocked,
   busy = false,
 }: {
   item: CartItem;
@@ -81,6 +92,7 @@ export function CartItemCard({
   onIncrement?: () => void;
   onDecrement?: () => void;
   onRemove?: () => void;
+  onIncrementBlocked?: (message: string) => void;
   busy?: boolean;
 }) {
   const { formatMoney } = useDisplayCurrency();
@@ -124,7 +136,21 @@ export function CartItemCard({
       : "Seller handles delivery";
   const canDecrease = qty > 1;
   const isUnavailable = String(item?.availability?.status || "").trim().toLowerCase() === "out_of_stock";
+  const quantityGuard = getCartQuantityGuard({
+    variant,
+    currentCartQty: qty,
+    unavailable: isUnavailable,
+  });
+  const availableQuantity = quantityGuard.availableQuantity;
+  const hasReachedMaxQuantity = quantityGuard.reachedCartLimit;
+  const incrementBlocked = quantityGuard.incrementBlocked;
   const controlsVisible = Boolean(onIncrement || onDecrement || onRemove);
+  const incrementBlockedMessage =
+    quantityGuard.reason === "reserved_in_checkout"
+      ? quantityGuard.message || "This item is currently reserved in another shopper's checkout."
+      : hasReachedMaxQuantity
+        ? `You already have the maximum available quantity${typeof availableQuantity === "number" ? ` (${availableQuantity})` : ""} in your cart.`
+        : quantityGuard.message;
   return (
     <div className={`flex gap-3 rounded-[8px] border border-black/5 bg-white shadow-[0_6px_18px_rgba(20,24,27,0.05)] ${compact ? "p-2.5" : "p-3"}`}>
       <div className={`relative shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa] ${compact ? "h-14 w-14" : "h-16 w-16"}`}>
@@ -215,9 +241,19 @@ export function CartItemCard({
                 </span>
                 <button
                   type="button"
-                  onClick={onIncrement}
+                  onClick={() => {
+                    if (incrementBlocked) {
+                      if (incrementBlockedMessage) onIncrementBlocked?.(incrementBlockedMessage);
+                      return;
+                    }
+                    onIncrement?.();
+                  }}
+                  disabled={busy}
                   className="inline-flex h-8 w-8 items-center justify-center text-[16px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="Increase quantity"
+                  title={
+                    incrementBlockedMessage || undefined
+                  }
                 >
                   +
                 </button>

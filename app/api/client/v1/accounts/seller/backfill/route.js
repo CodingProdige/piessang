@@ -46,6 +46,23 @@ function sellerMatchesProduct(product, owner) {
   );
 }
 
+function shouldUpdateProductSellerIdentity(product, owner) {
+  const productSellerCode = toStr(product?.product?.sellerCode || product?.seller?.sellerCode);
+  const productSellerSlug = toStr(
+    product?.product?.sellerSlug ||
+      product?.seller?.sellerSlug ||
+      product?.seller?.groupSellerSlug ||
+      product?.seller?.activeSellerSlug,
+  );
+  const productVendorName = toStr(product?.product?.vendorName || product?.seller?.vendorName);
+
+  return Boolean(
+    productSellerCode !== owner.sellerCode ||
+      productSellerSlug !== owner.sellerSlug ||
+      productVendorName !== owner.vendorName,
+  );
+}
+
 export async function POST(req) {
   try {
     const db = getAdminDb();
@@ -107,14 +124,19 @@ export async function POST(req) {
       const data = docSnap.data() || {};
       const owner = owners.find((item) => sellerMatchesProduct(data, { seller: item }));
       if (!owner) continue;
+      if (!shouldUpdateProductSellerIdentity(data, owner)) continue;
 
       await db.collection("products_v2").doc(docSnap.id).update({
         "product.sellerCode": owner.sellerCode,
+        "product.sellerSlug": owner.sellerSlug,
         "product.vendorName": owner.vendorName,
         "product.vendorDescription": owner.vendorDescription,
         "seller.sellerCode": owner.sellerCode,
         "seller.activeSellerCode": owner.sellerCode,
         "seller.groupSellerCode": owner.sellerCode,
+        "seller.sellerSlug": owner.sellerSlug,
+        "seller.activeSellerSlug": owner.sellerSlug,
+        "seller.groupSellerSlug": owner.sellerSlug,
         "seller.vendorName": owner.vendorName,
         "seller.vendorDescription": owner.vendorDescription,
         "timestamps.updatedAt": FieldValue.serverTimestamp(),

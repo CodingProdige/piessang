@@ -794,6 +794,7 @@ export async function GET(req){
     const subCategory  = normStr(searchParams.get("subCategory"));
     const brand        = normStr(searchParams.get("brand"));
     const vendorName   = normStr(searchParams.get("vendorName"));
+    const sellerCode   = normStr(searchParams.get("sellerCode"));
     const sellerSlug   = normStr(searchParams.get("sellerSlug") || searchParams.get("vendor"));
     const kind         = normStr(searchParams.get("kind"));
     const keywordsRaw  = normStr(searchParams.get("keywords"));
@@ -820,8 +821,10 @@ export async function GET(req){
       ? keywordsRaw.split(/[,\s]+/).map(s=>s.trim().toLowerCase()).filter(Boolean)
       : [];
 
-    if (sellerSlug) {
-      const sellerOwner = await findSellerOwnerBySlug(sellerSlug);
+    if (sellerCode || sellerSlug) {
+      const sellerOwner = sellerCode
+        ? await findSellerOwnerByIdentifier(sellerCode)
+        : await findSellerOwnerBySlug(sellerSlug);
       if (sellerOwner && isSellerAccountUnavailable(sellerOwner.data)) {
         if (groupByBrand) return ok({ total: 0, count: 0, groups: [] });
         return ok({ total: 0, count: 0, items: [] });
@@ -915,6 +918,26 @@ export async function GET(req){
       ) return false;
       if (!includeUnavailable && !productHasListableAvailability(data)) return false;
       if (!matchesGrouping(data, { category, subCategory, brand })) return false;
+      if (sellerCode) {
+        const recordSellerCode = normStr(
+          data?.product?.sellerCode ||
+          data?.seller?.sellerCode ||
+          data?.seller?.activeSellerCode ||
+          data?.seller?.groupSellerCode ||
+          ""
+        );
+        if (recordSellerCode !== sellerCode) return false;
+      }
+      if (sellerSlug) {
+        const recordSellerSlug = normStr(
+          data?.product?.sellerSlug ||
+          data?.seller?.sellerSlug ||
+          data?.seller?.activeSellerSlug ||
+          data?.seller?.groupSellerSlug ||
+          ""
+        );
+        if (recordSellerSlug !== sellerSlug) return false;
+      }
       if (vendorName){
         const recordVendor = normText(
           data?.product?.vendorName ||

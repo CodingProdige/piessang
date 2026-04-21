@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CartActionStack } from "@/components/cart/cart-actions";
 import { CartItemCard } from "@/components/cart/cart-item-card";
 import { DisplayCurrencySelector, useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import { useAuth } from "@/components/auth/auth-provider";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 
 type CartPreviewItem = {
@@ -127,6 +128,7 @@ export function CartPreviewDrawer({
   cartOwnerId: string | null;
   onCartChange?: (cart: unknown) => void;
 }) {
+  const { authReady } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const [loading, setLoading] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -139,7 +141,7 @@ export function CartPreviewDrawer({
   const [cart, setCart] = useState<{
     items?: CartPreviewItem[];
     totals?: { final_payable_incl?: number; final_incl?: number };
-    cart?: { item_count?: number };
+    cart?: { item_count?: number; cart_id?: string };
   } | null>(null);
 
   useEffect(() => {
@@ -147,6 +149,7 @@ export function CartPreviewDrawer({
   }, [cart]);
 
   useEffect(() => {
+    if (!authReady) return;
     if (!open || !cartOwnerId) return;
 
     let mounted = true;
@@ -177,12 +180,14 @@ export function CartPreviewDrawer({
     return () => {
       mounted = false;
     };
-  }, [cartOwnerId, onCartChange, open]);
+  }, [authReady, cartOwnerId, onCartChange, open]);
 
   const items = Array.isArray(cart?.items) ? cart.items : [];
   const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const totalIncl = cart?.totals?.final_payable_incl ?? cart?.totals?.final_incl ?? 0;
-  const showDrawerLoading = loading && !hasLoaded;
+  const cartId = String(cart?.cart?.cart_id || "").trim();
+  const viewCartHref = cartId ? `/cart?cart=${encodeURIComponent(cartId)}` : "/cart";
+  const showDrawerLoading = !authReady || (loading && !hasLoaded);
   const sellerGroups = items.reduce<Array<{ seller: string; items: CartPreviewItem[] }>>((groups, item) => {
     const seller =
       item?.product_snapshot?.seller?.vendorName?.trim() ||
@@ -369,6 +374,7 @@ export function CartPreviewDrawer({
                         onIncrement={() => void updateLine(item, "increment")}
                         onDecrement={() => void updateLine(item, "decrement")}
                         onRemove={() => void updateLine(item, "remove")}
+                        onIncrementBlocked={(message) => setSnackbarMessage(message)}
                         busy={lineBusyKey === busyKey}
                       />
                     );
@@ -382,7 +388,10 @@ export function CartPreviewDrawer({
             </div>
           ) : null}
 
-          <CartActionStack onNavigate={onClose} compact />
+          <CartActionStack
+            compact
+            viewCartHref={viewCartHref}
+          />
         </div>
 
         <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />

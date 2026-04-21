@@ -10,7 +10,7 @@ import { useDisplayCurrency } from "@/components/currency/display-currency-provi
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
-import { PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
+import { PHONE_REGION_OPTIONS, PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { normalizeMoneyAmount } from "@/lib/money";
@@ -382,6 +382,105 @@ function formatShipmentSummary(summary?: { parcelCount?: number; billableWeightK
   return parts.join(" · ");
 }
 
+function parseCutoffMinutes(cutoff?: string | null) {
+  if (!cutoff) return null;
+  const [hoursRaw, minutesRaw] = String(cutoff).split(":");
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function getZonedNow(offsetMinutes?: number | null) {
+  const now = new Date();
+  if (!Number.isFinite(Number(offsetMinutes))) return now;
+  return new Date(now.getTime() + Number(offsetMinutes) * 60_000 + now.getTimezoneOffset() * 60_000);
+}
+
+function computePromisedDate({
+  leadTimeDays,
+  cutoffTime,
+  utcOffsetMinutes,
+}: {
+  leadTimeDays?: number | null;
+  cutoffTime?: string | null;
+  utcOffsetMinutes?: number | null;
+}) {
+  const safeLeadTimeDays = Number(leadTimeDays);
+  if (!Number.isFinite(safeLeadTimeDays) || safeLeadTimeDays < 0) return null;
+  const now = getZonedNow(utcOffsetMinutes);
+  const cutoffMinutes = parseCutoffMinutes(cutoffTime);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const afterCutoff = cutoffMinutes == null ? false : nowMinutes >= cutoffMinutes;
+  const promisedDate = new Date(now);
+  promisedDate.setDate(promisedDate.getDate() + safeLeadTimeDays + (afterCutoff ? 1 : 0));
+  return promisedDate;
+}
+
+function formatFulfillmentDate(date: Date | null) {
+  if (!date) return "";
+  return new Intl.DateTimeFormat("en-ZA", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  }).format(date);
+}
+
+function sanitizeEmailInput(value: string) {
+  return String(value || "").replace(/\s+/g, "").trim();
+}
+
+function isBasicEmailAddress(value: string) {
+  const sanitized = sanitizeEmailInput(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized);
+}
+
+function getAddressFieldCopy(countryValue?: string | null) {
+  const normalizedCountry = String(countryValue || "").trim().toLowerCase();
+  const isSouthAfrica = normalizedCountry === "south africa";
+  const isUnitedStates =
+    normalizedCountry === "united states" ||
+    normalizedCountry === "united states of america" ||
+    normalizedCountry === "usa" ||
+    normalizedCountry === "us";
+  const isUnitedKingdom =
+    normalizedCountry === "united kingdom" ||
+    normalizedCountry === "uk" ||
+    normalizedCountry === "great britain";
+
+  const regionLabel = isSouthAfrica
+    ? "Province"
+    : isUnitedStates
+      ? "State"
+      : isUnitedKingdom
+        ? "County / Region"
+        : "State / Province / Region";
+
+  const postalLabel = isUnitedStates ? "ZIP code" : isUnitedKingdom ? "Postcode" : "Postal code";
+
+  return {
+    addressLine1Label: "Address line 1",
+    addressLine1Placeholder: "Street number and street name",
+    addressLine2Label: "Address line 2",
+    addressLine2Placeholder: "Apartment, suite, unit, building, floor",
+    suburbLabel: isSouthAfrica ? "Suburb" : "Suburb / District",
+    suburbPlaceholder: isSouthAfrica ? "Suburb" : "Suburb, district, or neighborhood",
+    cityLabel: "City",
+    cityPlaceholder: "City",
+    regionLabel,
+    regionPlaceholder: regionLabel,
+    postalLabel,
+    postalPlaceholder: postalLabel,
+    countryLabel: "Country",
+    countryPlaceholder: "Country",
+  };
+}
+
+function countryIsoToFlagEmoji(iso: string) {
+  if (!/^[A-Z]{2}$/.test(iso)) return "";
+  return String.fromCodePoint(...iso.split("").map((char) => 127397 + char.charCodeAt(0)));
+}
+
 function getLineIds(item: CartItem) {
   const productId = String(
     item?.product_snapshot?.product?.unique_id ||
@@ -683,6 +782,15 @@ export function CartCheckout() {
   const cardNumberRef = useRef<any>(null);
   const cardExpiryRef = useRef<any>(null);
   const cardCvcRef = useRef<any>(null);
+  const contactSectionRef = useRef<HTMLElement | null>(null);
+  const addressSectionRef = useRef<HTMLElement | null>(null);
+  const paymentSectionRef = useRef<HTMLElement | null>(null);
+  const recipientNameInputRef = useRef<HTMLInputElement | null>(null);
+  const emailInputRef = useRef<HTMLInputElement | null>(null);
+  const phoneFieldRef = useRef<HTMLDivElement | null>(null);
+  const addressNameInputRef = useRef<HTMLInputElement | null>(null);
+  const streetAddressInputRef = useRef<HTMLInputElement | null>(null);
+  const cardHolderInputRef = useRef<HTMLInputElement | null>(null);
   const [cart, setCart] = useState<CartPayload | null>(null);
   const [locations, setLocations] = useState<DeliveryLocation[]>([]);
   const [cards, setCards] = useState<SavedCard[]>([]);
@@ -1122,6 +1230,51 @@ export function CartCheckout() {
       )
     ),
   );
+  const mobileStickyFulfillmentLabel = useMemo(() => {
+    if (!hasSelectedDeliveryAddress || !cartItems.length) return "";
+
+    const promisedDates = cartItems
+      .map((item) => {
+        const fulfillmentMode = String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase();
+        if (fulfillmentMode === "seller") {
+          const seller = item?.product_snapshot?.seller;
+          const deliveryProfile = seller?.deliveryProfile;
+          if (!deliveryProfile) return null;
+          const parcel = buildShipmentParcelFromVariant(item?.selected_variant_snapshot || null);
+          const resolved = resolveSellerDeliveryOption({
+            profile: deliveryProfile,
+            sellerBaseLocation: seller?.baseLocation || "",
+            shopperArea: {
+              city: selectedLocation?.city || selectedLocation?.suburb || "",
+              suburb: selectedLocation?.suburb || "",
+              province: selectedLocation?.province || selectedLocation?.stateProvinceRegion || "",
+              stateProvinceRegion: selectedLocation?.stateProvinceRegion || selectedLocation?.province || "",
+              postalCode: selectedLocation?.postalCode || "",
+              country: selectedLocation?.country || "South Africa",
+              latitude: selectedLocation?.latitude ?? null,
+              longitude: selectedLocation?.longitude ?? null,
+            } as any,
+            parcels: parcel ? [parcel] : [],
+          } as any);
+          if (!resolved?.available) return null;
+          return computePromisedDate({
+            leadTimeDays: resolved?.leadTimeDays,
+            cutoffTime: (resolved as any)?.cutoffTime || null,
+            utcOffsetMinutes: (resolved as any)?.utcOffsetMinutes ?? (seller?.deliveryProfile as any)?.origin?.utcOffsetMinutes ?? null,
+          });
+        }
+
+        return computePromisedDate({
+          leadTimeDays: (item?.product_snapshot?.fulfillment as any)?.lead_time_days,
+          cutoffTime: (item?.product_snapshot?.fulfillment as any)?.cutoff_time,
+        });
+      })
+      .filter((value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()));
+
+    if (!promisedDates.length) return "";
+    const latestPromisedDate = promisedDates.reduce((latest, current) => (current.getTime() > latest.getTime() ? current : latest));
+    return `Expected full order by ${formatFulfillmentDate(latestPromisedDate)}`;
+  }, [cartItems, hasSelectedDeliveryAddress, selectedLocation]);
   const blockedSellerKeys = new Set(
     hasSelectedDeliveryAddress
       ? [
@@ -1141,6 +1294,22 @@ export function CartCheckout() {
   );
   const cartIsResolving = loading || deliveryFeeLoading || checkoutReserveLoading || checkoutSessionLoading;
   const cartIsEmpty = !cartIsResolving && cartItems.length === 0;
+  const countryOptions = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          PHONE_REGION_OPTIONS.map((option) => [
+            option.label.replace(/\s*\(\+\d+\)$/, ""),
+            {
+              name: option.label.replace(/\s*\(\+\d+\)$/, ""),
+              iso: option.iso,
+              flag: countryIsoToFlagEmoji(option.iso),
+            },
+          ]),
+        ).values(),
+      ).sort((a, b) => a.name.localeCompare(b.name)),
+    [],
+  );
   const cardErrors = {
     holder: newCard.holder.trim().length > 1 ? "" : "Enter the name exactly as it appears on the card.",
     number: "",
@@ -1621,11 +1790,11 @@ export function CartCheckout() {
     }
   }
 
-  async function handleCreateAddress() {
+  async function handleCreateAddress(options?: { silentSuccess?: boolean }) {
     if (!addressDraft.locationName.trim() || !addressDraft.streetAddress.trim()) {
       setErrorMessage("Add a name for this address and a street address before saving it.");
       setSnackbarMessage("Please complete the required address fields.");
-      return;
+      return null;
     }
 
     if (!isAuthenticated || !uid) {
@@ -1653,8 +1822,8 @@ export function CartCheckout() {
       setLocations([nextLocation]);
       setSelectedLocationIndex(0);
       setShowAddAddress(false);
-      setSnackbarMessage("Address ready for this order.");
-      return;
+      if (!options?.silentSuccess) setSnackbarMessage("Address ready for this order.");
+      return nextLocation;
     }
 
     setAddressSaving(true);
@@ -1692,15 +1861,19 @@ export function CartCheckout() {
       const nextLocations = Array.isArray(payload?.data?.deliveryLocations)
         ? payload.data.deliveryLocations
         : [];
+      const nextSelectedIndex = Math.max(0, nextLocations.length - 1);
+      const nextSelectedLocation = nextLocations[nextSelectedIndex] || null;
       setLocations(nextLocations);
-      setSelectedLocationIndex(Math.max(0, nextLocations.length - 1));
+      setSelectedLocationIndex(nextSelectedIndex);
       setShowAddAddress(false);
       setAddressDraft(defaultAddressDraft(profile ?? undefined));
-      setSnackbarMessage("Address saved.");
+      if (!options?.silentSuccess) setSnackbarMessage("Address saved.");
+      return nextSelectedLocation;
     } catch (error) {
       const message = error instanceof Error ? error.message : "We could not save that address right now.";
       setErrorMessage(message);
       setSnackbarMessage(message);
+      return null;
     } finally {
       setAddressSaving(false);
     }
@@ -1816,18 +1989,104 @@ export function CartCheckout() {
     if (!activeCartOwnerId) {
       return;
     }
-    if (!selectedLocation) {
-      setErrorMessage("Choose a delivery address before placing your order.");
+    let resolvedSelectedLocation = selectedLocation;
+    const scrollToValidationTarget = (
+      target: { current: HTMLElement | HTMLInputElement | HTMLDivElement | null },
+      fallbackSection?: { current: HTMLElement | null },
+    ) => {
+      const element = target.current || fallbackSection?.current || null;
+      if (!element) return;
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.setTimeout(() => {
+        if ("focus" in element && typeof element.focus === "function") {
+          element.focus();
+          return;
+        }
+        const nestedInput = element.querySelector?.("input, button, [tabindex]");
+        if (nestedInput instanceof HTMLElement) nestedInput.focus();
+      }, 220);
+    };
+    if (!contactDraft.recipientName.trim()) {
+      const message = "Add the recipient name before placing your order.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+      scrollToValidationTarget(recipientNameInputRef, contactSectionRef);
       return;
     }
-    if (!hasCheckoutContactDetails) {
-      setErrorMessage(
-        isAuthenticated
-          ? "Add the delivery contact name and phone number before placing your order."
-          : "Add your email, delivery contact name, and phone number before placing your order.",
-      );
-      setSnackbarMessage("Delivery contact details are required before checkout.");
+    if (!isAuthenticated && !contactDraft.email.trim()) {
+      const message = "Add your email address before placing your order.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+      scrollToValidationTarget(emailInputRef, contactSectionRef);
       return;
+    }
+    if (!isAuthenticated && !isBasicEmailAddress(contactDraft.email)) {
+      const message = "Add a valid email address before placing your order.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+      scrollToValidationTarget(emailInputRef, contactSectionRef);
+      return;
+    }
+    if (!contactDraft.phoneNumber.trim()) {
+      const message = "Add a mobile number for delivery updates before placing your order.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+      scrollToValidationTarget(phoneFieldRef, contactSectionRef);
+      return;
+    }
+    if (!resolvedSelectedLocation) {
+      const isEnteringManualAddress =
+        showAddAddress ||
+        !hasSavedAddresses ||
+        Boolean(
+          addressDraft.locationName.trim() ||
+          addressDraft.streetAddress.trim() ||
+          addressDraft.suburb.trim() ||
+          addressDraft.city.trim() ||
+          addressDraft.stateProvinceRegion.trim() ||
+          addressDraft.postalCode.trim() ||
+          addressDraft.country.trim(),
+        );
+
+      if (isEnteringManualAddress) {
+        if (!addressDraft.locationName.trim()) {
+          const message = "Add an address name before placing your order.";
+          setErrorMessage(message);
+          setSnackbarMessage(message);
+          scrollToValidationTarget(addressNameInputRef, addressSectionRef);
+          return;
+        }
+        if (!addressDraft.streetAddress.trim()) {
+          const message = "Add the street address before placing your order.";
+          setErrorMessage(message);
+          setSnackbarMessage(message);
+          scrollToValidationTarget(streetAddressInputRef, addressSectionRef);
+          return;
+        }
+        if (!addressDraft.suburb.trim() || !addressDraft.city.trim() || !addressDraft.stateProvinceRegion.trim() || !addressDraft.postalCode.trim() || !addressDraft.country.trim()) {
+          const message = "Complete the delivery address before placing your order.";
+          setErrorMessage(message);
+          setSnackbarMessage(message);
+          scrollToValidationTarget(addressSectionRef, addressSectionRef);
+          return;
+        }
+
+        const createdLocation = await handleCreateAddress({ silentSuccess: true });
+        if (!createdLocation) {
+          scrollToValidationTarget(addressSectionRef, addressSectionRef);
+          return;
+        }
+        resolvedSelectedLocation = createdLocation as any;
+      } else {
+        if (!showAddAddress) {
+          setShowAddAddress(true);
+        }
+        const message = "Choose or add a delivery address before placing your order.";
+        setErrorMessage(message);
+        setSnackbarMessage(message);
+        scrollToValidationTarget(addressNameInputRef, addressSectionRef);
+        return;
+      }
     }
     if (checkoutBlocked) {
       const message = deliveryBlocked
@@ -1850,6 +2109,29 @@ export function CartCheckout() {
       setErrorMessage(message);
       setSnackbarMessage(message);
       return;
+    }
+    if (paymentMode === "saved" && !selectedCard?.id) {
+      const message = "Choose a saved card or switch to a new card before placing your order.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+      scrollToValidationTarget(paymentSectionRef, paymentSectionRef);
+      return;
+    }
+    if (paymentMode === "new") {
+      if (!newCard.holder.trim()) {
+        const message = "Add the card holder name before placing your order.";
+        setErrorMessage(message);
+        setSnackbarMessage(message);
+        scrollToValidationTarget(cardHolderInputRef, paymentSectionRef);
+        return;
+      }
+      if (!canUseNewCard) {
+        const message = "Complete the new card details before placing your order.";
+        setErrorMessage(message);
+        setSnackbarMessage(message);
+        scrollToValidationTarget(paymentSectionRef, paymentSectionRef);
+        return;
+      }
     }
     if (stripeCheckout) {
       setSubmitting(true);
@@ -1890,7 +2172,7 @@ export function CartCheckout() {
           checkoutSessionId: requestedCheckoutSessionId || null,
           customerEmail: contactDraft.email.trim() || null,
           deliveryAddress: {
-            ...(selectedLocation || {}),
+            ...(resolvedSelectedLocation || {}),
             recipientName: contactDraft.recipientName.trim(),
             phoneCountryCode: contactDraft.phoneCountryCode.trim(),
             phoneNumber: combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
@@ -2061,6 +2343,13 @@ export function CartCheckout() {
     );
   }
 
+  const checkoutCtaDisabled = submitting || stripeLoading || !cart?.items?.length;
+  const checkoutIsProcessing = submitting || stripeLoading;
+  const checkoutCtaLabel = submitting ? "Processing secure payment..." : `Place order • ${formatMoney(payableIncl)}`;
+  const hasSavedAddresses = locations.length > 0;
+  const addressMode = showAddAddress || !hasSavedAddresses ? "new" : "saved";
+  const addressFieldCopy = getAddressFieldCopy(addressDraft.country);
+
   return (
     <>
       <style jsx global>{`
@@ -2112,31 +2401,35 @@ export function CartCheckout() {
             filter: blur(2px);
           }
         }
+        @keyframes piessang-checkout-progress {
+          0% {
+            background-position: 0% 50%;
+            transform: translateX(-6%);
+          }
+          100% {
+            background-position: 100% 50%;
+            transform: translateX(6%);
+          }
+        }
       `}</style>
-    <section className="space-y-5">
+    <section className="space-y-5 pb-28 lg:pb-0">
       <div className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+        <div className="mb-4">
+          <Image
+            src="/logo/Piessang Logo Full - Clipped.png"
+            alt="Piessang"
+            width={154}
+            height={36}
+            priority
+            className="h-7 w-auto sm:h-8"
+          />
+        </div>
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Checkout</p>
-        <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Review and pay</h1>
+        <h1 className="mt-2 text-[28px] font-semibold text-[#202020]">Final step</h1>
         <p className="mt-2 text-[14px] leading-[1.6] text-[#57636c]">
-          Choose your delivery address, confirm how you want to pay, and place your order.
+          Secure your order, confirm the delivery details, and finish payment with confidence.
         </p>
       </div>
-
-      {!isAuthenticated ? (
-        <div className="rounded-[8px] border border-[#d6cffb] bg-[rgba(111,85,246,0.06)] px-5 py-4 text-[14px] text-[#4c3fb3] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
-          <p className="font-semibold text-[#202020]">Guest checkout is available</p>
-          <p className="mt-1 leading-[1.6]">
-            You can finish this order without an account. If you’d rather save addresses and payment methods, sign in or create an account first.
-          </p>
-          <button
-            type="button"
-            onClick={() => openAuthModal("Sign in or create an account for faster checkout next time.")}
-            className="mt-3 inline-flex h-10 items-center rounded-[8px] border border-[#6f55f6]/20 bg-white px-4 text-[12px] font-semibold text-[#4c3fb3]"
-          >
-            Sign in or create account
-          </button>
-        </div>
-      ) : null}
 
       <div className="rounded-[8px] border border-[#b7e4c7] bg-[#effaf3] px-5 py-4 text-[14px] text-[#1f6b43] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
         <div className="flex items-center gap-3">
@@ -2161,19 +2454,29 @@ export function CartCheckout() {
 
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_380px]">
           <div className="space-y-5">
-            <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-              <div className="flex items-center justify-between gap-3">
-                <div>
+            <section ref={contactSectionRef} className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
                   <h2 className="text-[18px] font-semibold text-[#202020]">Delivery contact details</h2>
-                  <p className="mt-1 text-[12px] text-[#57636c]">
+                  <p className="mt-1 max-w-[34ch] text-[12px] leading-[1.6] text-[#57636c]">
                     Add the name and phone number the seller or driver should use for this order.
                   </p>
                 </div>
+                {!isAuthenticated ? (
+                  <button
+                    type="button"
+                    onClick={() => openAuthModal("Sign in or create an account for faster checkout next time.")}
+                    className="self-start whitespace-normal text-left text-[13px] font-medium leading-[1.5] text-[#57636c] underline decoration-black/20 underline-offset-2 transition hover:text-[#202020] sm:self-auto sm:text-right"
+                  >
+                    Already have an account? <span className="font-semibold text-[#202020]">Log in</span>
+                  </button>
+                ) : null}
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <div>
                   <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Recipient name<RequiredMark /></label>
                   <input
+                    ref={recipientNameInputRef}
                     value={contactDraft.recipientName}
                     onChange={(event) => setContactDraft((current) => ({ ...current, recipientName: event.target.value }))}
                     className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
@@ -2184,52 +2487,79 @@ export function CartCheckout() {
                   <div>
                     <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Email address<RequiredMark /></label>
                     <input
+                      ref={emailInputRef}
                       type="email"
                       value={contactDraft.email}
-                      onChange={(event) => setContactDraft((current) => ({ ...current, email: event.target.value }))}
+                      onChange={(event) =>
+                        setContactDraft((current) => ({ ...current, email: sanitizeEmailInput(event.target.value) }))
+                      }
                       className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
                       placeholder="Where should we send your order updates?"
                       autoComplete="email"
+                      inputMode="email"
+                      spellCheck={false}
+                      autoCapitalize="none"
                     />
                   </div>
                 ) : null}
-                <PhoneInput
-                  label="Mobile number *"
-                  countryCode={contactDraft.phoneCountryCode}
-                  localNumber={contactDraft.phoneNumber}
-                  onCountryCodeChange={(value) => setContactDraft((current) => ({ ...current, phoneCountryCode: value }))}
-                  onLocalNumberChange={(value) => setContactDraft((current) => ({ ...current, phoneNumber: value }))}
-                  hint="We’ll use this for delivery and order updates."
-                />
+                <div ref={phoneFieldRef}>
+                  <PhoneInput
+                    label="Mobile number *"
+                    countryCode={contactDraft.phoneCountryCode}
+                    localNumber={contactDraft.phoneNumber}
+                    onCountryCodeChange={(value) => setContactDraft((current) => ({ ...current, phoneCountryCode: value }))}
+                    onLocalNumberChange={(value) => setContactDraft((current) => ({ ...current, phoneNumber: value }))}
+                    hint="We’ll use this for delivery and order updates."
+                  />
+                </div>
               </div>
             </section>
 
-            <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <section ref={addressSectionRef} className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-[18px] font-semibold text-[#202020]">Delivery address{!selectedLocation ? <RequiredMark /> : null}</h2>
                   <p className="mt-1 text-[12px] text-[#57636c]">
-                    Choose where this order should be delivered, or add a new address below.
+                    Where should we deliver your order?
                   </p>
                 </div>
-                <div className="flex items-center gap-3">
+                {isAuthenticated ? (
                   <button
                     type="button"
-                    onClick={() => setShowAddAddress((current) => !current)}
+                    onClick={() => setAddressesModalOpen(true)}
                     className="text-[12px] font-semibold text-[#907d4c]"
                   >
-                    {showAddAddress ? "Hide address form" : isAuthenticated ? "Add new address" : "Add delivery address"}
+                    Manage addresses
                   </button>
-                  {isAuthenticated ? (
-                    <button
-                      type="button"
-                      onClick={() => setAddressesModalOpen(true)}
-                      className="text-[12px] font-semibold text-[#907d4c]"
-                    >
-                      Manage addresses
-                    </button>
-                  ) : null}
-                </div>
+                ) : null}
+              </div>
+              <div className="mt-4 inline-flex rounded-[10px] bg-[#f6f3eb] p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!hasSavedAddresses) return;
+                    setShowAddAddress(false);
+                  }}
+                  disabled={!hasSavedAddresses}
+                  className={
+                    addressMode === "saved"
+                      ? "inline-flex h-10 items-center justify-center rounded-[8px] bg-white px-4 text-[12px] font-semibold text-[#202020] shadow-[0_4px_10px_rgba(20,24,27,0.08)] disabled:cursor-not-allowed disabled:opacity-50"
+                      : "inline-flex h-10 items-center justify-center rounded-[8px] px-4 text-[12px] font-semibold text-[#7a7a7a] disabled:cursor-not-allowed disabled:opacity-50"
+                  }
+                >
+                  Use saved address
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAddAddress(true)}
+                  className={
+                    addressMode === "new"
+                      ? "inline-flex h-10 items-center justify-center rounded-[8px] bg-white px-4 text-[12px] font-semibold text-[#202020] shadow-[0_4px_10px_rgba(20,24,27,0.08)]"
+                      : "inline-flex h-10 items-center justify-center rounded-[8px] px-4 text-[12px] font-semibold text-[#7a7a7a]"
+                  }
+                >
+                  Add new address
+                </button>
               </div>
               {checkoutBlocked ? (
                 <div className="mt-4 rounded-[8px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-[13px] font-medium text-[#b91c1c]">
@@ -2238,7 +2568,7 @@ export function CartCheckout() {
                     : "One or more items in your cart are now out of stock. Remove them from your cart before continuing."}
                 </div>
               ) : null}
-              {locations.length ? (
+              {addressMode === "saved" && hasSavedAddresses ? (
                 <div className="mt-4 space-y-3">
                   {locations.map((location, index) => (
                     <button
@@ -2265,27 +2595,46 @@ export function CartCheckout() {
                       </div>
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() => setShowAddAddress(true)}
+                    className="w-full rounded-[8px] border border-dashed border-[rgba(66,133,244,0.28)] bg-[rgba(66,133,244,0.04)] px-4 py-4 text-left text-[13px] font-semibold text-[#1a56c6] transition hover:border-[rgba(66,133,244,0.42)] hover:bg-[rgba(66,133,244,0.08)]"
+                  >
+                    + Add new address
+                  </button>
                 </div>
-              ) : (
+              ) : addressMode === "saved" ? (
                 <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fafafa] px-4 py-4 text-[13px] text-[#57636c]">
                   You do not have a saved delivery address yet.
                 </div>
-              )}
-              {showAddAddress ? (
+              ) : (
                 <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="sm:col-span-2 flex justify-end">
                       <button
                         type="button"
                         onClick={() => setAddressPickerOpen(true)}
-                        className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020]"
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-[10px] border border-[rgba(66,133,244,0.28)] bg-[linear-gradient(135deg,rgba(66,133,244,0.12)_0%,rgba(52,168,83,0.08)_100%)] px-4 text-[12px] font-semibold text-[#1a56c6] shadow-[0_8px_18px_rgba(66,133,244,0.12)] transition hover:border-[rgba(66,133,244,0.42)] hover:bg-[linear-gradient(135deg,rgba(66,133,244,0.16)_0%,rgba(52,168,83,0.12)_100%)]"
                       >
-                        Search address on map
+                        <span
+                          aria-hidden="true"
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#4285f4] shadow-[0_4px_10px_rgba(66,133,244,0.18)]"
+                        >
+                          <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-none stroke-current stroke-[1.9]">
+                            <path d="M10 17s5-4.6 5-9a5 5 0 1 0-10 0c0 4.4 5 9 5 9Z" strokeLinecap="round" strokeLinejoin="round" />
+                            <circle cx="10" cy="8" r="1.8" />
+                          </svg>
+                        </span>
+                        <span className="flex flex-col items-start leading-[1.1]">
+                          <span>Find with Google Maps</span>
+                          <span className="text-[10px] font-medium text-[#4d7fe0]">Auto-fill your delivery address</span>
+                        </span>
                       </button>
                     </div>
                     <div>
                       <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address name<RequiredMark /></label>
                       <input
+                        ref={addressNameInputRef}
                         value={addressDraft.locationName}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, locationName: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
@@ -2293,67 +2642,74 @@ export function CartCheckout() {
                       />
                     </div>
                     <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.addressLine1Label}<RequiredMark /></label>
                       <input
+                        ref={streetAddressInputRef}
                         value={addressDraft.streetAddress}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Street number and street name"
+                        placeholder={addressFieldCopy.addressLine1Placeholder}
                       />
                     </div>
                     <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address line 2</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.addressLine2Label}</label>
                       <input
                         value={addressDraft.addressLine2}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, addressLine2: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Apartment, unit, building, floor"
+                        placeholder={addressFieldCopy.addressLine2Placeholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suburb<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.suburbLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.suburb}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, suburb: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Suburb"
+                        placeholder={addressFieldCopy.suburbPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">City<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.cityLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.city}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, city: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="City"
+                        placeholder={addressFieldCopy.cityPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Province<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.regionLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.stateProvinceRegion}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, stateProvinceRegion: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Province"
+                        placeholder={addressFieldCopy.regionPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Postal code<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.postalLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.postalCode}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, postalCode: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Postal code"
+                        placeholder={addressFieldCopy.postalPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Country<RequiredMark /></label>
-                      <input
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.countryLabel}<RequiredMark /></label>
+                      <select
                         value={addressDraft.country}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, country: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                        placeholder="Country"
-                      />
+                      >
+                        <option value="">{addressFieldCopy.countryPlaceholder}</option>
+                        {countryOptions.map((option) => (
+                          <option key={option.iso} value={option.name}>
+                            {`${option.flag} ${option.name}`.trim()}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="sm:col-span-2 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[12px] text-[#57636c]">
                       {addressDraft.latitude && addressDraft.longitude
@@ -2370,41 +2726,22 @@ export function CartCheckout() {
                       />
                     </div>
                   </div>
-                  <label className="mt-3 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
-                    <input
-                      type="checkbox"
-                      checked={addressDraft.is_default}
-                      onChange={(event) => setAddressDraft((current) => ({ ...current, is_default: event.target.checked }))}
-                      className="h-4 w-4 rounded border-black/20"
-                      disabled={!isAuthenticated}
-                    />
-                    {isAuthenticated ? "Set this as my default delivery address" : "Use this address for this order"}
-                  </label>
-                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => void handleCreateAddress()}
-                      disabled={addressSaving}
-                      className="inline-flex h-11 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {addressSaving ? "Saving..." : isAuthenticated ? "Save address" : "Use this address"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAddAddress(false);
-                        setAddressDraft(defaultAddressDraft(profile ?? undefined));
-                      }}
-                      className="inline-flex h-11 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                  {isAuthenticated ? (
+                    <label className="mt-3 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
+                      <input
+                        type="checkbox"
+                        checked={addressDraft.is_default}
+                        onChange={(event) => setAddressDraft((current) => ({ ...current, is_default: event.target.checked }))}
+                        className="h-4 w-4 rounded border-black/20"
+                      />
+                      Set this as my default delivery address
+                    </label>
+                  ) : null}
                 </div>
-              ) : null}
+              )}
             </section>
 
-            <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <section ref={paymentSectionRef} className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-[18px] font-semibold text-[#202020]">Payment method{!canUseSavedCard ? <RequiredMark /> : null}</h2>
                 {isAuthenticated ? (
@@ -2561,6 +2898,7 @@ export function CartCheckout() {
                   <div className="sm:col-span-2">
                     <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Card holder<RequiredMark /></label>
                     <input
+                      ref={cardHolderInputRef}
                       value={newCard.holder}
                       onChange={(event) => setNewCard((current) => ({ ...current, holder: event.target.value }))}
                       onBlur={() => setCardTouched((current) => ({ ...current, holder: true }))}
@@ -2685,10 +3023,10 @@ export function CartCheckout() {
                     </div>
                     <div className="mt-3 space-y-3">
                       {group.items.map((item, index) => (
-                        <div key={`${item?.product_snapshot?.product?.title || "item"}-${index}`} className="rounded-[8px] border border-black/5 bg-white p-4">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex min-w-0 items-start gap-3">
-                              <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa]">
+                        <div key={`${item?.product_snapshot?.product?.title || "item"}-${index}`} className="rounded-[10px] border border-black/5 bg-white p-3 sm:p-4">
+                          <div className="space-y-3 sm:flex sm:items-start sm:justify-between sm:gap-3 sm:space-y-0">
+                            <div className="flex items-start gap-3">
+                              <div className="relative h-[72px] w-[72px] shrink-0 overflow-hidden rounded-[10px] border border-black/5 bg-[#fafafa] sm:h-16 sm:w-16 sm:rounded-[8px]">
                                 <BlurhashImage
                                   src={
                                     item?.selected_variant_snapshot?.media?.images?.[0]?.imageUrl ||
@@ -2701,23 +3039,41 @@ export function CartCheckout() {
                                     null
                                   }
                                   alt={item?.product_snapshot?.product?.title || "Product"}
-                                  sizes="64px"
+                                  sizes="(max-width: 640px) 72px, 64px"
                                   className="h-full w-full"
                                   imageClassName="object-cover"
                                 />
                               </div>
-                              <div className="min-w-0">
-                                <p className="text-[14px] font-semibold text-[#202020]">
+                              <div className="min-w-0 space-y-1">
+                                <p
+                                  className="text-[14px] font-semibold leading-[1.45] text-[#202020] sm:text-[14px]"
+                                  style={{
+                                    display: "-webkit-box",
+                                    WebkitLineClamp: 3,
+                                    WebkitBoxOrient: "vertical",
+                                    overflow: "hidden",
+                                  }}
+                                >
                                   {item?.product_snapshot?.product?.title || "Product"}
                                 </p>
-                                <p className="mt-1 text-[12px] text-[#57636c]">
+                                <p className="text-[12px] leading-[1.5] text-[#57636c]">
                                   {item?.selected_variant_snapshot?.label || "Selected variant"}
+                                </p>
+                                <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[#7b8690] sm:hidden">
+                                  Qty {Math.max(0, Number(item?.qty ?? item?.quantity ?? 0))}
+                                </p>
+                                <p className="text-[18px] font-semibold leading-none text-[#202020] sm:hidden">
+                                  {formatMoney(item?.line_totals?.final_incl || 0)}
                                 </p>
                               </div>
                             </div>
-                            <div className="text-right">
-                              <p className="text-[12px] text-[#57636c]">Qty {Math.max(0, Number(item?.qty ?? item?.quantity ?? 0))}</p>
-                              <p className="mt-1 text-[14px] font-semibold text-[#202020]">{formatMoney(item?.line_totals?.final_incl || 0)}</p>
+                            <div className="hidden min-w-[68px] flex-col items-end justify-start gap-1 text-right sm:flex">
+                              <p className="text-[12px] text-[#57636c]">
+                                Qty {Math.max(0, Number(item?.qty ?? item?.quantity ?? 0))}
+                              </p>
+                              <p className="mt-1 text-[14px] font-semibold text-[#202020]">
+                                {formatMoney(item?.line_totals?.final_incl || 0)}
+                              </p>
                             </div>
                           </div>
                         </div>
@@ -2730,7 +3086,47 @@ export function CartCheckout() {
           </div>
 
           <aside className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)] lg:sticky lg:top-6 lg:self-start">
-            <h2 className="text-[18px] font-semibold text-[#202020]">Order summary</h2>
+            <div className="rounded-[14px] bg-[linear-gradient(145deg,#202020_0%,#2c333a_60%,#3d4650_100%)] p-5 text-white shadow-[0_16px_40px_rgba(20,24,27,0.18)]">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/72">Order summary</p>
+              <div className="mt-4 flex items-end justify-between gap-4">
+                <div>
+                  <p className="text-[12px] text-white/72">Amount to pay</p>
+                  <p className="mt-1 text-[32px] font-semibold tracking-[-0.04em] text-white">{formatMoney(payableIncl)}</p>
+                </div>
+                <div className="rounded-full border border-white/12 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-white/88">
+                  {getItemCount(cart)} item{getItemCount(cart) === 1 ? "" : "s"}
+                </div>
+              </div>
+              <div className="mt-4 grid gap-2 text-[12px] text-white/78">
+                <div className="flex items-center gap-2">
+                  <span aria-hidden="true" className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10">
+                    <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-none stroke-current stroke-[2]">
+                      <path d="M10 2.5 4.5 5v4.3c0 3.1 2.2 6 5.5 7.2 3.3-1.2 5.5-4.1 5.5-7.2V5L10 2.5Z" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="m7.7 9.9 1.6 1.6 3-3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span>Secure checkout via Stripe</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span aria-hidden="true" className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10">
+                    <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-none stroke-current stroke-[2]">
+                      <path d="M3 10h14" strokeLinecap="round" />
+                      <path d="M10 3v14" strokeLinecap="round" />
+                    </svg>
+                  </span>
+                  <span>Delivery updates sent after purchase</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span aria-hidden="true" className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10">
+                    <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-none stroke-current stroke-[2]">
+                      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h7A2.5 2.5 0 0 1 16 6.5v4A2.5 2.5 0 0 1 13.5 13h-4l-3 3V6.5Z" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span>Support is available if anything changes</span>
+                </div>
+              </div>
+            </div>
+
             {selectedLocation ? (
               <div className="mt-5 rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Delivering to</p>
@@ -2906,23 +3302,56 @@ export function CartCheckout() {
               </div>
             ) : null}
 
+            <div className="mt-5 rounded-[12px] border border-[#d8eadf] bg-[#f4fbf6] px-4 py-4 text-[#24543b]">
+              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#198754]">Ready to complete</p>
+              <div className="mt-3 space-y-2 text-[12px] leading-[1.6] text-[#3a5d49]">
+                <div className="flex items-start gap-2">
+                  <span aria-hidden="true" className="mt-[2px] inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#d9f3e3] text-[#198754]">
+                    <svg viewBox="0 0 16 16" className="h-3 w-3 fill-none stroke-current stroke-[2.2]">
+                      <path d="m3.5 8.3 2.4 2.4 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span>Your payment is encrypted and handled securely.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span aria-hidden="true" className="mt-[2px] inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#d9f3e3] text-[#198754]">
+                    <svg viewBox="0 0 16 16" className="h-3 w-3 fill-none stroke-current stroke-[2.2]">
+                      <path d="m3.5 8.3 2.4 2.4 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span>We’ll email your receipt and order updates right away.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <span aria-hidden="true" className="mt-[2px] inline-flex h-4 w-4 items-center justify-center rounded-full bg-[#d9f3e3] text-[#198754]">
+                    <svg viewBox="0 0 16 16" className="h-3 w-3 fill-none stroke-current stroke-[2.2]">
+                      <path d="m3.5 8.3 2.4 2.4 6-6" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span>Your reserved stock stays held while you finish checkout.</span>
+                </div>
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={() => void handleCheckout()}
-              disabled={
-                submitting ||
-                stripeLoading ||
-                checkoutBlocked ||
-                !locations.length ||
-                !hasCheckoutContactDetails ||
-                !cart?.items?.length ||
-                (paymentMode === "saved" ? !selectedCard?.id : !canUseNewCard)
-              }
-              className="mt-5 inline-flex h-12 w-full items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold uppercase tracking-[0.08em] text-white disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={checkoutCtaDisabled}
+              className="relative mt-5 hidden h-12 w-full items-center justify-center overflow-hidden rounded-[8px] border border-[#b89335] bg-[#c9a64b] px-4 text-[13px] font-semibold text-[#201a12] shadow-[0_12px_24px_rgba(201,166,75,0.22)] transition hover:bg-[#b89335] disabled:cursor-not-allowed disabled:opacity-50 lg:inline-flex"
             >
-              {submitting
-                ? "Processing payment..."
-                : "Pay and place order"}
+              {checkoutIsProcessing ? (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 rounded-[8px] opacity-[0.22]"
+                  style={{
+                    backgroundImage:
+                      "linear-gradient(90deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.02) 18%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0.02) 82%, rgba(255,255,255,0.18) 100%), url('/backgrounds/piessang-repeat-background.png')",
+                    backgroundSize: "220% 100%, 340px auto",
+                    backgroundRepeat: "no-repeat, repeat",
+                    animation: "piessang-checkout-progress 1.9s linear infinite",
+                  }}
+                />
+              ) : null}
+              <span className="relative z-[1]">{checkoutCtaLabel}</span>
             </button>
 
             <Link href="/cart" className="mt-3 inline-flex h-11 w-full items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]">
@@ -2931,6 +3360,34 @@ export function CartCheckout() {
           </aside>
         </div>
     </section>
+    <div className="fixed inset-x-0 bottom-0 z-[95] border-t border-black/10 bg-white/95 px-4 pb-[calc(16px+env(safe-area-inset-bottom))] pt-3 shadow-[0_-16px_40px_rgba(20,24,27,0.12)] backdrop-blur lg:hidden">
+      <div className="mx-auto max-w-[640px]">
+        {mobileStickyFulfillmentLabel ? (
+          <p className="mb-3 text-[12px] font-medium text-[#57636c]">{mobileStickyFulfillmentLabel}</p>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void handleCheckout()}
+          disabled={checkoutCtaDisabled}
+          className="relative inline-flex h-12 w-full items-center justify-center overflow-hidden rounded-[8px] border border-[#b89335] bg-[#c9a64b] px-5 text-[13px] font-semibold text-[#201a12] shadow-[0_12px_24px_rgba(201,166,75,0.22)] transition hover:bg-[#b89335] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {checkoutIsProcessing ? (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 rounded-[8px] opacity-[0.22]"
+              style={{
+                backgroundImage:
+                  "linear-gradient(90deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.02) 18%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0.02) 82%, rgba(255,255,255,0.18) 100%), url('/backgrounds/piessang-repeat-background.png')",
+                backgroundSize: "220% 100%, 340px auto",
+                backgroundRepeat: "no-repeat, repeat",
+                animation: "piessang-checkout-progress 1.9s linear infinite",
+              }}
+            />
+          ) : null}
+          <span className="relative z-[1]">{submitting ? "Processing..." : `Place order • ${formatMoney(payableIncl)}`}</span>
+        </button>
+      </div>
+    </div>
     {paymentOverlay.open ? (
       <div className="fixed inset-0 z-[180] flex items-center justify-center bg-[rgba(20,24,27,0.55)] px-4 py-6" role="dialog" aria-modal="true">
         <div className="w-full max-w-[560px] overflow-hidden rounded-[28px] border border-black/10 bg-white shadow-[0_24px_80px_rgba(20,24,27,0.24)]">
@@ -3220,9 +3677,21 @@ export function CartCheckout() {
                     <button
                       type="button"
                       onClick={() => setAddressPickerOpen(true)}
-                      className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020]"
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-[10px] border border-[rgba(66,133,244,0.28)] bg-[linear-gradient(135deg,rgba(66,133,244,0.12)_0%,rgba(52,168,83,0.08)_100%)] px-4 text-[12px] font-semibold text-[#1a56c6] shadow-[0_8px_18px_rgba(66,133,244,0.12)] transition hover:border-[rgba(66,133,244,0.42)] hover:bg-[linear-gradient(135deg,rgba(66,133,244,0.16)_0%,rgba(52,168,83,0.12)_100%)]"
                     >
-                      Search address on map
+                      <span
+                        aria-hidden="true"
+                        className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-[#4285f4] shadow-[0_4px_10px_rgba(66,133,244,0.18)]"
+                      >
+                        <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-none stroke-current stroke-[1.9]">
+                          <path d="M10 17s5-4.6 5-9a5 5 0 1 0-10 0c0 4.4 5 9 5 9Z" strokeLinecap="round" strokeLinejoin="round" />
+                          <circle cx="10" cy="8" r="1.8" />
+                        </svg>
+                      </span>
+                      <span className="flex flex-col items-start leading-[1.1]">
+                        <span>Find with Google Maps</span>
+                        <span className="text-[10px] font-medium text-[#4d7fe0]">Auto-fill your delivery address</span>
+                      </span>
                     </button>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -3235,60 +3704,73 @@ export function CartCheckout() {
                       />
                     </div>
                     <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Street address<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.addressLine1Label}<RequiredMark /></label>
                       <input
                         value={addressDraft.streetAddress}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, streetAddress: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder={addressFieldCopy.addressLine1Placeholder}
                       />
                     </div>
                     <div className="sm:col-span-2">
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Address line 2</label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.addressLine2Label}</label>
                       <input
                         value={addressDraft.addressLine2}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, addressLine2: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder={addressFieldCopy.addressLine2Placeholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suburb<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.suburbLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.suburb}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, suburb: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder={addressFieldCopy.suburbPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">City<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.cityLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.city}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, city: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder={addressFieldCopy.cityPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Province<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.regionLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.stateProvinceRegion}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, stateProvinceRegion: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder={addressFieldCopy.regionPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Postal code<RequiredMark /></label>
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.postalLabel}<RequiredMark /></label>
                       <input
                         value={addressDraft.postalCode}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, postalCode: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
+                        placeholder={addressFieldCopy.postalPlaceholder}
                       />
                     </div>
                     <div>
-                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Country<RequiredMark /></label>
-                      <input
+                      <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">{addressFieldCopy.countryLabel}<RequiredMark /></label>
+                      <select
                         value={addressDraft.country}
                         onChange={(event) => setAddressDraft((current) => ({ ...current, country: event.target.value }))}
                         className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#907d4c]"
-                      />
+                      >
+                        <option value="">{addressFieldCopy.countryPlaceholder}</option>
+                        {countryOptions.map((option) => (
+                          <option key={option.iso} value={option.name}>
+                            {`${option.flag} ${option.name}`.trim()}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                     <div className="sm:col-span-2">
                       <label className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Delivery notes</label>

@@ -122,7 +122,7 @@ export async function POST(req) {
     }
 
     if (!adminReply) {
-      const internalEmails = await collectSystemAdminNotificationEmails({ fallbackEmails: ["support@piessang.com"] });
+      const internalEmails = await collectSystemAdminNotificationEmails({ fallbackEmails: ["admin@piessang.com"] });
       await sendSellerNotificationEmails({
         origin,
         type: "support-ticket-customer-reply-internal",

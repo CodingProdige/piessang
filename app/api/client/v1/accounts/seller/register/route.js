@@ -258,7 +258,7 @@ export async function POST(req) {
     };
     const internalEmailPayload = {
       type: "seller-registration-internal",
-      to: "support@piessang.com",
+      to: "admin@piessang.com",
       data: {
         uid,
         vendorName: vendorNameFormatted,

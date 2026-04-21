@@ -1091,7 +1091,7 @@ export async function POST(req){
       }
 
       if (process.env.SENDGRID_API_KEY?.startsWith("SG.") && toStr(next.moderation.status).toLowerCase() === "in_review") {
-        const internalRecipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["support@piessang.com"] });
+        const internalRecipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["admin@piessang.com"] });
         if (internalRecipients.length) {
           await sendSellerNotificationEmails({
             origin: new URL(req.url).origin,

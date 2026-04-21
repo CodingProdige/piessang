@@ -9,8 +9,13 @@ import { isSystemAdminUser } from "@/lib/seller/settlement-access";
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import {
   getSellerShopifyConnection,
+  getDefaultShopifyWebhookTopics,
+  getValidSellerShopifyAccessToken,
+  registerSellerShopifyWebhooks,
+  importSelectedSellerShopifyProducts,
   prepareSellerShopifyImport,
   saveSellerShopifyConnection,
+  updateSellerShopifyConnectionState,
   verifyShopifyConnection,
   listShopifyPreviewProducts,
   normalizeShopDomain,
@@ -167,7 +172,117 @@ export async function POST(req) {
       });
     }
 
-    return err(400, "Invalid Action", "Supported actions are verify_connection, save_setup, and prepare_import.");
+    if (action === "import_selected_products") {
+      const result = await importSelectedSellerShopifyProducts({
+        sellerSlug: auth.seller.sellerSlug,
+        sellerCode: auth.seller.sellerCode,
+        vendorName: auth.seller.vendorName,
+        jobId: toStr(body?.jobId),
+        productIds: Array.isArray(body?.productIds) ? body.productIds : [],
+      });
+      const connection = await getSellerShopifyConnection({
+        sellerSlug: auth.seller.sellerSlug,
+        sellerCode: auth.seller.sellerCode,
+      });
+      return ok({
+        message: result.createdProducts.length
+          ? `Imported ${result.createdProducts.length} Shopify product${result.createdProducts.length === 1 ? "" : "s"} into Piessang.`
+          : "No new Shopify products were imported because the selected items already exist in Piessang.",
+        ...result,
+        connection,
+      });
+    }
+
+    if (action === "disconnect") {
+      const existing = await getSellerShopifyConnection({
+        sellerSlug: auth.seller.sellerSlug,
+        sellerCode: auth.seller.sellerCode,
+      });
+      if (!existing) {
+        return ok({
+          message: "Shopify integration already disconnected.",
+          connection: null,
+        });
+      }
+
+      const connection = await updateSellerShopifyConnectionState({
+        sellerSlug: auth.seller.sellerSlug,
+        sellerCode: auth.seller.sellerCode,
+        patch: {
+          connected: false,
+          tokenMasked: "",
+          lastError: "",
+          verifiedAt: "",
+          accessTokenExpiresAt: "",
+          refreshTokenExpiresAt: "",
+          lastWebhookAt: "",
+          lastWebhookTopic: "",
+          lastSyncSummary: null,
+          webhooks: null,
+          lastPreview: {
+            fetchedAt: "",
+            totals: {},
+            products: [],
+          },
+          secret: {
+            adminAccessToken: "",
+            refreshToken: "",
+          },
+        },
+      });
+
+      return ok({
+        message: "Shopify integration disconnected. Piessang sync is now stopped until you reconnect.",
+        connection,
+      });
+    }
+
+    if (action === "retry_webhooks") {
+      const existing = await getSellerShopifyConnection({
+        sellerSlug: auth.seller.sellerSlug,
+        sellerCode: auth.seller.sellerCode,
+      });
+      if (!existing?.connected || !existing?.shopDomain) {
+        return err(400, "Not Connected", "Connect Shopify first before retrying webhook registration.");
+      }
+
+      const token = await getValidSellerShopifyAccessToken({
+        sellerSlug: auth.seller.sellerSlug,
+        sellerCode: auth.seller.sellerCode,
+      });
+      const webhookUrl = new URL("/api/client/v1/accounts/seller/shopify/webhook", req.url).toString();
+      const webhookResults = await registerSellerShopifyWebhooks({
+        shopDomain: existing.shopDomain,
+        adminAccessToken: token,
+        deliveryUrl: webhookUrl,
+        topics: getDefaultShopifyWebhookTopics(),
+      });
+
+      const connection = await updateSellerShopifyConnectionState({
+        sellerSlug: auth.seller.sellerSlug,
+        sellerCode: auth.seller.sellerCode,
+        patch: {
+          webhooks: {
+            registeredAt: new Date().toISOString(),
+            deliveryUrl: webhookUrl,
+            topics: webhookResults,
+            lastError: webhookResults.some((row) => !row.ok)
+              ? webhookResults.flatMap((row) => row.errors || []).map((item) => toStr(item?.message)).filter(Boolean).join(" | ").slice(0, 240)
+              : "",
+            lastAttemptAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      return ok({
+        message: webhookResults.some((row) => row.ok)
+          ? "Shopify webhooks registered successfully."
+          : "Shopify webhook registration still needs attention.",
+        connection,
+      });
+    }
+
+    return err(400, "Invalid Action", "Supported actions are verify_connection, save_setup, prepare_import, disconnect, and retry_webhooks.");
   } catch (e) {
     console.error("seller/shopify update failed:", e);
     return err(500, "Unexpected Error", "Unable to update Shopify onboarding.", {

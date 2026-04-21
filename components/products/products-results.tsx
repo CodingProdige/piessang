@@ -16,6 +16,7 @@ import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement, useProductImpressionTracker } from "@/lib/analytics/product-engagement-client";
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
+import { getCartQuantityGuard, getVariantAvailableQuantity } from "@/lib/cart/interaction-guards";
 import { formatCurrency } from "@/lib/seller/delivery-profile";
 import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
 import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
@@ -874,7 +875,7 @@ function getStockState(variant?: ProductVariant, item?: ProductItem) {
     return { label: "In stock", tone: "success" as const, hideQuantity: true };
   }
   if (variant?.checkout_reserved_unavailable) {
-    return { label: "Reserved in another shopper's checkout.", tone: "warning" as const, hideQuantity: false };
+    return { label: "Reserved in checkout", tone: "warning" as const, hideQuantity: true };
   }
 
   if (item?.data?.has_in_stock_variants === false) {
@@ -1041,6 +1042,7 @@ export function BrowseProductCard({
   const [favoriteBusy, setFavoriteBusy] = useState(false);
   const [cartBusy, setCartBusy] = useState(false);
   const [cartJustAdded, setCartJustAdded] = useState(false);
+  const [cartBlockedNotice, setCartBlockedNotice] = useState<string | null>(null);
   const defaultVariant = pickDisplayVariant(item.data?.variants) ?? undefined;
   const productUniqueId = String(item.id ?? item.data?.docId ?? item.data?.product?.unique_id ?? "").trim();
   const sellerCode = String(item.data?.product?.sellerCode ?? item.data?.seller?.sellerCode ?? "").trim();
@@ -1141,8 +1143,19 @@ export function BrowseProductCard({
   const cartVariantCount =
     productUniqueId && defaultVariantId ? cartVariantCounts[`${productUniqueId}::${defaultVariantId}`] ?? 0 : 0;
   const cartCount = cartVariantCount || cartProductCount;
+  const cartQuantityGuard = getCartQuantityGuard({
+    variant: defaultVariant,
+    currentCartQty: cartVariantCount,
+    unavailable: stockState.label === "Out of stock",
+  });
+  const availableQuantity = cartQuantityGuard.availableQuantity;
+  const isOutOfStock = cartQuantityGuard.isOutOfStock;
+  const isCheckoutReserved = cartQuantityGuard.isCheckoutReserved;
+  const reachedCartLimit = cartQuantityGuard.reachedCartLimit;
+  const canAddDefaultVariantToCart = !cartBusy && cartQuantityGuard.canAdd;
   const handleCartSuccess = onAddToCartSuccess ?? (() => {});
   const hasPrefetchedHrefRef = useRef(false);
+  const blockedCartMessage = cartQuantityGuard.message;
 
   const prefetchProductHref = () => {
     if (hasPrefetchedHrefRef.current || !href) return;
@@ -1192,6 +1205,11 @@ export function BrowseProductCard({
     const timeout = window.setTimeout(() => setCartJustAdded(false), 1400);
     return () => window.clearTimeout(timeout);
   }, [cartJustAdded]);
+  useEffect(() => {
+    if (!cartBlockedNotice) return undefined;
+    const timeout = window.setTimeout(() => setCartBlockedNotice(null), 2200);
+    return () => window.clearTimeout(timeout);
+  }, [cartBlockedNotice]);
   const favoriteVisible = isAuthenticated;
 
   const handleImagePointerMove = (event: MouseEvent<HTMLElement>) => {
@@ -1287,6 +1305,10 @@ export function BrowseProductCard({
     }
 
     if (cartBusy) return;
+    if (blockedCartMessage) {
+      setCartBlockedNotice(blockedCartMessage);
+      return;
+    }
     setCartBusy(true);
     setCartJustAdded(false);
     optimisticAddToCart(productUniqueId, defaultVariantId, 1);
@@ -1536,19 +1558,20 @@ export function BrowseProductCard({
 
   if (view === "list") {
     return (
-      <article
-        ref={impressionRef as any}
-        role="link"
-        tabIndex={0}
-        onClick={openCardIfAllowed}
-        onMouseEnter={handleCardMouseEnter}
-        onTouchStart={handleCardTouchStart}
-        onFocus={handleCardFocus}
-        onKeyDown={onCardKeyDown}
-        data-clickable-container="true"
-    className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
-      >
-        <div className="flex flex-col gap-3 p-4 sm:flex-row">
+      <>
+        <article
+          ref={impressionRef as any}
+          role="link"
+          tabIndex={0}
+          onClick={openCardIfAllowed}
+          onMouseEnter={handleCardMouseEnter}
+          onTouchStart={handleCardTouchStart}
+          onFocus={handleCardFocus}
+          onKeyDown={onCardKeyDown}
+          data-clickable-container="true"
+          className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
+        >
+          <div className="flex flex-col gap-3 p-4 sm:flex-row">
           <div
             className="relative h-[160px] w-full shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa] sm:w-[180px]"
             onMouseMove={handleImagePointerMove}
@@ -1700,16 +1723,42 @@ export function BrowseProductCard({
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={handleAddDefaultVariantToCart}
                 disabled={cartBusy}
-                className={`relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-wait disabled:opacity-70 ${
+                className={`relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${
                   cartJustAdded
                     ? "border-[#1a8553] bg-[#1a8553] text-white shadow-[0_10px_24px_rgba(26,133,83,0.18)]"
-                    : "border-black/20 bg-transparent text-[#202020] hover:border-[#cbb26b] hover:text-[#cbb26b]"
+                    : !canAddDefaultVariantToCart
+                      ? "border-black/10 bg-[#f5f5f5] text-[#7d7d7d]"
+                      : "border-black/20 bg-transparent text-[#202020] hover:border-[#cbb26b] hover:text-[#cbb26b]"
                 }`}
                 aria-label="Add default variant to cart"
+                aria-disabled={!canAddDefaultVariantToCart}
+                title={
+                  reachedCartLimit
+                    ? `Maximum available quantity already in cart${typeof availableQuantity === "number" ? ` (${availableQuantity})` : ""}.`
+                    : isCheckoutReserved
+                      ? "This item is currently reserved in another shopper's checkout."
+                      : isOutOfStock
+                      ? "This item is out of stock."
+                      : undefined
+                }
               >
                 <CartPlusIcon />
-                <span className="whitespace-nowrap sm:hidden">{cartBusy ? "Adding" : cartJustAdded ? "Added" : "Add"}</span>
-                <span className="hidden whitespace-nowrap sm:inline">{cartBusy ? "Adding..." : cartJustAdded ? "Added to cart" : "Add to cart"}</span>
+                <span className="whitespace-nowrap sm:hidden">
+                  {cartBusy ? "Adding" : reachedCartLimit ? "Max" : isCheckoutReserved ? "Reserved" : isOutOfStock ? "Sold out" : cartJustAdded ? "Added" : "Add"}
+                </span>
+                <span className="hidden whitespace-nowrap sm:inline">
+                  {cartBusy
+                    ? "Adding..."
+                    : reachedCartLimit
+                      ? "Max reached"
+                      : isCheckoutReserved
+                        ? "Reserved"
+                      : isOutOfStock
+                        ? "Out of stock"
+                        : cartJustAdded
+                          ? "Added to cart"
+                          : "Add to cart"}
+                </span>
                 {cartCount > 0 ? (
                   <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
                     {cartCount}
@@ -1723,8 +1772,20 @@ export function BrowseProductCard({
               </button>
             </div>
           </div>
-        </div>
-      </article>
+          </div>
+        </article>
+        <AppSnackbar
+          notice={
+            cartBlockedNotice
+              ? {
+                  tone: isOutOfStock || isCheckoutReserved ? "error" : "info",
+                  message: cartBlockedNotice,
+                }
+              : null
+          }
+          onClose={() => setCartBlockedNotice(null)}
+        />
+      </>
     );
   }
 
@@ -1886,16 +1947,42 @@ export function BrowseProductCard({
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={handleAddDefaultVariantToCart}
                 disabled={cartBusy}
-                className={`relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-wait disabled:opacity-70 ${
+                className={`relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${
                   cartJustAdded
                     ? "border-[#1a8553] bg-[#1a8553] text-white shadow-[0_10px_24px_rgba(26,133,83,0.18)]"
-                    : "border-black/20 bg-transparent text-[#202020] hover:border-[#cbb26b] hover:text-[#cbb26b]"
+                    : !canAddDefaultVariantToCart
+                      ? "border-black/10 bg-[#f5f5f5] text-[#7d7d7d]"
+                      : "border-black/20 bg-transparent text-[#202020] hover:border-[#cbb26b] hover:text-[#cbb26b]"
                 }`}
                 aria-label="Add default variant to cart"
+                aria-disabled={!canAddDefaultVariantToCart}
+                title={
+                  reachedCartLimit
+                    ? `Maximum available quantity already in cart${typeof availableQuantity === "number" ? ` (${availableQuantity})` : ""}.`
+                    : isCheckoutReserved
+                      ? "This item is currently reserved in another shopper's checkout."
+                      : isOutOfStock
+                      ? "This item is out of stock."
+                      : undefined
+                }
               >
                 <CartPlusIcon />
-                <span className="whitespace-nowrap sm:hidden">{cartBusy ? "Adding" : cartJustAdded ? "Added" : "Add"}</span>
-                <span className="hidden whitespace-nowrap sm:inline">{cartBusy ? "Adding..." : cartJustAdded ? "Added to cart" : "Add to cart"}</span>
+                <span className="whitespace-nowrap sm:hidden">
+                  {cartBusy ? "Adding" : reachedCartLimit ? "Max" : isCheckoutReserved ? "Reserved" : isOutOfStock ? "Sold out" : cartJustAdded ? "Added" : "Add"}
+                </span>
+                <span className="hidden whitespace-nowrap sm:inline">
+                  {cartBusy
+                    ? "Adding..."
+                    : reachedCartLimit
+                      ? "Max reached"
+                      : isCheckoutReserved
+                        ? "Reserved"
+                      : isOutOfStock
+                        ? "Out of stock"
+                        : cartJustAdded
+                          ? "Added to cart"
+                          : "Add to cart"}
+                </span>
                 {cartCount > 0 ? (
                   <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
                     {cartCount}
@@ -1911,6 +1998,17 @@ export function BrowseProductCard({
           </div>
         </div>
       </article>
+      <AppSnackbar
+        notice={
+          cartBlockedNotice
+            ? {
+                tone: isOutOfStock || isCheckoutReserved ? "error" : "info",
+                message: cartBlockedNotice,
+              }
+            : null
+        }
+        onClose={() => setCartBlockedNotice(null)}
+      />
     </div>
   );
 }
@@ -2202,12 +2300,12 @@ export function ProductsResults({
 
   const handleAddToCartSuccess = async (cart: CartPreview | null) => {
     const nextCart = (cart ?? null) as CartPreview | null;
-    syncCartState(nextCart);
     setCartPreview(nextCart);
     setCartDrawerOpen(true);
     setCartToastVisible(true);
     setCartBurstKey(Date.now());
     window.setTimeout(() => setCartToastVisible(false), 1600);
+    void refreshCart();
   };
   const handleClearFavorites = async () => {
     if (!isAuthenticated || !uid) {

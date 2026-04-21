@@ -73,6 +73,7 @@ type ProductItem = {
 
 type SellerProductsWorkspaceProps = {
   vendorName: string;
+  sellerCode?: string;
   sellerSlug?: string;
   onCreateProduct: () => void;
   onEditProduct: (productId: string) => void;
@@ -252,7 +253,14 @@ function isRowEditIgnored(target: EventTarget | null) {
   return Boolean(target.closest('button, a, input, textarea, select, label, [data-ignore-row-edit="true"]'));
 }
 
-export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateProduct, onEditProduct, onOpenSettings }: SellerProductsWorkspaceProps) {
+export function SellerProductsWorkspace({
+  vendorName,
+  sellerCode = "",
+  sellerSlug = "",
+  onCreateProduct,
+  onEditProduct,
+  onOpenSettings,
+}: SellerProductsWorkspaceProps) {
   const [items, setItems] = useState<ProductItem[]>([]);
   const [deliverySettingsReady, setDeliverySettingsReady] = useState(true);
   const [weightBasedShippingRequired, setWeightBasedShippingRequired] = useState(false);
@@ -282,7 +290,9 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
         limit: "all",
         includeUnavailable: "true",
       });
-      if (vendorName.trim()) params.set("vendorName", vendorName.trim());
+      if (sellerCode.trim()) params.set("sellerCode", sellerCode.trim());
+      else if (sellerSlug.trim()) params.set("sellerSlug", sellerSlug.trim());
+      else if (vendorName.trim()) params.set("vendorName", vendorName.trim());
 
       const response = await fetch(`/api/catalogue/v1/products/product/get?${params.toString()}`, {
         signal,
@@ -304,7 +314,7 @@ export function SellerProductsWorkspace({ vendorName, sellerSlug = "", onCreateP
         setLoading(false);
       }
     }
-  }, [vendorName]);
+  }, [sellerCode, sellerSlug, vendorName]);
 
   useEffect(() => {
     const controller = new AbortController();
