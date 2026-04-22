@@ -10,6 +10,7 @@ import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/t
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { normalizeMoneyAmount } from "@/lib/money";
+import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 import { encryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
 import { enqueueGoogleSyncForSeller } from "@/lib/integrations/google-sync-queue";
 import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
@@ -345,6 +346,19 @@ function parseDeliveryProfile(payload) {
   };
 }
 
+function parseCourierProfile(payload) {
+  const normalized = normalizeSellerCourierProfile(payload && typeof payload === "object" ? payload : {});
+  return {
+    enabled: normalized.enabled === true,
+    provider: "easyship",
+    internationalEnabled: normalized.internationalEnabled !== false,
+    handoverMode: normalized.handoverMode === "dropoff" ? "dropoff" : "pickup",
+    allowedCouriers: [],
+    allowedDestinationCountries: [],
+    platformMarkupMode: "platform_default",
+  };
+}
+
 async function enforceSellerWeightShippingRequirements(db, sellerSlug, deliveryProfile) {
   if (!sellerSlug || !sellerHasWeightBasedShipping(deliveryProfile)) {
     return { hasWeightBasedShipping: false, missingWeightCount: 0, affectedTitles: [], deactivatedCount: 0 };
@@ -404,6 +418,7 @@ export async function POST(req) {
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     const branding = parseBranding(data?.branding || data);
     const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
+    const courierProfile = parseCourierProfile(data?.courierProfile || data?.courier || {});
     deliveryProfile.origin = await enrichLocationWithGeocode({
       country: deliveryProfile.origin?.country,
       region: deliveryProfile.origin?.region,
@@ -460,6 +475,7 @@ export async function POST(req) {
       "seller.groupSellerCode": sellerCode,
       "seller.branding": branding,
       "seller.deliveryProfile": deliveryProfile,
+      "seller.courierProfile": courierProfile,
       "seller.payoutProfile": encryptedPayoutProfile,
       "seller.payoutProvider": payoutProvider,
       "seller.businessDetails": businessDetails,
@@ -488,6 +504,7 @@ export async function POST(req) {
       propagatedProducts,
       branding,
       deliveryProfile,
+      courierProfile,
       shippingWeightRequirements,
       payoutProfile,
       payoutProvider,

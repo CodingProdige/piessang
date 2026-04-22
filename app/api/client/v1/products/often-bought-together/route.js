@@ -41,7 +41,7 @@ function getPublicMarketplaceSource(doc) {
     doc?.live_snapshot && typeof doc.live_snapshot === "object"
       ? normalizeTimestamps(doc.live_snapshot)
       : null;
-  if (liveSnapshot && ["in_review", "draft", "rejected"].includes(status)) {
+  if (liveSnapshot && status === "in_review") {
     return liveSnapshot;
   }
   return doc;

@@ -20,7 +20,7 @@ const ok  =(p={},s=200)=>NextResponse.json({ok:true,...p},{status:s});
 const err =(s,t,m,e={})=>NextResponse.json({ok:false,title:t,message:m,...e},{status:s});
 
 const VAT_RATE = 0.15;
-const ALLOWED_VOLUME_UNITS = new Set(["kg", "ml", "lt", "g", "small", "medium", "large", "each"]);
+const ALLOWED_VOLUME_UNITS = new Set(["mg", "g", "kg", "oz", "lb", "ml", "cl", "lt", "each", "pair", "set", "pack", "small", "medium", "large"]);
 
 const money2=(v)=>Number.isFinite(+v)?Math.round(+v*100)/100:0;
 const toInt=(v,f=0)=>Number.isFinite(+v)?Math.trunc(+v):f;
@@ -41,8 +41,16 @@ function normalizeVolumeUnit(value) {
   const unit = String(value ?? "").trim().toLowerCase();
   if (["l", "lt", "liter", "litre", "liters", "litres"].includes(unit)) return "lt";
   if (["kg", "kgs", "kilogram", "kilograms"].includes(unit)) return "kg";
+  if (["lb", "lbs", "pound", "pounds"].includes(unit)) return "lb";
+  if (["oz", "ounce", "ounces"].includes(unit)) return "oz";
+  if (["mg", "milligram", "milligrams"].includes(unit)) return "mg";
   if (["g", "gram", "grams"].includes(unit)) return "g";
-  if (["small", "medium", "large", "ml", "each"].includes(unit)) return unit;
+  if (["ml", "milliliter", "milliliters", "millilitre", "millilitres"].includes(unit)) return "ml";
+  if (["cl", "centiliter", "centiliters", "centilitre", "centilitres"].includes(unit)) return "cl";
+  if (["pair", "pairs"].includes(unit)) return "pair";
+  if (["set", "sets"].includes(unit)) return "set";
+  if (["pack", "packs"].includes(unit)) return "pack";
+  if (["small", "medium", "large", "each"].includes(unit)) return unit;
   return "each";
 }
 
@@ -176,7 +184,12 @@ export async function POST(req){
       :0)+1;
     const inventoryRows = parseInventory(data?.inventory);
     const logistics = normalizeMarketplaceVariantLogistics(data?.logistics);
-    const isTrackedInventory = productFulfillmentMode === "bevgo" || Boolean(data?.placement?.track_inventory) || inventoryRows.length > 0;
+    const explicitTrackInventory =
+      typeof data?.placement?.track_inventory === "boolean" ? data.placement.track_inventory : null;
+    const isTrackedInventory =
+      productFulfillmentMode === "bevgo" ||
+      explicitTrackInventory === true ||
+      (explicitTrackInventory == null && inventoryRows.length > 0);
     const requiresLogistics = productFulfillmentMode === "bevgo";
     if (requiresLogistics && !marketplaceVariantLogisticsComplete(logistics)) {
       return err(

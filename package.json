@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "backfill:images": "node scripts/backfill-image-assets.mjs",
+    "backfill:product-statuses": "node scripts/backfill-product-statuses.mjs",
     "reconcile:orders": "node scripts/reconcile-order-financial-state.mjs"
   },
   "dependencies": {

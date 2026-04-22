@@ -1,4 +1,5 @@
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { normalizeSellerCourierProfile, normalizeProductCourierSettings } from "@/lib/integrations/easyship-profile";
 
 function normalizeText(value: unknown) {
   return String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -9,12 +10,7 @@ export function getShopperSelectedCountryLabel(shopperArea?: { country?: string 
 }
 
 export function isProductEligibleForShopperCountry(
-  item: {
-    data?: {
-      fulfillment?: { mode?: string | null };
-      seller?: { deliveryProfile?: Record<string, unknown> | null };
-    };
-  } | null | undefined,
+  item: any,
   shopperCountry?: string | null,
 ) {
   const normalizedCountry = normalizeText(shopperCountry);
@@ -43,6 +39,20 @@ export function isProductEligibleForShopperCountry(
     : [];
   if (shippingZoneCountries.length) {
     signals.push(shippingZoneCountries.includes(normalizedCountry));
+  }
+
+  const courierProfile = normalizeSellerCourierProfile(item?.data?.seller?.courierProfile || {});
+  const shippingSettings = normalizeProductCourierSettings(item?.data?.product?.shipping || {});
+  if (
+    courierProfile.enabled === true &&
+    courierProfile.internationalEnabled !== false &&
+    shippingSettings.courierEnabled === true &&
+    shippingSettings.allowedInternational !== false
+  ) {
+    const allowedCountries = Array.isArray(courierProfile.allowedDestinationCountries)
+      ? courierProfile.allowedDestinationCountries.map((entry) => normalizeText(entry)).filter(Boolean)
+      : [];
+    signals.push(allowedCountries.length ? allowedCountries.includes(normalizedCountry) : true);
   }
 
   if (!signals.length) return true;

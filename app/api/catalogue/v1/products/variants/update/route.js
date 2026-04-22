@@ -40,14 +40,22 @@ const toBool = (v, f = false) =>
     : f;
 const is8 = (s) => /^\d{8}$/.test(String(s ?? "").trim());
 const VAT_RATE = 0.15;
-const ALLOWED_VOLUME_UNITS = new Set(["kg", "ml", "lt", "g", "small", "medium", "large", "each"]);
+const ALLOWED_VOLUME_UNITS = new Set(["mg", "g", "kg", "oz", "lb", "ml", "cl", "lt", "each", "pair", "set", "pack", "small", "medium", "large"]);
 
 function normalizeVolumeUnit(value) {
   const unit = String(value ?? "").trim().toLowerCase();
   if (["l", "lt", "liter", "litre", "liters", "litres"].includes(unit)) return "lt";
   if (["kg", "kgs", "kilogram", "kilograms"].includes(unit)) return "kg";
+  if (["lb", "lbs", "pound", "pounds"].includes(unit)) return "lb";
+  if (["oz", "ounce", "ounces"].includes(unit)) return "oz";
+  if (["mg", "milligram", "milligrams"].includes(unit)) return "mg";
   if (["g", "gram", "grams"].includes(unit)) return "g";
-  if (["small", "medium", "large", "ml", "each"].includes(unit)) return unit;
+  if (["ml", "milliliter", "milliliters", "millilitre", "millilitres"].includes(unit)) return "ml";
+  if (["cl", "centiliter", "centiliters", "centilitre", "centilitres"].includes(unit)) return "cl";
+  if (["pair", "pairs"].includes(unit)) return "pair";
+  if (["set", "sets"].includes(unit)) return "set";
+  if (["pack", "packs"].includes(unit)) return "pack";
+  if (["small", "medium", "large", "each"].includes(unit)) return unit;
   return "each";
 }
 
@@ -212,16 +220,6 @@ function hasVariantReviewSensitiveChanges(beforeVariant = {}, afterVariant = {})
 
   if (
     fieldsToCompare.some((field) => toStr(before?.[field], null) !== toStr(after?.[field], null))
-  ) {
-    return true;
-  }
-
-  const beforePack = before?.pack && typeof before.pack === "object" ? before.pack : {};
-  const afterPack = after?.pack && typeof after.pack === "object" ? after.pack : {};
-  if (
-    toInt(beforePack?.unit_count, 0) !== toInt(afterPack?.unit_count, 0) ||
-    toNum(beforePack?.volume, 0) !== toNum(afterPack?.volume, 0) ||
-    normalizeVolumeUnit(beforePack?.volume_unit) !== normalizeVolumeUnit(afterPack?.volume_unit)
   ) {
     return true;
   }
@@ -584,7 +582,12 @@ export async function POST(req) {
     }
     updated.pricing.selling_price_excl = money2(moneyInclToExcl(updated.pricing.selling_price_incl));
     if (!updated.sale) updated.sale = {};
-    const isTrackedInventory = productFulfillmentMode === "bevgo" || Boolean(updated?.placement?.track_inventory) || (Array.isArray(updated?.inventory) && updated.inventory.length > 0);
+    const explicitTrackInventory =
+      typeof updated?.placement?.track_inventory === "boolean" ? updated.placement.track_inventory : null;
+    const isTrackedInventory =
+      productFulfillmentMode === "bevgo" ||
+      explicitTrackInventory === true ||
+      (explicitTrackInventory == null && Array.isArray(updated?.inventory) && updated.inventory.length > 0);
     if (isTrackedInventory) {
       updated.placement = updated.placement || {};
       updated.placement.continue_selling_out_of_stock = false;

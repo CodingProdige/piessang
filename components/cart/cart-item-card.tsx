@@ -135,7 +135,8 @@ export function CartItemCard({
       ? "Piessang handles delivery"
       : "Seller handles delivery";
   const canDecrease = qty > 1;
-  const isUnavailable = String(item?.availability?.status || "").trim().toLowerCase() === "out_of_stock";
+  const availabilityStatus = String(item?.availability?.status || "").trim().toLowerCase();
+  const isUnavailable = availabilityStatus === "out_of_stock" || availabilityStatus === "unavailable";
   const quantityGuard = getCartQuantityGuard({
     variant,
     currentCartQty: qty,

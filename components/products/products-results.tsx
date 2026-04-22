@@ -594,6 +594,8 @@ function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliver
   return getShopperFacingDeliveryMessage({
     fulfillmentMode: item.data?.fulfillment?.mode,
     profile: item.data?.seller?.deliveryProfile,
+    courierProfile: (item.data?.seller as any)?.courierProfile,
+    productShipping: (item.data?.product as any)?.shipping,
     sellerBaseLocation: item.data?.seller?.baseLocation || "",
     shopperArea,
     variant,

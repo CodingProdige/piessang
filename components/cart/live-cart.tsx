@@ -168,8 +168,11 @@ function getSellerFulfillmentSummary(items: CartItem[]) {
 }
 
 function getSellerDeliveryFeeForGroup(items: CartItem[]) {
+  const availableItems = items.filter(
+    (item) => String(item?.availability?.status || "").trim().toLowerCase() === "available",
+  );
   const shopperArea = readShopperDeliveryArea();
-  const sellerItems = items.filter(
+  const sellerItems = availableItems.filter(
     (item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "seller",
   );
   if (!sellerItems.length) {
@@ -288,7 +291,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
     fetch("/api/client/v1/carts/get", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cartOwnerId: activeCartOwnerId }),
+      body: JSON.stringify({ cartOwnerId: activeCartOwnerId, lightweight: true }),
     })
       .then((response) => response.json())
       .then((payload) => {
@@ -321,7 +324,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
   const displayedItems = Array.isArray(displayedCart?.items) ? displayedCart.items : [];
   const displayedItemCount = displayedCart?.cart?.item_count ?? displayedItems.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const displayedTotalIncl = displayedCart?.totals?.final_payable_incl ?? displayedCart?.totals?.final_incl ?? 0;
-  const showCartLoading = !authReady || (loading && !hasLoaded) || sharedCartLoading;
+  const showCartLoading = !authReady || !hasLoaded || sharedCartLoading;
   const sellerGroups = items.reduce<Array<{ seller: string; items: CartItem[] }>>((groups, item) => {
     const seller = getSellerGroupLabel(item);
     const existing = groups.find((group) => group.seller === seller);
@@ -332,12 +335,26 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
     }
     return groups;
   }, []);
-  const unavailableItems = items.filter(
-    (item) => String(item?.availability?.status || "").trim().toLowerCase() === "out_of_stock",
-  );
+  const unavailableItems = items.filter((item) => {
+    const status = String(item?.availability?.status || "").trim().toLowerCase();
+    return status === "out_of_stock" || status === "unavailable";
+  });
   const checkoutBlocked = unavailableItems.length > 0;
+  const unavailableStateSummary = unavailableItems.reduce(
+    (summary, item) => {
+      const status = String(item?.availability?.status || "").trim().toLowerCase();
+      if (status === "unavailable") summary.noLongerAvailable += 1;
+      else if (status === "out_of_stock") summary.outOfStock += 1;
+      return summary;
+    },
+    { noLongerAvailable: 0, outOfStock: 0 },
+  );
   const checkoutBlockMessage = checkoutBlocked
-    ? `${unavailableItems.length} item${unavailableItems.length === 1 ? "" : "s"} in your cart ${unavailableItems.length === 1 ? "is" : "are"} out of stock. Remove ${unavailableItems.length === 1 ? "it" : "them"} before continuing to checkout.`
+    ? unavailableStateSummary.noLongerAvailable > 0 && unavailableStateSummary.outOfStock === 0
+      ? `${unavailableStateSummary.noLongerAvailable} item${unavailableStateSummary.noLongerAvailable === 1 ? "" : "s"} in your cart ${unavailableStateSummary.noLongerAvailable === 1 ? "is" : "are"} no longer available. Remove ${unavailableStateSummary.noLongerAvailable === 1 ? "it" : "them"} before continuing to checkout.`
+      : unavailableStateSummary.outOfStock > 0 && unavailableStateSummary.noLongerAvailable === 0
+        ? `${unavailableStateSummary.outOfStock} item${unavailableStateSummary.outOfStock === 1 ? "" : "s"} in your cart ${unavailableStateSummary.outOfStock === 1 ? "is" : "are"} out of stock. Remove ${unavailableStateSummary.outOfStock === 1 ? "it" : "them"} before continuing to checkout.`
+        : `${unavailableItems.length} item${unavailableItems.length === 1 ? "" : "s"} in your cart need attention before checkout. Remove the unavailable item${unavailableItems.length === 1 ? "" : "s"} first.`
     : "";
   const displayedSellerGroups = displayedItems.reduce<Array<{ seller: string; items: CartItem[] }>>((groups, item) => {
     const seller = getSellerGroupLabel(item);

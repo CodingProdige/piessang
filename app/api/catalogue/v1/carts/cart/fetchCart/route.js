@@ -11,6 +11,7 @@ import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-
 import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
 import { resolveDeliveryQuote } from "@/lib/shipping/rating";
+import { getVariantAvailableQuantity as getGuardedVariantAvailableQuantity } from "@/lib/cart/interaction-guards";
 
 /* ------------------ HELPERS ------------------- */
 
@@ -26,6 +27,17 @@ const sellerOwnerCache = new Map();
 
 function buildDeliveryOwnershipMeta(resolved = null) {
   const kind = String(resolved?.kind || "").trim().toLowerCase();
+  if (kind === "courier_live_rate") {
+    return {
+      delivery_owner: "platform",
+      tracking_owner: "platform",
+      tracking_mode: "courier",
+      rate_mode: "live_rate",
+      courier_key: "easyship",
+      courier_carrier: resolved?.matchedRule?.courierCarrier || null,
+      courier_service: resolved?.matchedRule?.courierService || null,
+    };
+  }
   if (kind === "shipping") {
     return {
       delivery_owner: "seller",
@@ -68,8 +80,9 @@ function getVariantInventoryTotal(variant){
 }
 
 function getVariantAvailableQuantity(variant){
-  const inventoryQty = getVariantInventoryTotal(variant);
-  return Math.max(0, inventoryQty);
+  const guardedQuantity = getGuardedVariantAvailableQuantity(variant);
+  if (typeof guardedQuantity === "number") return Math.max(0, guardedQuantity);
+  return null;
 }
 
 function isCheckoutCart(cart) {
@@ -135,6 +148,8 @@ function applySellerDisplayData(data, sellerOwner) {
   const deliveryProfile = normalizeSellerDeliveryProfile(
     seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
   );
+  const courierProfile =
+    seller?.courierProfile && typeof seller.courierProfile === "object" ? seller.courierProfile : {};
 
   return {
     ...data,
@@ -148,6 +163,7 @@ function applySellerDisplayData(data, sellerOwner) {
       activeSellerSlug: String(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug || "").trim() || null,
       groupSellerSlug: String(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug || "").trim() || null,
       deliveryProfile,
+      courierProfile,
     },
     product: {
       ...(data?.product && typeof data.product === "object" ? data.product : {}),
@@ -203,7 +219,32 @@ function computeLineTotals(v, qty){
   };
 }
 
-async function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelections = []){
+function collectLineQuoteItems(item) {
+  const product = item?.product_snapshot || item?.product || {};
+  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+  const quantity = Math.max(0, Number(item?.qty ?? item?.quantity ?? 0));
+  if (quantity <= 0) return [];
+  const lineTotal = Number(item?.line_totals?.final_incl || 0);
+  const unitValue = quantity > 0 ? r2(lineTotal / quantity) : 0;
+  const productShipping = product?.product?.shipping || product?.shipping || {};
+  return [
+    {
+      description: String(product?.product?.title || variant?.label || "Marketplace item").trim(),
+      quantity,
+      unitValue,
+      customsCategory: productShipping?.customsCategory || null,
+      hsCode: productShipping?.hsCode || null,
+      countryOfOrigin: productShipping?.countryOfOrigin || null,
+    },
+  ];
+}
+
+function isLineCourierEligible(item) {
+  const product = item?.product_snapshot || item?.product || {};
+  return product?.product?.shipping?.courierEnabled === true;
+}
+
+async function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSelections = [], courierSelections = {}){
   const groups = new Map();
   const pickupSet = new Set(
     (Array.isArray(pickupSelections) ? pickupSelections : [])
@@ -236,12 +277,17 @@ async function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSe
       sellerName: String(seller?.vendorName || product?.product?.vendorName || "Seller").trim(),
       sellerBase: String(seller?.baseLocation || "").trim(),
       deliveryProfile: seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
+      courierProfile: seller?.courierProfile && typeof seller.courierProfile === "object" ? seller.courierProfile : {},
       items: [],
       subtotalIncl: 0,
+      productCourierEligible: true,
+      quoteItems: [],
       parcels: [],
     };
     existing.items.push(item);
     existing.subtotalIncl = r2(existing.subtotalIncl + Number(item?.line_totals?.final_incl || 0));
+    existing.productCourierEligible = existing.productCourierEligible && isLineCourierEligible(item);
+    existing.quoteItems.push(...collectLineQuoteItems(item));
     const parcel = buildShipmentParcelFromVariant(item?.selected_variant_snapshot || item?.selected_variant || item?.variant || null);
     const quantity = Math.max(0, Number(item?.qty ?? item?.quantity ?? 0));
     if (parcel && quantity > 0) {
@@ -277,6 +323,10 @@ async function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSe
 
     const resolved = await resolveDeliveryQuote({
       profile: group.deliveryProfile || {},
+      courierProfile: group.courierProfile || {},
+      productCourierEligible: group.productCourierEligible === true,
+      quoteItems: group.quoteItems,
+      selectedCourierQuoteId: String(courierSelections?.[group.sellerKey] || "").trim(),
       sellerBaseLocation: group.sellerBase,
       shopperArea,
       subtotalIncl: group.subtotalIncl,
@@ -300,6 +350,10 @@ async function computeSellerDeliveryFees(items, deliveryAddress = null, pickupSe
       amount_incl: amount,
       amount_excl: amount,
       currency: "ZAR",
+      available_courier_quotes:
+        Array.isArray(resolved?.metadata?.availableQuotes) ? resolved.metadata.availableQuotes : [],
+      selected_courier_quote_id:
+        String(resolved?.metadata?.selectedQuoteId || resolved?.matchedRule?.id || "").trim() || null,
       shipment_summary: resolved?.shipmentSummary || null,
       ...buildDeliveryOwnershipMeta(resolved),
     });
@@ -352,6 +406,14 @@ function computeCartTotals(items, deliveryFee = 0, sellerDelivery = { total_excl
     vat_total: r2(vat_total),
     final_excl,
     final_incl
+  };
+}
+
+function buildEmptySellerDelivery() {
+  return {
+    total_excl: 0,
+    total_incl: 0,
+    breakdown: [],
   };
 }
 
@@ -565,16 +627,28 @@ export async function POST(req){
       return err(500,"Database Unavailable","Admin database is not configured.");
     }
     const marketplaceFeeConfig = await loadMarketplaceFeeConfig();
-    const { customerId, deliveryAddress, useCredit, onBehalfOfUid, pickupSelections } = await req.json();
+    const {
+      customerId,
+      deliveryAddress,
+      useCredit,
+      onBehalfOfUid,
+      pickupSelections,
+      courierSelections,
+      includeDelivery,
+    } = await req.json();
     if (!customerId)
       return err(400,"Invalid Request","customerId is required.");
 
+    const shouldIncludeDelivery = includeDelivery !== false;
+
     const pricingProfileUid = String(onBehalfOfUid || customerId).trim();
 
-    const { amount: deliveryFee, meta: deliveryMeta } = await fetchDeliveryFee(
-      deliveryAddress,
-      customerId
-    );
+    const { amount: deliveryFee, meta: deliveryMeta } = shouldIncludeDelivery
+      ? await fetchDeliveryFee(
+          deliveryAddress,
+          customerId
+        )
+      : { amount: 0, meta: {} };
 
     const userRef = db.collection("users").doc(pricingProfileUid);
     const userSnap = await userRef.get();
@@ -610,7 +684,9 @@ export async function POST(req){
         }
       };
 
-      const sellerDelivery = await computeSellerDeliveryFees([], deliveryAddress, pickupSelections);
+      const sellerDelivery = shouldIncludeDelivery
+        ? await computeSellerDeliveryFees([], deliveryAddress, pickupSelections, courierSelections)
+        : buildEmptySellerDelivery();
       const emptyTotals = computeCartTotals([], deliveryFee, sellerDelivery);
       const adjust = computePricingAdjustments(emptyTotals.subtotal_excl, userData?.pricing);
       const rebateNextTier = (
@@ -748,23 +824,39 @@ export async function POST(req){
       };
 
       const continueSellingOutOfStock = Boolean(liveVar?.placement?.continue_selling_out_of_stock);
-      const variantUnavailable =
+      const availableQuantity = getVariantAvailableQuantity(liveVar);
+      const moderationStatus = String(liveProd?.moderation?.status || "").trim().toLowerCase();
+      const productNotLive =
         !liveVar ||
         liveProd?.placement?.isActive === false ||
-        liveProd?.moderation?.status === "blocked" ||
-        (!continueSellingOutOfStock && getVariantAvailableQuantity(liveVar) <= 0);
+        ["draft", "rejected", "blocked"].includes(moderationStatus);
+      const stockUnavailable =
+        !productNotLive &&
+        !continueSellingOutOfStock &&
+        typeof availableQuantity === "number" &&
+        availableQuantity <= 0;
 
-      if (variantUnavailable) {
+      if (productNotLive || stockUnavailable) {
+        const noLongerLive =
+          !liveVar ||
+          liveProd?.placement?.isActive === false ||
+          ["draft", "rejected"].includes(moderationStatus);
+        const availabilityMessage = noLongerLive
+          ? "This item is no longer available and must be removed from your cart before checkout."
+          : moderationStatus === "blocked"
+            ? "This item is no longer available and must be removed from your cart before checkout."
+            : "This item is now out of stock. Remove it from your cart before continuing to checkout.";
+
         clean.availability = {
-          status: "out_of_stock",
-          message: "This item is now out of stock. Remove it from your cart before continuing to checkout.",
+          status: noLongerLive ? "unavailable" : "out_of_stock",
+          message: availabilityMessage,
         };
         clean.line_totals = computeLineTotals(clean.selected_variant_snapshot, clean.quantity);
         kept.push(clean);
         warnings.items.push({
           cart_item_key: it.cart_item_key || null,
           variant_id: vSnap.variant_id || null,
-          message: "This item is now out of stock and must be removed before checkout."
+          message: availabilityMessage,
         });
         continue;
       }
@@ -834,7 +926,9 @@ export async function POST(req){
     /* ------------------------------------------
        🔄 RECOMPUTE CART TOTALS
     ------------------------------------------- */
-    const sellerDelivery = await computeSellerDeliveryFees(kept, deliveryAddress, pickupSelections);
+    const sellerDelivery = shouldIncludeDelivery
+      ? await computeSellerDeliveryFees(kept, deliveryAddress, pickupSelections, courierSelections)
+      : buildEmptySellerDelivery();
     const totals = computeCartTotals(kept, deliveryFee, sellerDelivery);
     const adjust = computePricingAdjustments(totals.subtotal_excl, userData?.pricing);
     const rebateNextTier = (

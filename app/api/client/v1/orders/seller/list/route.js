@@ -226,6 +226,10 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
     };
   }
   if (deliveryType === "courier_live_rate" || deliveryType === "platform_courier_live_rate") {
+    const availableQuotes = Array.isArray(entry?.available_courier_quotes) ? entry.available_courier_quotes : [];
+    const selectedQuoteId = toStr(entry?.selected_courier_quote_id || "");
+    const selectedQuote = availableQuotes.find((quote) => toStr(quote?.id) === selectedQuoteId) || null;
+    const preferredHandoverMode = toLower(entry?.courier_handover_mode || "") === "dropoff" ? "dropoff" : "pickup";
     return {
       type: deliveryType,
       label: toStr(entry?.label || "Platform courier shipping"),
@@ -239,6 +243,17 @@ function getSellerDeliveryDetails(order, sellerIdentity) {
       trackingOwner: toStr(entry?.tracking_owner || entry?.trackingOwner || "piessang"),
       courierService: toStr(entry?.courier_service || entry?.courierService || ""),
       courierCarrier: toStr(entry?.courier_carrier || entry?.courierCarrier || ""),
+      courierHandoverMode: preferredHandoverMode,
+      selectedCourierQuoteId: selectedQuoteId,
+      availableCourierCount: availableQuotes.length,
+      selectedCourierHandoverOptions: Array.isArray(selectedQuote?.handoverOptions) ? selectedQuote.handoverOptions.map((item) => toStr(item)).filter(Boolean) : [],
+      trackingUrl: toStr(entry?.tracking_url || ""),
+      labelUrl: toStr(entry?.label_url || ""),
+      shipmentStatus: toStr(entry?.shipment_status || ""),
+      shipmentCreationState: toStr(entry?.shipment_creation_state || ""),
+      shipmentErrorMessage: toStr(entry?.shipment_error_message || ""),
+      shipmentLastAttemptAt: toStr(entry?.shipment_last_attempt_at || ""),
+      shipmentRetryable: Boolean(entry?.shipment_retryable),
     };
   }
 

@@ -686,7 +686,7 @@ export function AuthProvider({
         method: "POST",
         cache: "no-store",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cartOwnerId: activeGuestCartId }),
+        body: JSON.stringify({ cartOwnerId: activeGuestCartId, lightweight: true }),
       });
       const payload = await response.json().catch(() => ({}));
       const nextCart = payload?.data?.cart ?? null;
@@ -735,7 +735,7 @@ export function AuthProvider({
           method: "POST",
           cache: "no-store",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cartOwnerId: activeGuestCartId }),
+          body: JSON.stringify({ cartOwnerId: activeGuestCartId, lightweight: true }),
         });
         const guestCartPayload = await guestCartResponse.json().catch(() => ({}));
         const guestCart = guestCartPayload?.data?.cart ?? null;

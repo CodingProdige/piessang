@@ -24,6 +24,9 @@ type ProductItem = {
       overview?: string | null;
       description?: string | null;
       keywords?: string[];
+      shipping?: {
+        courierEnabled?: boolean;
+      };
     };
     grouping?: {
       category?: string;
@@ -55,6 +58,16 @@ type ProductItem = {
       notes?: string | null;
       reviewedAt?: string | null;
     };
+    status?: {
+      stored?: string | null;
+      current?: string | null;
+      reviewQueueStatus?: string | null;
+      pendingUpdateStatus?: string | null;
+      hasPendingLiveUpdate?: boolean;
+      hasMeaningfulPendingUpdate?: boolean;
+      isStalePendingState?: boolean;
+    };
+    live_snapshot?: ProductItem["data"] | null;
     seller_offer_count?: number;
     canonical_offer_barcode?: string | null;
     variants?: Array<{
@@ -89,12 +102,106 @@ function toSlug(value: string) {
     .trim();
 }
 
+function toStr(value: unknown, fallback = "") {
+  return value == null ? fallback : String(value).trim();
+}
+
+function normalizeTextValue(value: unknown) {
+  return toStr(value).replace(/\s+/g, " ").trim();
+}
+
+function valuesDiffer(left: unknown, right: unknown) {
+  return normalizeTextValue(left) !== normalizeTextValue(right);
+}
+
+function imageCount(data: ProductItem["data"] | null | undefined) {
+  return Array.isArray(data?.media?.images) ? data.media.images.filter((entry) => Boolean(entry?.imageUrl)).length : 0;
+}
+
+function variantCount(data: ProductItem["data"] | null | undefined) {
+  return Array.isArray(data?.variants) ? data.variants.length : 0;
+}
+
+function summarizeVariantLabels(data: ProductItem["data"] | null | undefined) {
+  if (!Array.isArray(data?.variants)) return "";
+  return data.variants.map((variant) => toStr(variant?.label || variant?.variant_id || "")).filter(Boolean).join(", ");
+}
+
+function buildReviewDiffRows(item: ProductItem["data"]) {
+  const live = item?.live_snapshot || null;
+  if (!live) return [];
+
+  const pending = item || {};
+  const rows = [
+    {
+      liveValue: toStr(live?.product?.title, "Not set"),
+      pendingValue: toStr(pending?.product?.title, "Not set"),
+    },
+    {
+      liveValue: toStr(live?.product?.brandTitle || "", "Not set"),
+      pendingValue: toStr(pending?.product?.brandTitle || "", "Not set"),
+    },
+    {
+      liveValue: toStr(live?.product?.vendorName || "", "Not set"),
+      pendingValue: toStr(pending?.product?.vendorName || "", "Not set"),
+    },
+    {
+      liveValue: toStr(live?.grouping?.category || "", "Not set"),
+      pendingValue: toStr(pending?.grouping?.category || "", "Not set"),
+    },
+    {
+      liveValue: toStr(live?.grouping?.subCategory || "", "Not set"),
+      pendingValue: toStr(pending?.grouping?.subCategory || "", "Not set"),
+    },
+    {
+      liveValue: toStr(live?.fulfillment?.mode || "", "Not set"),
+      pendingValue: toStr(pending?.fulfillment?.mode || "", "Not set"),
+    },
+    {
+      liveValue: String(imageCount(live)),
+      pendingValue: String(imageCount(pending)),
+    },
+    {
+      liveValue: `${variantCount(live)}${summarizeVariantLabels(live) ? ` • ${summarizeVariantLabels(live)}` : ""}`,
+      pendingValue: `${variantCount(pending)}${summarizeVariantLabels(pending) ? ` • ${summarizeVariantLabels(pending)}` : ""}`,
+    },
+    {
+      liveValue: toStr(live?.product?.overview || "", "Not set"),
+      pendingValue: toStr(pending?.product?.overview || "", "Not set"),
+    },
+    {
+      liveValue: toStr(live?.product?.description || "", "Not set"),
+      pendingValue: toStr(pending?.product?.description || "", "Not set"),
+    },
+  ];
+
+  return rows.filter((row) => valuesDiffer(row.liveValue, row.pendingValue));
+}
+
+function hasMeaningfulReviewDiff(item: ProductItem["data"]) {
+  return buildReviewDiffRows(item).length > 0;
+}
+
 function normalizeStatus(item: ProductItem["data"]) {
+  const explicitCurrent = String(item?.status?.current || "").trim().toLowerCase();
+  if (explicitCurrent) {
+    if (explicitCurrent === "published") return item?.placement?.isActive === false ? "draft" : "live";
+    if (explicitCurrent === "in_review") return "review";
+    if (explicitCurrent === "awaiting_stock") return "awaiting_stock";
+    if (explicitCurrent === "draft") return "draft";
+    if (explicitCurrent === "rejected") return "rejected";
+    if (explicitCurrent === "blocked") return "blocked";
+  }
   const moderation = String(item?.moderation?.status ?? "").toLowerCase();
   if (moderation === "archived" || moderation === "deleted") return "archived";
   if (moderation === "blocked") return "blocked";
   if (moderation === "rejected") return "rejected";
-  if (moderation === "in_review" || moderation === "pending") return "review";
+  if (moderation === "in_review" || moderation === "pending") {
+    if (item?.live_snapshot && !hasMeaningfulReviewDiff(item)) {
+      return item?.placement?.isActive === false ? "draft" : "live";
+    }
+    return "review";
+  }
   if (moderation === "awaiting_stock") return "awaiting_stock";
   if (moderation === "draft") return "draft";
   if (moderation === "published") {
@@ -130,6 +237,21 @@ function statusTone(status: string) {
     default:
       return "bg-[rgba(148,163,184,0.14)] text-[#475569]";
   }
+}
+
+function GlobeIndicatorIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <circle cx="12" cy="12" r="8.25" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M3.75 12h16.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path
+        d="M12 3.75c2.15 2.24 3.5 5.09 3.5 8.25s-1.35 6.01-3.5 8.25c-2.15-2.24-3.5-5.09-3.5-8.25s1.35-6.01 3.5-8.25Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function statusLabel(status: string) {
@@ -766,7 +888,7 @@ export function SellerProductsWorkspace({
                         disabled={bulkBusy || deleteProgress !== null}
                         className="flex w-full items-center rounded-[8px] px-3 py-2 text-left text-[12px] font-medium text-[#202020] hover:bg-[#f5f5f5] disabled:opacity-60"
                       >
-                        Publish selected
+                        Submit selected for review
                       </button>
                     ) : null}
                     {canBulkDraft ? (
@@ -904,6 +1026,7 @@ export function SellerProductsWorkspace({
                     <tr className="text-left text-[11px] uppercase tracking-[0.14em] text-[#7d7d7d]">
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Select</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Product</th>
+                      <th className="border-b border-black/5 px-3 py-2.5 font-semibold text-center">Global</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Status</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Inventory</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Category</th>
@@ -925,6 +1048,9 @@ export function SellerProductsWorkspace({
                       const expanded = expandedIds.includes(item.id);
                       const sellerOfferCount = Math.max(Number(item.data?.seller_offer_count || 1), 1);
                       const canonicalBarcode = String(item.data?.canonical_offer_barcode || "").trim();
+                      const globalCourierEnabled =
+                        item.data?.fulfillment?.mode === "seller" &&
+                        item.data?.product?.shipping?.courierEnabled === true;
 
                     return (
                       <Fragment key={item.id}>
@@ -1011,6 +1137,21 @@ export function SellerProductsWorkspace({
                               </div>
                             </td>
                             <td className="border-b border-black/5 px-3 py-2.5 align-middle">
+                              <div className="flex justify-center">
+                                {globalCourierEnabled ? (
+                                  <span
+                                    className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[rgba(21,128,61,0.08)] text-[#15803d]"
+                                    title="Global courier shipping enabled"
+                                    aria-label="Global courier shipping enabled"
+                                  >
+                                    <GlobeIndicatorIcon className="h-4 w-4" />
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex h-7 w-7" aria-hidden="true" />
+                                )}
+                              </div>
+                            </td>
+                            <td className="border-b border-black/5 px-3 py-2.5 align-middle">
                               {status === "rejected" ? (
                                 <button
                                   type="button"
@@ -1065,7 +1206,7 @@ export function SellerProductsWorkspace({
                           </tr>
                           {expanded ? (
                             <tr>
-                              <td className="border-b border-black/5 bg-[#fafafa] px-3 py-3" colSpan={7}>
+                              <td className="border-b border-black/5 bg-[#fafafa] px-3 py-3" colSpan={8}>
                                 <div className="rounded-[8px] border border-black/5 bg-white p-3">
                                   <div className="flex items-center justify-between gap-3">
                                     <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Variants</p>

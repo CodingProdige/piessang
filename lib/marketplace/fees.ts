@@ -43,6 +43,8 @@ export type MarketplaceVariantLogistics = {
   monthlySales30d: number;
   stockQty: number;
   warehouseId: string | null;
+  parcelPreset?: string | null;
+  shippingClass?: string | null;
 };
 
 export type MarketplaceSubCategory = {
@@ -1073,6 +1075,8 @@ export function normalizeMarketplaceVariantLogistics(input: Partial<MarketplaceV
   const monthlySales30d = Number(source.monthlySales30d ?? source.monthly_sales_30d ?? source.sales30d ?? source.projectedMonthlySales30d ?? 0);
   const stockQty = Number(source.stockQty ?? source.stock_qty ?? source.inventoryQty ?? source.inventory_qty ?? 0);
   const warehouseId = source.warehouseId ?? source.warehouse_id ?? null;
+  const parcelPreset = source.parcelPreset ?? source.parcel_preset ?? null;
+  const shippingClass = source.shippingClass ?? source.shipping_class ?? null;
 
   return {
     weightKg: Number.isFinite(weightKg) ? normalizeMoneyAmount(weightKg) : 0,
@@ -1082,6 +1086,8 @@ export function normalizeMarketplaceVariantLogistics(input: Partial<MarketplaceV
     monthlySales30d: Number.isFinite(monthlySales30d) ? Math.max(0, Math.trunc(monthlySales30d)) : 0,
     stockQty: Number.isFinite(stockQty) ? Math.max(0, Math.trunc(stockQty)) : 0,
     warehouseId: warehouseId == null ? null : String(warehouseId).trim() || null,
+    parcelPreset: parcelPreset == null ? null : String(parcelPreset).trim() || null,
+    shippingClass: shippingClass == null ? null : String(shippingClass).trim() || null,
   } satisfies MarketplaceVariantLogistics;
 }
 

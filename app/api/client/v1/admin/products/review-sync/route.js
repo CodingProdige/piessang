@@ -4,6 +4,7 @@ export const preferredRegion = "fra1";
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { buildProductStatus } from "@/lib/catalogue/product-status";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) =>
@@ -15,6 +16,28 @@ const chunk = (arr, size) => {
   return out;
 };
 
+function buildRepairPatch(data) {
+  const status = buildProductStatus(data);
+  const patch = {};
+  let changed = false;
+
+  if (status.current !== status.stored) {
+    patch["moderation.status"] = status.current;
+    changed = true;
+  }
+
+  if (status.isStalePendingState && data?.live_snapshot) {
+    patch.live_snapshot = FieldValue.delete();
+    changed = true;
+  }
+
+  if (changed) {
+    patch["timestamps.updatedAt"] = FieldValue.serverTimestamp();
+  }
+
+  return { changed, patch, status };
+}
+
 export async function POST() {
   try {
     const db = getAdminDb();
@@ -23,34 +46,26 @@ export async function POST() {
     }
 
     const snap = await db.collection("products_v2").get();
-    const stale = snap.docs.filter((docSnap) => {
-      const data = docSnap.data() || {};
-      const moderationStatus = String(data?.moderation?.status || "").trim().toLowerCase();
-      const reviewedAt = data?.moderation?.reviewedAt ?? null;
-      const reviewedBy = data?.moderation?.reviewedBy ?? null;
-      return moderationStatus === "published" && !reviewedAt && !reviewedBy;
-    });
+    const stale = snap.docs
+      .map((docSnap) => {
+        const data = docSnap.data() || {};
+        const repair = buildRepairPatch(data);
+        return { docSnap, repair };
+      })
+      .filter((entry) => entry.repair.changed);
 
     let updated = 0;
     for (const part of chunk(stale, 450)) {
       const batch = db.batch();
-      for (const docSnap of part) {
-        batch.update(docSnap.ref, {
-          "moderation.status": "in_review",
-          "moderation.reason": null,
-          "moderation.notes": "Moved back to in review after workflow correction. Awaiting admin decision.",
-          "moderation.reviewedAt": null,
-          "moderation.reviewedBy": null,
-          "placement.isActive": false,
-          "timestamps.updatedAt": FieldValue.serverTimestamp(),
-        });
+      for (const entry of part) {
+        batch.update(entry.docSnap.ref, entry.repair.patch);
         updated += 1;
       }
       await batch.commit();
     }
 
     return ok({
-      message: "Product review statuses synchronized.",
+      message: "Product statuses synchronized.",
       scanned: snap.size,
       updated,
     });

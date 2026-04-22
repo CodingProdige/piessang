@@ -36,6 +36,17 @@ const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 
 function buildDeliveryOwnershipMeta(resolved = null) {
   const kind = String(resolved?.kind || "").trim().toLowerCase();
+  if (kind === "courier_live_rate") {
+    return {
+      delivery_owner: "platform",
+      tracking_owner: "platform",
+      tracking_mode: "courier",
+      rate_mode: "live_rate",
+      courier_key: "easyship",
+      courier_carrier: resolved?.matchedRule?.courierCarrier || null,
+      courier_service: resolved?.matchedRule?.courierService || null,
+    };
+  }
   if (kind === "shipping") {
     return {
       delivery_owner: "seller",
@@ -379,9 +390,34 @@ function collectLineShipmentParcels(item) {
   return Array.from({ length: quantity }, () => parcel);
 }
 
+function isLineCourierEligible(item) {
+  const product = item?.product_snapshot || item?.product || {};
+  return product?.product?.shipping?.courierEnabled === true;
+}
+
+function collectLineQuoteItems(item) {
+  const product = item?.product_snapshot || item?.product || {};
+  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+  const quantity = getLineQty(item);
+  if (quantity <= 0) return [];
+  const lineTotal = computeLineFinalIncl(item);
+  const unitValue = quantity > 0 ? r2(lineTotal / quantity) : 0;
+  return [
+    {
+      description: String(product?.product?.title || variant?.label || "Marketplace item").trim(),
+      quantity,
+      unitValue,
+      customsCategory: product?.product?.shipping?.customsCategory || product?.shipping?.customsCategory || null,
+      hsCode: product?.product?.shipping?.hsCode || product?.shipping?.hsCode || null,
+      countryOfOrigin: product?.product?.shipping?.countryOfOrigin || product?.shipping?.countryOfOrigin || null,
+    },
+  ];
+}
+
 async function resolveLiveSellerDeliveryBreakdown({
   items = [],
   pickupSelections = [],
+  courierSelections = {},
   resolvedDeliveryAddress = null,
 }) {
   const shopperArea = buildShopperArea(resolvedDeliveryAddress);
@@ -411,9 +447,14 @@ async function resolveLiveSellerDeliveryBreakdown({
       sellerBaseLocation: String(seller?.baseLocation || "").trim(),
       subtotalIncl: 0,
       deliveryProfile: seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : null,
+      courierProfile: seller?.courierProfile && typeof seller.courierProfile === "object" ? seller.courierProfile : null,
+      productCourierEligible: true,
+      quoteItems: [],
       parcels: [],
     };
     existing.subtotalIncl = r2(existing.subtotalIncl + computeLineFinalIncl(item));
+    existing.productCourierEligible = existing.productCourierEligible && isLineCourierEligible(item);
+    existing.quoteItems.push(...collectLineQuoteItems(item));
     existing.parcels.push(...collectLineShipmentParcels(item));
     groups.set(sellerKey, existing);
   }
@@ -421,6 +462,7 @@ async function resolveLiveSellerDeliveryBreakdown({
   const breakdown = [];
   for (const group of groups.values()) {
     let profile = group.deliveryProfile;
+    let courierProfile = group.courierProfile;
     let sellerBaseLocation = group.sellerBaseLocation;
 
     if (!profile) {
@@ -429,6 +471,7 @@ async function resolveLiveSellerDeliveryBreakdown({
         (group.sellerSlug ? await findSellerOwnerBySlug(group.sellerSlug) : null);
       const sellerData = ownerDoc?.data?.seller && typeof ownerDoc.data.seller === "object" ? ownerDoc.data.seller : {};
       profile = sellerData?.deliveryProfile && typeof sellerData.deliveryProfile === "object" ? sellerData.deliveryProfile : {};
+      courierProfile = sellerData?.courierProfile && typeof sellerData.courierProfile === "object" ? sellerData.courierProfile : {};
       sellerBaseLocation = sellerBaseLocation || String(sellerData?.baseLocation || "").trim();
     }
 
@@ -455,6 +498,10 @@ async function resolveLiveSellerDeliveryBreakdown({
 
     const resolved = await resolveDeliveryQuote({
       profile: profile || {},
+      courierProfile: courierProfile || {},
+      productCourierEligible: group.productCourierEligible === true,
+      quoteItems: group.quoteItems,
+      selectedCourierQuoteId: String(courierSelections?.[group.sellerKey] || "").trim(),
       sellerBaseLocation,
       shopperArea,
       subtotalIncl: group.subtotalIncl,
@@ -475,6 +522,11 @@ async function resolveLiveSellerDeliveryBreakdown({
       amount_excl: amount,
       currency: "ZAR",
       reason: Array.isArray(resolved?.unavailableReasons) ? resolved.unavailableReasons : [],
+      available_courier_quotes:
+        Array.isArray(resolved?.metadata?.availableQuotes) ? resolved.metadata.availableQuotes : [],
+      selected_courier_quote_id:
+        String(resolved?.metadata?.selectedQuoteId || resolved?.matchedRule?.id || "").trim() || null,
+      courier_handover_mode: String(courierProfile?.handoverMode || "").trim().toLowerCase() === "dropoff" ? "dropoff" : "pickup",
       distance_km: Number.isFinite(Number(resolved?.distanceKm)) ? Number(resolved.distanceKm) : null,
       shipment_summary: resolved?.shipmentSummary || null,
       ...buildDeliveryOwnershipMeta(resolved),
@@ -584,6 +636,7 @@ export async function POST(req) {
       deliveryAddress = null,
       onBehalfOfCustomerId = null,
       pickupSelections = [],
+      courierSelections = {},
       checkoutSessionId = null,
       customerEmail = null,
     } = await req.json();
@@ -681,6 +734,7 @@ export async function POST(req) {
           customerId: cartId,
           deliveryAddress: resolvedDeliveryAddress,
           pickupSelections: Array.isArray(pickupSelections) ? pickupSelections : [],
+          courierSelections: courierSelections && typeof courierSelections === "object" ? courierSelections : {},
           ...(safeOnBehalfOf ? { onBehalfOfUid: targetCustomerId } : {})
         })
       }
@@ -707,6 +761,7 @@ export async function POST(req) {
     const liveSellerDelivery = await resolveLiveSellerDeliveryBreakdown({
       items: Array.isArray(cart?.items) ? cart.items : [],
       pickupSelections,
+      courierSelections,
       resolvedDeliveryAddress,
     });
     const sellerDeliveryBreakdown = Array.isArray(liveSellerDelivery?.breakdown)

@@ -118,6 +118,55 @@ type SellerContextItem = {
 
 type SellerAccessRole = "admin" | "manager" | "catalogue" | "orders" | "analytics" | "";
 
+function toReviewText(value: unknown, fallback = "") {
+  return value == null ? fallback : String(value).trim();
+}
+
+function normalizeReviewText(value: unknown) {
+  return toReviewText(value).replace(/\s+/g, " ").trim();
+}
+
+function reviewValuesDiffer(left: unknown, right: unknown) {
+  return normalizeReviewText(left) !== normalizeReviewText(right);
+}
+
+function reviewImageCount(data: any) {
+  return Array.isArray(data?.media?.images) ? data.media.images.filter((entry: any) => Boolean(entry?.imageUrl)).length : 0;
+}
+
+function reviewVariantCount(data: any) {
+  return Array.isArray(data?.variants) ? data.variants.length : 0;
+}
+
+function summarizeReviewVariantLabels(data: any) {
+  if (!Array.isArray(data?.variants)) return "";
+  return data.variants.map((variant: any) => toReviewText(variant?.label || variant?.variant_id || "")).filter(Boolean).join(", ");
+}
+
+function hasMeaningfulProductReviewDiff(item: any) {
+  const live = item?.data?.live_snapshot || null;
+  if (!live) return true;
+
+  const pending = item?.data || {};
+  const rows = [
+    [toReviewText(live?.product?.title, "Not set"), toReviewText(pending?.product?.title, "Not set")],
+    [toReviewText(live?.product?.brandTitle || "", "Not set"), toReviewText(pending?.product?.brandTitle || "", "Not set")],
+    [toReviewText(live?.product?.vendorName || "", "Not set"), toReviewText(pending?.product?.vendorName || "", "Not set")],
+    [toReviewText(live?.grouping?.category || "", "Not set"), toReviewText(pending?.grouping?.category || "", "Not set")],
+    [toReviewText(live?.grouping?.subCategory || "", "Not set"), toReviewText(pending?.grouping?.subCategory || "", "Not set")],
+    [toReviewText(live?.fulfillment?.mode || "", "Not set"), toReviewText(pending?.fulfillment?.mode || "", "Not set")],
+    [String(reviewImageCount(live)), String(reviewImageCount(pending))],
+    [
+      `${reviewVariantCount(live)}${summarizeReviewVariantLabels(live) ? ` • ${summarizeReviewVariantLabels(live)}` : ""}`,
+      `${reviewVariantCount(pending)}${summarizeReviewVariantLabels(pending) ? ` • ${summarizeReviewVariantLabels(pending)}` : ""}`,
+    ],
+    [toReviewText(live?.product?.overview || "", "Not set"), toReviewText(pending?.product?.overview || "", "Not set")],
+    [toReviewText(live?.product?.description || "", "Not set"), toReviewText(pending?.product?.description || "", "Not set")],
+  ];
+
+  return rows.some(([liveValue, pendingValue]) => reviewValuesDiffer(liveValue, pendingValue));
+}
+
 function formatTeamRoleLabel(role?: string | null) {
   const value = String(role ?? "").trim().toLowerCase();
   if (value === "owner") return "Seller account owner";
@@ -1318,7 +1367,13 @@ function SellerDashboardContent() {
       const campaignPayload = await campaignResponse.json().catch(() => ({}));
       const productReviewCount =
         productResponse.ok && productPayload?.ok !== false && Array.isArray(productPayload?.items)
-          ? productPayload.items.filter((item: any) => String(item?.data?.moderation?.status || "").trim().toLowerCase() === "in_review").length
+          ? productPayload.items.filter((item: any) => {
+              const queueStatus = String(item?.data?.status?.reviewQueueStatus || "").trim().toLowerCase();
+              if (queueStatus) return queueStatus === "in_review";
+              const status = String(item?.data?.moderation?.status || "").trim().toLowerCase();
+              if (status !== "in_review") return false;
+              return hasMeaningfulProductReviewDiff(item);
+            }).length
           : 0;
       setAdminBadges({
         sellerReviewCount: sellerResponse.ok && sellerPayload?.ok !== false ? Number(sellerPayload?.count || 0) : 0,

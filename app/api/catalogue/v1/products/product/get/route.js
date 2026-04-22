@@ -20,6 +20,7 @@ import {
   variantCanContinueSellingOutOfStock,
   variantTotalInStockItemsAvailable,
 } from "@/lib/catalogue/availability";
+import { buildProductStatus } from "@/lib/catalogue/product-status";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -79,7 +80,7 @@ function getPublicMarketplaceSource(doc) {
   const liveSnapshot = doc?.live_snapshot && typeof doc.live_snapshot === "object"
     ? normalizeTimestamps(doc.live_snapshot)
     : null;
-  if (liveSnapshot && ["in_review", "draft", "rejected"].includes(status)) {
+  if (liveSnapshot && status === "in_review") {
     return liveSnapshot;
   }
   return doc;
@@ -95,6 +96,14 @@ function getSellerIdentifier(data) {
     data?.product?.sellerSlug ||
     data?.product?.vendorSlug,
   );
+}
+
+function attachProductStatus(data) {
+  if (!data || typeof data !== "object") return data;
+  return {
+    ...data,
+    status: buildProductStatus(data),
+  };
 }
 
 function applySellerDisplayData(data, sellerOwner) {
@@ -523,8 +532,8 @@ async function buildAlternateOffersForBarcode(db, barcode, includeUnavailable = 
     const rawData = normalizeTimestamps(d.data() || {});
     return {
       id: d.id,
-      rawData,
-      data: includeUnavailable ? rawData : getPublicMarketplaceSource(rawData),
+      rawData: attachProductStatus(rawData),
+      data: attachProductStatus(includeUnavailable ? rawData : getPublicMarketplaceSource(rawData)),
     };
   });
 
@@ -665,6 +674,7 @@ export async function GET(req){
             has_in_stock_variants: hasInStockVariants(data),
             is_eligible_by_variant_availability: hasListableAvailability,
             is_unavailable_for_listing: !hasListableAvailability || Boolean(missingDelivery),
+            status: buildProductStatus(rawData),
           },
         });
       }
@@ -785,6 +795,7 @@ export async function GET(req){
                 badgeForegroundColor: getBadgeForegroundColorForType(engagement.badge, badgeSettings),
               }
             : null,
+          status: buildProductStatus(rawData),
         }
       });
     }
@@ -883,10 +894,12 @@ export async function GET(req){
     // 2) Map + timestamp normalize
     let items = rs.docs.map(d=>({
       id:d.id,
-      rawData: normalizeTimestamps(d.data()||{}),
-      data: includeUnavailable
-        ? normalizeTimestamps(d.data()||{})
-        : getPublicMarketplaceSource(normalizeTimestamps(d.data()||{})),
+      rawData: attachProductStatus(normalizeTimestamps(d.data()||{})),
+      data: attachProductStatus(
+        includeUnavailable
+          ? normalizeTimestamps(d.data()||{})
+          : getPublicMarketplaceSource(normalizeTimestamps(d.data()||{})),
+      ),
     }));
     const sellerBlockMap = new Map();
     const sellerIdentifierSet = new Set();
@@ -1034,6 +1047,7 @@ export async function GET(req){
           listing_block_reason_message: hiddenByDeliverySettings
             ? "This self-fulfilled product is hidden until delivery settings are completed."
             : null,
+          status: buildProductStatus(dataWithSellerDisplay),
         }
       };
     }));

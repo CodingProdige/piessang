@@ -28,6 +28,15 @@ type ReviewProduct = {
       notes?: string | null;
       reason?: string | null;
     };
+    status?: {
+      stored?: string | null;
+      current?: string | null;
+      reviewQueueStatus?: string | null;
+      pendingUpdateStatus?: string | null;
+      hasPendingLiveUpdate?: boolean;
+      hasMeaningfulPendingUpdate?: boolean;
+      isStalePendingState?: boolean;
+    };
     seller_offer_count?: number;
     canonical_offer_barcode?: string | null;
     live_snapshot?: ReviewProduct["data"] | null;
@@ -189,6 +198,10 @@ function buildReviewDiffRows(product: ReviewProduct) {
   return rows.filter((row) => valuesDiffer(row.liveValue, row.pendingValue));
 }
 
+function hasMeaningfulReviewDiff(product: ReviewProduct) {
+  return buildReviewDiffRows(product).length > 0;
+}
+
 const REJECTION_PRESETS = [
   {
     code: "images",
@@ -274,7 +287,14 @@ export function SellerProductReviewsWorkspace({ onQueueChanged }: SellerProductR
       }
       const rows = Array.isArray(payload?.items) ? payload.items : [];
       setItems(
-        rows.filter((item: ReviewProduct) => toStr(item?.data?.moderation?.status).toLowerCase() === "in_review"),
+        rows.filter((item: ReviewProduct) => {
+          const queueStatus = toStr(item?.data?.status?.reviewQueueStatus).toLowerCase();
+          if (queueStatus) return queueStatus === "in_review";
+          const status = toStr(item?.data?.moderation?.status).toLowerCase();
+          if (status !== "in_review") return false;
+          if (item?.data?.live_snapshot) return hasMeaningfulReviewDiff(item);
+          return true;
+        }),
       );
     } catch (cause) {
       if (!silent) {

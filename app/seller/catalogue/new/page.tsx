@@ -7,11 +7,14 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { PageBody } from "@/components/layout/page-body";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { SellerPageIntro } from "@/components/seller/page-intro";
+import { CourierLiabilityNotice } from "@/components/seller/courier-liability-notice";
 import { prepareImageAsset } from "@/lib/client/image-prep";
 import { clientStorage } from "@/lib/firebase";
 import { getSellerBlockReasonFix, getSellerBlockReasonLabel } from "@/lib/seller/account-status";
 import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
 import { sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
+import { normalizeSellerCourierProfile, normalizeProductCourierSettings } from "@/lib/integrations/easyship-profile";
+import { buildEasyshipSellerWarnings, EASYSHIP_CUSTOMS_CATEGORY_FALLBACK_OPTIONS, resolveEasyshipCategoryMapping } from "@/lib/integrations/easyship-taxonomy";
 import { buildVariantOptionMatrix, formatVariantAxisValue, type VariantAxisKey } from "@/lib/catalogue/variant-options";
 import { getRelevantVariantMetadataGroups } from "@/lib/catalogue/variant-context";
 import {
@@ -59,6 +62,7 @@ type CreatedProductSummary = {
   brandTitle: string;
   vendorName: string;
   moderationStatus: string;
+  storedModerationStatus?: string;
   moderationReason?: string;
 };
 
@@ -409,13 +413,21 @@ const UNIQUE_CODE_ENDPOINT = "/api/catalogue/v1/products/generateUniqueCode";
 const SKU_ENDPOINT = "/api/catalogue/v1/products/sku/generate";
 const SKU_CHECK_ENDPOINT = "/api/catalogue/v1/products/sku/checkSku";
 const VAT_RATE = 0.15;
-const VOLUME_UNITS = ["kg", "ml", "lt", "g", "small", "medium", "large", "each"];
-const PARCEL_PRESET_OPTIONS: Array<{ value: ParcelPresetKey; label: string; description: string }> = [
-  { value: "fashion_satchel", label: "Fashion satchel", description: "Best for folded clothing and soft pre-loved fashion." },
-  { value: "shoe_box", label: "Shoe box", description: "Best for shoes, sneakers and structured footwear." },
-  { value: "small_accessory", label: "Small accessory", description: "Best for jewellery, belts, caps and compact items." },
-  { value: "standard_box", label: "Standard box", description: "Best for most general parcels and homeware." },
-  { value: "bulky_box", label: "Bulky box", description: "Best for larger items that need a bigger carton." },
+const VOLUME_UNITS = ["mg", "g", "kg", "oz", "lb", "ml", "cl", "lt", "each", "pair", "set", "pack", "small", "medium", "large"];
+const PARCEL_PRESET_OPTIONS: Array<{
+  value: ParcelPresetKey;
+  label: string;
+  description: string;
+  family: "bag" | "box";
+  scale: "slim" | "small" | "medium" | "large";
+}> = [
+  { value: "courier_bag", label: "Courier bag", description: "Best for light soft goods, tees, leggings and other slim parcels.", family: "bag", scale: "slim" },
+  { value: "fashion_satchel", label: "Fashion satchel", description: "Best for folded clothing and soft pre-loved fashion.", family: "bag", scale: "medium" },
+  { value: "small_accessory", label: "Accessory box", description: "Best for jewellery, belts, caps and compact items.", family: "box", scale: "small" },
+  { value: "small_box", label: "Small box", description: "Best for compact rigid goods and small packed items.", family: "box", scale: "small" },
+  { value: "shoe_box", label: "Shoe box", description: "Best for shoes, sneakers and structured footwear.", family: "box", scale: "medium" },
+  { value: "medium_box", label: "Medium box", description: "Best for most general parcels and homeware.", family: "box", scale: "medium" },
+  { value: "large_box", label: "Large box", description: "Best for larger items that need a bigger carton.", family: "box", scale: "large" },
 ];
 const VARIANT_METADATA_GROUP_ORDER = [
   "Core options",
@@ -678,6 +690,168 @@ function hasEnteredReviewFlow(status: string | null | undefined) {
   return ["published", "in_review", "awaiting_stock"].includes(normalized);
 }
 
+function editorReviewText(value: unknown, fallback = "") {
+  return value == null ? fallback : String(value).trim();
+}
+
+function editorReviewValueChanged(left: unknown, right: unknown) {
+  return editorReviewText(left).replace(/\s+/g, " ").trim() !== editorReviewText(right).replace(/\s+/g, " ").trim();
+}
+
+function editorReviewImageCount(data: any) {
+  return Array.isArray(data?.media?.images) ? data.media.images.filter((entry: any) => Boolean(entry?.imageUrl)).length : 0;
+}
+
+function editorReviewVariantCount(data: any) {
+  return Array.isArray(data?.variants) ? data.variants.length : 0;
+}
+
+function summarizeEditorReviewVariantLabels(data: any) {
+  if (!Array.isArray(data?.variants)) return "";
+  return data.variants
+    .map((variant: any) => editorReviewText(variant?.label || variant?.variant_id || ""))
+    .filter(Boolean)
+    .join(", ");
+}
+
+function editorHasMeaningfulReviewDiff(record: any) {
+  const live = record?.live_snapshot || null;
+  if (!live) return false;
+
+  const rows = [
+    [editorReviewText(live?.product?.title, "Not set"), editorReviewText(record?.product?.title, "Not set")],
+    [editorReviewText(live?.product?.brandTitle || "", "Not set"), editorReviewText(record?.product?.brandTitle || "", "Not set")],
+    [editorReviewText(live?.product?.vendorName || "", "Not set"), editorReviewText(record?.product?.vendorName || "", "Not set")],
+    [editorReviewText(live?.grouping?.category || "", "Not set"), editorReviewText(record?.grouping?.category || "", "Not set")],
+    [editorReviewText(live?.grouping?.subCategory || "", "Not set"), editorReviewText(record?.grouping?.subCategory || "", "Not set")],
+    [editorReviewText(live?.fulfillment?.mode || "", "Not set"), editorReviewText(record?.fulfillment?.mode || "", "Not set")],
+    [String(editorReviewImageCount(live)), String(editorReviewImageCount(record))],
+    [
+      `${editorReviewVariantCount(live)}${summarizeEditorReviewVariantLabels(live) ? ` • ${summarizeEditorReviewVariantLabels(live)}` : ""}`,
+      `${editorReviewVariantCount(record)}${summarizeEditorReviewVariantLabels(record) ? ` • ${summarizeEditorReviewVariantLabels(record)}` : ""}`,
+    ],
+    [editorReviewText(live?.product?.overview || "", "Not set"), editorReviewText(record?.product?.overview || "", "Not set")],
+    [editorReviewText(live?.product?.description || "", "Not set"), editorReviewText(record?.product?.description || "", "Not set")],
+  ];
+
+  return rows.some(([left, right]) => editorReviewValueChanged(left, right));
+}
+
+function normalizeEditorModerationStatus(record: any) {
+  const moderation = String(record?.moderation?.status ?? "").trim().toLowerCase();
+  if (moderation === "in_review" || moderation === "pending") {
+    if (record?.live_snapshot && !editorHasMeaningfulReviewDiff(record)) {
+      return record?.placement?.isActive === false ? "draft" : "published";
+    }
+    return "in_review";
+  }
+  if (moderation === "published" && record?.placement?.isActive === false) {
+    return "draft";
+  }
+  return moderation || "draft";
+}
+
+function buildEditorStatusMessage({
+  hasProduct,
+  moderationStatus,
+  isSystemAdmin,
+}: {
+  hasProduct: boolean;
+  moderationStatus: string;
+  isSystemAdmin: boolean;
+}) {
+  if (!hasProduct) {
+    return "Add the core product details first, then save to unlock variants, pricing, and stock.";
+  }
+
+  if (isSystemAdmin) {
+    switch (moderationStatus) {
+      case "published":
+        return "Review the published listing, inspect its live details, or update the saved record.";
+      case "in_review":
+        return "Review the pending listing, refine saved fixes, or keep the record moving through admin review.";
+      case "awaiting_stock":
+        return "Review the approved listing and confirm it is ready for its stock handoff.";
+      case "rejected":
+        return "Review the rejected listing, inspect the latest fixes, or continue editing the saved record.";
+      default:
+        return "Review the saved listing, add variants, or update the record.";
+    }
+  }
+
+  switch (moderationStatus) {
+    case "published":
+      return "This listing is live. Keep operational updates moving here and only re-submit if shopper-facing content changes.";
+    case "in_review":
+      return "This listing is in review. You can still save refinements here while Piessang checks the current submission.";
+    case "awaiting_stock":
+      return "This listing is approved and waiting for stock before it can go live.";
+    case "rejected":
+      return "Fix the review feedback here, save the changes, then re-submit the listing when you are ready.";
+    default:
+      return "Save the core listing here, then add variants before you submit it for review.";
+  }
+}
+
+function buildEditorStatusSummary({
+  hasProduct,
+  moderationStatus,
+}: {
+  hasProduct: boolean;
+  moderationStatus: string;
+}) {
+  if (!hasProduct) return "Not yet saved.";
+
+  switch (moderationStatus) {
+    case "published":
+      return "Live on Piessang.";
+    case "in_review":
+      return "Currently in review.";
+    case "awaiting_stock":
+      return "Approved and waiting for stock.";
+    case "blocked":
+      return "Blocked from sale.";
+    case "rejected":
+      return "Needs changes before approval.";
+    default:
+      return "Draft saved.";
+  }
+}
+
+function buildListingSummaryCopy({
+  moderationStatus,
+  isSystemAdmin,
+}: {
+  moderationStatus: string;
+  isSystemAdmin: boolean;
+}) {
+  if (isSystemAdmin) {
+    switch (moderationStatus) {
+      case "published":
+        return "You are viewing this published listing in system admin mode. Seller-only submission shortcuts are hidden here.";
+      case "in_review":
+        return "You are viewing this in-review listing in system admin mode. Seller-only submission shortcuts are hidden here.";
+      default:
+        return "You are viewing this listing in system admin mode. Seller-only submission shortcuts are hidden here.";
+    }
+  }
+
+  switch (moderationStatus) {
+    case "published":
+      return "Your listing is live. You can keep updating operational details here while shopper-facing content changes may still require review.";
+    case "in_review":
+      return "Your listing is currently in review. Keep its saved details accurate here while Piessang reviews the submission.";
+    case "awaiting_stock":
+      return "Your listing is approved and waiting for stock before it can go live.";
+    case "rejected":
+      return "Your listing needs fixes before it can be approved again. Update it here, then re-submit it for review.";
+    case "blocked":
+      return "This listing is blocked from sale right now. Review the reason below before trying to move it forward again.";
+    default:
+      return "Your listing is saved as a draft. Add variants, then submit it for review when you are ready. If Piessang fulfils this listing, it will move to an awaiting stock state after approval.";
+  }
+}
+
 function ChangeImpactHint({
   mode,
   hasSavedProduct = true,
@@ -712,6 +886,9 @@ type ProductEditorBaseline = {
   imageKeys: string[];
   fulfillmentMode: "seller" | "bevgo";
   inventoryTracking: boolean;
+  courierEnabled: boolean;
+  customsCategory: string;
+  hsCode: string;
 };
 
 type VariantEditorBaseline = {
@@ -851,6 +1028,9 @@ function createProductEditorBaseline(input: Partial<ProductEditorBaseline>): Pro
       : [],
     fulfillmentMode: input.fulfillmentMode === "bevgo" ? "bevgo" : "seller",
     inventoryTracking: Boolean(input.inventoryTracking),
+    courierEnabled: Boolean(input.courierEnabled),
+    customsCategory: String(input.customsCategory ?? "").trim(),
+    hsCode: String(input.hsCode ?? "").trim(),
   };
 }
 
@@ -1106,7 +1286,7 @@ function getVariantChangeImpactSummary({
   if (baseline.color !== current.color) reviewTriggers.push("color");
   if (JSON.stringify(baseline.imageKeys) !== JSON.stringify(current.imageKeys)) reviewTriggers.push("images");
   if (baseline.unitCount !== current.unitCount || baseline.volume !== current.volume || baseline.volumeUnit !== current.volumeUnit) {
-    reviewTriggers.push("pack details");
+    liveChanges.push("pack details");
   }
   if (baseline.isDefault !== current.isDefault) liveChanges.push("default selection");
   if (baseline.isActive !== current.isActive) reviewTriggers.push("variant visibility");
@@ -1199,6 +1379,15 @@ function getProductChangeImpactSummary({
   if (baseline.inventoryTracking !== current.inventoryTracking) {
     liveChanges.push("inventory tracking");
   }
+  if (baseline.courierEnabled !== current.courierEnabled) {
+    liveChanges.push("courier shipping");
+  }
+  if (baseline.customsCategory !== current.customsCategory) {
+    liveChanges.push("customs category");
+  }
+  if (baseline.hsCode !== current.hsCode) {
+    liveChanges.push("customs code");
+  }
 
   if (reviewTriggers.length) {
     const preview = reviewTriggers.slice(0, 3).join(", ");
@@ -1208,13 +1397,13 @@ function getProductChangeImpactSummary({
     if (!hasReviewHistory) {
       return {
         tone: "neutral" as const,
-        title: "Current draft changes will be included in review",
+        title: "Current listing changes will be included in review",
         message: `Your unsaved edits affect ${preview}${remaining}. Save them when you are ready. Piessang will only review this listing once you submit it.`,
       };
     }
     return {
       tone: "review" as const,
-      title: "Current draft changes will require review",
+      title: "Current listing changes will require review",
       message: `Your unsaved edits affect ${preview}${remaining}. Save them when you are ready, then re-submit the listing for review.`,
     };
   }
@@ -1222,7 +1411,7 @@ function getProductChangeImpactSummary({
   if (liveChanges.length) {
     return {
       tone: "live" as const,
-      title: "Current draft changes can update without re-review",
+      title: "Current changes can update without re-review",
       message: `Your unsaved edits only affect ${liveChanges.join(", ")}. These changes do not trigger another product review.`,
     };
   }
@@ -1248,6 +1437,25 @@ function variantEffectiveSellingPriceIncl(variantLike: {
   return basePriceIncl;
 }
 
+function hasVariantCourierPackDetails(variant: any) {
+  const unitCount = Number(variant?.pack?.unit_count || 0);
+  const volume = Number(variant?.pack?.volume || 0);
+  const shippingProfile = buildVariantShippingProfile({
+    parcelPreset: variant?.logistics?.parcel_preset || variant?.logistics?.parcelPreset || null,
+    actualWeightKg: Number(variant?.logistics?.weight_kg || variant?.logistics?.weightKg || 0) || null,
+    lengthCm: Number(variant?.logistics?.length_cm || variant?.logistics?.lengthCm || 0) || null,
+    widthCm: Number(variant?.logistics?.width_cm || variant?.logistics?.widthCm || 0) || null,
+    heightCm: Number(variant?.logistics?.height_cm || variant?.logistics?.heightCm || 0) || null,
+    shippingClass: variant?.logistics?.shipping_class || variant?.logistics?.shippingClass || null,
+  });
+  const weightKg = Number(shippingProfile.actualWeightKg || 0);
+  const lengthCm = Number(shippingProfile.lengthCm || 0);
+  const widthCm = Number(shippingProfile.widthCm || 0);
+  const heightCm = Number(shippingProfile.heightCm || 0);
+
+  return unitCount > 0 && (volume > 0 || weightKg > 0) && lengthCm > 0 && widthCm > 0 && heightCm > 0;
+}
+
 function notifyAdminBadgeRefresh() {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("piessang:refresh-admin-badges"));
@@ -1257,8 +1465,16 @@ function normalizeVolumeUnit(value: string) {
   const lower = String(value ?? "").trim().toLowerCase();
   if (["l", "lt", "liter", "litre", "liters", "litres"].includes(lower)) return "lt";
   if (["kg", "kgs", "kilogram", "kilograms"].includes(lower)) return "kg";
+  if (["lb", "lbs", "pound", "pounds"].includes(lower)) return "lb";
+  if (["oz", "ounce", "ounces"].includes(lower)) return "oz";
+  if (["mg", "milligram", "milligrams"].includes(lower)) return "mg";
   if (["g", "grams", "gram"].includes(lower)) return "g";
-  if (["small", "medium", "large", "ml", "each"].includes(lower)) return lower;
+  if (["ml", "milliliter", "milliliters", "millilitre", "millilitres"].includes(lower)) return "ml";
+  if (["cl", "centiliter", "centiliters", "centilitre", "centilitres"].includes(lower)) return "cl";
+  if (["pair", "pairs"].includes(lower)) return "pair";
+  if (["set", "sets"].includes(lower)) return "set";
+  if (["pack", "packs"].includes(lower)) return "pack";
+  if (["small", "medium", "large", "each"].includes(lower)) return lower;
   return "each";
 }
 
@@ -1778,6 +1994,81 @@ function EyeIcon({ className = "" }: { className?: string }) {
         strokeLinejoin="round"
       />
       <circle cx="12" cy="12" r="2.8" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}
+
+function ParcelBagIcon({
+  className = "",
+  compact = false,
+}: {
+  className?: string;
+  compact?: boolean;
+}) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M8 8.5V7a4 4 0 0 1 8 0v1.5"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <rect
+        x="5.5"
+        y={compact ? "8.5" : "7.8"}
+        width="13"
+        height={compact ? "11" : "11.7"}
+        rx="3.2"
+        stroke="currentColor"
+        strokeWidth={1.8}
+      />
+      <path
+        d="M9.2 11.2h5.6"
+        stroke="currentColor"
+        strokeWidth={1.6}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ParcelBoxIcon({
+  className = "",
+  large = false,
+}: {
+  className?: string;
+  large?: boolean;
+}) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path
+        d="M4.8 8.8 12 5.5l7.2 3.3v8.4L12 20.5l-7.2-3.3Z"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4.8 8.8 12 12.1l7.2-3.3"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 12.1v8.4"
+        stroke="currentColor"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+      />
+      {large ? (
+        <path
+          d="M9.4 7 12 8.2 14.6 7"
+          stroke="currentColor"
+          strokeWidth={1.4}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      ) : null}
     </svg>
   );
 }
@@ -2531,6 +2822,20 @@ export function SellerCatalogueEditor({
   const [feeConfig, setFeeConfig] = useState(DEFAULT_MARKETPLACE_FEE_CONFIG);
   const [sellerDeliverySettingsReady, setSellerDeliverySettingsReady] = useState(true);
   const [sellerWeightBasedShippingRequired, setSellerWeightBasedShippingRequired] = useState(false);
+  const [sellerCourierProfile, setSellerCourierProfile] = useState(() => normalizeSellerCourierProfile({}));
+  const [sellerOriginCountry, setSellerOriginCountry] = useState("");
+  const [productCourierEnabled, setProductCourierEnabled] = useState(false);
+  const [productCustomsCategory, setProductCustomsCategory] = useState("");
+  const [productHsCode, setProductHsCode] = useState("");
+  const [easyshipCustomsCategoryOptions, setEasyshipCustomsCategoryOptions] = useState<string[]>(() => [...EASYSHIP_CUSTOMS_CATEGORY_FALLBACK_OPTIONS]);
+  const [productCustomsCategoryTouched, setProductCustomsCategoryTouched] = useState(false);
+  const [productHsCodeTouched, setProductHsCodeTouched] = useState(false);
+  const [easyshipSuggestedHsCode, setEasyshipSuggestedHsCode] = useState("");
+  const [easyshipSuggestedHsDescription, setEasyshipSuggestedHsDescription] = useState("");
+  const [hsSuggestionSource, setHsSuggestionSource] = useState<"easyship" | "reviewed_fallback" | "ai_fallback" | "none">("none");
+  const [hsSuggestionNote, setHsSuggestionNote] = useState("");
+  const [showAdvancedCustomsDetails, setShowAdvancedCustomsDetails] = useState(false);
+  const [hsSuggestionLoading, setHsSuggestionLoading] = useState(false);
   const draftImpactResolverRef = useRef<((value: boolean) => void) | null>(null);
   const marketplaceCategories = useMemo(
     () => (feeConfig?.categories?.length ? feeConfig.categories : SELLER_CATALOGUE_CATEGORIES),
@@ -2555,6 +2860,22 @@ export function SellerCatalogueEditor({
   const isBookMediaProductDraft = useMemo(() => hasVariantCategoryContext && isBookMediaProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
   const isBabyProductDraft = useMemo(() => hasVariantCategoryContext && isBabyProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
   const isFitmentProductDraft = useMemo(() => hasVariantCategoryContext && isFitmentProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
+  const easyshipCategoryMapping = useMemo(
+    () => resolveEasyshipCategoryMapping({ categorySlug: category, subCategorySlug: subCategory }),
+    [category, subCategory],
+  );
+  const easyshipSellerWarnings = useMemo(
+    () =>
+      buildEasyshipSellerWarnings({
+        courierEnabled: fulfillmentMode === "seller" && productCourierEnabled,
+        categorySlug: category,
+        subCategorySlug: subCategory,
+        customsCategory: productCustomsCategory,
+        hsCode: productHsCode,
+        countryOfOrigin: sellerOriginCountry,
+      }),
+    [category, fulfillmentMode, productCourierEnabled, productCustomsCategory, productHsCode, sellerOriginCountry, subCategory],
+  );
   const variantAxisMatrix = useMemo(() => buildVariantOptionMatrix(variantItems), [variantItems]);
   const relevantVariantMetadataGroups = useMemo(
     () => (hasVariantCategoryContext ? getRelevantVariantMetadataGroups(category, subCategory) : new Set<string>()),
@@ -2623,6 +2944,7 @@ export function SellerCatalogueEditor({
   const fulfillmentLocked = Boolean(editorProductId || createdProduct?.uniqueId);
   const activeProcessLabel = useMemo(() => {
     if (submitting) return "Saving product...";
+    if (hsSuggestionLoading) return "Refreshing customs code...";
     if (uploadingImages) return "Uploading images...";
     if (uploadingVariantImages) return "Uploading variant images...";
     if (generatingCode) return "Refreshing product code...";
@@ -2637,6 +2959,7 @@ export function SellerCatalogueEditor({
     generatingKeywords,
     generatingOverview,
     generatingSku,
+    hsSuggestionLoading,
     submitting,
     uploadingImages,
     uploadingVariantImages,
@@ -2665,6 +2988,9 @@ export function SellerCatalogueEditor({
           imageKeys: imageSignatureFromItems(productImages),
           fulfillmentMode,
           inventoryTracking,
+          courierEnabled: fulfillmentMode === "seller" ? productCourierEnabled : false,
+          customsCategory: fulfillmentMode === "seller" && productCourierEnabled ? productCustomsCategory : "",
+          hsCode: fulfillmentMode === "seller" && productCourierEnabled ? productHsCode : "",
         }),
         hasSavedProduct: Boolean(activeProductId),
         moderationStatus: createdProduct?.moderationStatus,
@@ -2679,7 +3005,10 @@ export function SellerCatalogueEditor({
       inventoryTracking,
       keywordTags,
       overview,
+      productCourierEnabled,
       productEditorBaseline,
+      productCustomsCategory,
+      productHsCode,
       productImages,
       selectedBrand?.slug,
       selectedBrand?.title,
@@ -2687,6 +3016,7 @@ export function SellerCatalogueEditor({
       title,
     ],
   );
+  const hasUnsavedProductChanges = productChangeImpact.title !== "No unsaved product changes detected";
 
   const variantChangeImpact = useMemo(() => {
     const editingVariant =
@@ -3020,11 +3350,51 @@ export function SellerCatalogueEditor({
     variantItems,
   ]);
   const isEditingProduct = Boolean(activeProductId);
+  const moderationStatusKey = String(createdProduct?.moderationStatus ?? "draft").trim().toLowerCase();
+  const pageIntroTitle = isEditingProduct ? "Edit product" : "Create product";
+  const topStatusMessage = buildEditorStatusMessage({
+    hasProduct: Boolean(createdProduct),
+    moderationStatus: moderationStatusKey,
+    isSystemAdmin,
+  });
+  const primarySaveLabel = submitting
+    ? "Saving..."
+    : hsSuggestionLoading
+      ? "Refreshing customs code..."
+      : isEditingProduct
+        ? (hasUnsavedProductChanges ? "Save changes" : "No changes")
+        : "Save draft";
+  const statusSummaryText = buildEditorStatusSummary({
+    hasProduct: Boolean(createdProduct),
+    moderationStatus: moderationStatusKey,
+  });
   const productStatusLabel = useMemo(() => {
     if (!isEditingProduct) return "Draft";
     if (createdProduct?.moderationStatus) return formatModerationStatus(createdProduct.moderationStatus);
     return "Draft";
   }, [createdProduct?.moderationStatus, isEditingProduct]);
+  const variantSectionHelperText = useMemo(() => {
+    if (!activeProductId) {
+      return "Save the product first, then add at least one variant so customers have something to buy.";
+    }
+    if (moderationStatusKey === "published") {
+      return "Add and edit variants here. Shopper-facing variant changes may still require review before they go live.";
+    }
+    if (moderationStatusKey === "in_review") {
+      return "Keep the variant list complete and accurate while this listing is in review.";
+    }
+    if (moderationStatusKey === "awaiting_stock") {
+      return "Add and refine variants here while the listing waits for stock.";
+    }
+    if (moderationStatusKey === "rejected") {
+      return "Update the variant list here before you re-submit the listing for review.";
+    }
+    return "Add at least one variant before you submit this listing for review.";
+  }, [activeProductId, moderationStatusKey]);
+  const listingSummaryCopy = buildListingSummaryCopy({
+    moderationStatus: moderationStatusKey,
+    isSystemAdmin,
+  });
   const selectedFeeRule = useMemo(
     () => resolveMarketplaceSuccessFeeRule(category, subCategory, marketplaceCategories),
     [category, marketplaceCategories, subCategory],
@@ -3073,6 +3443,21 @@ export function SellerCatalogueEditor({
   );
 
   const activeParcelPresetMeta = getParcelPresetMeta(effectiveParcelPreset);
+  const parcelPresetGroups = useMemo(
+    () => [
+      {
+        key: "bag",
+        label: "Bags",
+        items: PARCEL_PRESET_OPTIONS.filter((preset) => preset.family === "bag"),
+      },
+      {
+        key: "box",
+        label: "Boxes",
+        items: PARCEL_PRESET_OPTIONS.filter((preset) => preset.family === "box"),
+      },
+    ],
+    [],
+  );
   const selectedSuccessFeePercent = useMemo(
     () => estimateMarketplaceSuccessFeePercent(selectedFeeRule.rule, variantEffectivePriceIncl || 0),
     [selectedFeeRule.rule, variantEffectivePriceIncl],
@@ -3127,23 +3512,17 @@ export function SellerCatalogueEditor({
     variantShippingProfile.widthCm,
   ]);
   const variantFeePreviewReady = Boolean(variantDraft.sellingPriceIncl.trim()) && (fulfillmentMode === "seller" || variantLogisticsReady);
-  useEffect(() => {
-    if (!variantFormOpen) return;
-    if (variantDraft.parcelPreset || !recommendedParcelPreset) return;
-    setVariantDraft((current) => {
-      if (current.parcelPreset) return current;
-      const nextProfile = buildVariantShippingProfile({ parcelPreset: recommendedParcelPreset });
-      return {
-        ...current,
-        parcelPreset: recommendedParcelPreset,
-        shippingClass: current.shippingClass || nextProfile.shippingClass || "",
-        weightKg: current.weightKg || (nextProfile.actualWeightKg != null ? String(nextProfile.actualWeightKg) : ""),
-        lengthCm: current.lengthCm || (nextProfile.lengthCm != null ? String(nextProfile.lengthCm) : ""),
-        widthCm: current.widthCm || (nextProfile.widthCm != null ? String(nextProfile.widthCm) : ""),
-        heightCm: current.heightCm || (nextProfile.heightCm != null ? String(nextProfile.heightCm) : ""),
-      };
-    });
-  }, [recommendedParcelPreset, variantDraft.parcelPreset, variantFormOpen]);
+  const courierPackDetailsReady = useMemo(
+    () => variantItems.length > 0 && variantItems.every((variant) => hasVariantCourierPackDetails(variant)),
+    [variantItems],
+  );
+  const sellerVariantWeightReady = useMemo(
+    () => variantItems.every((variant) => {
+      const logistics = (variant?.logistics || {}) as Record<string, unknown>;
+      return Number(logistics.weight_kg ?? logistics.weightKg ?? 0) > 0;
+    }),
+    [variantItems],
+  );
   const publishRequirements = useMemo(
     () => [
       { label: "Title", ready: title.trim().length > 2 },
@@ -3157,8 +3536,11 @@ export function SellerCatalogueEditor({
       { label: "Keywords", ready: keywordTags.length > 0 },
       { label: "Images", ready: productImages.length > 0 },
       ...(fulfillmentMode === "seller" ? [{ label: "Delivery settings", ready: sellerDeliverySettingsReady }] : []),
+      ...(fulfillmentMode === "seller" && productCourierEnabled
+        ? [{ label: "Courier pack details", ready: courierPackDetailsReady }]
+        : []),
       ...(fulfillmentMode === "seller" && sellerWeightBasedShippingRequired
-        ? [{ label: "Variant weight", ready: variantItems.every((variant) => Number(variant?.logistics?.weight_kg || 0) > 0) }]
+        ? [{ label: "Variant weight", ready: sellerVariantWeightReady }]
         : []),
       ...(fulfillmentMode === "bevgo" ? [{ label: "Variant logistics", ready: variantLogisticsReady }] : []),
       { label: "Variants", ready: variantItems.length > 0 },
@@ -3171,10 +3553,13 @@ export function SellerCatalogueEditor({
       keywordTags.length,
       overview,
       productImages.length,
+      productCourierEnabled,
       productSku,
       subCategory,
       title,
       uniqueId.length,
+      courierPackDetailsReady,
+      sellerVariantWeightReady,
       variantItems.length,
       sellerWeightBasedShippingRequired,
       variantLogisticsReady,
@@ -3202,8 +3587,34 @@ export function SellerCatalogueEditor({
 
   useEffect(() => {
     let cancelled = false;
+    fetch("/api/client/v1/integrations/easyship/customs-categories", { cache: "no-store" })
+      .then((response) => response.json().catch(() => ({})))
+      .then((payload) => {
+        if (cancelled) return;
+        const categories = Array.isArray(payload?.categories)
+          ? payload.categories.map((item: unknown) => String(item).trim()).filter(Boolean)
+          : [];
+        if (categories.length) {
+          setEasyshipCustomsCategoryOptions(categories);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEasyshipCustomsCategoryOptions([...EASYSHIP_CUSTOMS_CATEGORY_FALLBACK_OPTIONS]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     if (!effectiveSellerSettingsIdentifier) {
       setSellerDeliverySettingsReady(true);
+      setSellerCourierProfile(normalizeSellerCourierProfile({}));
+      setSellerOriginCountry("");
       return;
     }
 
@@ -3214,13 +3625,21 @@ export function SellerCatalogueEditor({
       .then((payload) => {
         if (cancelled) return;
         const profile = payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {};
+        const nextCourierProfile = normalizeSellerCourierProfile(
+          payload?.courierProfile && typeof payload.courierProfile === "object" ? payload.courierProfile : {},
+        );
+        const nextOriginCountry = String(profile?.origin?.country || "").trim();
         setSellerDeliverySettingsReady(hasSellerDeliverySettings(profile));
         setSellerWeightBasedShippingRequired(sellerHasWeightBasedShipping(profile));
+        setSellerCourierProfile(nextCourierProfile);
+        setSellerOriginCountry(nextOriginCountry);
       })
       .catch(() => {
         if (!cancelled) {
           setSellerDeliverySettingsReady(false);
           setSellerWeightBasedShippingRequired(false);
+          setSellerCourierProfile(normalizeSellerCourierProfile({}));
+          setSellerOriginCountry("");
         }
       });
 
@@ -3243,11 +3662,11 @@ export function SellerCatalogueEditor({
     descriptionPlainText.trim().length > 10 &&
     productSku.trim().length > 0 &&
     keywordTags.length > 0 &&
+    !hsSuggestionLoading &&
     !submitting;
+  const saveDisabled = !formIsValid || (isEditingProduct && !hasUnsavedProductChanges);
 
-  const moderationStatusKey = String(createdProduct?.moderationStatus ?? "draft").trim().toLowerCase();
   const canSubmitReview =
-    !isSystemAdmin &&
     Boolean(activeProductId) &&
     variantItems.length > 0 &&
     !submitting &&
@@ -3289,7 +3708,7 @@ export function SellerCatalogueEditor({
     <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Publishing</p>
       <p className="mt-2 text-[12px] leading-[1.55] text-[#57636c]">
-        Your draft stays here until the items below are completed.
+        Complete the items below so this listing is ready for its next step.
       </p>
       <div className="mt-4 space-y-2">
         {publishRequirements.map((item) => (
@@ -3313,8 +3732,12 @@ export function SellerCatalogueEditor({
       </div>
       <div className="mt-4 rounded-[8px] bg-[#fafafa] px-3 py-2 text-[12px] text-[#57636c]">
         {missingRequirements.length === 0
-          ? "Ready to save and send for review."
-          : `${missingRequirements.length} item${missingRequirements.length === 1 ? "" : "s"} still need attention before the product can go live.`}
+          ? moderationStatusKey === "published"
+            ? "Ready to keep saving live-safe updates."
+            : moderationStatusKey === "in_review"
+              ? "Ready to stay in review with the current saved details."
+              : "Ready to save and move to the next step."
+          : `${missingRequirements.length} item${missingRequirements.length === 1 ? "" : "s"} still need attention before this listing is ready to move forward.`}
       </div>
     </section>
   );
@@ -3328,94 +3751,88 @@ export function SellerCatalogueEditor({
             {productStatusLabel}
           </span>
           <span className="text-[12px] text-[#57636c]">
-            {createdProduct ? "Saved as a draft." : "Not yet saved."}
+            {statusSummaryText}
           </span>
         </div>
-        {!isSystemAdmin ? (
-          <>
-            {moderationStatusKey === "in_review" ? (
-              <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
-                This product is already in review. Piessang will review it before it can move forward.
-              </p>
-            ) : moderationStatusKey === "rejected" ? (
-              <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
-                <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Review changes needed</p>
-                <p className="mt-1">
-                  {createdProduct?.moderationReason || "Piessang rejected this product during review. Fix the feedback, then submit it again."}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void submitForReview()}
-                  disabled={!canSubmitReview}
-                  className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {submitReviewLabel}
-                </button>
-                <p className="mt-2 text-[11px] leading-[1.4] text-[#7f1d1d]">
-                  {variantItems.length === 0
-                    ? "Add at least one variant before you can re-submit this product."
-                    : fulfillmentMode === "seller" && !sellerDeliverySettingsReady
-                      ? "Add your delivery and shipping settings before re-submitting this self-fulfilled listing."
-                      : "Once you’ve fixed the feedback above, re-submit this product for review."}
-                </p>
-              </div>
-            ) : moderationStatusKey === "blocked" ? (
-              <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
-                <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Product blocked</p>
-                <p className="mt-1">
-                  {createdProduct?.moderationReason || "Piessang has hidden this product after reviewing a customer report."}
-                </p>
-                <label className="mt-3 block">
-                  <span className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Dispute this decision</span>
-                  <textarea
-                    value={productDisputeMessage}
-                    onChange={(event) => setProductDisputeMessage(event.target.value)}
-                    rows={4}
-                    className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020] outline-none focus:border-[#cbb26b]"
-                    placeholder="Tell Piessang why this product should be restored."
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void submitProductBlockDispute()}
-                  disabled={productDisputeSubmitting || !productDisputeMessage.trim()}
-                  className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {productDisputeSubmitting ? "Sending dispute..." : "Submit dispute"}
-                </button>
-              </div>
-            ) : moderationStatusKey === "published" || moderationStatusKey === "awaiting_stock" ? (
-              <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
-                This product has already been approved. Submit for review will only return after a rejection or meaningful content changes.
-              </p>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void submitForReview()}
-                  disabled={!canSubmitReview}
-                  className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {submitReviewLabel}
-                </button>
-                <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                  {variantItems.length === 0
-                    ? "Add at least one variant before you can submit this draft."
-                    : fulfillmentMode === "seller" && !sellerDeliverySettingsReady
-                      ? "Add your delivery and shipping settings in seller settings before submitting a self-fulfilled listing."
-                    : moderationStatusKey === "rejected"
-                      ? "Fix the rejection feedback, then re-submit the product for review."
-                      : inventoryTrackingRequired
-                        ? "Piessang fulfilment can be submitted now. Once accepted, stock must be shipped to the warehouse before it can go live."
-                        : "Your draft can be submitted once you are ready."}
-                </p>
-              </>
-            )}
-          </>
-        ) : (
+        {moderationStatusKey === "in_review" ? (
           <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
-            System admins can review and edit this listing here, but seller submission actions are hidden in admin review mode.
+            This product is already in review. Piessang will review it before it can move forward.
           </p>
+        ) : moderationStatusKey === "rejected" ? (
+          <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
+            <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Review changes needed</p>
+            <p className="mt-1">
+              {createdProduct?.moderationReason || "Piessang rejected this product during review. Fix the feedback, then submit it again."}
+            </p>
+            <button
+              type="button"
+              onClick={() => void submitForReview()}
+              disabled={!canSubmitReview}
+              className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSystemAdmin ? "Submit seller product for review" : submitReviewLabel}
+            </button>
+            <p className="mt-2 text-[11px] leading-[1.4] text-[#7f1d1d]">
+              {variantItems.length === 0
+                ? "Add at least one variant before you can re-submit this product."
+                : fulfillmentMode === "seller" && !sellerDeliverySettingsReady
+                  ? "Add your delivery and shipping settings before re-submitting this self-fulfilled listing."
+                  : "Once you’ve fixed the feedback above, re-submit this product for review."}
+            </p>
+          </div>
+        ) : moderationStatusKey === "blocked" ? (
+          <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
+            <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Product blocked</p>
+            <p className="mt-1">
+              {createdProduct?.moderationReason || "Piessang has hidden this product after reviewing a customer report."}
+            </p>
+            <label className="mt-3 block">
+              <span className="mb-2 block text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Dispute this decision</span>
+              <textarea
+                value={productDisputeMessage}
+                onChange={(event) => setProductDisputeMessage(event.target.value)}
+                rows={4}
+                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[12px] text-[#202020] outline-none focus:border-[#cbb26b]"
+                placeholder="Tell Piessang why this product should be restored."
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => void submitProductBlockDispute()}
+              disabled={productDisputeSubmitting || !productDisputeMessage.trim()}
+              className="mt-3 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {productDisputeSubmitting ? "Sending dispute..." : "Submit dispute"}
+            </button>
+          </div>
+        ) : moderationStatusKey === "published" || moderationStatusKey === "awaiting_stock" ? (
+          <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
+            This product has already been approved. Submit for review will only return after a rejection or meaningful content changes.
+          </p>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => void submitForReview()}
+              disabled={!canSubmitReview}
+              className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSystemAdmin ? "Submit seller product for review" : submitReviewLabel}
+            </button>
+            <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+              {variantItems.length === 0
+                ? "Add at least one variant before you can submit this listing."
+                : fulfillmentMode === "seller" && !sellerDeliverySettingsReady
+                  ? "Add your delivery and shipping settings in seller settings before submitting a self-fulfilled listing."
+                  : moderationStatusKey === "rejected"
+                    ? "Fix the rejection feedback, then re-submit the product for review."
+                    : inventoryTrackingRequired
+                      ? "Piessang fulfilment can be submitted now. Once accepted, stock must be shipped to the warehouse before it can go live."
+                      : isSystemAdmin
+                        ? "You can submit this seller listing into Piessang review from admin seller context."
+                        : "Your draft can be submitted once you are ready."}
+            </p>
+          </>
         )}
       </section>
 
@@ -3825,8 +4242,15 @@ export function SellerCatalogueEditor({
             : [],
         );
         const nextFulfillmentMode = String(record?.fulfillment?.mode ?? "seller") === "bevgo" ? "bevgo" : "seller";
+        const nextShipping = normalizeProductCourierSettings(record?.product?.shipping || {});
         const nextInventoryTracking = Boolean(record?.placement?.inventory_tracking) || nextFulfillmentMode === "bevgo";
         setFulfillmentMode(nextFulfillmentMode);
+        setProductCourierEnabled(nextShipping.courierEnabled === true);
+        setProductCustomsCategory(String(nextShipping.customsCategory || "").trim());
+        setProductHsCode(String(nextShipping.hsCode || "").trim());
+        setProductCustomsCategoryTouched(Boolean(String(nextShipping.customsCategory || "").trim()));
+        setProductHsCodeTouched(Boolean(String(nextShipping.hsCode || "").trim()));
+        setShowAdvancedCustomsDetails(Boolean(String(nextShipping.hsCode || "").trim()));
         setInventoryTracking(nextInventoryTracking);
         setVariantDraft((current) => ({
           ...current,
@@ -3845,7 +4269,8 @@ export function SellerCatalogueEditor({
           brandSlug: String(record?.product?.brand ?? "").trim(),
           brandTitle: String(record?.product?.brandTitle ?? "").trim(),
           vendorName: recordVendorName || String(vendorName ?? "").trim(),
-          moderationStatus: String(record?.moderation?.status ?? "draft").trim() || "draft",
+          moderationStatus: String(record?.status?.current || normalizeEditorModerationStatus(record)).trim() || "draft",
+          storedModerationStatus: String(record?.status?.stored || record?.moderation?.status || "").trim() || "draft",
           moderationReason: String(record?.moderation?.reason ?? record?.moderation?.notes ?? "").trim(),
         });
         updateProductEditorBaseline({
@@ -3865,6 +4290,15 @@ export function SellerCatalogueEditor({
             : [],
           fulfillmentMode: nextFulfillmentMode,
           inventoryTracking: nextInventoryTracking,
+          courierEnabled: nextFulfillmentMode === "seller" ? record?.product?.shipping?.courierEnabled === true : false,
+          customsCategory:
+            nextFulfillmentMode === "seller" && record?.product?.shipping?.courierEnabled === true
+              ? String(record?.product?.shipping?.customsCategory ?? "").trim()
+              : "",
+          hsCode:
+            nextFulfillmentMode === "seller" && record?.product?.shipping?.courierEnabled === true
+              ? String(record?.product?.shipping?.hsCode ?? "").trim()
+              : "",
         });
       } catch (cause) {
         if (!cancelled) {
@@ -3894,6 +4328,112 @@ export function SellerCatalogueEditor({
       setVariantDraft((current) => ({ ...current, continueSellingOutOfStock: false }));
     }
   }, [continueSellingAvailable, variantDraft.continueSellingOutOfStock]);
+
+  useEffect(() => {
+    if (!productCourierEnabled || fulfillmentMode !== "seller") return;
+    if (productCustomsCategoryTouched || !easyshipCategoryMapping.itemCategory) return;
+    const matchedOption =
+      easyshipCustomsCategoryOptions.find(
+        (option) => option.trim().toLowerCase() === String(easyshipCategoryMapping.itemCategory || "").trim().toLowerCase(),
+      ) || "";
+    const nextSuggestedCategory = matchedOption || easyshipCategoryMapping.itemCategory;
+    if (String(productCustomsCategory || "").trim().toLowerCase() !== nextSuggestedCategory.trim().toLowerCase()) {
+      setProductCustomsCategory(nextSuggestedCategory);
+    }
+  }, [
+    easyshipCategoryMapping.itemCategory,
+    easyshipCustomsCategoryOptions,
+    fulfillmentMode,
+    productCourierEnabled,
+    productCustomsCategory,
+    productCustomsCategoryTouched,
+  ]);
+
+  useEffect(() => {
+    if (easyshipCategoryMapping.supportLevel === "restricted" && productCourierEnabled) {
+      setProductCourierEnabled(false);
+    }
+  }, [easyshipCategoryMapping.supportLevel, productCourierEnabled]);
+
+  useEffect(() => {
+    if (!productCourierEnabled || fulfillmentMode !== "seller") return;
+    if (productHsCodeTouched) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      void suggestHsCode();
+    }, 700);
+
+    async function suggestHsCode() {
+      if (!cancelled) setHsSuggestionLoading(true);
+      try {
+        const response = await fetch("/api/client/v1/integrations/easyship/hs-suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            categorySlug: category,
+            subCategorySlug: subCategory,
+            title,
+            brandTitle: selectedBrand?.title || brandName,
+            overview,
+            description: descriptionPlainText,
+            customsCategory: productCustomsCategory,
+          }),
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        const suggestion = payload?.suggestion && typeof payload.suggestion === "object" ? payload.suggestion : null;
+        const suggestedCode = String(suggestion?.code || "").trim();
+        const suggestedDescription = String(suggestion?.description || "").trim();
+        const nextSource =
+          String(payload?.source || "").trim() === "easyship"
+            ? "easyship"
+            : String(payload?.source || "").trim() === "reviewed_fallback"
+              ? "reviewed_fallback"
+            : String(payload?.source || "").trim() === "ai_fallback"
+              ? "ai_fallback"
+              : "none";
+        const nextNote = String(payload?.note || "").trim();
+        setEasyshipSuggestedHsCode(suggestedCode);
+        setEasyshipSuggestedHsDescription(suggestedDescription);
+        setHsSuggestionSource(nextSource);
+        setHsSuggestionNote(nextNote);
+        if (suggestedCode && !productHsCodeTouched && String(productHsCode || "").trim() !== suggestedCode) {
+          setProductHsCode(suggestedCode);
+        }
+      } catch {
+        if (!cancelled) {
+          setEasyshipSuggestedHsCode("");
+          setEasyshipSuggestedHsDescription("");
+          setHsSuggestionSource("none");
+          setHsSuggestionNote("");
+        }
+      } finally {
+        if (!cancelled) setHsSuggestionLoading(false);
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      setHsSuggestionLoading(false);
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [
+    brandName,
+    category,
+    descriptionPlainText,
+    fulfillmentMode,
+    overview,
+    productCourierEnabled,
+    productCustomsCategory,
+    productHsCode,
+    productHsCodeTouched,
+    selectedBrand?.title,
+    subCategory,
+    title,
+  ]);
 
   const loadVariantItems = useMemo(
     () => async (productId: string) => {
@@ -4339,6 +4879,16 @@ export function SellerCatalogueEditor({
     setVariantFormOpen(false);
     setInventoryTracking(false);
     setFulfillmentMode("seller");
+    setProductCourierEnabled(false);
+    setProductCustomsCategory("");
+    setProductHsCode("");
+    setProductCustomsCategoryTouched(false);
+    setProductHsCodeTouched(false);
+    setEasyshipSuggestedHsCode("");
+    setEasyshipSuggestedHsDescription("");
+    setHsSuggestionSource("none");
+    setHsSuggestionNote("");
+    setShowAdvancedCustomsDetails(false);
     setLoadedProductSku("");
     setLoadedProductSellerCode("");
     setLoadedProductSellerSlug("");
@@ -4601,20 +5151,15 @@ export function SellerCatalogueEditor({
     try {
       const isUpdate = Boolean(activeProductId);
       const productHasEnteredReviewFlow = hasEnteredReviewFlow(createdProduct?.moderationStatus);
-      const targetModerationStatus: "draft" | "in_review" =
-        isUpdate && adminReviewEditing ? "in_review" : "draft";
+      const targetModerationStatus: "draft" | "in_review" | null =
+        isUpdate ? (adminReviewEditing ? "in_review" : null) : "draft";
       if (
         isUpdate &&
         !(await requestDraftImpactConfirmation({
           title: "Update product",
-          message:
-            adminReviewEditing
-              ? "Updating this product here will keep it in the review queue so you can continue reviewing it after saving your fixes."
-              : String(createdProduct?.moderationStatus || "").trim().toLowerCase() === "published"
-                ? "Updating this product will send your changes for review while the current live version stays visible until approval."
-                : productHasEnteredReviewFlow
-                  ? "Updating this product will move it back to draft and it will need to be resubmitted for review."
-                  : "Update this draft with your latest changes?",
+          message: adminReviewEditing
+            ? "Updating this product here will keep it in the review queue so you can continue reviewing it after saving your fixes."
+            : productChangeImpact.message,
         }))
       ) {
         return { savedId: activeProductId, isUpdate };
@@ -4648,9 +5193,17 @@ export function SellerCatalogueEditor({
           normalizedUniqueId,
       ).trim();
       const slug = String(returnedProduct?.product?.titleSlug ?? returnedProduct?.titleSlug ?? productTitleSlug).trim();
-      const moderationStatus = String(
-        returnedProduct?.moderation?.status ?? payloadResponse?.product?.moderation?.status ?? payloadResponse?.moderation?.status ?? (isUpdate ? "draft" : "draft"),
-      ).trim();
+      const moderationStatus = normalizeEditorModerationStatus({
+        ...(returnedProduct && typeof returnedProduct === "object" ? returnedProduct : {}),
+        moderation: {
+          ...(returnedProduct?.moderation && typeof returnedProduct.moderation === "object" ? returnedProduct.moderation : {}),
+          status:
+            returnedProduct?.moderation?.status ??
+            payloadResponse?.product?.moderation?.status ??
+            payloadResponse?.moderation?.status ??
+            "draft",
+        },
+      });
 
       setCreatedProduct({
         uniqueId: savedId,
@@ -4661,6 +5214,13 @@ export function SellerCatalogueEditor({
         brandTitle: normalizedBrandTitle,
         vendorName: vendorName.trim(),
         moderationStatus,
+        storedModerationStatus: String(
+          returnedProduct?.status?.stored ??
+          returnedProduct?.moderation?.status ??
+          payloadResponse?.product?.moderation?.status ??
+          payloadResponse?.moderation?.status ??
+          moderationStatus,
+        ).trim() || moderationStatus,
         moderationReason: String(returnedProduct?.moderation?.reason ?? returnedProduct?.moderation?.notes ?? "").trim(),
       });
       setUniqueId(savedId);
@@ -4698,6 +5258,9 @@ export function SellerCatalogueEditor({
         imageKeys: imageSignatureFromItems(productImages),
         fulfillmentMode,
         inventoryTracking,
+        courierEnabled: fulfillmentMode === "seller" ? productCourierEnabled : false,
+        customsCategory: fulfillmentMode === "seller" && productCourierEnabled ? productCustomsCategory : "",
+        hsCode: fulfillmentMode === "seller" && productCourierEnabled ? productHsCode : "",
       });
       setMessage(
         [
@@ -4745,7 +5308,7 @@ export function SellerCatalogueEditor({
     }
   }
 
-  function buildProductPayload(moderationStatus: "draft" | "in_review" = "draft", includeVariants = true) {
+  function buildProductPayload(moderationStatus: "draft" | "in_review" | null = "draft", includeVariants = true) {
     const normalizedUniqueId = String(uniqueId).trim();
     const normalizedSku = String(productSku).trim();
     const normalizedTitle = sanitizeText(title);
@@ -4775,6 +5338,13 @@ export function SellerCatalogueEditor({
           keywords: normalizedKeywords,
           brandTitle: normalizedBrandTitle || null,
           brand: normalizedBrandSlug || null,
+          shipping: {
+            courierEnabled: fulfillmentMode === "seller" ? productCourierEnabled : false,
+            allowedInternational: true,
+            customsCategory: fulfillmentMode === "seller" && productCourierEnabled ? productCustomsCategory.trim() || null : null,
+            hsCode: fulfillmentMode === "seller" && productCourierEnabled ? productHsCode.trim() || null : null,
+            countryOfOrigin: fulfillmentMode === "seller" && productCourierEnabled ? sellerOriginCountry.trim() || null : null,
+          },
           sellerCode: activeSellerContext?.sellerCode || profile?.sellerCode || loadedProductSellerCode || null,
           vendorName: (vendorName || loadedProductVendorName).trim(),
         },
@@ -4784,13 +5354,21 @@ export function SellerCatalogueEditor({
           brand: normalizedBrandSlug || null,
         },
         placement: {
-          isActive: false,
-          isFeatured: false,
+          ...(activeProductId
+            ? {}
+            : {
+                isActive: false,
+                isFeatured: false,
+              }),
           inventory_tracking: inventoryTrackingForProduct,
         },
-        moderation: {
-          status: moderationStatus,
-        },
+        ...(moderationStatus
+          ? {
+              moderation: {
+                status: moderationStatus,
+              },
+            }
+          : {}),
         fulfillment: {
           mode: fulfillmentMode,
           success_fee_percent: selectedSuccessFeePercent,
@@ -4863,7 +5441,7 @@ export function SellerCatalogueEditor({
       }
       setCreatedProduct((current) =>
         current
-          ? { ...current, moderationStatus: "in_review" }
+          ? { ...current, moderationStatus: "in_review", storedModerationStatus: "in_review" }
           : current,
       );
       notifyAdminBadgeRefresh();
@@ -5014,6 +5592,7 @@ export function SellerCatalogueEditor({
   }
 
   function loadVariantIntoForm(variant: ProductVariantItem, index: number) {
+    const variantLogistics = (variant.logistics || {}) as Record<string, unknown>;
     setEditingVariantIndex(index);
     setVariantFormOpen(true);
     setVariantImages(Array.isArray(variant.media?.images) ? variant.media.images : []);
@@ -5120,8 +5699,8 @@ export function SellerCatalogueEditor({
       waterPressure: String((variant as any).waterPressure ?? "").trim(),
       waterUsage: String((variant as any).waterUsage ?? "").trim(),
       noiseLevel: String((variant as any).noiseLevel ?? "").trim(),
-      parcelPreset: String(variant.logistics?.parcel_preset ?? "").trim(),
-      shippingClass: String(variant.logistics?.shipping_class ?? "").trim(),
+      parcelPreset: String(variantLogistics.parcel_preset ?? variantLogistics.parcelPreset ?? "").trim(),
+      shippingClass: String(variantLogistics.shipping_class ?? variantLogistics.shippingClass ?? "").trim(),
       sku: String(variant.sku ?? "").trim(),
       barcode: String(variant.barcode ?? "").trim(),
       barcodeImageUrl: String(variant.barcodeImageUrl ?? "").trim(),
@@ -5139,11 +5718,11 @@ export function SellerCatalogueEditor({
       trackInventory: Boolean(variant.inventory?.length) || inventoryTrackingEnabled,
       inventoryQty: String(variant.inventory?.[0]?.in_stock_qty ?? ""),
       warehouseId: String(variant.inventory?.[0]?.warehouse_id ?? ""),
-      weightKg: String(variant.logistics?.weight_kg ?? ""),
-      lengthCm: String(variant.logistics?.length_cm ?? ""),
-      widthCm: String(variant.logistics?.width_cm ?? ""),
-      heightCm: String(variant.logistics?.height_cm ?? ""),
-      monthlySales30d: String(variant.logistics?.monthly_sales_30d ?? ""),
+      weightKg: String(variantLogistics.weight_kg ?? variantLogistics.weightKg ?? ""),
+      lengthCm: String(variantLogistics.length_cm ?? variantLogistics.lengthCm ?? ""),
+      widthCm: String(variantLogistics.width_cm ?? variantLogistics.widthCm ?? ""),
+      heightCm: String(variantLogistics.height_cm ?? variantLogistics.heightCm ?? ""),
+      monthlySales30d: String(variantLogistics.monthly_sales_30d ?? variantLogistics.monthlySales30d ?? ""),
       metadataNotes:
         variant.metadataNotes && typeof variant.metadataNotes === "object"
           ? Object.fromEntries(
@@ -5257,17 +5836,17 @@ export function SellerCatalogueEditor({
       const saleIsOn = variantDraft.isOnSale && discountPercent > 0;
       const salePriceIncl = variantDraft.isOnSale && discountPercent > 0 ? money2(sellingPriceIncl * (1 - discountPercent / 100)) : 0;
       const isBevgoFulfilment = fulfillmentMode === "bevgo";
-      const logistics = isBevgoFulfilment
-        ? normalizeMarketplaceVariantLogistics({
-            weightKg: variantShippingProfile.actualWeightKg,
-            lengthCm: variantShippingProfile.lengthCm,
-            widthCm: variantShippingProfile.widthCm,
-            heightCm: variantShippingProfile.heightCm,
-            monthlySales30d: variantDraft.monthlySales30d,
-            stockQty: variantDraft.inventoryQty,
-            warehouseId: variantDraft.warehouseId,
-          })
-        : null;
+      const logistics = normalizeMarketplaceVariantLogistics({
+        parcelPreset: effectiveParcelPreset || null,
+        shippingClass: variantShippingProfile.shippingClass || null,
+        weightKg: variantShippingProfile.actualWeightKg,
+        lengthCm: variantShippingProfile.lengthCm,
+        widthCm: variantShippingProfile.widthCm,
+        heightCm: variantShippingProfile.heightCm,
+        monthlySales30d: isBevgoFulfilment ? variantDraft.monthlySales30d : 0,
+        stockQty: isBevgoFulfilment ? variantDraft.inventoryQty : 0,
+        warehouseId: isBevgoFulfilment ? variantDraft.warehouseId : null,
+      });
       const inventoryRows = (inventoryTrackingEnabled || isBevgoFulfilment)
         ? [
             {
@@ -6207,7 +6786,7 @@ export function SellerCatalogueEditor({
               {createdProduct ? formatModerationStatus(createdProduct.moderationStatus || "draft") : "Unsaved product"}
             </span>
             <span className="hidden text-[12px] text-white/70 md:inline">
-              {createdProduct ? "Review the saved listing, add variants, or update the draft." : "Add details, review the summary, then save the draft."}
+              {topStatusMessage}
             </span>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -6238,10 +6817,10 @@ export function SellerCatalogueEditor({
             <button
               type="button"
               onClick={() => void handleSubmit()}
-              disabled={!formIsValid}
+              disabled={saveDisabled}
               className="brand-button inline-flex h-10 items-center rounded-[8px] px-4 text-[13px] font-semibold disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitting ? "Saving..." : activeProductId ? "Update draft" : "Save draft"}
+              {primarySaveLabel}
             </button>
           </div>
         </div>
@@ -6274,8 +6853,12 @@ export function SellerCatalogueEditor({
       </section>
 
       <SellerPageIntro
-        title="Create product"
-        description="Start with the product record here. Variants, pricing, and stock are added once the core listing is saved."
+        title={pageIntroTitle}
+        description={
+          isEditingProduct
+            ? "Update the saved product record here. Variants, pricing, and stock can be managed once the core listing is saved."
+            : "Start with the product record here. Variants, pricing, and stock are added once the core listing is saved."
+        }
       />
 
       {showInitialEditorSkeleton ? renderEditorLoadingSkeleton() : (
@@ -6285,16 +6868,16 @@ export function SellerCatalogueEditor({
           {createdProduct ? (
             <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] p-4">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#39a96b]">Product created</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#39a96b]">
+                  {isEditingProduct ? "Product saved" : "Product created"}
+                </p>
                 <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#907d4c]">
                   {formatModerationStatus(createdProduct.moderationStatus || "draft")}
                 </span>
               </div>
               <h2 className="mt-2 text-[18px] font-semibold text-[#202020]">{createdProduct.title}</h2>
               <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
-                {isSystemAdmin
-                  ? "You are viewing this listing in system admin mode. Seller-only submission shortcuts are hidden here."
-                  : "Your listing is saved as a draft. Add variants, then submit it for review when you are ready. If Piessang fulfils this listing, it will move to an awaiting stock state after approval."}
+                {listingSummaryCopy}
               </p>
               <p className="mt-2 text-[12px] uppercase tracking-[0.12em] text-[#907d4c]">SKU: {createdProduct.sku}</p>
               <div className="mt-4 flex flex-wrap gap-2">
@@ -6643,6 +7226,186 @@ export function SellerCatalogueEditor({
                     </div>
                   )}
                 </div>
+                {fulfillmentMode === "seller" ? (
+                  <div className="mt-3 rounded-[8px] border border-black/10 bg-white px-3 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[12px] font-semibold text-[#202020]">Courier shipping</p>
+                        <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                          Turn this on if this product should be eligible for Piessang-managed courier shipping once the seller destination and courier checks pass.
+                        </p>
+                      </div>
+                      <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[10px] font-semibold text-[#907d4c]">
+                        {sellerCourierProfile.enabled ? "Seller courier enabled" : "Seller courier disabled"}
+                      </span>
+                    </div>
+                    <label className="mt-3 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
+                      <input
+                        type="checkbox"
+                        checked={productCourierEnabled}
+                        onChange={(event) => setProductCourierEnabled(event.target.checked)}
+                        disabled={!sellerCourierProfile.enabled || easyshipCategoryMapping.supportLevel === "restricted"}
+                      />
+                      Allow courier shipping for this product
+                    </label>
+                      <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                        {easyshipCategoryMapping.supportLevel === "restricted"
+                        ? "This category is treated as restricted for Piessang-managed courier shipping, so the courier option is disabled for this product."
+                        : sellerCourierProfile.enabled
+                        ? "Variant dimensions and weight still matter for later courier quoting, but this flag controls whether the product is even considered for courier delivery."
+                        : "Enable courier shipping in seller settings first before you can switch this product on."}
+                    </p>
+                    {productCourierEnabled ? (
+                      <div className="mt-3 space-y-3">
+                        <CourierLiabilityNotice />
+                        <div className="grid gap-3 sm:grid-cols-1">
+                        <label className="block">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Customs category</span>
+                          <select
+                            value={productCustomsCategory}
+                            onChange={(event) => {
+                              setProductCustomsCategoryTouched(true);
+                              setProductCustomsCategory(event.target.value);
+                              if (!productHsCodeTouched) {
+                                setProductHsCode("");
+                              }
+                            }}
+                            className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#cbb26b]"
+                          >
+                            <option value="">Select customs category</option>
+                            {easyshipCustomsCategoryOptions.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                          {!productCustomsCategoryTouched && easyshipCategoryMapping.itemCategory ? (
+                            <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                              Suggested from your Piessang category: <span className="font-semibold text-[#202020]">{easyshipCategoryMapping.itemCategory}</span>
+                            </p>
+                          ) : null}
+                          <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                            Piessang preselects the closest supported customs category from your Piessang category. Change it only if this product should be classified differently for customs.
+                          </p>
+                        </label>
+                        </div>
+                        <div className="rounded-[10px] border border-black/8 bg-[#fafafa] px-3 py-3 text-[11px] leading-[1.5] text-[#57636c]">
+                          <span className="font-semibold text-[#202020]">Country of origin:</span>{" "}
+                          {sellerOriginCountry || "Inherited from your seller shipping origin once that origin is set in Settings."}
+                        </div>
+                        <div className="rounded-[10px] border border-black/8 bg-white">
+                          <button
+                            type="button"
+                            onClick={() => setShowAdvancedCustomsDetails((current) => !current)}
+                            className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
+                          >
+                            <div>
+                              <p className="text-[12px] font-semibold text-[#202020]">Advanced customs details</p>
+                              <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                Piessang fills the customs code automatically when possible, so most sellers will not need to touch this.
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {hsSuggestionLoading ? (
+                                <span className="inline-flex items-center gap-1.5 rounded-full bg-[rgba(203,178,107,0.14)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">
+                                  <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-[#907d4c]" />
+                                  Refreshing code
+                                </span>
+                              ) : null}
+                              <span className="text-[11px] font-semibold text-[#907d4c]">
+                                {showAdvancedCustomsDetails ? "Hide" : "Review"}
+                              </span>
+                            </div>
+                          </button>
+                          {!showAdvancedCustomsDetails ? (
+                            <div className="border-t border-black/6 px-3 py-3 text-[11px] leading-[1.5] text-[#57636c]">
+                              {productHsCode ? (
+                                <div className="space-y-2">
+                                  <p>
+                                    Piessang has prepared a customs code for this product.
+                                  </p>
+                                  <div className="inline-flex items-center gap-2 rounded-[10px] border border-[#cbb26b]/35 bg-[#fffaf0] px-3 py-2">
+                                    <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Code</span>
+                                    <span className="text-[18px] font-semibold tracking-[0.08em] text-[#202020]">{productHsCode}</span>
+                                  </div>
+                                  <p>
+                                    {hsSuggestionSource === "ai_fallback"
+                                      ? "This is currently an AI fallback suggestion."
+                                      : hsSuggestionSource === "reviewed_fallback"
+                                        ? "This is currently using Piessang's reviewed fallback classification."
+                                        : "This was auto-filled from the latest classification pass."}
+                                  </p>
+                                </div>
+                              ) : (
+                                <>
+                                  {hsSuggestionLoading
+                                    ? "Piessang is currently classifying this product and refreshing the customs code."
+                                    : "Piessang will keep trying to prepare a customs code automatically from the selected customs category."}
+                                </>
+                              )}
+                              {!productHsCodeTouched ? (
+                                <span className="block mt-2">This code keeps updating automatically as your product title, category, brand, overview, and description become more specific.</span>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className="border-t border-black/6 px-3 py-3">
+                              <label className="block">
+                                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suggested customs code</span>
+                                <input
+                                  type="text"
+                                  value={productHsCode}
+                                  onChange={(event) => {
+                                    setProductHsCodeTouched(true);
+                                    setProductHsCode(event.target.value);
+                                  }}
+                                  placeholder="Piessang will auto-fill this when possible"
+                                  className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#cbb26b]"
+                                />
+                                <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                                  This customs code helps duties, taxes, and customs clearance. Leave Piessang&apos;s suggestion in place unless you know the exact classification for your product.
+                                </p>
+                                <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                                  {productHsCodeTouched
+                                    ? "Using your manual customs code override."
+                                    : "Piessang keeps this code up to date automatically while you edit the product details."}
+                                </p>
+                                {hsSuggestionLoading ? (
+                                  <div className="mt-2 inline-flex items-center gap-2 rounded-[10px] border border-[#cbb26b]/25 bg-[#fffaf0] px-3 py-2 text-[11px] font-medium text-[#907d4c]">
+                                    <SpinnerIcon className="h-4 w-4 animate-spin text-[#907d4c]" />
+                                    Refreshing the latest customs code suggestion from your current product details...
+                                  </div>
+                                ) : null}
+                                {!productHsCodeTouched && easyshipSuggestedHsCode ? (
+                                  <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                                    Suggested from the selected customs category: <span className="font-semibold text-[#202020]">{easyshipSuggestedHsCode}</span>
+                                    {easyshipSuggestedHsDescription ? ` · ${easyshipSuggestedHsDescription}` : ""}
+                                  </p>
+                                ) : null}
+                                {hsSuggestionNote ? (
+                                  <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
+                                    {hsSuggestionNote}
+                                  </p>
+                                ) : null}
+                              </label>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                    {easyshipSellerWarnings.length ? (
+                      <div className="mt-3 rounded-[10px] border border-[#f59e0b]/25 bg-[rgba(245,158,11,0.08)] p-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#92400e]">Courier review</p>
+                        <div className="mt-2 space-y-2">
+                          {easyshipSellerWarnings.map((warning) => (
+                            <p key={warning} className="text-[12px] leading-[1.5] text-[#7c2d12]">
+                              {warning}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </section>
 
               <section className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
@@ -6877,7 +7640,7 @@ export function SellerCatalogueEditor({
                   <div>
                     <p className="text-[12px] font-semibold text-[#202020]">Variants</p>
                     <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                      Add at least one variant before you submit this draft for review.
+                      {variantSectionHelperText}
                     </p>
                   </div>
                   <button
@@ -7135,13 +7898,151 @@ export function SellerCatalogueEditor({
                           <div>
                             <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">Pack details</p>
                             <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                              Keep the operational pack details here, including pack size, volume or weight, and basic dimensions.
+                              {isApparelProductDraft
+                                ? "Keep the operational pack details here. For apparel and other soft goods, Piessang can estimate packed dimensions from a packaging preset so sellers mainly need the correct weight."
+                                : "Keep the operational pack details here, including pack size, volume or weight, and basic dimensions."}
                             </p>
+                          </div>
+                          <div className="mt-3 rounded-[10px] border border-black/8 bg-white p-3">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-[12px] font-semibold text-[#202020]">Packaging preset</p>
+                                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                  {isApparelProductDraft
+                                    ? "Choose the packed parcel type Piessang should use for soft-goods courier quoting. You can still override dimensions below if needed."
+                                    : "Choose a parcel preset if this variant usually ships in a standard package shape. You can still override dimensions below if needed."}
+                                </p>
+                              </div>
+                              {recommendedParcelPreset && !variantDraft.parcelPreset ? (
+                                <span className="rounded-full bg-[rgba(34,197,94,0.12)] px-2.5 py-1 text-[11px] font-semibold text-[#15803d]">
+                                  Recommended: {getParcelPresetMeta(recommendedParcelPreset)?.label || "Preset ready"}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-3">
+                              <div className="mb-1 block text-[11px] font-semibold text-[#202020]">Preset</div>
+                              <div className="space-y-3">
+                                {parcelPresetGroups.map((group) => (
+                                  <div key={group.key}>
+                                    <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">
+                                      {group.label}
+                                    </p>
+                                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                      {group.items.map((preset) => {
+                                        const isActive = variantDraft.parcelPreset === preset.value;
+                                        const presetDefaults = buildVariantShippingProfile({ parcelPreset: preset.value });
+                                        const iconClassName =
+                                          preset.family === "bag"
+                                            ? preset.scale === "slim"
+                                              ? "h-7 w-7"
+                                              : "h-8 w-8"
+                                            : preset.scale === "small"
+                                              ? "h-7 w-7"
+                                              : preset.scale === "medium"
+                                                ? "h-8 w-8"
+                                                : "h-9 w-9";
+                                        return (
+                                          <button
+                                            key={preset.value}
+                                            type="button"
+                                            onClick={() => {
+                                              const nextPreset = preset.value;
+                                              const nextProfile = buildVariantShippingProfile({ parcelPreset: nextPreset || null });
+                                              setVariantDraft((current) => ({
+                                                ...current,
+                                                parcelPreset: nextPreset,
+                                                shippingClass: nextProfile.shippingClass || current.shippingClass,
+                                                weightKg:
+                                                  nextProfile.actualWeightKg != null
+                                                    ? String(nextProfile.actualWeightKg)
+                                                    : "",
+                                                lengthCm:
+                                                  nextProfile.lengthCm != null
+                                                    ? String(nextProfile.lengthCm)
+                                                    : "",
+                                                widthCm:
+                                                  nextProfile.widthCm != null
+                                                    ? String(nextProfile.widthCm)
+                                                    : "",
+                                                heightCm:
+                                                  nextProfile.heightCm != null
+                                                    ? String(nextProfile.heightCm)
+                                                    : "",
+                                              }));
+                                            }}
+                                            className={`rounded-[10px] border px-3 py-2 text-left transition ${
+                                              isActive
+                                                ? "border-[#cbb26b] bg-[rgba(203,178,107,0.12)] shadow-[0_0_0_1px_rgba(203,178,107,0.14)]"
+                                                : "border-black/8 bg-white hover:border-[#cbb26b]/55 hover:bg-[#fcfbf6]"
+                                            }`}
+                                          >
+                                            <div className="flex items-center gap-3">
+                                              <div className="flex h-10 w-12 shrink-0 items-center justify-center rounded-[10px] bg-[#f5f5f2]">
+                                                {preset.family === "bag" ? (
+                                                  <ParcelBagIcon
+                                                    compact={preset.scale === "slim"}
+                                                    className={`${iconClassName} text-[#6b5f38]`}
+                                                  />
+                                                ) : (
+                                                  <ParcelBoxIcon
+                                                    large={preset.scale === "large"}
+                                                    className={`${iconClassName} text-[#6b5f38]`}
+                                                  />
+                                                )}
+                                              </div>
+                                              <div className="min-w-0">
+                                                <div className="text-[12px] font-semibold text-[#202020]">{preset.label}</div>
+                                                <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-[#6b7280]">
+                                                  {presetDefaults.lengthCm || 0} x {presetDefaults.widthCm || 0} x {presetDefaults.heightCm || 0} cm
+                                                  {presetDefaults.actualWeightKg ? ` • ${presetDefaults.actualWeightKg} kg` : ""}
+                                                </p>
+                                              </div>
+                                            </div>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-3 flex flex-wrap items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => setVariantDraft((current) => ({ ...current, parcelPreset: "" }))}
+                                  className="rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[11px] font-semibold text-[#57636c] transition hover:border-black/20 hover:text-[#202020]"
+                                >
+                                  Clear preset
+                                </button>
+                                <p className="text-[11px] leading-[1.4] text-[#57636c]">
+                                  Piessang uses the preset as the packed parcel shape. Weight and dimensions below can still override it.
+                                </p>
+                              </div>
+                            </div>
+                            {activeParcelPresetMeta ? (
+                              <div className="mt-3 rounded-[8px] border border-[rgba(203,178,107,0.28)] bg-[rgba(248,244,232,0.85)] px-3 py-2">
+                                <p className="text-[12px] font-semibold text-[#6b5f38]">{activeParcelPresetMeta.label}</p>
+                                <p className="mt-1 text-[11px] leading-[1.4] text-[#6b7280]">
+                                  {activeParcelPresetMeta.description}
+                                </p>
+                                <p className="mt-2 text-[11px] leading-[1.4] text-[#6b7280]">
+                                  Default packed size:{" "}
+                                  <span className="font-semibold text-[#202020]">
+                                    {variantShippingProfile.lengthCm || 0} x {variantShippingProfile.widthCm || 0} x {variantShippingProfile.heightCm || 0} cm
+                                  </span>
+                                  {variantShippingProfile.actualWeightKg ? (
+                                    <>
+                                      {" "}at about{" "}
+                                      <span className="font-semibold text-[#202020]">{variantShippingProfile.actualWeightKg} kg</span>
+                                    </>
+                                  ) : null}
+                                </p>
+                              </div>
+                            ) : null}
                           </div>
                           <div className="mt-3 grid gap-3 sm:grid-cols-3">
                             <label className="block">
                               <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Pack count</span>
-                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <ChangeImpactHint mode="live" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
                               <input
                                 type="number"
                                 min="1"
@@ -7151,36 +8052,67 @@ export function SellerCatalogueEditor({
                               />
                             </label>
                             <label className="block">
-                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Volume / weight</span>
-                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                                {isApparelProductDraft ? "Shipping weight (kg)" : "Volume / weight"}
+                              </span>
+                              <ChangeImpactHint mode="live" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
                               <input
                                 type="number"
                                 min="0"
-                                value={variantDraft.volume}
-                                onChange={(event) => setVariantDraft((current) => ({ ...current, volume: event.target.value }))}
+                                step={isApparelProductDraft ? "0.01" : "1"}
+                                value={
+                                  isApparelProductDraft
+                                    ? (variantDraft.weightKg || (variantShippingProfile.actualWeightKg != null ? String(variantShippingProfile.actualWeightKg) : ""))
+                                    : variantDraft.volume
+                                }
+                                onChange={(event) =>
+                                  setVariantDraft((current) => ({
+                                    ...current,
+                                    ...(isApparelProductDraft
+                                      ? { weightKg: event.target.value }
+                                      : { volume: event.target.value }),
+                                  }))}
                                 className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
                               />
+                              {isApparelProductDraft ? (
+                                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                  Piessang uses this packed parcel weight for courier quotes. Your selected preset can suggest a starting weight.
+                                </p>
+                              ) : null}
                             </label>
                             <label className="block">
-                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Unit</span>
-                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
-                              <select
-                                value={variantDraft.volumeUnit}
-                                onChange={(event) => setVariantDraft((current) => ({ ...current, volumeUnit: event.target.value }))}
-                                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                              >
-                                {VOLUME_UNITS.map((unit) => (
-                                  <option key={unit} value={unit}>
-                                    {unit}
-                                  </option>
-                                ))}
-                              </select>
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                                {isApparelProductDraft ? "Weight unit" : "Unit"}
+                              </span>
+                              <ChangeImpactHint mode="live" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              {isApparelProductDraft ? (
+                                <input
+                                  type="text"
+                                  value="kg"
+                                  readOnly
+                                  className="w-full rounded-[8px] border border-black/10 bg-[#f7f7f4] px-3 py-2.5 text-[12px] text-[#57636c] outline-none"
+                                />
+                              ) : (
+                                <select
+                                  value={variantDraft.volumeUnit}
+                                  onChange={(event) => setVariantDraft((current) => ({ ...current, volumeUnit: event.target.value }))}
+                                  className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
+                                >
+                                  {VOLUME_UNITS.map((unit) => (
+                                    <option key={unit} value={unit}>
+                                      {unit}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
                             </label>
                           </div>
                           <div className="mt-3 grid gap-3 sm:grid-cols-3">
                             <label className="block">
-                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Length (cm)</span>
-                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                                {isApparelProductDraft ? "Length (cm) override" : "Length (cm)"}
+                              </span>
+                              <ChangeImpactHint mode="live" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
                               <input
                                 type="number"
                                 min="0"
@@ -7188,10 +8120,17 @@ export function SellerCatalogueEditor({
                                 onChange={(event) => setVariantDraft((current) => ({ ...current, lengthCm: event.target.value }))}
                                 className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
                               />
+                              {isApparelProductDraft ? (
+                                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                  Leave blank to use the selected packaging preset dimensions automatically.
+                                </p>
+                              ) : null}
                             </label>
                             <label className="block">
-                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Width (cm)</span>
-                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                                {isApparelProductDraft ? "Width (cm) override" : "Width (cm)"}
+                              </span>
+                              <ChangeImpactHint mode="live" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
                               <input
                                 type="number"
                                 min="0"
@@ -7199,10 +8138,17 @@ export function SellerCatalogueEditor({
                                 onChange={(event) => setVariantDraft((current) => ({ ...current, widthCm: event.target.value }))}
                                 className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
                               />
+                              {isApparelProductDraft ? (
+                                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                  Leave blank to use the selected packaging preset dimensions automatically.
+                                </p>
+                              ) : null}
                             </label>
                             <label className="block">
-                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Height (cm)</span>
-                              <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
+                              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">
+                                {isApparelProductDraft ? "Height (cm) override" : "Height (cm)"}
+                              </span>
+                              <ChangeImpactHint mode="live" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
                               <input
                                 type="number"
                                 min="0"
@@ -7210,6 +8156,11 @@ export function SellerCatalogueEditor({
                                 onChange={(event) => setVariantDraft((current) => ({ ...current, heightCm: event.target.value }))}
                                 className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
                               />
+                              {isApparelProductDraft ? (
+                                <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                  Leave blank to use the selected packaging preset dimensions automatically.
+                                </p>
+                              ) : null}
                             </label>
                           </div>
                         </div>

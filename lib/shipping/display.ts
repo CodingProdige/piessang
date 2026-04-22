@@ -1,5 +1,6 @@
 import { formatCurrency as formatDeliveryCurrency, resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
+import { normalizeSellerCourierProfile, normalizeProductCourierSettings } from "@/lib/integrations/easyship-profile";
 
 type ShopperDeliveryAreaLike = {
   city?: string | null;
@@ -26,6 +27,8 @@ type VariantLike = {
 } | null;
 
 type DeliveryProfileLike = Record<string, unknown> | null | undefined;
+type CourierProfileLike = Record<string, unknown> | null | undefined;
+type ProductShippingLike = Record<string, unknown> | null | undefined;
 
 export type ShopperFacingDeliveryTone = "success" | "danger" | "warning" | "neutral";
 
@@ -142,6 +145,8 @@ export function getShopperFacingDeliveryPromise({
 export function getShopperFacingDeliveryMessage({
   fulfillmentMode,
   profile,
+  courierProfile,
+  productShipping,
   sellerBaseLocation,
   shopperArea,
   variant,
@@ -150,6 +155,8 @@ export function getShopperFacingDeliveryMessage({
 }: {
   fulfillmentMode?: string | null;
   profile?: DeliveryProfileLike;
+  courierProfile?: CourierProfileLike;
+  productShipping?: ProductShippingLike;
   sellerBaseLocation?: string | null;
   shopperArea: ShopperDeliveryAreaLike | null;
   variant?: VariantLike;
@@ -161,7 +168,21 @@ export function getShopperFacingDeliveryMessage({
     return { label: platformLabel, tone: "neutral" };
   }
 
+  const normalizedCourierProfile = normalizeSellerCourierProfile(courierProfile || {});
+  const normalizedProductShipping = normalizeProductCourierSettings(productShipping || {});
+  const courierEligible =
+    normalizedCourierProfile.enabled === true &&
+    normalizedCourierProfile.internationalEnabled !== false &&
+    normalizedProductShipping.courierEnabled === true &&
+    normalizedProductShipping.allowedInternational !== false;
+
   if (!profile) {
+    if (courierEligible) {
+      return {
+        label: shopperArea?.country ? `Courier shipping checked for ${shopperArea.country} at checkout` : "Courier shipping available",
+        tone: shopperArea?.country ? "warning" : "success",
+      };
+    }
     return {
       label: missingProfileLabel || (shopperArea ? "Check delivery with seller" : "Set your shipping location"),
       tone: "neutral",
@@ -204,6 +225,20 @@ export function getShopperFacingDeliveryMessage({
             : "Shipping available",
       tone: "success",
     };
+  }
+
+  if (courierEligible) {
+    const allowedCountries = Array.isArray(normalizedCourierProfile.allowedDestinationCountries)
+      ? normalizedCourierProfile.allowedDestinationCountries.map((entry) => String(entry).trim().toUpperCase()).filter(Boolean)
+      : [];
+    const shopperCountry = String(shopperArea?.country || "").trim().toUpperCase();
+    const allowedForCountry = !shopperCountry || !allowedCountries.length || allowedCountries.includes(shopperCountry);
+    if (allowedForCountry) {
+      return {
+        label: shopperArea?.country ? `Courier shipping may be available to ${shopperArea.country}` : "Courier shipping available",
+        tone: shopperArea?.country ? "warning" : "success",
+      };
+    }
   }
 
   return {

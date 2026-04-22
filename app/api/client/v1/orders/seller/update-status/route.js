@@ -11,6 +11,9 @@ import { canTransitionSellerFulfillment, getSellerFulfillmentStatusLabel, normal
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 import { sendTrackingUpdateNotifications } from "@/lib/orders/tracking-notifications";
 import { processStripeOrderRefund } from "@/lib/payments/stripe-refunds";
+import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
+import { easyshipRateAdapter } from "@/lib/shipping/adapters/easyship";
+import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status, title, message, extra = {}) => NextResponse.json({ ok: false, title, message, ...extra }, { status });
@@ -30,6 +33,168 @@ function getLineSellerIdentity(item) {
     sellerSlug: toStr(product?.product?.sellerSlug || product?.seller?.sellerSlug || ""),
     vendorName: toStr(product?.product?.vendorName || product?.seller?.vendorName || ""),
   };
+}
+
+function r2(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.round(numeric * 100) / 100;
+}
+
+function getLineQty(item) {
+  return Math.max(0, Number(item?.quantity || 0));
+}
+
+function computeLineFinalIncl(item) {
+  const lineTotal = Number(item?.line_totals?.final_incl);
+  if (Number.isFinite(lineTotal) && lineTotal >= 0) return r2(lineTotal);
+  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+  const quantity = getLineQty(item);
+  const saleIncl = Number(variant?.sale?.sale_price_incl);
+  const regularIncl = Number(variant?.pricing?.selling_price_incl);
+  const unitIncl = Number.isFinite(saleIncl) && saleIncl > 0 ? saleIncl : Number.isFinite(regularIncl) && regularIncl > 0 ? regularIncl : 0;
+  return r2(unitIncl * quantity);
+}
+
+function collectLineShipmentParcels(item) {
+  const quantity = getLineQty(item);
+  const parcel = buildShipmentParcelFromVariant(item?.selected_variant_snapshot || item?.selected_variant || item?.variant || null);
+  if (!parcel || quantity <= 0) return [];
+  return Array.from({ length: quantity }, () => parcel);
+}
+
+function collectLineQuoteItems(item) {
+  const product = item?.product_snapshot || item?.product || {};
+  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+  const quantity = getLineQty(item);
+  if (quantity <= 0) return [];
+  const lineTotal = computeLineFinalIncl(item);
+  const unitValue = quantity > 0 ? r2(lineTotal / quantity) : 0;
+  return [
+    {
+      description: toStr(product?.product?.title || variant?.label || "Marketplace item"),
+      quantity,
+      unitValue,
+      customsCategory: product?.product?.shipping?.customsCategory || product?.shipping?.customsCategory || null,
+      hsCode: product?.product?.shipping?.hsCode || product?.shipping?.hsCode || null,
+      countryOfOrigin: product?.product?.shipping?.countryOfOrigin || product?.shipping?.countryOfOrigin || null,
+    },
+  ];
+}
+
+function getOrderDeliveryAddress(order) {
+  const snapshot = order?.delivery_snapshot && typeof order.delivery_snapshot === "object" ? order.delivery_snapshot : {};
+  const delivery = order?.delivery && typeof order.delivery === "object" ? order.delivery : {};
+  const address = snapshot?.address && typeof snapshot.address === "object" ? snapshot.address : delivery?.address_snapshot && typeof delivery.address_snapshot === "object" ? delivery.address_snapshot : {};
+  return {
+    country: toStr(address?.country),
+    region: toStr(address?.province || address?.stateProvinceRegion),
+    city: toStr(address?.city || address?.suburb),
+    suburb: toStr(address?.suburb),
+    postalCode: toStr(address?.postalCode),
+    recipientName: toStr(address?.recipientName),
+  };
+}
+
+function updateSellerBreakdownEntries(entries, sellerCode, sellerSlug, patch) {
+  const normalizedCode = toLower(sellerCode);
+  const normalizedSlug = toLower(sellerSlug);
+  return (Array.isArray(entries) ? entries : []).map((entry) => {
+    const entryCode = toLower(entry?.sellerCode || entry?.seller_code || entry?.seller_key || "");
+    const entrySlug = toLower(entry?.sellerSlug || entry?.seller_slug || "");
+    const matches = Boolean((normalizedCode && entryCode === normalizedCode) || (normalizedSlug && entrySlug === normalizedSlug));
+    return matches ? { ...entry, ...patch } : entry;
+  });
+}
+
+function buildPlatformShipmentBreakdownPatch({ sellerDeliveryEntry = null, platformShipment = null, failure = null, now = "" } = {}) {
+  const currentEntry = sellerDeliveryEntry && typeof sellerDeliveryEntry === "object" ? sellerDeliveryEntry : {};
+  if (failure) {
+    return {
+      shipment_creation_state: "failed",
+      shipment_error_message: toStr(failure?.message || "Piessang could not create the courier shipment yet."),
+      shipment_last_attempt_at: now || new Date().toISOString(),
+      shipment_retryable: true,
+      shipment_status: toStr(currentEntry?.shipment_status || ""),
+    };
+  }
+  if (platformShipment) {
+    return {
+      easyship_shipment_id: platformShipment.shipmentId,
+      shipment_id: platformShipment.shipmentId,
+      tracking_number: platformShipment.trackingNumber,
+      tracking_url: platformShipment.trackingUrl,
+      label_url: platformShipment.labelUrl,
+      shipment_status: platformShipment.status,
+      shipment_metadata: platformShipment.metadata || {},
+      courier_carrier: toStr(platformShipment?.metadata?.courierName || currentEntry?.courier_carrier || ""),
+      courier_service: toStr(platformShipment?.metadata?.serviceName || currentEntry?.courier_service || ""),
+      shipment_creation_state: "created",
+      shipment_error_message: "",
+      shipment_last_attempt_at: now || new Date().toISOString(),
+      shipment_retryable: false,
+    };
+  }
+  return {};
+}
+
+async function createPlatformCourierShipment({ order, sellerCode, sellerSlug, sellerDeliveryEntry, sellerItems }) {
+  const existingShipmentId = toStr(
+    sellerDeliveryEntry?.easyship_shipment_id ||
+    sellerDeliveryEntry?.shipment_id ||
+    sellerDeliveryEntry?.shipmentId,
+  );
+  if (existingShipmentId) {
+    return {
+      skipped: true,
+      shipmentId: existingShipmentId,
+      trackingNumber: toStr(sellerDeliveryEntry?.tracking_number || sellerDeliveryEntry?.courier_tracking_number || "") || null,
+      trackingUrl: toStr(sellerDeliveryEntry?.tracking_url || sellerDeliveryEntry?.courier_tracking_url || "") || null,
+      labelUrl: toStr(sellerDeliveryEntry?.label_url || "") || null,
+      status: toStr(sellerDeliveryEntry?.shipment_status || "created"),
+      metadata: sellerDeliveryEntry?.shipment_metadata && typeof sellerDeliveryEntry.shipment_metadata === "object" ? sellerDeliveryEntry.shipment_metadata : {},
+    };
+  }
+
+  const ownerDoc =
+    (sellerCode ? await findSellerOwnerByCode(sellerCode) : null) ??
+    (sellerSlug ? await findSellerOwnerBySlug(sellerSlug) : null);
+  const seller = ownerDoc?.data?.seller && typeof ownerDoc.data.seller === "object" ? ownerDoc.data.seller : {};
+  const origin = seller?.deliveryProfile?.origin && typeof seller.deliveryProfile.origin === "object" ? seller.deliveryProfile.origin : null;
+  if (!origin?.country) {
+    throw new Error("Seller shipping origin is missing, so Piessang cannot create the courier shipment yet.");
+  }
+
+  const destination = getOrderDeliveryAddress(order);
+  if (!destination.country) {
+    throw new Error("Customer delivery address is incomplete, so Piessang cannot create the courier shipment yet.");
+  }
+
+  const parcels = sellerItems.flatMap((item) => collectLineShipmentParcels(item));
+  const items = sellerItems.flatMap((item) => collectLineQuoteItems(item));
+  const availableQuotes = Array.isArray(sellerDeliveryEntry?.available_courier_quotes) ? sellerDeliveryEntry.available_courier_quotes : [];
+  const selectedQuoteId = toStr(sellerDeliveryEntry?.selected_courier_quote_id || "");
+  const selectedQuote = availableQuotes.find((quote) => toStr(quote?.id) === selectedQuoteId) || null;
+
+  return easyshipRateAdapter.createShipment({
+    sellerId: sellerCode || sellerSlug,
+    orderId: toStr(order?.order?.orderNumber || order?.order?.id || ""),
+    origin,
+    destination,
+    parcels,
+    serviceCode: selectedQuoteId || null,
+    metadata: {
+      items,
+      sellerCode,
+      sellerSlug,
+      orderNumber: toStr(order?.order?.orderNumber || ""),
+      companyName: toStr(seller?.vendorName || seller?.groupVendorName || seller?.companyName || "Piessang seller"),
+      recipientName: toStr(destination.recipientName || ""),
+      handoverMode: toStr(sellerDeliveryEntry?.courier_handover_mode || "pickup"),
+      courierName: toStr(selectedQuote?.carrier || sellerDeliveryEntry?.courier_carrier || ""),
+      serviceName: toStr(selectedQuote?.service || sellerDeliveryEntry?.courier_service || ""),
+    },
+  });
 }
 
 function getCustomerEmail(order) {
@@ -184,6 +349,14 @@ export async function POST(req) {
       });
     }
 
+    if ((trackingOwner === "platform" || trackingOwner === "piessang") && !isSystemAdminUser(requester)) {
+      return err(
+        409,
+        "Courier Status Managed By Piessang",
+        "This courier shipment is now managed by Piessang and the courier integration, so sellers cannot update its fulfilment status manually.",
+      );
+    }
+
     const sellerSourceItems = sourceItems
       .filter((item) => {
         const lineSeller = getLineSellerIdentity(item);
@@ -205,10 +378,27 @@ export async function POST(req) {
     ) {
       return err(409, "Invalid Status Change", `You cannot move this order from ${getSellerFulfillmentStatusLabel(currentSellerStatus)} to ${getSellerFulfillmentStatusLabel(status)}.`);
     }
-    if (trackingOwner === "piessang" && (trackingNumber || courierName)) {
+    if ((trackingOwner === "piessang" || trackingOwner === "platform") && (trackingNumber || courierName)) {
       return err(409, "Tracking Managed By Piessang", "This shipping method is tracked by Piessang, so sellers cannot add courier details manually.");
     }
 
+    let platformShipment = null;
+    let platformShipmentFailure = null;
+    if (status === "dispatched" && (trackingOwner === "platform" || trackingOwner === "piessang")) {
+      try {
+        platformShipment = await createPlatformCourierShipment({
+          order,
+          sellerCode,
+          sellerSlug,
+          sellerDeliveryEntry,
+          sellerItems: sellerSourceItems,
+        });
+      } catch (shipmentError) {
+        platformShipmentFailure = shipmentError instanceof Error ? shipmentError : new Error("Piessang could not create the courier shipment yet.");
+      }
+    }
+
+    const effectiveStatus = platformShipmentFailure ? currentSellerStatus : status;
     const nextItems = sourceItems.map((item) => {
       const lineSeller = getLineSellerIdentity(item);
       const matchesSeller =
@@ -221,14 +411,36 @@ export async function POST(req) {
           ...item,
           fulfillment_tracking: {
             ...(item?.fulfillment_tracking || {}),
-            status,
+            status: effectiveStatus,
             updatedAt: now,
             updatedBy: sessionUser.uid,
-            trackingNumber: trackingNumber || item?.fulfillment_tracking?.trackingNumber || null,
-            courierName: courierName || item?.fulfillment_tracking?.courierName || null,
+            trackingNumber:
+              (trackingOwner === "platform" || trackingOwner === "piessang")
+                ? platformShipment?.trackingNumber || item?.fulfillment_tracking?.trackingNumber || null
+                : trackingNumber || item?.fulfillment_tracking?.trackingNumber || null,
+            courierName:
+              (trackingOwner === "platform" || trackingOwner === "piessang")
+                ? toStr(platformShipment?.metadata?.courierName || "") || item?.fulfillment_tracking?.courierName || null
+                : courierName || item?.fulfillment_tracking?.courierName || null,
+            trackingUrl:
+              (trackingOwner === "platform" || trackingOwner === "piessang")
+                ? platformShipment?.trackingUrl || item?.fulfillment_tracking?.trackingUrl || null
+                : item?.fulfillment_tracking?.trackingUrl || null,
+            labelUrl:
+              (trackingOwner === "platform" || trackingOwner === "piessang")
+                ? platformShipment?.labelUrl || item?.fulfillment_tracking?.labelUrl || null
+                : item?.fulfillment_tracking?.labelUrl || null,
+            shipmentId:
+              (trackingOwner === "platform" || trackingOwner === "piessang")
+                ? platformShipment?.shipmentId || item?.fulfillment_tracking?.shipmentId || null
+                : item?.fulfillment_tracking?.shipmentId || null,
+            shipmentStatus:
+              (trackingOwner === "platform" || trackingOwner === "piessang")
+                ? toStr(platformShipment?.status || item?.fulfillment_tracking?.shipmentStatus || "")
+                : toStr(item?.fulfillment_tracking?.shipmentStatus || ""),
             notes: notes || item?.fulfillment_tracking?.notes || null,
             cancellationReason: cancellationReason || item?.fulfillment_tracking?.cancellationReason || null,
-            cancelledAt: status === "cancelled" ? now : item?.fulfillment_tracking?.cancelledAt || null,
+            cancelledAt: effectiveStatus === "cancelled" ? now : item?.fulfillment_tracking?.cancelledAt || null,
           },
         },
         order,
@@ -243,6 +455,31 @@ export async function POST(req) {
 
     const aggregate = deriveAggregateOrderStatuses(nextItems, order);
     const { items: enrichedItems, progress } = buildOrderDeliveryProgress({ ...order, items: nextItems });
+
+    const platformShipmentBreakdownPatch = buildPlatformShipmentBreakdownPatch({
+      sellerDeliveryEntry,
+      platformShipment,
+      failure: platformShipmentFailure,
+      now,
+    });
+    const nextPricingBreakdown = updateSellerBreakdownEntries(
+      order?.pricing_snapshot?.sellerDeliveryBreakdown || [],
+      sellerCode,
+      sellerSlug,
+      platformShipmentBreakdownPatch,
+    );
+    const nextDeliveryBreakdown = updateSellerBreakdownEntries(
+      order?.delivery?.fee?.seller_breakdown || [],
+      sellerCode,
+      sellerSlug,
+      platformShipmentBreakdownPatch,
+    );
+    const nextDeliverySnapshotBreakdown = updateSellerBreakdownEntries(
+      order?.delivery_snapshot?.sellerDeliveryBreakdown || [],
+      sellerCode,
+      sellerSlug,
+      platformShipmentBreakdownPatch,
+    );
 
     const wholeOrderCancelled = aggregate.orderStatus === "cancelled";
     const paymentProvider = toLower(order?.payment?.provider || "");
@@ -307,28 +544,40 @@ export async function POST(req) {
     const refundStarted = ["refunded", "partial_refund", "already_refunded", "already_processed"].includes(
       toLower(refundResult?.status || ""),
     );
+    const effectiveCourierName =
+      (trackingOwner === "platform" || trackingOwner === "piessang")
+        ? toStr(platformShipment?.metadata?.courierName || platformShipment?.metadata?.serviceName || "")
+        : courierName;
+    const effectiveTrackingNumber =
+      (trackingOwner === "platform" || trackingOwner === "piessang")
+        ? toStr(platformShipment?.trackingNumber || "")
+        : trackingNumber;
     const sellerVendorName = touchedItems[0]?.product_snapshot?.product?.vendorName || touchedItems[0]?.product_snapshot?.seller?.vendorName || "";
     const timelineEvent = createOrderTimelineEvent({
-      type: `seller_${status}`,
+      type: platformShipmentFailure ? "seller_dispatch_attempt_failed" : `seller_${effectiveStatus}`,
       title:
-        status === "cancelled"
+        platformShipmentFailure
+          ? "Courier shipment creation failed"
+          : effectiveStatus === "cancelled"
           ? "Seller cancelled this order"
-          : status === "dispatched"
+          : effectiveStatus === "dispatched"
             ? (trackingNumber || courierName ? "Order handed to courier" : "Order out for delivery")
-            : status === "delivered"
+            : effectiveStatus === "delivered"
               ? "Seller marked this order delivered"
               : "Seller started processing this order",
       message:
-        status === "cancelled"
+        platformShipmentFailure
+          ? `Piessang could not create the courier shipment yet.${platformShipmentFailure?.message ? ` ${platformShipmentFailure.message}` : ""}`
+          : effectiveStatus === "cancelled"
           ? `The seller cancelled this order.${cancellationReason ? ` Reason: ${cancellationReason}` : ""}`
-          : status === "dispatched"
+          : effectiveStatus === "dispatched"
             ? [
                 "The seller marked this order as on the way.",
-                courierName ? `Courier: ${courierName}.` : "",
-                trackingNumber ? `Tracking number: ${trackingNumber}.` : "",
+                effectiveCourierName ? `Courier: ${effectiveCourierName}.` : "",
+                effectiveTrackingNumber ? `Tracking number: ${effectiveTrackingNumber}.` : "",
                 notes ? `Note: ${notes}` : "",
               ].filter(Boolean).join(" ")
-            : status === "delivered"
+            : effectiveStatus === "delivered"
               ? "The seller confirmed that this order has been delivered."
               : "The seller started preparing this order.",
       actorType: isSystemAdminUser(requester) ? "admin" : "seller",
@@ -342,12 +591,12 @@ export async function POST(req) {
           "Seller",
       ),
       createdAt: now,
-      status,
+      status: platformShipmentFailure ? "failed" : effectiveStatus,
       sellerCode: sellerCode || touchedItems[0]?.product_snapshot?.product?.sellerCode || "",
       sellerSlug: sellerSlug || touchedItems[0]?.product_snapshot?.product?.sellerSlug || "",
       metadata: {
-        courierName: courierName || null,
-        trackingNumber: trackingNumber || null,
+        courierName: effectiveCourierName || null,
+        trackingNumber: effectiveTrackingNumber || null,
         note: notes || null,
         itemCount: touchedItems.length,
         cancellationReason: cancellationReason || null,
@@ -374,6 +623,21 @@ export async function POST(req) {
     await orderRef.set(
       {
         items: enrichedItems,
+        pricing_snapshot: {
+          ...(order?.pricing_snapshot || {}),
+          sellerDeliveryBreakdown: nextPricingBreakdown,
+        },
+        delivery: {
+          ...(order?.delivery || {}),
+          fee: {
+            ...(order?.delivery?.fee || {}),
+            seller_breakdown: nextDeliveryBreakdown,
+          },
+        },
+        delivery_snapshot: {
+          ...(order?.delivery_snapshot || {}),
+          sellerDeliveryBreakdown: nextDeliverySnapshotBreakdown,
+        },
         order: {
           ...(order?.order || {}),
           status: {
@@ -456,6 +720,47 @@ export async function POST(req) {
       { merge: true },
     );
 
+    if (platformShipmentFailure) {
+      return err(
+        409,
+        "Courier Shipment Pending",
+        platformShipmentFailure.message || "Piessang could not create the courier shipment yet.",
+        {
+          orderId: resolvedOrderId,
+          orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || ""),
+          status: effectiveStatus,
+          retryable: true,
+          deliveryUpdate: {
+            shipmentCreationState: "failed",
+            shipmentErrorMessage: toStr(platformShipmentFailure.message || ""),
+            shipmentLastAttemptAt: now,
+            shipmentRetryable: true,
+            shipmentStatus: toStr(sellerDeliveryEntry?.shipment_status || ""),
+            trackingUrl: toStr(sellerDeliveryEntry?.tracking_url || ""),
+            labelUrl: toStr(sellerDeliveryEntry?.label_url || ""),
+          },
+        },
+      );
+    }
+
+    if (platformShipment?.shipmentId) {
+      await db.collection("order_courier_shipments").doc(String(platformShipment.shipmentId)).set(
+        {
+          shipmentId: String(platformShipment.shipmentId),
+          orderId: resolvedOrderId,
+          sellerCode: sellerCode || null,
+          sellerSlug: sellerSlug || null,
+          trackingNumber: platformShipment.trackingNumber || null,
+          trackingUrl: platformShipment.trackingUrl || null,
+          shipmentStatus: toStr(platformShipment.status || ""),
+          active: toLower(platformShipment.status) !== "delivered" && toLower(platformShipment.status) !== "cancelled",
+          createdAt: now,
+          updatedAt: now,
+        },
+        { merge: true },
+      );
+    }
+
     const customerEmail = getCustomerEmail(order);
     const customerPhone = getCustomerPhone(order);
     const customerName = getCustomerName(order);
@@ -467,8 +772,8 @@ export async function POST(req) {
       orderNumber: toStr(order?.order?.orderNumber || orderNumberInput || resolvedOrderId),
       deliveryType: sellerDeliveryEntry?.delivery_type || sellerDeliveryEntry?.method || "",
       status,
-      courierName: courierName || touchedItems[0]?.fulfillment_tracking?.courierName || "",
-      trackingNumber: trackingNumber || touchedItems[0]?.fulfillment_tracking?.trackingNumber || "",
+      courierName: effectiveCourierName || touchedItems[0]?.fulfillment_tracking?.courierName || "",
+      trackingNumber: effectiveTrackingNumber || touchedItems[0]?.fulfillment_tracking?.trackingNumber || "",
       sellerVendorName,
       cancellationReason,
       itemCount: touchedItems.length,
@@ -524,6 +829,15 @@ export async function POST(req) {
       updatedCount: touchedItems.length,
       status,
       deliveryProgress: progress,
+      deliveryUpdate: {
+        shipmentCreationState: platformShipment ? "created" : toStr(sellerDeliveryEntry?.shipment_creation_state || ""),
+        shipmentErrorMessage: platformShipment ? "" : toStr(sellerDeliveryEntry?.shipment_error_message || ""),
+        shipmentLastAttemptAt: platformShipment ? now : toStr(sellerDeliveryEntry?.shipment_last_attempt_at || ""),
+        shipmentRetryable: platformShipment ? false : Boolean(sellerDeliveryEntry?.shipment_retryable),
+        shipmentStatus: toStr(platformShipment?.status || sellerDeliveryEntry?.shipment_status || ""),
+        trackingUrl: toStr(platformShipment?.trackingUrl || sellerDeliveryEntry?.tracking_url || ""),
+        labelUrl: toStr(platformShipment?.labelUrl || sellerDeliveryEntry?.label_url || ""),
+      },
       paymentStatus: refundStarted
         ? (refundResult?.status === "partial_refund" ? "partial_refund" : "refunded")
         : paymentStatus,

@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { clientStorage } from "@/lib/firebase";
 import { prepareImageAsset } from "@/lib/client/image-prep";
 import { CustomerSellerInvoiceDrawer } from "@/components/account/customer-seller-invoice-drawer";
+import { CustomerSellerShipmentCard } from "@/components/account/customer-seller-shipment-card";
 import { DocumentSnackbar } from "@/components/ui/document-snackbar";
 import { collectCustomerSellerInvoiceGroups, getCustomerBusinessDetails } from "@/lib/orders/customer-seller-invoices";
 import { getFrozenLineTotalIncl, getFrozenOrderPaidIncl, getFrozenOrderPayableIncl, getFrozenOrderProductsIncl } from "@/lib/orders/frozen-money";
@@ -58,7 +59,35 @@ type OrderData = {
     seller_delivery_fee_incl?: number;
     delivery_fee_incl?: number;
   };
+  pricing_snapshot?: {
+    sellerDeliveryBreakdown?: Array<{
+      sellerCode?: string;
+      sellerSlug?: string;
+      seller_code?: string;
+      seller_slug?: string;
+      seller_key?: string;
+      delivery_type?: string;
+      method?: string;
+      tracking_url?: string;
+      tracking_number?: string;
+      courier_carrier?: string;
+    }>;
+  };
   delivery?: {
+    fee?: {
+      seller_breakdown?: Array<{
+        sellerCode?: string;
+        sellerSlug?: string;
+        seller_code?: string;
+        seller_slug?: string;
+        seller_key?: string;
+        delivery_type?: string;
+        method?: string;
+        tracking_url?: string;
+        tracking_number?: string;
+        courier_carrier?: string;
+      }>;
+    };
     address_snapshot?: {
       recipientName?: string;
       streetAddress?: string;
@@ -135,6 +164,19 @@ type OrderData = {
       actionOwner?: string;
       trackingNumber?: string | null;
       courierName?: string | null;
+      trackingUrl?: string | null;
+      labelUrl?: string | null;
+      shipmentStatus?: string | null;
+      checkpoints?: Array<{
+        message?: string | null;
+        status?: string | null;
+        subtag_message?: string | null;
+        details?: string | null;
+        location?: string | null;
+        city?: string | null;
+        occurred_at?: string | null;
+        created_at?: string | null;
+      }>;
     };
     line_totals?: {
       final_incl?: number;
@@ -240,8 +282,77 @@ function getLineImage(item: any) {
   );
 }
 
+function isCourierDeliveryType(value: unknown) {
+  const normalized = toStr(value).toLowerCase();
+  return normalized === "shipping" || normalized === "courier_live_rate" || normalized === "platform_courier_live_rate";
+}
+
+function isCollectionDeliveryType(value: unknown) {
+  const normalized = toStr(value).toLowerCase();
+  return normalized === "collection";
+}
+
+function getShipmentProgressSteps(mode: unknown, status: unknown) {
+  const normalized = toStr(status).toLowerCase();
+  const isCollection = isCollectionDeliveryType(mode);
+  const activeIndex =
+    normalized === "delivered"
+      ? 3
+      : normalized === "dispatched"
+        ? 2
+        : normalized === "processing" || normalized === "confirmed"
+          ? 1
+          : 0;
+  const labels = isCollection
+    ? ["Confirmed", "Prepared", "Ready for pickup", "Collected"]
+    : isCourierDeliveryType(mode)
+      ? ["Confirmed", "Prepared", "In transit", "Delivered"]
+      : ["Confirmed", "Preparing", "Out for delivery", "Delivered"];
+  return labels.map((label, index) => ({
+    key: `${toStr(mode || "delivery")}-${index}`,
+    label,
+    icon: String(index + 1),
+    done: activeIndex >= index,
+    active: activeIndex === index,
+  }));
+}
+
+function getShipmentSummaryCopy(group: {
+  deliveryType?: string;
+  latestStatus?: string;
+  courierName?: string;
+  trackingNumber?: string;
+}) {
+  if (isCollectionDeliveryType(group.deliveryType)) {
+    return {
+      eyebrow: "Collection progress",
+      subtext: "The seller will prepare this order for collection and update you when it is ready.",
+      meta: "",
+    };
+  }
+  if (isCourierDeliveryType(group.deliveryType)) {
+    return {
+      eyebrow: "Shipment progress",
+      subtext: "Live courier updates for this seller shipment.",
+      meta: [toStr(group.courierName), toStr(group.trackingNumber)].filter(Boolean).join(" • "),
+    };
+  }
+  return {
+    eyebrow: "Delivery progress",
+    subtext: "The seller is delivering this order directly and updates will appear here as it moves.",
+    meta: "",
+  };
+}
+
 function getSellerGroups(order: OrderData | null) {
   const items = Array.isArray(order?.items) ? order.items : [];
+  const pricingSnapshot = order?.pricing_snapshot && typeof (order as any)?.pricing_snapshot === "object" ? (order as any).pricing_snapshot : {};
+  const delivery = order?.delivery && typeof (order as any)?.delivery === "object" ? (order as any).delivery : {};
+  const sellerDeliveryBreakdown = Array.isArray(pricingSnapshot?.sellerDeliveryBreakdown)
+    ? pricingSnapshot.sellerDeliveryBreakdown
+    : Array.isArray(delivery?.fee?.seller_breakdown)
+      ? delivery.fee.seller_breakdown
+      : [];
   const sliceMeta = new Map<string, { vendorName: string; sellerCode: string; sellerSlug: string; quantity: number }>();
   for (const slice of Array.isArray(order?.seller_slices) ? order!.seller_slices! : []) {
     const sliceKey = toStr(slice?.sellerCode || slice?.sellerSlug || slice?.vendorName);
@@ -253,7 +364,7 @@ function getSellerGroups(order: OrderData | null) {
       quantity: Math.max(0, Number(slice?.quantity || 0)),
     });
   }
-  const groups = new Map<string, { key: string; vendorName: string; sellerCode: string; sellerSlug: string; items: any[]; totalQty: number; progressSum: number; latestStatus: string }>();
+  const groups = new Map<string, { key: string; vendorName: string; sellerCode: string; sellerSlug: string; items: any[]; totalQty: number; progressSum: number; latestStatus: string; deliveryType: string; trackingUrl: string; trackingNumber: string; courierName: string }>();
   for (const item of items) {
     const productSnapshot: any = item?.product_snapshot || {};
     const snapshotProduct = productSnapshot?.product || {};
@@ -288,6 +399,10 @@ function getSellerGroups(order: OrderData | null) {
       totalQty: 0,
       progressSum: 0,
       latestStatus: "not_started",
+      deliveryType: "",
+      trackingUrl: "",
+      trackingNumber: "",
+      courierName: "",
     };
     current.items.push(item);
     current.totalQty += quantity;
@@ -296,6 +411,17 @@ function getSellerGroups(order: OrderData | null) {
     const nextRank = ["not_started", "confirmed", "processing", "dispatched", "delivered"].indexOf(nextStatus);
     const currentRank = ["not_started", "confirmed", "processing", "dispatched", "delivered"].indexOf(current.latestStatus);
     if (nextRank > currentRank) current.latestStatus = nextStatus;
+    const deliveryMatch = sellerDeliveryBreakdown.find((entry: any) => {
+      const entryCode = toStr(entry?.sellerCode || entry?.seller_code || entry?.seller_key);
+      const entrySlug = toStr(entry?.sellerSlug || entry?.seller_slug);
+      return Boolean((sellerCode && entryCode === sellerCode) || (sellerSlug && entrySlug === sellerSlug));
+    });
+    if (deliveryMatch) {
+      current.deliveryType = toStr(deliveryMatch?.delivery_type || deliveryMatch?.method || current.deliveryType);
+      current.trackingUrl = toStr(deliveryMatch?.tracking_url || current.trackingUrl);
+      current.trackingNumber = toStr(deliveryMatch?.tracking_number || current.trackingNumber);
+      current.courierName = toStr(deliveryMatch?.courier_carrier || current.courierName);
+    }
     groups.set(key, current);
   }
   return Array.from(groups.values()).map((group) => ({
@@ -315,6 +441,43 @@ function getSellerGroups(order: OrderData | null) {
       return group.latestStatus;
     })(),
   }));
+}
+
+function buildCheckpointEventsForGroup(group: ReturnType<typeof getSellerGroups>[number]) {
+  const seen = new Set<string>();
+  const events: Array<{
+    id?: string;
+    title?: string;
+    message?: string;
+    createdAt?: string;
+    sellerCode?: string | null;
+    sellerSlug?: string | null;
+    status?: string | null;
+  }> = [];
+
+  for (const item of Array.isArray(group?.items) ? group.items : []) {
+    const checkpoints = Array.isArray(item?.fulfillment_tracking?.checkpoints) ? item.fulfillment_tracking.checkpoints : [];
+    for (const checkpoint of checkpoints) {
+      const title = toStr(checkpoint?.message || checkpoint?.status || checkpoint?.subtag_message || "Shipment update");
+      const createdAt = toStr(checkpoint?.occurred_at || checkpoint?.created_at || "");
+      const location = toStr(checkpoint?.location || checkpoint?.city || "");
+      const detail = toStr(checkpoint?.subtag_message || checkpoint?.details || "");
+      const dedupeKey = `${title}::${createdAt}::${location}::${detail}`;
+      if (!title || seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      events.push({
+        id: dedupeKey,
+        title,
+        message: [detail, location].filter(Boolean).join(location && detail ? " • " : ""),
+        createdAt,
+        sellerCode: group?.sellerCode || null,
+        sellerSlug: group?.sellerSlug || null,
+        status: toStr(checkpoint?.status || ""),
+      });
+    }
+  }
+
+  return events.sort((left, right) => toStr(right.createdAt).localeCompare(toStr(left.createdAt)));
 }
 
 export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; orderId: string }) {
@@ -1204,121 +1367,33 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
                 </div>
                 <div className="mt-4 space-y-4">
                   {sellerGroups.map((group) => (
-                    <div key={group.key} className="rounded-[20px] border border-black/6 p-4">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div>
-                          <p className="text-[18px] font-semibold text-[#202020]">{group.vendorName}</p>
-                          <p className="mt-1 text-[13px] text-[#57636c]">{group.items.length} line{group.items.length === 1 ? "" : "s"} • {group.totalQty} item{group.totalQty === 1 ? "" : "s"}</p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-3">
-                          <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${fulfillmentTone(group.latestStatus)}`}>{sentenceStatus(group.latestStatus)}</span>
-                          {group.latestStatus === "delivered" ? (
-                            <button
-                              type="button"
-                              onClick={() => openSellerReviewModal(group)}
-                              className="text-[13px] font-semibold text-[#0f80c3] underline decoration-[#0f80c3] underline-offset-2"
-                            >
-                              {sellerReviews[group.sellerCode || group.sellerSlug || group.key] ? "Edit rating" : "Rate seller"}
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={() => setOpenSellerKey((current) => (current === group.key ? null : group.key))}
-                            className="text-[13px] font-semibold text-[#0f80c3] underline decoration-[#0f80c3] underline-offset-2"
-                          >
-                            {openSellerKey === group.key ? "Hide details" : "View details"}
-                          </button>
-                          <span className="text-[14px] font-semibold text-[#202020]">{group.progress}%</span>
-                        </div>
-                      </div>
-                      <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#eceff3]">
-                        <div className={`h-full rounded-full ${group.latestStatus === "cancelled" ? "bg-[#ef4444]" : group.progress >= 100 ? "bg-[#1f8f55]" : group.progress >= 50 ? "bg-[#57a6ff]" : "bg-[#202020]"}`} style={{ width: `${group.progress}%` }} />
-                      </div>
-                      <div className="mt-4 space-y-3">
-                        {group.items.map((item, index) => {
-                          const image = getLineImage(item);
-                          return (
-                            <div key={`${group.key}-${item?.product_snapshot?.name || "item"}-${index}`} className="flex flex-col gap-4 rounded-[18px] bg-[#fcfcfc] px-4 py-4 sm:flex-row sm:items-center">
-                              <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-[16px] border border-black/6 bg-[#f8f8f8]">
-                                {image ? <Image src={image} alt={toStr(item?.product_snapshot?.name || "Product")} fill className="object-cover" sizes="64px" /> : <div className="flex h-full w-full items-center justify-center text-[11px] font-semibold text-[#907d4c]">Item</div>}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <p className="text-[18px] font-semibold leading-tight text-[#202020]">{item?.product_snapshot?.name || "Product"}</p>
-                                {item?.selected_variant_snapshot?.label ? <p className="mt-1 text-[14px] text-[#57636c]">{item.selected_variant_snapshot.label}</p> : null}
-                                <p className="mt-1 text-[13px] text-[#57636c]">{sentenceStatus(item?.fulfillment_tracking?.label || item?.fulfillment_tracking?.status || "not_started")}</p>
-                                {item?.fulfillment_tracking?.courierName || item?.fulfillment_tracking?.trackingNumber ? (
-                                  <p className="mt-1 text-[12px] text-[#57636c]">
-                                    {[toStr(item?.fulfillment_tracking?.courierName), toStr(item?.fulfillment_tracking?.trackingNumber)].filter(Boolean).join(" • ")}
-                                  </p>
-                                ) : null}
-                              </div>
-                              <div className="shrink-0 text-left sm:text-right">
-                                <p className="text-[15px] text-[#57636c]">Qty {Number(item?.quantity || 0)}</p>
-                                <p className="mt-1 text-[22px] font-semibold text-[#202020]">{formatMoney(getFrozenLineTotalIncl(item || {}))}</p>
-                              </div>
-                            </div>
-                          );
+                    <CustomerSellerShipmentCard
+                      key={group.key}
+                      group={group}
+                      isOpen={openSellerKey === group.key}
+                      summary={getShipmentSummaryCopy(group)}
+                      steps={getShipmentProgressSteps(group.deliveryType, group.latestStatus)}
+                      sellerReviewExists={Boolean(sellerReviews[group.sellerCode || group.sellerSlug || group.key])}
+                      sellerEvents={[
+                        ...buildCheckpointEventsForGroup(group),
+                        ...cumulativeEvents.filter((entry) => Boolean((group.sellerCode && toStr(entry?.sellerCode) === group.sellerCode) || (group.sellerSlug && toStr(entry?.sellerSlug) === group.sellerSlug))),
+                      ]
+                        .sort((left, right) => toStr(right.createdAt).localeCompare(toStr(left.createdAt)))
+                        .filter((entry, index, source) => {
+                          const key = `${toStr(entry.title)}::${toStr(entry.createdAt)}::${toStr(entry.message)}`;
+                          return source.findIndex((candidate) => `${toStr(candidate.title)}::${toStr(candidate.createdAt)}::${toStr(candidate.message)}` === key) === index;
                         })}
-                      </div>
-                      {openSellerKey === group.key ? (
-                        <div className="mt-4 rounded-[18px] border border-black/6 bg-[#fafafa] p-4">
-                          <p className="text-[14px] font-semibold text-[#202020]">{group.vendorName} order details</p>
-                          <div className="mt-3 space-y-2 text-[13px] text-[#57636c]">
-                            <p>Status: <span className="font-semibold text-[#202020]">{sentenceStatus(group.latestStatus)}</span></p>
-                            <p>Progress: <span className="font-semibold text-[#202020]">{group.progress}%</span></p>
-                            <p>Items: <span className="font-semibold text-[#202020]">{group.totalQty}</span></p>
-                          </div>
-                          <div className="mt-4 space-y-3">
-                            {creditNotesBySeller
-                              .filter((entry) => {
-                                const entryCode = toStr(entry?.sellerCode);
-                                const entrySlug = toStr(entry?.sellerSlug);
-                                return Boolean(
-                                  (group.sellerCode && entryCode === group.sellerCode) ||
-                                  (group.sellerSlug && entrySlug === group.sellerSlug),
-                                );
-                              })
-                              .map((entry) => (
-                                <div key={entry.creditNoteId || entry.creditNoteNumber} className="flex flex-wrap items-center justify-between gap-3 rounded-[14px] border border-black/6 bg-white px-3 py-3">
-                                  <div>
-                                    <p className="text-[13px] font-semibold text-[#202020]">{entry.creditNoteNumber || "Credit note"}</p>
-                                    <p className="mt-1 text-[12px] text-[#57636c]">{formatDateTime(entry.issuedAt)} • {formatMoney(Number(entry.amountIncl || 0))}</p>
-                                  </div>
-                                  {entry.creditNoteId ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleViewCreditNote(entry.creditNoteId!)}
-                                      className="text-[13px] font-semibold text-[#0f80c3] underline decoration-[#0f80c3] underline-offset-2"
-                                    >
-                                      View credit note
-                                    </button>
-                                  ) : null}
-                                </div>
-                              ))}
-                            {cumulativeEvents
-                              .filter((entry) => {
-                                const eventCode = toStr(entry?.sellerCode);
-                                const eventSlug = toStr(entry?.sellerSlug);
-                                return Boolean(
-                                  (group.sellerCode && eventCode === group.sellerCode) ||
-                                  (group.sellerSlug && eventSlug === group.sellerSlug),
-                                );
-                              })
-                              .map((entry, index) => (
-                                <div key={entry.id || `${group.key}-event-${index}`} className="relative pl-5">
-                                  <span className="absolute left-0 top-1.5 h-2 w-2 rounded-full bg-[#202020]" />
-                                  <p className="text-[13px] font-semibold text-[#202020]">{entry.title || "Order update"}</p>
-                                  {entry.message ? <p className="mt-1 text-[13px] text-[#57636c]">{entry.message}</p> : null}
-                                  <p className="mt-1 text-[12px] text-[#8b94a3]">{formatDateTime(entry.createdAt)}</p>
-                                </div>
-                              ))}
-                            {!cumulativeEvents.some((entry) => Boolean((group.sellerCode && toStr(entry?.sellerCode) === group.sellerCode) || (group.sellerSlug && toStr(entry?.sellerSlug) === group.sellerSlug))) ? (
-                              <p className="text-[13px] text-[#57636c]">No seller-specific events have been recorded yet.</p>
-                            ) : null}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
+                      sellerCreditNotes={creditNotesBySeller.filter((entry) => Boolean((group.sellerCode && toStr(entry?.sellerCode) === group.sellerCode) || (group.sellerSlug && toStr(entry?.sellerSlug) === group.sellerSlug)))}
+                      getLineImage={getLineImage}
+                      sentenceStatus={sentenceStatus}
+                      fulfillmentTone={fulfillmentTone}
+                      formatMoney={formatMoney}
+                      formatDateTime={formatDateTime}
+                      getFrozenLineTotalIncl={getFrozenLineTotalIncl}
+                      onToggleDetails={() => setOpenSellerKey((current) => (current === group.key ? null : group.key))}
+                      onOpenSellerReview={() => openSellerReviewModal(group)}
+                      onViewCreditNote={(creditNoteId) => handleViewCreditNote(creditNoteId)}
+                    />
                   ))}
                 </div>
               </div>

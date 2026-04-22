@@ -28,6 +28,7 @@ function buildShopperArea(address = {}) {
 function formatReason(kind) {
   if (kind === "direct") return "platform_direct_delivery";
   if (kind === "shipping") return "platform_shipping";
+  if (kind === "courier_live_rate") return "platform_courier_live_rate";
   if (kind === "collection") return "platform_collection";
   return "platform_delivery_unavailable";
 }
@@ -44,11 +45,17 @@ export async function POST(req) {
 
     const shopperArea = buildShopperArea(address);
     const profile = body?.deliveryProfile && typeof body.deliveryProfile === "object" ? body.deliveryProfile : null;
+    const courierProfile = body?.courierProfile && typeof body.courierProfile === "object" ? body.courierProfile : null;
+    const productCourierEligible = body?.productCourierEligible === true;
+    const quoteItems = Array.isArray(body?.quoteItems) ? body.quoteItems : [];
     const sellerBaseLocation = toStr(body?.sellerBaseLocation || body?.baseLocation || "");
     const parcels = Array.isArray(body?.parcels) ? body.parcels : [];
     const resolved = profile
       ? await resolveDeliveryQuote({
           profile,
+          courierProfile,
+          productCourierEligible,
+          quoteItems,
           sellerBaseLocation,
           shopperArea,
           subtotalIncl,

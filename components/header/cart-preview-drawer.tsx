@@ -157,7 +157,7 @@ export function CartPreviewDrawer({
     fetch("/api/client/v1/carts/get", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cartOwnerId }),
+      body: JSON.stringify({ cartOwnerId, lightweight: true }),
     })
       .then((response) => response.json())
       .then((payload) => {
@@ -198,6 +198,23 @@ export function CartPreviewDrawer({
     else groups.push({ seller, items: [item] });
     return groups;
   }, []);
+  const unavailableItems = items.filter((item) => {
+    const status = String((item as { availability?: { status?: string } })?.availability?.status || "")
+      .trim()
+      .toLowerCase();
+    return status === "out_of_stock" || status === "unavailable";
+  });
+  const checkoutBlocked = unavailableItems.length > 0;
+  const checkoutBlockMessage = checkoutBlocked
+    ? unavailableItems.some(
+        (item) =>
+          String((item as { availability?: { status?: string } })?.availability?.status || "")
+            .trim()
+            .toLowerCase() === "unavailable",
+      )
+      ? `${unavailableItems.length} item${unavailableItems.length === 1 ? "" : "s"} in your cart ${unavailableItems.length === 1 ? "is" : "are"} no longer available. Remove ${unavailableItems.length === 1 ? "it" : "them"} before continuing to checkout.`
+      : `${unavailableItems.length} item${unavailableItems.length === 1 ? "" : "s"} in your cart ${unavailableItems.length === 1 ? "is" : "are"} out of stock. Remove ${unavailableItems.length === 1 ? "it" : "them"} before continuing to checkout.`
+    : "";
 
   const updateLine = async (
     item: CartPreviewItem,
@@ -355,7 +372,14 @@ export function CartPreviewDrawer({
                   <div className="flex items-center justify-between px-1">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{group.seller}</p>
                     <p className="text-[10px] text-[#8b94a3]">
-                      {group.items.some((item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "bevgo")
+                      {group.items.some(
+                        (item) =>
+                          String((item as { availability?: { status?: string } })?.availability?.status || "")
+                            .trim()
+                            .toLowerCase() === "unavailable",
+                      )
+                        ? "Unavailable"
+                        : group.items.some((item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "bevgo")
                         ? "Piessang delivery available"
                         : "Seller delivery"}
                     </p>
@@ -391,6 +415,8 @@ export function CartPreviewDrawer({
           <CartActionStack
             compact
             viewCartHref={viewCartHref}
+            disableCheckout={checkoutBlocked}
+            checkoutHint={checkoutBlockMessage}
           />
         </div>
 

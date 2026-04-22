@@ -41,6 +41,17 @@ type SellerOrderSlice = {
     trackingOwner?: string;
     courierService?: string;
     courierCarrier?: string;
+    courierHandoverMode?: string;
+    selectedCourierQuoteId?: string;
+    availableCourierCount?: number;
+    selectedCourierHandoverOptions?: string[];
+    trackingUrl?: string;
+    labelUrl?: string;
+    shipmentStatus?: string;
+    shipmentCreationState?: string;
+    shipmentErrorMessage?: string;
+    shipmentLastAttemptAt?: string;
+    shipmentRetryable?: boolean;
     cutoffTime?: string;
   };
   fulfilmentDeadline?: {
@@ -124,6 +135,35 @@ type SellerActionDraft = {
 type SellerActionLabels = {
   primary: string;
   secondary?: string;
+};
+
+type CourierHandoffDetails = {
+  handoverMode?: string;
+  carrier?: string;
+  service?: string;
+  pickupSlots?: Array<{
+    id?: string;
+    date?: string;
+    from?: string;
+    to?: string;
+  }>;
+  dropoffLocations?: Array<{
+    id?: string;
+    name?: string;
+    address?: string;
+  }>;
+  note?: string;
+};
+
+type CourierCheckpoint = {
+  message?: string | null;
+  status?: string | null;
+  subtag_message?: string | null;
+  details?: string | null;
+  location?: string | null;
+  city?: string | null;
+  occurred_at?: string | null;
+  created_at?: string | null;
 };
 
 type HoverCardState = {
@@ -305,6 +345,53 @@ function isPlatformTracked(item?: SellerOrderSlice | null) {
   return toStr(item?.deliveryOption?.trackingMode).toLowerCase() === "platform";
 }
 
+function getPlatformShipmentLifecycle(option?: SellerOrderSlice["deliveryOption"]) {
+  const state = toStr(option?.shipmentCreationState).toLowerCase();
+  if (state === "created") {
+    return {
+      tone: "success" as const,
+      title: "Shipment created",
+      message: "Piessang has already created the courier shipment and attached the latest waybill and tracking links below.",
+    };
+  }
+  if (state === "failed") {
+    return {
+      tone: "error" as const,
+      title: "Shipment creation failed",
+      message: toStr(option?.shipmentErrorMessage || "Piessang could not create the courier shipment yet. You can retry once the order is still packed and ready."),
+    };
+  }
+  return {
+    tone: "info" as const,
+    title: "Shipment not created yet",
+    message: "Piessang will create the courier shipment once you save this handoff. If the courier rejects the shipment request, you will see the exact reason here and can retry.",
+  };
+}
+
+function getPlatformCourierHandoverSummary(option?: SellerOrderSlice["deliveryOption"]) {
+  const mode = toStr(option?.courierHandoverMode).toLowerCase() === "dropoff" ? "dropoff" : "pickup";
+  const handoverOptions = Array.isArray(option?.selectedCourierHandoverOptions)
+    ? option.selectedCourierHandoverOptions.map((item) => toStr(item)).filter(Boolean)
+    : [];
+  const serviceCount = Math.max(0, Number(option?.availableCourierCount || 0));
+
+  if (mode === "dropoff") {
+    return {
+      title: "Seller dropoff",
+      message: "Piessang will use a courier service that supports seller dropoff. Once this order is ready, Piessang will attach the relevant dropoff instructions on the order.",
+      helper: serviceCount > 1 ? `${serviceCount} matching courier services were available for this route.` : "",
+      options: handoverOptions,
+    };
+  }
+
+  return {
+    title: "Courier pickup from seller",
+    message: "Piessang will use a courier service that supports seller pickup. Once this order is ready, Piessang will attach the pickup timing or collection guidance on the order.",
+    helper: serviceCount > 1 ? `${serviceCount} matching courier services were available for this route.` : "",
+    options: handoverOptions,
+  };
+}
+
 function getSellerActionLabels(item: SellerOrderSlice, nextStatus: SellerFulfillmentAction): SellerActionLabels {
   if (nextStatus === "processing") {
     return { primary: isCourierTracked(item) || isPlatformTracked(item) ? "Prepare shipment" : "Prepare delivery" };
@@ -330,6 +417,7 @@ function getSellerActionLabels(item: SellerOrderSlice, nextStatus: SellerFulfill
 
 function getNextSellerActions(item: SellerOrderSlice): SellerFulfillmentAction[] {
   if (item?.cancellation?.blocked) return [];
+  if (isPlatformTracked(item)) return [];
   return getSellerFulfillmentActions({
     currentStatus: item.fulfillmentStatus || item.orderStatus,
     deliveryType: item.deliveryOption?.type,
@@ -688,7 +776,29 @@ function StatusWithLatePopover({
 }
 
 function SellerTimeline({ item }: { item: SellerOrderSlice }) {
-  const entries = Array.isArray(item.timeline) ? item.timeline : [];
+  const storedEntries = Array.isArray(item.timeline) ? item.timeline : [];
+  const checkpointEntries = [
+    ...(Array.isArray(item.lines?.selfFulfilment) ? item.lines.selfFulfilment : []),
+    ...(Array.isArray(item.lines?.piessangFulfilment) ? item.lines.piessangFulfilment : []),
+  ]
+    .flatMap((line) => (Array.isArray(line?.fulfillment_tracking?.checkpoints) ? line.fulfillment_tracking.checkpoints : []) as CourierCheckpoint[])
+    .map((checkpoint, index) => ({
+      id: `checkpoint-${index}-${toStr(checkpoint?.occurred_at || checkpoint?.created_at || "")}`,
+      title: toStr(checkpoint?.message || checkpoint?.status || checkpoint?.subtag_message || "Shipment update"),
+      message: [toStr(checkpoint?.subtag_message || checkpoint?.details || ""), toStr(checkpoint?.location || checkpoint?.city || "")]
+        .filter(Boolean)
+        .join(" • "),
+      createdAt: toStr(checkpoint?.occurred_at || checkpoint?.created_at || ""),
+      actorLabel: "Courier",
+    }))
+    .filter((entry) => entry.title)
+    .sort((left, right) => toStr(right.createdAt).localeCompare(toStr(left.createdAt)));
+  const entries = [...checkpointEntries, ...storedEntries]
+    .sort((left, right) => toStr(right.createdAt).localeCompare(toStr(left.createdAt)))
+    .filter((entry, index, source) => {
+      const key = `${toStr(entry.title)}::${toStr(entry.createdAt)}::${toStr(entry.message)}`;
+      return source.findIndex((candidate) => `${toStr(candidate.title)}::${toStr(candidate.createdAt)}::${toStr(candidate.message)}` === key) === index;
+    });
   return (
     <section className="rounded-[18px] border border-black/6 bg-white p-5">
       <p className="text-[16px] font-semibold text-[#202020]">Timeline</p>
@@ -740,6 +850,8 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const [metricInfoOpen, setMetricInfoOpen] = useState<string | null>(null);
   const [cancelModalOrderId, setCancelModalOrderId] = useState<string | null>(null);
   const [dispatchModalOrderId, setDispatchModalOrderId] = useState<string | null>(null);
+  const [handoffDetailsByOrder, setHandoffDetailsByOrder] = useState<Record<string, CourierHandoffDetails>>({});
+  const [handoffDetailsLoadingOrderId, setHandoffDetailsLoadingOrderId] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const periodMenuRef = useRef<HTMLDivElement | null>(null);
   const detailActionsRef = useRef<HTMLDivElement | null>(null);
@@ -888,7 +1000,29 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
         }),
       });
       const payload = await response.json().catch(() => ({}));
+      const deliveryUpdate = payload?.deliveryUpdate && typeof payload.deliveryUpdate === "object" ? payload.deliveryUpdate : null;
       if (!response.ok || payload?.ok === false) {
+        if (deliveryUpdate) {
+          setItems((current) =>
+            current.map((entry) =>
+              entry.orderId !== item.orderId
+                ? entry
+                : {
+                    ...entry,
+                    deliveryOption: {
+                      ...(entry.deliveryOption || {}),
+                      shipmentCreationState: toStr(deliveryUpdate.shipmentCreationState),
+                      shipmentErrorMessage: toStr(deliveryUpdate.shipmentErrorMessage),
+                      shipmentLastAttemptAt: toStr(deliveryUpdate.shipmentLastAttemptAt),
+                      shipmentRetryable: Boolean(deliveryUpdate.shipmentRetryable),
+                      shipmentStatus: toStr(deliveryUpdate.shipmentStatus || entry.deliveryOption?.shipmentStatus || ""),
+                      trackingUrl: toStr(deliveryUpdate.trackingUrl || entry.deliveryOption?.trackingUrl || ""),
+                      labelUrl: toStr(deliveryUpdate.labelUrl || entry.deliveryOption?.labelUrl || ""),
+                    },
+                  },
+            ),
+          );
+        }
         throw new Error(payload?.message || "Unable to update seller order status.");
       }
 
@@ -902,7 +1036,16 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                 paymentStatus: toStr(payload?.paymentStatus || entry.paymentStatus),
                 fulfillmentStatus: nextStatus === "delivered" ? "delivered" : nextStatus,
                 deliveryProgress: payload?.deliveryProgress || entry.deliveryProgress,
-                deliveryOption: entry.deliveryOption,
+                deliveryOption: {
+                  ...(entry.deliveryOption || {}),
+                  shipmentCreationState: toStr(deliveryUpdate?.shipmentCreationState || entry.deliveryOption?.shipmentCreationState || ""),
+                  shipmentErrorMessage: toStr(deliveryUpdate?.shipmentErrorMessage || ""),
+                  shipmentLastAttemptAt: toStr(deliveryUpdate?.shipmentLastAttemptAt || entry.deliveryOption?.shipmentLastAttemptAt || ""),
+                  shipmentRetryable: Boolean(deliveryUpdate?.shipmentRetryable),
+                  shipmentStatus: toStr(deliveryUpdate?.shipmentStatus || entry.deliveryOption?.shipmentStatus || ""),
+                  trackingUrl: toStr(deliveryUpdate?.trackingUrl || entry.deliveryOption?.trackingUrl || ""),
+                  labelUrl: toStr(deliveryUpdate?.labelUrl || entry.deliveryOption?.labelUrl || ""),
+                },
                 lines: {
                   selfFulfilment: entry.lines.selfFulfilment.map((line) => ({
                     ...line,
@@ -921,14 +1064,21 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               },
         ),
       );
-      setNotice(
-        payload?.refundStarted
-          ? `Order ${item.orderNumber || item.orderId} cancelled and refund started.`
-          : `Order ${item.orderNumber || item.orderId} marked ${statusLabelText(nextStatus).toLowerCase()}.`,
-      );
+      const successMessage =
+        nextStatus === "dispatched" && isPlatformTracked(item)
+          ? toStr(deliveryUpdate?.shipmentCreationState).toLowerCase() === "created"
+            ? `Shipment created for ${item.orderNumber || item.orderId}. Piessang attached the courier tracking details.`
+            : `Order ${item.orderNumber || item.orderId} marked ${statusLabelText(nextStatus).toLowerCase()}.`
+          : payload?.refundStarted
+            ? `Order ${item.orderNumber || item.orderId} cancelled and refund started.`
+            : `Order ${item.orderNumber || item.orderId} marked ${statusLabelText(nextStatus).toLowerCase()}.`;
+      setNotice(successMessage);
+      setDocumentSnackbar({ tone: "success", message: successMessage });
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to update seller order status.");
+      const message = cause instanceof Error ? cause.message : "Unable to update seller order status.";
+      setError(message);
+      setDocumentSnackbar({ tone: "error", message });
       return false;
     } finally {
       setUpdatingOrderId(null);
@@ -1107,6 +1257,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const activeItem = useMemo(() => items.find((item) => item.orderId === activeOrderId) || null, [activeOrderId, items]);
   const cancelModalItem = useMemo(() => items.find((item) => item.orderId === cancelModalOrderId) || null, [cancelModalOrderId, items]);
   const dispatchModalItem = useMemo(() => items.find((item) => item.orderId === dispatchModalOrderId) || null, [dispatchModalOrderId, items]);
+  const dispatchModalHandoffDetails = dispatchModalItem ? handoffDetailsByOrder[dispatchModalItem.orderId] || null : null;
   const allVisibleSelected = filteredItems.length > 0 && filteredItems.every((item) => selectedOrderIds.includes(item.orderId));
   const selectedItems = useMemo(() => items.filter((item) => selectedOrderIds.includes(item.orderId)), [items, selectedOrderIds]);
   const commonSelectedActions = useMemo(() => {
@@ -1115,6 +1266,52 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       selectedItems.every((item) => getNextSellerActions(item).includes(status)),
     );
   }, [selectedItems]);
+
+  useEffect(() => {
+    if (!dispatchModalItem || !isPlatformTracked(dispatchModalItem)) return undefined;
+    const orderId = toStr(dispatchModalItem.orderId);
+    if (!orderId) return undefined;
+
+    const controller = new AbortController();
+    const params = new URLSearchParams({ orderId });
+    if (toStr(dispatchModalItem.sellerCode)) params.set("sellerCode", toStr(dispatchModalItem.sellerCode));
+    if (toStr(dispatchModalItem.sellerSlug)) params.set("sellerSlug", toStr(dispatchModalItem.sellerSlug));
+
+    setHandoffDetailsLoadingOrderId(orderId);
+    fetch(`/api/client/v1/orders/seller/handoff-details?${params.toString()}`, {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok !== true) {
+          throw new Error(toStr(payload?.message || payload?.error || "Could not load courier handoff details."));
+        }
+        return payload?.details && typeof payload.details === "object" ? payload.details : {};
+      })
+      .then((details) => {
+        if (controller.signal.aborted) return;
+        setHandoffDetailsByOrder((current) => ({ ...current, [orderId]: details }));
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return;
+        setHandoffDetailsByOrder((current) => ({
+          ...current,
+          [orderId]: {
+            note: error instanceof Error ? error.message : "Could not load courier handoff details.",
+          },
+        }));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setHandoffDetailsLoadingOrderId((current) => (current === orderId ? null : current));
+        }
+      });
+
+    return () => controller.abort();
+  }, [dispatchModalItem]);
 
   const periodDays = metricPeriod === "today" ? 1 : metricPeriod === "7d" ? 7 : 30;
   const periodStats = useMemo(() => {
@@ -1530,14 +1727,138 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                 ) : null}
                 {isPlatformTracked(dispatchModalItem) ? (
                   <div className="rounded-[16px] border border-[#e5e7eb] bg-[#fafafa] px-4 py-4 text-[13px] text-[#57636c]">
-                    <p className="font-semibold text-[#202020]">Piessang-managed courier tracking</p>
+                    <p className="font-semibold text-[#202020]">Piessang-managed courier handoff</p>
                     <p className="mt-2">
                       Save this update once the parcel is packed and ready. Piessang will attach the courier tracking number, fire all customer notifications, and keep the order updated with courier events automatically.
                     </p>
+                    {(() => {
+                      const lifecycle = getPlatformShipmentLifecycle(dispatchModalItem.deliveryOption);
+                      const toneClasses =
+                        lifecycle.tone === "success"
+                          ? "border-[#d1fae5] bg-[#ecfdf5] text-[#166534]"
+                          : lifecycle.tone === "error"
+                            ? "border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]"
+                            : "border-[#dbeafe] bg-[#eff6ff] text-[#1d4ed8]";
+                      return (
+                        <div className={`mt-3 rounded-[12px] border px-3 py-3 ${toneClasses}`}>
+                          <p className="text-[12px] font-semibold">{lifecycle.title}</p>
+                          <p className="mt-1 text-[12px] leading-[1.6]">{lifecycle.message}</p>
+                          {toStr(dispatchModalItem.deliveryOption?.shipmentLastAttemptAt) ? (
+                            <p className="mt-2 text-[11px] opacity-80">
+                              Last attempt: {formatTime(dispatchModalItem.deliveryOption?.shipmentLastAttemptAt)}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                     {(dispatchModalItem.deliveryOption?.courierCarrier || dispatchModalItem.deliveryOption?.courierService) ? (
                       <p className="mt-2 text-[#202020]">
                         {[toStr(dispatchModalItem.deliveryOption?.courierCarrier), toStr(dispatchModalItem.deliveryOption?.courierService)].filter(Boolean).join(" • ")}
                       </p>
+                    ) : null}
+                    {toStr(dispatchModalItem.deliveryOption?.shipmentStatus) ? (
+                      <p className="mt-1 text-[12px] text-[#57636c]">
+                        Shipment status: <span className="font-medium text-[#202020]">{dispatchModalItem.deliveryOption?.shipmentStatus}</span>
+                      </p>
+                    ) : null}
+                    {(() => {
+                      const handoff = getPlatformCourierHandoverSummary(dispatchModalItem.deliveryOption);
+                      return (
+                        <div className="mt-3 rounded-[12px] border border-black/8 bg-white px-3 py-3">
+                          <p className="text-[12px] font-semibold text-[#202020]">{handoff.title}</p>
+                          <p className="mt-1 text-[12px] leading-[1.6] text-[#57636c]">{handoff.message}</p>
+                          {handoff.helper ? (
+                            <p className="mt-2 text-[11px] text-[#57636c]">{handoff.helper}</p>
+                          ) : null}
+                          {handoff.options.length ? (
+                            <p className="mt-2 text-[11px] text-[#57636c]">
+                              Supported handover options for the selected service:{" "}
+                              <span className="font-medium text-[#202020]">{handoff.options.join(", ")}</span>
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
+                    <div className="mt-3 rounded-[12px] border border-black/8 bg-white px-3 py-3">
+                      <p className="text-[12px] font-semibold text-[#202020]">
+                        {toStr(dispatchModalItem.deliveryOption?.courierHandoverMode).toLowerCase() === "dropoff"
+                          ? "Dropoff locations"
+                          : "Pickup timing"}
+                      </p>
+                      {handoffDetailsLoadingOrderId === dispatchModalItem.orderId ? (
+                        <p className="mt-1 text-[12px] text-[#57636c]">Loading the latest courier handoff details for this order...</p>
+                      ) : null}
+                      {!handoffDetailsLoadingOrderId && dispatchModalHandoffDetails?.pickupSlots?.length ? (
+                        <div className="mt-2 space-y-2">
+                          {dispatchModalHandoffDetails.pickupSlots.map((slot) => (
+                            <div
+                              key={toStr(slot.id || `${slot.date}-${slot.from}-${slot.to}`)}
+                              className="rounded-[10px] border border-black/8 bg-[#fafafa] px-3 py-2"
+                            >
+                              <p className="text-[12px] font-medium text-[#202020]">{slot.date || "Pickup date pending"}</p>
+                              <p className="mt-0.5 text-[11px] text-[#57636c]">
+                                {slot.from || slot.to
+                                  ? `${toStr(slot.from, "Start time pending")} - ${toStr(slot.to, "End time pending")}`
+                                  : "Collection window pending"}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {!handoffDetailsLoadingOrderId && dispatchModalHandoffDetails?.dropoffLocations?.length ? (
+                        <div className="mt-2 space-y-2">
+                          {dispatchModalHandoffDetails.dropoffLocations.map((location) => (
+                            <div
+                              key={toStr(location.id || `${location.name}-${location.address}`)}
+                              className="rounded-[10px] border border-black/8 bg-[#fafafa] px-3 py-2"
+                            >
+                              <p className="text-[12px] font-medium text-[#202020]">{toStr(location.name, "Dropoff point")}</p>
+                              {toStr(location.address) ? <p className="mt-0.5 text-[11px] text-[#57636c]">{location.address}</p> : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {!handoffDetailsLoadingOrderId && toStr(dispatchModalHandoffDetails?.note) ? (
+                        <p className="mt-2 text-[11px] leading-[1.6] text-[#57636c]">{dispatchModalHandoffDetails?.note}</p>
+                      ) : null}
+                    </div>
+                    {(toStr(dispatchModalItem.deliveryOption?.labelUrl) || toStr(dispatchModalItem.deliveryOption?.trackingUrl)) ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {toStr(dispatchModalItem.deliveryOption?.labelUrl) ? (
+                          <a
+                            href={dispatchModalItem.deliveryOption?.labelUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center rounded-[10px] border border-black/10 bg-white px-3 py-2 text-[12px] font-semibold text-[#202020]"
+                          >
+                            Open waybill
+                          </a>
+                        ) : null}
+                        {toStr(dispatchModalItem.deliveryOption?.trackingUrl) ? (
+                          <a
+                            href={dispatchModalItem.deliveryOption?.trackingUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center rounded-[10px] border border-black/10 bg-white px-3 py-2 text-[12px] font-semibold text-[#202020]"
+                          >
+                            Open tracking
+                          </a>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {dispatchModalItem.deliveryOption?.shipmentRetryable ? (
+                      <div className="mt-3">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await updateSellerOrderStatus(dispatchModalItem, "dispatched");
+                          }}
+                          disabled={updatingOrderId === dispatchModalItem.orderId}
+                          className="inline-flex items-center rounded-[10px] border border-black/10 bg-white px-3 py-2 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
+                        >
+                          Retry courier shipment
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                 ) : null}

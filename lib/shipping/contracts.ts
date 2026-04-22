@@ -30,7 +30,11 @@ export type ShipmentParcel = {
 };
 
 export type ParcelPresetKey =
+  | "courier_bag"
   | "fashion_satchel"
+  | "small_box"
+  | "medium_box"
+  | "large_box"
   | "shoe_box"
   | "small_accessory"
   | "standard_box"
@@ -197,29 +201,41 @@ export function computeBillableWeightKg({
 export function normalizePresetKey(value: unknown): ParcelPresetKey | null {
   const input = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (
+    input === "courier_bag" ||
     input === "fashion_satchel" ||
+    input === "small_box" ||
+    input === "medium_box" ||
+    input === "large_box" ||
     input === "shoe_box" ||
-    input === "small_accessory" ||
-    input === "standard_box" ||
-    input === "bulky_box"
+    input === "small_accessory"
   ) {
     return input;
   }
+  if (input === "standard_box") return "medium_box";
+  if (input === "bulky_box") return "large_box";
   return null;
 }
 
 export function getParcelPresetDefaults(preset: ParcelPresetKey | null): Partial<VariantShippingProfile> {
   switch (preset) {
+    case "courier_bag":
+      return { lengthCm: 28, widthCm: 22, heightCm: 3, actualWeightKg: 0.2, shippingClass: "courier_bag" };
     case "fashion_satchel":
       return { lengthCm: 35, widthCm: 28, heightCm: 4, actualWeightKg: 0.35, shippingClass: "fashion_satchel" };
+    case "small_box":
+      return { lengthCm: 22, widthCm: 16, heightCm: 8, actualWeightKg: 0.8, shippingClass: "small_box" };
+    case "medium_box":
+      return { lengthCm: 30, widthCm: 24, heightCm: 18, actualWeightKg: 2.5, shippingClass: "medium_box" };
+    case "large_box":
+      return { lengthCm: 60, widthCm: 45, heightCm: 40, actualWeightKg: 10, shippingClass: "large_box" };
     case "shoe_box":
       return { lengthCm: 34, widthCm: 22, heightCm: 13, actualWeightKg: 1.2, shippingClass: "small_parcel" };
     case "small_accessory":
       return { lengthCm: 18, widthCm: 12, heightCm: 6, actualWeightKg: 0.25, shippingClass: "small_parcel" };
     case "standard_box":
-      return { lengthCm: 30, widthCm: 24, heightCm: 18, actualWeightKg: 2.5, shippingClass: "standard_box" };
+      return { lengthCm: 30, widthCm: 24, heightCm: 18, actualWeightKg: 2.5, shippingClass: "medium_box" };
     case "bulky_box":
-      return { lengthCm: 60, widthCm: 45, heightCm: 40, actualWeightKg: 10, shippingClass: "bulky" };
+      return { lengthCm: 60, widthCm: 45, heightCm: 40, actualWeightKg: 10, shippingClass: "large_box" };
     default:
       return {};
   }

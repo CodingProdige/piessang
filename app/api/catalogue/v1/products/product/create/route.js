@@ -11,6 +11,7 @@ import { getVariantInventoryTotal } from "@/lib/seller/notifications";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
+import { normalizeSellerCourierProfile, normalizeProductCourierSettings } from "@/lib/integrations/easyship-profile";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
 import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
@@ -232,6 +233,8 @@ export async function POST(req){
       sellerOwner?.id || uniqueId,
     );
     const marketplaceFeeConfig = await loadMarketplaceFeeConfig();
+    const sellerCourierProfile = normalizeSellerCourierProfile(sellerOwner?.data?.seller?.courierProfile || {});
+    const productShipping = normalizeProductCourierSettings(data?.product?.shipping || data?.shipping || {});
     const successFeeRule = resolveMarketplaceSuccessFeeRule(category, subCategory, marketplaceFeeConfig?.categories);
     const successFeePercent = estimateMarketplaceSuccessFeePercent(successFeeRule.rule, 0);
     const successFeeLabel = describeMarketplaceFeeRule(successFeeRule.rule);
@@ -338,8 +341,18 @@ export async function POST(req){
         description: toStr(data?.product?.description,null) || null,
         condition: toStr(data?.product?.condition, null) || null,
         vendorDescription,
+        shipping: productShipping,
         keywords: parseKeywords(data?.product?.keywords),
         ...(vendorName ? { vendorName } : {})
+      },
+      seller: {
+        sellerSlug: sellerSlug || null,
+        sellerCode,
+        deliveryProfile:
+          sellerOwner?.data?.seller?.deliveryProfile && typeof sellerOwner.data.seller.deliveryProfile === "object"
+            ? sellerOwner.data.seller.deliveryProfile
+            : {},
+        courierProfile: sellerCourierProfile,
       },
       moderation: {
         status: "draft",

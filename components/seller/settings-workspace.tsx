@@ -15,6 +15,7 @@ import { SHOPPER_COUNTRY_OPTIONS } from "@/components/products/delivery-area-gat
 import { clientStorage } from "@/lib/firebase";
 import { prepareImageAsset } from "@/lib/client/image-prep";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, getDefaultPayoutCurrency } from "@/lib/seller/payout-config";
 
 type SellerBranding = {
@@ -82,6 +83,12 @@ type SellerDeliveryProfile = {
     leadTimeDays: string;
   };
   notes: string;
+};
+
+type SellerCourierProfile = {
+  enabled: boolean;
+  handoverMode: "pickup" | "dropoff";
+  allowedCouriers: string[];
 };
 
 type SellerPayoutProfile = {
@@ -182,6 +189,12 @@ const EMPTY_DELIVERY_PROFILE: SellerDeliveryProfile = {
     leadTimeDays: "0",
   },
   notes: "",
+};
+
+const EMPTY_COURIER_PROFILE: SellerCourierProfile = {
+  enabled: false,
+  handoverMode: "pickup",
+  allowedCouriers: [],
 };
 
 const EMPTY_PAYOUT_PROFILE: SellerPayoutProfile = {
@@ -544,6 +557,15 @@ function mapDeliveryProfile(profile: any): SellerDeliveryProfile {
   };
 }
 
+function mapCourierProfile(profile: any): SellerCourierProfile {
+  const normalized = normalizeSellerCourierProfile(profile && typeof profile === "object" ? profile : {});
+  return {
+    enabled: normalized.enabled === true,
+    handoverMode: normalized.handoverMode === "dropoff" ? "dropoff" : "pickup",
+    allowedCouriers: Array.isArray(normalized.allowedCouriers) ? normalized.allowedCouriers : [],
+  };
+}
+
 const BANNER_RATIOS = ["3:1", "16:9", "2:1"];
 const LOGO_RATIOS = ["1:1", "4:3"];
 
@@ -622,6 +644,7 @@ function useSellerAccessLabel(role: string) {
 function buildSettingsSnapshot(input: {
   branding: SellerBranding;
   deliveryProfile: SellerDeliveryProfile;
+  courierProfile: SellerCourierProfile;
   payoutProfile: SellerPayoutProfile;
   businessDetails: SellerBusinessDetails;
   vendorNameValue: string;
@@ -630,6 +653,7 @@ function buildSettingsSnapshot(input: {
   return JSON.stringify({
     branding: input.branding,
     deliveryProfile: input.deliveryProfile,
+    courierProfile: input.courierProfile,
     payoutProfile: input.payoutProfile,
     businessDetails: input.businessDetails,
     vendorNameValue: sanitizeVendorName(input.vendorNameValue),
@@ -714,6 +738,7 @@ export function SellerSettingsWorkspace({
   const [deleting, setDeleting] = useState(false);
   const [branding, setBranding] = useState<SellerBranding>(EMPTY_BRANDING);
   const [deliveryProfile, setDeliveryProfile] = useState<SellerDeliveryProfile>(EMPTY_DELIVERY_PROFILE);
+  const [courierProfile, setCourierProfile] = useState<SellerCourierProfile>(EMPTY_COURIER_PROFILE);
   const [payoutProfile, setPayoutProfile] = useState<SellerPayoutProfile>(EMPTY_PAYOUT_PROFILE);
   const [businessDetails, setBusinessDetails] = useState<SellerBusinessDetails>(EMPTY_BUSINESS_DETAILS);
   const [vendorNameValue, setVendorNameValue] = useState(vendorName);
@@ -825,12 +850,13 @@ export function SellerSettingsWorkspace({
       buildSettingsSnapshot({
         branding,
         deliveryProfile,
+        courierProfile,
         payoutProfile,
         businessDetails,
         vendorNameValue,
         vendorDescriptionValue,
       }) !== savedSnapshot,
-    [branding, businessDetails, deliveryProfile, payoutProfile, savedSnapshot, vendorDescriptionValue, vendorNameValue],
+    [branding, businessDetails, courierProfile, deliveryProfile, payoutProfile, savedSnapshot, vendorDescriptionValue, vendorNameValue],
   );
   
   function showSnackbar(message: string, tone: "success" | "error" = "success") {
@@ -926,6 +952,9 @@ export function SellerSettingsWorkspace({
         const nextDeliveryProfile = normalizeSellerDeliveryProfile(
           payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {},
         );
+        const nextCourierProfile = normalizeSellerCourierProfile(
+          payload?.courierProfile && typeof payload.courierProfile === "object" ? payload.courierProfile : {},
+        );
         const nextPayoutProfile = payload?.payoutProfile && typeof payload.payoutProfile === "object" ? payload.payoutProfile : {};
         const nextBusinessDetails = payload?.businessDetails && typeof payload.businessDetails === "object" ? payload.businessDetails : {};
         if (!cancelled && sellerRecord) {
@@ -948,6 +977,7 @@ export function SellerSettingsWorkspace({
           setVendorNameValue(nextVendorName || vendorName);
           setVendorDescriptionValue(nextVendorDescription);
           setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
+          setCourierProfile(mapCourierProfile(nextCourierProfile));
           setPayoutProfile({
             provider: toStr(nextPayoutProfile?.provider || sellerRecord?.payoutProvider || "wise"),
             payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -1017,6 +1047,7 @@ export function SellerSettingsWorkspace({
                 logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
               },
               deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
+              courierProfile: mapCourierProfile(nextCourierProfile),
               payoutProfile: {
                 provider: toStr(nextPayoutProfile?.provider || sellerRecord?.payoutProvider || "wise"),
                 payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -1411,10 +1442,6 @@ export function SellerSettingsWorkspace({
       setError("Choose a unique vendor name before saving.");
       return false;
     }
-    if (hasDuplicateShippingZoneCountries) {
-      setError("Each shipping zone must use a unique country before saving.");
-      return false;
-    }
     setSaving(true);
     setError(null);
     setMessage(null);
@@ -1427,7 +1454,16 @@ export function SellerSettingsWorkspace({
           sellerSlug,
           data: {
             branding,
-            deliveryProfile,
+            deliveryProfile: {
+              ...deliveryProfile,
+              shippingZones: [],
+              pickup: {
+                ...deliveryProfile.pickup,
+                enabled: false,
+                leadTimeDays: "0",
+              },
+            },
+            courierProfile,
             payoutProfile,
             businessDetails,
             vendorName: nextVendorName,
@@ -1456,7 +1492,9 @@ export function SellerSettingsWorkspace({
         logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
       });
       const nextDeliveryProfile = normalizeSellerDeliveryProfile(payload?.deliveryProfile || {});
+      const nextCourierProfile = normalizeSellerCourierProfile(payload?.courierProfile || {});
       setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
+      setCourierProfile(mapCourierProfile(nextCourierProfile));
       setPayoutProfile({
         provider: toStr(nextPayoutProfile?.provider || payload?.payoutProvider || payoutProvider || "wise"),
         payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -1521,6 +1559,7 @@ export function SellerSettingsWorkspace({
             logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
           },
           deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
+          courierProfile: mapCourierProfile(nextCourierProfile),
           payoutProfile: {
             provider: toStr(nextPayoutProfile?.provider || payload?.payoutProvider || payoutProvider || "wise"),
             payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -1938,7 +1977,7 @@ export function SellerSettingsWorkspace({
       <SettingsSection
         eyebrow="Shipping preferences"
         title="How you ship orders"
-        description="Keep this simple: set one local delivery radius and fee, then add country shipping rates for everywhere else you ship."
+        description="Set your local delivery radius first, then switch on platform-managed courier delivery for supported destinations."
         expanded={sectionOpen.shipping}
         onToggle={() => setSectionOpen((current) => ({ ...current, shipping: !current.shipping }))}
       >
@@ -2058,181 +2097,57 @@ export function SellerSettingsWorkspace({
           </div>
 
           <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-[13px] font-semibold text-[#202020]">Shipping zones</p>
-                <p className="mt-1 text-[12px] text-[#57636c]">Add one row per country you ship to, just like a simple Shopify-style shipping zone list.</p>
+                <p className="text-[13px] font-semibold text-[#202020]">Courier shipping</p>
+                <p className="mt-1 text-[12px] text-[#57636c]">
+                  Use this when Piessang should surface platform-managed courier delivery for supported destinations.
+                </p>
               </div>
-              <button
-                type="button"
-                disabled={!canEditSettings || deliveryProfile.shippingZones.length >= SHOPPER_COUNTRY_OPTIONS.length}
-                onClick={() =>
-                  setDeliveryProfile((current) => ({
-                    ...current,
-                    shippingZones: [
-                      ...current.shippingZones,
-                      {
-                        ...makeShippingZone(Date.now()),
-                        country: getUnusedShippingZoneCountry("", current.shippingZones),
-                        label: getUnusedShippingZoneCountry("", current.shippingZones),
-                      },
-                    ],
-                  }))
-                }
-                className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
-              >
-                Add Zone
-              </button>
             </div>
             <div className="mt-4 space-y-3">
-              {hasDuplicateShippingZoneCountries ? (
-                <div className="rounded-[8px] border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-[12px] text-[#991b1b]">
-                  Each shipping zone must use a unique country. Remove or change duplicate country rows before saving.
-                </div>
-              ) : null}
-              {deliveryProfile.shippingZones.length ? deliveryProfile.shippingZones.map((zone, index) => (
-                <div key={zone.id || index} className="rounded-[8px] border border-black/10 bg-white p-4">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Country</span>
-                      <div className="relative">
-                        <select
-                          value={zone.country}
-                          onChange={(event) => setDeliveryProfile((current) => ({
-                            ...current,
-                            shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
-                              ...entry,
-                              country: event.target.value,
-                              label: event.target.value,
-                              scopeType: "country",
-                              region: "",
-                              city: "",
-                              postalCodes: "",
-                            } : entry),
-                          }))}
-                          disabled={!canEditSettings}
-                          className="appearance-none w-full rounded-[8px] border border-black/10 bg-white py-2.5 pl-3 pr-8 text-[13px] font-semibold text-[#202020] outline-none disabled:bg-[#f7f7f7]"
-                        >
-                          <option value="">Select country</option>
-                          {SHOPPER_COUNTRY_OPTIONS.filter((option) => {
-                            const normalizedLabel = normalizeCountryKey(option.label);
-                            return !deliveryProfile.shippingZones.some(
-                              (entry, entryIndex) => entryIndex !== index && normalizeCountryKey(entry.country) === normalizedLabel,
-                            );
-                          }).map((option) => (
-                            <option key={option.code} value={option.label}>
-                              {option.displayLabel}
-                            </option>
-                          ))}
-                        </select>
-                        <svg viewBox="0 0 20 20" className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 fill-current text-[#6b7280]" aria-hidden="true">
-                          <path d="M5.5 7.5 10 12l4.5-4.5" />
-                        </svg>
-                      </div>
-                    </label>
-                    <div className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Shipping type</span>
-                      <div className="flex h-[42px] items-center rounded-[8px] border border-black/10 bg-[#f7f7f7] px-3 text-[13px] font-semibold text-[#202020]">
-                        Seller-managed flat rate
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-3">
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Rate calculation</span>
-                      <select
-                        value={zone.pricingBasis || "per_order"}
-                        onChange={(event) => setDeliveryProfile((current) => ({
-                          ...current,
-                          shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
-                            ...entry,
-                            pricingBasis: event.target.value,
-                            pricingRules: [
-                              {
-                                ...(entry.pricingRules[0] || makePricingRule(Date.now())),
-                                pricingBasis: event.target.value,
-                              },
-                            ],
-                          } : entry),
-                        }))}
-                        disabled={!canEditSettings}
-                        className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
-                      >
-                        <option value="per_order">Flat per order</option>
-                        <option value="per_item">Flat per item</option>
-                        <option value="per_kg">Per kg</option>
-                      </select>
-                    </label>
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Expected delivery time (days)</span>
-                      <input
-                          value={zone.leadTimeDays || ""}
-                          onChange={(event) => setDeliveryProfile((current) => ({
-                            ...current,
-                            shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
-                              ...entry,
-                              leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2),
-                            } : entry),
-                          }))}
-                          disabled={!canEditSettings}
-                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
-                          placeholder="2"
-                        />
-                      </label>
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
-                        {zone.pricingBasis === "per_item" ? "Shipping cost per item (R)" : zone.pricingBasis === "per_kg" ? "Shipping cost per kg (R)" : "Shipping cost (R)"}
-                      </span>
-                      <input
-                          value={zone.pricingRules[0]?.fee || ""}
-                          onChange={(event) => setDeliveryProfile((current) => ({
-                            ...current,
-                            shippingZones: current.shippingZones.map((entry, entryIndex) => entryIndex === index ? {
-                              ...entry,
-                              pricingRules: [
-                                {
-                                  ...(entry.pricingRules[0] || makePricingRule(Date.now())),
-                                  label: entry.country || entry.label || "Standard shipping",
-                                  pricingBasis: entry.pricingBasis || "per_order",
-                                  fee: event.target.value.replace(/[^\d.]/g, "").slice(0, 8),
-                                  minOrderValue: "",
-                                  maxOrderValue: "",
-                                  minDistanceKm: "",
-                                  maxDistanceKm: "",
-                                },
-                              ],
-                            } : entry),
-                          }))}
-                          disabled={!canEditSettings}
-                          className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
-                          placeholder="120"
-                        />
-                      </label>
-                    </div>
-                  <p className="mt-3 text-[12px] text-[#57636c]">
-                    If a shopper’s delivery country does not match one of your rows here, seller-managed shipping will not be offered.
-                    {zone.pricingBasis === "per_kg" ? " Per-kg shipping requires every variant on the listing to have a weight." : ""}
-                  </p>
-                  <div className="mt-3 flex items-center justify-between gap-3">
-                    <button type="button" disabled={!canEditSettings} onClick={() => setDeliveryProfile((current) => ({ ...current, shippingZones: current.shippingZones.filter((_, entryIndex) => entryIndex !== index) }))} className="text-[12px] font-semibold text-[#b91c1c] disabled:opacity-60">Remove zone</button>
-                  </div>
-                </div>
-              )) : (
-                <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-4 py-5 text-[12px] text-[#57636c]">No shipping zones yet.</div>
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
-            <div className="grid gap-3 md:grid-cols-2">
               <label className="inline-flex items-center gap-2 text-[12px] text-[#57636c]">
-                <input type="checkbox" checked={deliveryProfile.pickup.enabled} onChange={(event) => setDeliveryProfile((current) => ({ ...current, pickup: { ...current.pickup, enabled: event.target.checked } }))} disabled={!canEditSettings} className="h-4 w-4 rounded border-black/20" />
-                Allow customer collection
+                <input
+                  type="checkbox"
+                  checked={courierProfile.enabled}
+                  onChange={(event) => setCourierProfile((current) => ({ ...current, enabled: event.target.checked }))}
+                  disabled={!canEditSettings}
+                  className="h-4 w-4 rounded border-black/20"
+                />
+                Enable courier shipping
               </label>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Collection ready time (days)</span>
-                <input value={deliveryProfile.pickup.leadTimeDays} onChange={(event) => setDeliveryProfile((current) => ({ ...current, pickup: { ...current.pickup, leadTimeDays: event.target.value.replace(/[^\d]/g, "").slice(0, 2) } }))} disabled={!canEditSettings || !deliveryProfile.pickup.enabled} className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]" placeholder="0" />
-              </label>
+              <div className="grid gap-3 md:grid-cols-1">
+                <label className="block">
+                  <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Parcel handover</span>
+                  <select
+                    value={courierProfile.handoverMode}
+                    onChange={(event) => setCourierProfile((current) => ({
+                      ...current,
+                      handoverMode: event.target.value === "dropoff" ? "dropoff" : "pickup",
+                    }))}
+                    disabled={!canEditSettings || !courierProfile.enabled}
+                    className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none disabled:bg-[#f7f7f7]"
+                  >
+                    <option value="pickup">Courier picks up from seller</option>
+                    <option value="dropoff">Seller drops off parcels</option>
+                  </select>
+                  <p className="mt-1.5 text-[11px] leading-[1.5] text-[#57636c]">
+                    Piessang will only use courier services that support this handover method for your origin location. Pickup timing or dropoff instructions will appear on the order after checkout.
+                  </p>
+                </label>
+              </div>
+              <div className="rounded-[8px] border border-black/10 bg-white p-3">
+                <p className="text-[12px] font-semibold text-[#202020]">Courier availability</p>
+                {!toStr(deliveryProfile.origin.country) ? (
+                  <p className="mt-3 text-[11px] text-[#57636c]">
+                    Set your shipping origin above first. Piessang can only work out nearby courier pickup or dropoff options once your origin location is saved.
+                  </p>
+                ) : (
+                  <p className="mt-3 text-[11px] text-[#57636c]">
+                    Piessang will choose from courier services that actually support your saved origin location and selected handover method when a shipment is prepared. This keeps sellers from being shown courier options that are only available on the other side of the country.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </div>

@@ -18,6 +18,7 @@ import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
 import { ensureCatalogueTaxonomySeed } from "@/lib/marketplace/fees-store";
 import { refreshCartsForSaleChange } from "@/lib/cart/sale-refresh";
+import { normalizeSellerCourierProfile, normalizeProductCourierSettings } from "@/lib/integrations/easyship-profile";
 import {
   getVariantActivePriceIncl,
   isProductPublished,
@@ -25,6 +26,7 @@ import {
   listUsersWhoFavoritedProduct,
 } from "@/lib/notifications/customer-inbox";
 import { dispatchCustomerNotification } from "@/lib/notifications/customer-delivery";
+import { buildProductStatus } from "@/lib/catalogue/product-status";
 
 const ok  = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
 const err = (s, t, m, e = {}) =>
@@ -183,15 +185,57 @@ function deepMerge(target, patch) {
   return out;
 }
 
-function hasReviewSensitiveProductChanges(patch, { changeRequestOnly = false } = {}) {
+function arraysEqualNormalized(a, b, mapper = (value) => toStr(value)) {
+  const left = Array.isArray(a) ? a.map(mapper).filter(Boolean) : [];
+  const right = Array.isArray(b) ? b.map(mapper).filter(Boolean) : [];
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function normalizeMediaImages(images) {
+  return Array.isArray(images)
+    ? images.map((item) => ({
+        imageUrl: toStr(item?.imageUrl || item?.url),
+        blurHashUrl: toStr(item?.blurHashUrl || item?.blurhash || item?.blurHash),
+        altText: toStr(item?.altText || item?.alt || item?.alt_text),
+        position: Number.isFinite(+item?.position) ? toInt(item.position) : null,
+      }))
+    : [];
+}
+
+function hasReviewSensitiveProductChanges(current, patch, { changeRequestOnly = false } = {}) {
   if (!patch || typeof patch !== "object") return false;
 
-  if ("grouping" in patch) return true;
-  if ("media" in patch) return true;
-  if ("inventory" in patch) return true;
+  if ("grouping" in patch) {
+    const groupingPatch = patch.grouping || {};
+    const currentGrouping = current?.grouping || {};
+    if (
+      toStr(groupingPatch.category, toStr(currentGrouping.category)) !== toStr(currentGrouping.category) ||
+      toStr(groupingPatch.subCategory, toStr(currentGrouping.subCategory)) !== toStr(currentGrouping.subCategory) ||
+      toStr(groupingPatch.brand, toStr(currentGrouping.brand)) !== toStr(currentGrouping.brand)
+    ) {
+      return true;
+    }
+  }
+
+  if ("media" in patch) {
+    const nextImages = normalizeMediaImages(patch?.media?.images);
+    const currentImages = normalizeMediaImages(current?.media?.images);
+    if (JSON.stringify(nextImages) !== JSON.stringify(currentImages)) {
+      return true;
+    }
+  }
+
+  if ("inventory" in patch) {
+    const nextInventory = Array.isArray(patch.inventory) ? patch.inventory : [];
+    const currentInventory = Array.isArray(current?.inventory) ? current.inventory : [];
+    if (JSON.stringify(nextInventory) !== JSON.stringify(currentInventory)) {
+      return true;
+    }
+  }
 
   if ("product" in patch) {
     const productPatch = patch.product || {};
+    const currentProduct = current?.product || {};
     const reviewSensitiveProductKeys = new Set([
       "title",
       "overview",
@@ -206,21 +250,45 @@ function hasReviewSensitiveProductChanges(patch, { changeRequestOnly = false } =
       "vendorName",
     ]);
 
-    if (Object.keys(productPatch).some((key) => reviewSensitiveProductKeys.has(key))) {
+    if (
+      Object.keys(productPatch).some((key) => {
+        if (!reviewSensitiveProductKeys.has(key)) return false;
+        if (key === "keywords") {
+          return !arraysEqualNormalized(productPatch.keywords, currentProduct.keywords, (value) =>
+            toStr(value).toLowerCase(),
+          );
+        }
+        return toStr(productPatch[key], toStr(currentProduct[key])) !== toStr(currentProduct[key]);
+      })
+    ) {
       return true;
     }
   }
 
   if ("placement" in patch) {
     const placementPatch = patch.placement || {};
-    const safePlacementKeys = new Set(["isActive", "inventory_tracking", "supplier_out_of_stock", "in_stock"]);
-    if (Object.keys(placementPatch).some((key) => !safePlacementKeys.has(key))) {
+    const currentPlacement = current?.placement || {};
+    const safePlacementKeys = new Set([
+      "isActive",
+      "inventory_tracking",
+      "track_inventory",
+      "continue_selling_out_of_stock",
+      "supplier_out_of_stock",
+      "in_stock",
+    ]);
+    if (
+      Object.keys(placementPatch).some((key) => {
+        if (safePlacementKeys.has(key)) return false;
+        return String(placementPatch[key]) !== String(currentPlacement[key]);
+      })
+    ) {
       return true;
     }
   }
 
   if ("fulfillment" in patch) {
     const fulfillmentPatch = patch.fulfillment || {};
+    const currentFulfillment = current?.fulfillment || {};
     const safeFulfillmentKeys = new Set([
       "commission_rate",
       "success_fee_percent",
@@ -231,13 +299,19 @@ function hasReviewSensitiveProductChanges(patch, { changeRequestOnly = false } =
       "locked",
       "mode",
     ]);
-    if (Object.keys(fulfillmentPatch).some((key) => !safeFulfillmentKeys.has(key))) {
+    if (
+      Object.keys(fulfillmentPatch).some((key) => {
+        if (safeFulfillmentKeys.has(key)) return false;
+        return String(fulfillmentPatch[key]) !== String(currentFulfillment[key]);
+      })
+    ) {
       return true;
     }
 
     if (
       Object.prototype.hasOwnProperty.call(fulfillmentPatch, "mode") &&
-      !changeRequestOnly
+      !changeRequestOnly &&
+      toStr(fulfillmentPatch.mode, toStr(currentFulfillment.mode)) !== toStr(currentFulfillment.mode)
     ) {
       return true;
     }
@@ -479,7 +553,7 @@ function sanitizePatch(patch){
     if ("icon" in m)   out.media.icon   = toStr(m.icon,  null) || null;
   }
 
-    if ("product" in patch){
+  if ("product" in patch){
     const pr = patch.product || {};
     out.product = {};
     if ("unique_id" in pr)   out.product.unique_id = toStr(pr.unique_id);
@@ -495,6 +569,7 @@ function sanitizePatch(patch){
     if ("vendorDescription" in pr) out.product.vendorDescription = toStr(pr.vendorDescription, null) || null;
     if ("sellerSlug" in pr)  out.product.sellerSlug   = toStr(pr.sellerSlug, null) || null;
     if ("sellerCode" in pr)  out.product.sellerCode   = toStr(pr.sellerCode, null) || null;
+    if ("shipping" in pr) out.product.shipping = normalizeProductCourierSettings(pr.shipping);
   }
 
   if ("inventory" in patch){
@@ -635,8 +710,21 @@ export async function POST(req){
       toBool(adminReviewEdit) &&
       normalizeKey(profile?.systemAccessType) === "admin" &&
       currentModerationStatus === "in_review";
-    const nextModerationStatus = toStr(next?.moderation?.status, currentModerationStatus) || currentModerationStatus;
-    const meaningfulContentChange = hasReviewSensitiveProductChanges(patch, { changeRequestOnly });
+    const requestedModerationStatus = toStr(patch?.moderation?.status).toLowerCase();
+    const canApplyRequestedModerationStatus =
+      !requestedModerationStatus
+        ? false
+        : requestedModerationStatus === "in_review" ||
+          requestedModerationStatus === "published" ||
+          requestedModerationStatus === "rejected" ||
+          requestedModerationStatus === "blocked" ||
+          currentModerationStatus === "draft" ||
+          currentModerationStatus === "rejected";
+    const nextModerationStatus =
+      (canApplyRequestedModerationStatus
+        ? requestedModerationStatus
+        : toStr(current?.moderation?.status, "draft").toLowerCase()) || currentModerationStatus;
+    const meaningfulContentChange = hasReviewSensitiveProductChanges(current, patch, { changeRequestOnly });
     next.moderation = next.moderation || {};
     next.moderation.status = meaningfulContentChange
       ? preserveLiveVersionDuringReview
@@ -790,6 +878,7 @@ export async function POST(req){
       sellerOwner?.data?.seller?.deliveryProfile && typeof sellerOwner.data.seller.deliveryProfile === "object"
         ? sellerOwner.data.seller.deliveryProfile
         : {};
+    const sellerCourierProfile = normalizeSellerCourierProfile(sellerOwner?.data?.seller?.courierProfile || {});
     if (toStr(nextFulfillmentMode).toLowerCase() === "seller" && sellerHasWeightBasedShipping(sellerDeliveryProfile) && (activatingProduct || submittingForReview)) {
       const weightIssues = collectProductWeightRequirementIssues(next);
       if (weightIssues.includes("Variant weight")) {
@@ -816,6 +905,13 @@ export async function POST(req){
     /* -- Update Firestore -- */
     const updatePayload = {
       ...next,
+      seller: {
+        ...(next?.seller && typeof next.seller === "object" ? next.seller : {}),
+        sellerSlug: currentSellerSlug || next?.product?.sellerSlug || null,
+        sellerCode,
+        deliveryProfile: sellerDeliveryProfile,
+        courierProfile: sellerCourierProfile,
+      },
       marketplace: {
         ...(next?.marketplace && typeof next.marketplace === "object" ? next.marketplace : {}),
         ...buildOfferGroupMetadata({
@@ -1009,7 +1105,15 @@ export async function POST(req){
       }
     }
 
-    if (currentModerationStatus !== next.moderation.status) {
+    const previousProductStatus = buildProductStatus(current);
+    const nextProductStatus = buildProductStatus(updated);
+    const enteredReviewQueue =
+      previousProductStatus.reviewQueueStatus !== "in_review" &&
+      nextProductStatus.reviewQueueStatus === "in_review";
+    const currentStatusChanged = previousProductStatus.current !== nextProductStatus.current;
+    const shouldNotifySeller = enteredReviewQueue || currentStatusChanged;
+
+    if (shouldNotifySeller) {
       const sellerSlug = toStr(
         next?.seller?.sellerSlug ||
           next?.product?.sellerSlug ||
@@ -1021,11 +1125,14 @@ export async function POST(req){
       const fulfillmentModeForEmail = toStr(next?.fulfillment?.mode || current?.fulfillment?.mode || "seller");
       const reason = toStr(next?.moderation?.reason || current?.moderation?.reason || "");
       const sellerCode = toStr(next?.seller?.sellerCode || current?.seller?.sellerCode || next?.product?.sellerCode || current?.product?.sellerCode || "");
+      const notificationStatus = enteredReviewQueue ? "in_review" : nextProductStatus.current;
+      const notificationIsLiveUpdate =
+        enteredReviewQueue ? wasLiveUpdate : previousProductStatus.hasPendingLiveUpdate || wasLiveUpdate;
       const sellerNotification = buildSellerProductNotification({
-        status: next.moderation.status,
+        status: notificationStatus,
         productTitle,
         reason,
-        isLiveUpdate: wasLiveUpdate,
+        isLiveUpdate: notificationIsLiveUpdate,
       });
       const sellerProductHref = `/seller/catalogue/new?unique_id=${encodeURIComponent(pid)}`;
 
@@ -1040,8 +1147,9 @@ export async function POST(req){
           metadata: {
             productId: pid,
             productTitle,
-            status: toStr(next.moderation.status),
-            isLiveUpdate: wasLiveUpdate,
+            status: toStr(notificationStatus),
+            storedStatus: toStr(next?.moderation?.status),
+            isLiveUpdate: notificationIsLiveUpdate,
           },
         }).catch((notificationError) => {
           console.error("seller product notification failed:", notificationError);
@@ -1066,31 +1174,31 @@ export async function POST(req){
             data: {
               vendorName,
               productTitle,
-              statusLabel: formatModerationStatusLabel(next.moderation.status),
+              statusLabel: formatModerationStatusLabel(notificationStatus),
               statusHeading:
-                next.moderation.status === "published" && wasLiveUpdate
+                notificationStatus === "published" && notificationIsLiveUpdate
                   ? "Product update approved"
-                  : next.moderation.status === "published"
+                  : notificationStatus === "published"
                     ? "Product approved"
-                    : next.moderation.status === "rejected" && wasLiveUpdate
+                    : notificationStatus === "rejected" && notificationIsLiveUpdate
                       ? "Product update rejected"
-                      : next.moderation.status === "rejected"
+                      : notificationStatus === "rejected"
                         ? "Product rejected"
-                        : next.moderation.status === "in_review" && wasLiveUpdate
+                        : notificationStatus === "in_review" && notificationIsLiveUpdate
                           ? "Product update submitted"
                           : "Product status update",
-              isLiveUpdate: wasLiveUpdate,
+              isLiveUpdate: notificationIsLiveUpdate,
               fulfillmentLabel: fulfillmentModeForEmail === "bevgo" ? "Piessang fulfils" : "Seller fulfils",
-              reason: next.moderation.status === "rejected" ? reason : "",
-              nextStep: buildProductStatusNextStep(next.moderation.status, fulfillmentModeForEmail, reason, {
-                isLiveUpdate: wasLiveUpdate,
+              reason: notificationStatus === "rejected" ? reason : "",
+              nextStep: buildProductStatusNextStep(notificationStatus, fulfillmentModeForEmail, reason, {
+                isLiveUpdate: notificationIsLiveUpdate,
               }),
             },
           });
         }
       }
 
-      if (process.env.SENDGRID_API_KEY?.startsWith("SG.") && toStr(next.moderation.status).toLowerCase() === "in_review") {
+      if (process.env.SENDGRID_API_KEY?.startsWith("SG.") && enteredReviewQueue) {
         const internalRecipients = await collectSystemAdminNotificationEmails({ fallbackEmails: ["admin@piessang.com"] });
         if (internalRecipients.length) {
           await sendSellerNotificationEmails({
@@ -1125,6 +1233,11 @@ export async function POST(req){
           }
         : null,
       product: updated
+        ? {
+            ...updated,
+            status: buildProductStatus(updated),
+          }
+        : null,
     });
 
   } catch (e){

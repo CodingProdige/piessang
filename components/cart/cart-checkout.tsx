@@ -99,11 +99,24 @@ type CartPayload = {
       amount_incl?: number;
       amount_excl?: number;
       currency?: string;
+      reason?: string[];
       shipment_summary?: {
         parcelCount?: number;
         actualWeightKg?: number;
         billableWeightKg?: number;
       } | null;
+      available_courier_quotes?: Array<{
+        id?: string;
+        carrier?: string;
+        service?: string;
+        amountIncl?: number;
+        currency?: string;
+        leadTimeDays?: number | null;
+        handoverOptions?: string[];
+        markupAmount?: number;
+        baseAmount?: number;
+      }>;
+      selected_courier_quote_id?: string | null;
     }>;
     delivery_fee_incl?: number;
     delivery_fee_excl?: number;
@@ -310,7 +323,7 @@ function getSellerFulfillmentSummary(items: CartItem[]) {
   );
   if (modes.has("bevgo") && modes.has("seller")) return "Some items ship from Piessang and some ship from the seller.";
   if (modes.has("bevgo")) return "Piessang handles shipping for these items.";
-  return "The seller handles local delivery, country shipping, or collection for these items.";
+  return "The seller handles local delivery or courier delivery for these items.";
 }
 
 function getSellerDeliverySummary(items: CartItem[], selectedLocation?: DeliveryLocation | null, pickupSelections: string[] = []) {
@@ -354,6 +367,8 @@ function getSellerDeliverySummary(items: CartItem[], selectedLocation?: Delivery
   const shopperFacingMessage = getShopperFacingDeliveryMessage({
     fulfillmentMode: "seller",
     profile: deliveryProfile,
+    courierProfile: (seller as any)?.courierProfile,
+    productShipping: (sellerItems[0]?.product_snapshot as any)?.product?.shipping || (sellerItems[0]?.product_snapshot as any)?.shipping || null,
     sellerBaseLocation: seller?.baseLocation || "",
     shopperArea,
     variant: sellerItems[0]?.selected_variant_snapshot || null,
@@ -770,6 +785,15 @@ function togglePickupSelection(current: string[], sellerKey: string, enabled: bo
   return current.filter((entry) => entry !== normalized);
 }
 
+function normalizeCourierSelections(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, entry]) => [String(key || "").trim(), String(entry || "").trim()])
+      .filter(([key, entry]) => key && entry),
+  );
+}
+
 export function CartCheckout() {
   const router = useRouter();
   const pathname = usePathname();
@@ -802,6 +826,7 @@ export function CartCheckout() {
   const [addressEditing, setAddressEditing] = useState(false);
   const [selectedLocationIndex, setSelectedLocationIndex] = useState(0);
   const [pickupSelections, setPickupSelections] = useState<string[]>([]);
+  const [courierSelections, setCourierSelections] = useState<Record<string, string>>({});
   const [contactDraft, setContactDraft] = useState<CheckoutContactDraft>({
     recipientName: "",
     email: String(profile?.email || "").trim(),
@@ -942,25 +967,13 @@ export function CartCheckout() {
     let mounted = true;
     setDeliveryFeeLoading(true);
     setCheckoutReserveLoading(true);
-    fetch("/api/client/v1/carts/get", {
+    fetch("/api/client/v1/carts/checkout-reserve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cartOwnerId: activeCartOwnerId,
-          deliveryAddress: selectedLocation,
-          pickupSelections,
-        }),
-      })
+      body: JSON.stringify({ cartOwnerId: activeCartOwnerId }),
+    })
       .then((response) => response.json().catch(() => ({})))
-      .then(async (payload) => {
-        if (!mounted) return;
-        setCart((payload?.data?.cart ?? null) as CartPayload | null);
-        const reserveResponse = await fetch("/api/client/v1/carts/checkout-reserve", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cartOwnerId: activeCartOwnerId }),
-        }).catch(() => null);
-        const reservePayload = reserveResponse ? await reserveResponse.json().catch(() => ({})) : null;
+      .then(async (reservePayload) => {
         if (!mounted) return;
         if (reservePayload?.message) {
           setErrorMessage(reservePayload.message);
@@ -973,6 +986,7 @@ export function CartCheckout() {
             cartOwnerId: activeCartOwnerId,
             deliveryAddress: selectedLocation,
             pickupSelections,
+            courierSelections,
           }),
         }).catch(() => null);
         const refreshedCartPayload = refreshedCartResponse
@@ -996,7 +1010,7 @@ export function CartCheckout() {
     return () => {
       mounted = false;
     };
-  }, [cartOwnerId, pickupSelections, selectedLocation, uid]);
+  }, [cartOwnerId, courierSelections, pickupSelections, selectedLocation, uid]);
 
   useEffect(() => {
     setAddressDraft(defaultAddressDraft(profile ?? undefined));
@@ -1211,6 +1225,35 @@ export function CartCheckout() {
   const sellerDeliveryBreakdown = Array.isArray(cart?.totals?.seller_delivery_breakdown)
     ? cart.totals.seller_delivery_breakdown
     : [];
+  useEffect(() => {
+    setCourierSelections((current) => {
+      const next = { ...current };
+      let changed = false;
+      const activeSellerKeys = new Set<string>();
+      for (const entry of sellerDeliveryBreakdown) {
+        const sellerKey = String(entry?.seller_key || "").trim();
+        if (!sellerKey) continue;
+        activeSellerKeys.add(sellerKey);
+        const quotes = Array.isArray(entry?.available_courier_quotes) ? entry.available_courier_quotes : [];
+        const selectedQuoteId = String(entry?.selected_courier_quote_id || "").trim();
+        if (quotes.length && !next[sellerKey] && selectedQuoteId) {
+          next[sellerKey] = selectedQuoteId;
+          changed = true;
+        }
+        if (!quotes.length && next[sellerKey]) {
+          delete next[sellerKey];
+          changed = true;
+        }
+      }
+      for (const sellerKey of Object.keys(next)) {
+        if (!activeSellerKeys.has(sellerKey)) {
+          delete next[sellerKey];
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [sellerDeliveryBreakdown]);
   const unavailableSellerDeliveryGroups = sellerDeliveryBreakdown.filter(
     (entry) => entry?.applicable === false && String(entry?.delivery_type || "").trim().toLowerCase() === "unavailable",
   );
@@ -1967,6 +2010,7 @@ export function CartCheckout() {
           cartOwnerId: activeCartOwnerId,
           deliveryAddress: selectedLocation,
           pickupSelections,
+          courierSelections,
         }),
       });
       const refreshedPayload = await refreshed.json().catch(() => ({}));
@@ -2178,6 +2222,7 @@ export function CartCheckout() {
             phoneNumber: combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
           },
           pickupSelections,
+          courierSelections,
           source: "web",
         }),
       });
@@ -2958,7 +3003,20 @@ export function CartCheckout() {
                   <div key={group.seller} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
                     {(() => {
                       const summary = getSellerDeliverySummary(group.items, selectedLocation, pickupSelections);
-                      const sellerBlockedByDelivery = hasSelectedDeliveryAddress && summary && !summary.isPickup && summary.isUnavailable === true;
+                      const breakdownEntry = sellerDeliveryBreakdown.find(
+                        (entry) => String(entry?.seller_key || "").trim() === group.sellerKey,
+                      );
+                      const sellerBlockedByDelivery =
+                        hasSelectedDeliveryAddress &&
+                        (
+                          (summary && !summary.isPickup && summary.isUnavailable === true)
+                          || (breakdownEntry?.applicable === false && String(breakdownEntry?.delivery_type || "").trim().toLowerCase() === "unavailable")
+                        );
+                      const failureReasons = summary?.reasons?.length
+                        ? summary.reasons
+                        : Array.isArray(breakdownEntry?.reason)
+                          ? breakdownEntry.reason
+                          : [];
                       return sellerBlockedByDelivery ? (
                         <div className="mb-4 rounded-[10px] border border-[#fecaca] bg-[#fff1f2] px-4 py-3">
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2968,11 +3026,11 @@ export function CartCheckout() {
                                 {group.seller} cannot deliver these items to your selected address right now.
                               </p>
                               <p className="mt-1 text-[13px] leading-[1.6] text-[#991b1b]">
-                                Change your delivery address, switch to seller collection if available, or remove this seller&apos;s items to continue.
+                                Change your delivery address or remove this seller&apos;s items to continue.
                               </p>
-                              {summary?.reasons?.length ? (
+                              {failureReasons.length ? (
                                 <div className="mt-3 space-y-1">
-                                  {summary.reasons.map((reason: string, reasonIndex: number) => (
+                                  {failureReasons.map((reason: string, reasonIndex: number) => (
                                     <p key={`${group.sellerKey}-reason-${reasonIndex}`} className="text-[12px] leading-[1.5] text-[#991b1b]">
                                       {reason}
                                     </p>
@@ -2998,11 +3056,18 @@ export function CartCheckout() {
                         <p className="text-[16px] font-semibold text-[#202020]">{group.seller}</p>
                         <div className="text-right">
                           <p className="text-[12px] text-[#57636c]">{getSellerFulfillmentSummary(group.items)}</p>
-                          {hasSelectedDeliveryAddress && getSellerDeliverySummary(group.items, selectedLocation, pickupSelections) ? (
+                          {hasSelectedDeliveryAddress && (() => {
+                            const breakdownEntry = sellerDeliveryBreakdown.find(
+                              (entry) => String(entry?.seller_key || "").trim() === group.sellerKey,
+                            );
+                            const fallbackSummary = getSellerDeliverySummary(group.items, selectedLocation, pickupSelections);
+                            const summaryLabel = String(breakdownEntry?.label || fallbackSummary?.label || "").trim();
+                            return summaryLabel ? (
                             <p className="mt-1 text-[12px] font-semibold text-[#202020]">
-                              {getSellerDeliverySummary(group.items, selectedLocation, pickupSelections)?.label}
+                              {summaryLabel}
                             </p>
-                          ) : null}
+                            ) : null;
+                          })()}
                         </div>
                       </div>
                       {group.pickupAvailable ? (
@@ -3020,6 +3085,69 @@ export function CartCheckout() {
                           Collect these items from the seller instead
                         </label>
                       ) : null}
+                      {(() => {
+                        const breakdownEntry = sellerDeliveryBreakdown.find(
+                          (entry) => String(entry?.seller_key || "").trim() === group.sellerKey,
+                        );
+                        const courierQuotes = Array.isArray(breakdownEntry?.available_courier_quotes)
+                          ? breakdownEntry.available_courier_quotes
+                          : [];
+                        if (!courierQuotes.length || pickupSelections.includes(group.sellerKey)) return null;
+                        return (
+                          <div className="mt-3 rounded-[10px] border border-[#cbb26b]/30 bg-[rgba(203,178,107,0.08)] p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Courier options</p>
+                                <p className="mt-1 text-[12px] text-[#57636c]">Choose how Piessang should ship this seller&apos;s items to your address.</p>
+                              </div>
+                            </div>
+                            <div className="mt-3 space-y-2">
+                              {courierQuotes.map((quote) => {
+                                const quoteId = String(quote?.id || "").trim();
+                                if (!quoteId) return null;
+                                const selected = courierSelections[group.sellerKey] === quoteId;
+                                return (
+                                  <label
+                                    key={`${group.sellerKey}-${quoteId}`}
+                                    className={[
+                                      "flex cursor-pointer items-start justify-between gap-3 rounded-[10px] border px-3 py-3 transition-colors",
+                                      selected
+                                        ? "border-[#cbb26b] bg-white"
+                                        : "border-black/10 bg-white/80 hover:border-[#cbb26b]/60",
+                                    ].join(" ")}
+                                  >
+                                    <div className="flex min-w-0 items-start gap-3">
+                                      <input
+                                        type="radio"
+                                        name={`courier-option-${group.sellerKey}`}
+                                        checked={selected}
+                                        onChange={() =>
+                                          setCourierSelections((current) => ({
+                                            ...current,
+                                            [group.sellerKey]: quoteId,
+                                          }))
+                                        }
+                                        className="mt-1 h-4 w-4 border-black/20"
+                                      />
+                                      <div className="min-w-0">
+                                        <p className="text-[13px] font-semibold text-[#202020]">
+                                          {[String(quote?.carrier || "").trim(), String(quote?.service || "").trim()].filter(Boolean).join(" • ")}
+                                        </p>
+                                        <p className="mt-1 text-[11px] text-[#57636c]">
+                                          {quote?.leadTimeDays ? `${quote.leadTimeDays} day${Number(quote.leadTimeDays) === 1 ? "" : "s"} estimated` : "Live courier rate"}
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <div className="text-right">
+                                      <p className="text-[13px] font-semibold text-[#202020]">{formatMoney(Number(quote?.amountIncl || 0))}</p>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                     <div className="mt-3 space-y-3">
                       {group.items.map((item, index) => (

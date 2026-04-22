@@ -16,9 +16,15 @@ export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
     const cartOwnerId = resolveCartOwnerId(body);
+    const includeDelivery = body?.includeDelivery !== false && body?.lightweight !== true;
     const deliveryAddressInput = body?.deliveryAddress && typeof body.deliveryAddress === "object" ? body.deliveryAddress : null;
-    const deliveryAddress = deliveryAddressInput ? await enrichLocationWithGeocode(deliveryAddressInput) : null;
+    const deliveryAddress =
+      includeDelivery && deliveryAddressInput ? await enrichLocationWithGeocode(deliveryAddressInput) : null;
     const pickupSelections = Array.isArray(body?.pickupSelections) ? body.pickupSelections : [];
+    const courierSelections =
+      body?.courierSelections && typeof body.courierSelections === "object" && !Array.isArray(body.courierSelections)
+        ? body.courierSelections
+        : {};
     if (!cartOwnerId) return err(400, "Invalid Request", "cartOwnerId is required.");
 
     const origin = new URL(req.url).origin;
@@ -31,6 +37,8 @@ export async function POST(req) {
         userId: cartOwnerId,
         deliveryAddress,
         pickupSelections,
+        courierSelections,
+        includeDelivery,
       }),
     });
 
