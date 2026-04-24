@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { NextResponse } from "next/server";
 import { computeCatalogueMenuCounts } from "@/lib/catalogue/menu-counts";
+import { readShopperAreaFromSearchParams } from "@/lib/shipping/shopper-country";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -19,7 +20,7 @@ export async function GET(req){
 
     const { searchParams } = new URL(req.url);
     const isActive = toBool(searchParams.get("isActive"));
-    const shopperCountry = String(searchParams.get("country") || "").trim();
+    const shopperArea = readShopperAreaFromSearchParams(searchParams);
 
     const filters = [];
     if (isActive!==null) filters.push(["placement.isActive", "==", isActive]);
@@ -39,8 +40,8 @@ export async function GET(req){
       return ap - bp;
     });
     let localizedCounts = null;
-    if (shopperCountry) {
-      localizedCounts = (await computeCatalogueMenuCounts(db, shopperCountry)).categoryCounts;
+    if (shopperArea.country) {
+      localizedCounts = (await computeCatalogueMenuCounts(db, shopperArea)).categoryCounts;
     }
 
     const items = rows.map(d => ({

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
+import { cookies, headers } from "next/headers";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { LandingSection } from "@/lib/cms/landing-page-schema";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
@@ -20,6 +21,7 @@ import {
   type SharedLandingCategory,
   type SharedLandingProduct,
 } from "@/components/cms/shared-landing-section-content";
+import { appendShopperAreaSearchParams, normalizeShopperArea } from "@/lib/shipping/shopper-country";
 
 type ProductOption = ProductItem & {
   title: string;
@@ -34,6 +36,46 @@ type CategoryOption = {
   title: string;
   productCount: number;
 };
+
+function getBadgeIconKeyForType(badge: string, badgeSettings: any) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerIcon || null;
+  if (badge === "popular") return badgeSettings?.popularIcon || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowIcon || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarIcon || null;
+  return null;
+}
+
+function getBadgeIconUrlForType(badge: string, badgeSettings: any) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerIconUrl || null;
+  if (badge === "popular") return badgeSettings?.popularIconUrl || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowIconUrl || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarIconUrl || null;
+  return null;
+}
+
+function getBadgeColorKeyForType(badge: string, badgeSettings: any) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerColor || null;
+  if (badge === "popular") return badgeSettings?.popularColor || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowColor || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarColor || null;
+  return null;
+}
+
+function getBadgeBackgroundColorForType(badge: string, badgeSettings: any) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerBackgroundColor || null;
+  if (badge === "popular") return badgeSettings?.popularBackgroundColor || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowBackgroundColor || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarBackgroundColor || null;
+  return null;
+}
+
+function getBadgeForegroundColorForType(badge: string, badgeSettings: any) {
+  if (badge === "best_seller") return badgeSettings?.bestSellerForegroundColor || null;
+  if (badge === "popular") return badgeSettings?.popularForegroundColor || null;
+  if (badge === "trending_now") return badgeSettings?.trendingNowForegroundColor || null;
+  if (badge === "rising_star") return badgeSettings?.risingStarForegroundColor || null;
+  return null;
+}
 
 function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
@@ -55,6 +97,15 @@ function slugify(value: unknown) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function normalizeBadgeKey(label: unknown) {
+  const normalized = toStr(label).toLowerCase().replace(/\s+/g, "_");
+  if (normalized === "best_seller") return "best_seller";
+  if (normalized === "popular") return "popular";
+  if (normalized === "trending_now") return "trending_now";
+  if (normalized === "rising_star") return "rising_star";
+  return "";
 }
 
 function resolveCategoryIconKey(category: { slug?: string; title?: string }) {
@@ -234,13 +285,34 @@ function isNewArrival(firstPublishedAt: unknown, windowDays = 30) {
   return ageMs <= windowDays * 24 * 60 * 60 * 1000;
 }
 
-async function loadCatalogData() {
+function readServerShopperArea(cookieStore: Awaited<ReturnType<typeof cookies>>) {
+  const raw = cookieStore.get("piessang_shopper_delivery_area")?.value || "";
+  if (raw) {
+    try {
+      return normalizeShopperArea(JSON.parse(decodeURIComponent(raw)));
+    } catch {
+      // ignore malformed cookie payloads
+    }
+  }
+  return normalizeShopperArea({ country: cookieStore.get("piessang_shopper_country")?.value || "" });
+}
+
+async function loadCatalogData(origin: string, shopperArea: any) {
   const db = getAdminDb();
   if (!db) return { products: [] as ProductOption[], categories: [] as CategoryOption[] };
 
-  const [productsSnap, categoriesSnap, campaignsSnap] = await Promise.all([
-    db.collection("products_v2").where("placement.isActive", "==", true).limit(120).get(),
-    db.collection("categories").where("placement.isActive", "==", true).get(),
+  const productsUrl = new URL("/api/catalogue/v1/products/product/get", origin);
+  productsUrl.searchParams.set("isActive", "true");
+  productsUrl.searchParams.set("limit", "9999");
+  appendShopperAreaSearchParams(productsUrl.searchParams, shopperArea);
+
+  const categoriesUrl = new URL("/api/catalogue/v1/categories/list", origin);
+  categoriesUrl.searchParams.set("isActive", "true");
+  appendShopperAreaSearchParams(categoriesUrl.searchParams, shopperArea);
+
+  const [productsResponse, categoriesResponse, campaignsSnap] = await Promise.all([
+    fetch(productsUrl, { next: { revalidate: 300 } }).then((response) => response.json().catch(() => ({}))),
+    fetch(categoriesUrl, { next: { revalidate: 300 } }).then((response) => response.json().catch(() => ({}))),
     campaignsCollection(db).get().catch(() => null),
   ]);
 
@@ -257,47 +329,59 @@ async function loadCatalogData() {
       .filter(Boolean),
   );
 
-  const products = await Promise.all(
-    productsSnap.docs.map(async (docSnap) => {
-      const baseData = toPlainJsonValue(docSnap.data() || {});
-      const sellerOwner = await findSellerOwnerByIdentifier(getSellerIdentifier(baseData)).catch(() => null);
-      const hydratedData = applySellerDisplayData(baseData, sellerOwner);
-      const firstPublishedAt = getFirstPublishedAt(hydratedData);
-      const data = {
-        ...hydratedData,
-        is_new_arrival: isNewArrival(firstPublishedAt),
-        marketplace: {
-          ...(hydratedData?.marketplace && typeof hydratedData.marketplace === "object" ? hydratedData.marketplace : {}),
-          firstPublishedAt,
-        },
-      };
-      return {
-        id: docSnap.id,
-        data,
-        title: toStr(data?.product?.title, "Product"),
-        category: toStr(data?.grouping?.category),
-        categorySlug: slugify(data?.grouping?.categorySlug || data?.grouping?.category),
-        hasActiveCampaign: activeCampaignProductIds.has(docSnap.id),
-      };
-    }),
-  );
-
-  const categories = categoriesSnap.docs.map((docSnap) => {
-    const data = docSnap.data() || {};
-    const slug = toStr(data?.category?.slug || docSnap.id);
-    const productCount = products.reduce((count, product) => {
-      const productCategorySlug = slugify(
-        product?.data?.grouping?.categorySlug || product?.data?.grouping?.category || product?.data?.product?.grouping?.category,
-      );
-      return productCategorySlug === slug.toLowerCase() ? count + 1 : count;
-    }, 0);
+  const productItems = Array.isArray(productsResponse?.items) ? productsResponse.items : [];
+  const products = productItems.map((item: any) => {
+    const source = item?.data || item || {};
+    const hasCanonicalShape = !item?.data && typeof source?.title === "string";
+    const data = toPlainJsonValue(
+      hasCanonicalShape
+        ? {
+            product: {
+              unique_id: item?.id || source?.id || null,
+              title: source?.title || null,
+              brand: source?.brandLabel || null,
+              brandTitle: source?.brandLabel || null,
+              vendorName: source?.vendorLabel || null,
+            },
+            media: {
+              images: source?.image?.imageUrl
+                ? [{ imageUrl: source.image.imageUrl, blurHashUrl: source.image.blurHashUrl || null }]
+                : [],
+            },
+            grouping: {
+              category: source?.categorySlug || null,
+              categorySlug: source?.categorySlug || null,
+            },
+            is_new_arrival: source?.merchandising?.isNewArrival === true,
+            analytics: source?.badge
+              ? {
+                  badge: normalizeBadgeKey(source.badge.label),
+                  badgeLabel: source.badge.label || null,
+                  badgeIconKey: source.badge.iconKey || null,
+                  badgeIconUrl: source.badge.iconUrl || null,
+                  badgeBackgroundColor: source.badge.backgroundColor || null,
+                  badgeForegroundColor: source.badge.foregroundColor || null,
+                }
+              : {},
+          }
+        : source,
+    );
     return {
-      id: docSnap.id,
-      slug,
-      title: toStr(data?.category?.title, "Category"),
-      productCount,
+      id: toStr(item?.id || data?.docId || data?.product?.unique_id),
+      data,
+      title: toStr(data?.product?.title, "Product"),
+      category: toStr(data?.grouping?.category),
+      categorySlug: slugify(data?.grouping?.categorySlug || data?.grouping?.category),
+      hasActiveCampaign: activeCampaignProductIds.has(toStr(item?.id || data?.docId || data?.product?.unique_id)),
     };
   });
+
+  const categories = (Array.isArray(categoriesResponse?.items) ? categoriesResponse.items : []).map((item: any) => ({
+    id: toStr(item?.id || item?.slug),
+    slug: toStr(item?.slug),
+    title: toStr(item?.title, "Category"),
+    productCount: Number(item?.productCount ?? 0),
+  }));
 
   return { products, categories };
 }
@@ -353,9 +437,15 @@ function getDeferredSectionMinHeight(section: LandingSection) {
 }
 
 export async function LandingPageRenderer({ sections }: { sections: LandingSection[] }) {
-  const { products, categories } = await loadCatalogData();
+  const requestHeaders = await headers();
+  const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
+  const proto = requestHeaders.get("x-forwarded-proto") ?? "http";
+  const origin = `${proto}://${host}`;
+  const cookieStore = await cookies();
+  const shopperArea = readServerShopperArea(cookieStore);
+  const { products, categories } = await loadCatalogData(origin, shopperArea);
 
-  const blocks = sections.map((section, index) => {
+  const blocks = sections.map((section: LandingSection, index: number) => {
     let block: React.ReactNode = null;
 
     if (section.type === "hero_banner") {
@@ -533,9 +623,9 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       const randomize = toBool(section.props?.randomize);
       const selectedProducts =
         source === "manual"
-          ? products.filter((product) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
+          ? products.filter((product: ProductOption) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
           : source === "category_match"
-            ? products.filter((product) => {
+            ? products.filter((product: ProductOption) => {
                 if (!selectedCategorySlugs.length) return true;
                 return selectedCategorySlugs.includes(slugify(product.categorySlug || product.category));
               })
@@ -548,13 +638,15 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
           subtitle={toStr(section.props?.subtitle)}
           products={items}
           emptyMessage="No products available for this rail yet."
+          hideWhenEmpty
+          mobileLeadingSpacer={false}
         />
       );
     }
 
     if (!block && section.type === "featured_duo") {
       const selected = products
-        .filter((product) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
+        .filter((product: ProductOption) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
         .slice(0, 2);
       block = (
         <ProductRailCarousel
@@ -563,6 +655,8 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
           subtitle={toStr(section.props?.subtitle)}
           products={selected}
           emptyMessage="Select up to two products for this feature."
+          hideWhenEmpty
+          mobileLeadingSpacer={false}
         />
       );
     }
@@ -572,17 +666,17 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
         ? section.props.categorySlugs.map((slug: unknown) => toStr(slug)).filter(Boolean)
         : [];
       const selected = (selectedCategorySlugs.length
-        ? categories.filter((category) => selectedCategorySlugs.includes(category.slug))
+        ? categories.filter((category: CategoryOption) => selectedCategorySlugs.includes(category.slug))
         : categories
-      ).filter((category) => category.productCount > 0);
+      ).filter((category: CategoryOption) => category.productCount > 0);
       block = (
         <SectionShell key={section.id}>
           <div>
             <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Quick shop")}</p>
             <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
           </div>
-          <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
-            {selected.map((category) => (
+          <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
+            {selected.map((category: CategoryOption) => (
               <Link
                 key={category.id}
                 href={`/products?category=${encodeURIComponent(category.slug)}`}
@@ -599,7 +693,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
 
     if (!block && section.type === "category_rail") {
       const selected = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
-        ? categories.filter((category) => section.props.categorySlugs.includes(category.slug))
+        ? categories.filter((category: CategoryOption) => section.props.categorySlugs.includes(category.slug))
         : categories.slice(0, 8);
       block = (
         <SectionShell key={section.id}>
@@ -612,8 +706,8 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
               Browse categories
             </Link>
           </div>
-          <div className="mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] sm:mt-5 sm:gap-4 [&::-webkit-scrollbar]:hidden">
-            {selected.map((category, index) => (
+          <div className="mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 [scrollbar-width:none] sm:mt-5 sm:gap-4 [&::-webkit-scrollbar]:hidden">
+            {selected.map((category: CategoryOption, index: number) => (
               <Link
                 key={category.id}
                 href={`/products?category=${encodeURIComponent(category.slug)}`}
@@ -642,7 +736,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
             <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
           </div>
           <div className="mt-4 flex flex-wrap gap-3">
-            {brands.map((brand, index) => (
+            {brands.map((brand: string, index: number) => (
               <div key={`${section.id}-brand-${index}`} className="inline-flex min-h-11 items-center rounded-[8px] border border-black/8 bg-[#fbfbfb] px-4 text-[13px] font-semibold tracking-[0.02em] text-[#202020]">
                 {brand}
               </div>
@@ -654,7 +748,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
 
     if (!block && section.type === "category_mosaic") {
       const selected = Array.isArray(section.props?.categorySlugs) && section.props.categorySlugs.length
-        ? categories.filter((category) => section.props.categorySlugs.includes(category.slug)).slice(0, 5)
+        ? categories.filter((category: CategoryOption) => section.props.categorySlugs.includes(category.slug)).slice(0, 5)
         : categories.slice(0, 5);
       block = (
         <SectionShell key={section.id}>
@@ -667,7 +761,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
               <p className="mt-3 text-[14px] text-[#57636c]">Lead shoppers into the strongest category moment right now.</p>
             </Link>
             <div className="grid gap-4 sm:grid-cols-2">
-              {selected.slice(1).map((category) => (
+              {selected.slice(1).map((category: CategoryOption) => (
                 <Link key={category.id} href={`/products?category=${encodeURIComponent(category.slug)}`} className="rounded-[8px] border border-black/6 bg-[#fbfbfb] p-5">
                   <p className="text-[18px] font-semibold text-[#202020]">{category.title}</p>
                   <p className="mt-2 text-[13px] text-[#7a8594]">{category.slug}</p>
@@ -776,7 +870,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
             <div className="rounded-[8px] border border-black/6 bg-[#fbfbfb] p-5">
               <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Highlights</p>
               <div className="mt-4 space-y-3">
-                {points.length ? points.map((point, index) => (
+                {points.length ? points.map((point: string, index: number) => (
                   <div key={`${section.id}-point-${index}`} className="rounded-[8px] border border-black/6 bg-white px-4 py-3 text-[14px] font-medium text-[#202020]">
                     {point}
                   </div>

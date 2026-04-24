@@ -1726,6 +1726,7 @@ export function AuthProvider({
 
                   <form
                     className="mt-5 space-y-3"
+                    suppressHydrationWarning
                     onSubmit={(event) => {
                       event.preventDefault();
                       void handleSellerRegistration();
@@ -1802,6 +1803,10 @@ export function AuthProvider({
                         autoCorrect="off"
                         spellCheck={false}
                         inputMode="email"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        data-bwignore="true"
+                        data-protonpass-ignore="true"
                         value={sellerModal.contactEmail}
                         onChange={(event) =>
                           setSellerModal((current) => ({ ...current, contactEmail: sanitizeEmailInput(event.target.value) }))

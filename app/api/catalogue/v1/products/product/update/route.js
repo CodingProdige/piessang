@@ -13,7 +13,7 @@ import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
 import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
-import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
+import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping, shippingSettingsRequireWeight } from "@/lib/seller/shipping-weight-requirements";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
 import { ensureCatalogueTaxonomySeed } from "@/lib/marketplace/fees-store";
@@ -878,8 +878,14 @@ export async function POST(req){
       sellerOwner?.data?.seller?.deliveryProfile && typeof sellerOwner.data.seller.deliveryProfile === "object"
         ? sellerOwner.data.seller.deliveryProfile
         : {};
+    const sellerShippingSettings =
+      sellerOwner?.data?.seller?.shippingSettings && typeof sellerOwner.data.seller.shippingSettings === "object"
+        ? sellerOwner.data.seller.shippingSettings
+        : {};
     const sellerCourierProfile = normalizeSellerCourierProfile(sellerOwner?.data?.seller?.courierProfile || {});
-    if (toStr(nextFulfillmentMode).toLowerCase() === "seller" && sellerHasWeightBasedShipping(sellerDeliveryProfile) && (activatingProduct || submittingForReview)) {
+    const requiresWeightForShipping =
+      shippingSettingsRequireWeight(sellerShippingSettings) || sellerHasWeightBasedShipping(sellerDeliveryProfile);
+    if (toStr(nextFulfillmentMode).toLowerCase() === "seller" && requiresWeightForShipping && (activatingProduct || submittingForReview)) {
       const weightIssues = collectProductWeightRequirementIssues(next);
       if (weightIssues.includes("Variant weight")) {
         return err(

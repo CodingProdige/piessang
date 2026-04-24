@@ -644,7 +644,7 @@ export function LandingPageLivePreview({
                   <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Quick shop")}</p>
                   <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
                 </div>
-                <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
+                <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
                   {selectedCategories.map((category) => (
                     <div key={category.id} className="flex w-[84px] shrink-0 flex-col items-center text-center text-[13px] font-medium leading-[1.3] text-[#202020] sm:w-[96px]">
                       <CategoryChipVisual section={section} category={category} />
@@ -680,7 +680,7 @@ export function LandingPageLivePreview({
                   Browse categories
                 </Link>
               </div>
-              <div className="mt-5 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="mt-5 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {selected.map((category, index) => (
                   <Link
                     key={category.id}

@@ -14,6 +14,9 @@ import {
 } from "@/lib/currency/display-currency";
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
 
+const DISPLAY_CURRENCY_MANUAL_OVERRIDE_KEY = "piessang-display-currency-manual-override";
+const SHOPPER_AREA_EVENT = "piessang-shopper-delivery-area-change";
+
 type DisplayCurrencyContextValue = {
   currency: SupportedDisplayCurrencyCode;
   rates: Record<string, number> | null;
@@ -28,17 +31,45 @@ export function DisplayCurrencyProvider({ children }: { children: React.ReactNod
   const [currency, setCurrencyState] = useState<SupportedDisplayCurrencyCode>(BASE_CURRENCY);
   const [rates, setRates] = useState<Record<string, number> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasMounted, setHasMounted] = useState(false);
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(DISPLAY_CURRENCY_STORAGE_KEY);
-    if (stored && isSupportedDisplayCurrency(stored)) {
-      setCurrencyState(stored);
-      return;
+
+    function resolveSuggestedCurrency() {
+      const shopperArea = readShopperDeliveryArea();
+      const suggested = suggestDisplayCurrencyFromCountry(String(shopperArea?.country || ""));
+      return isSupportedDisplayCurrency(suggested) ? suggested : BASE_CURRENCY;
     }
-    const shopperArea = readShopperDeliveryArea();
-    const suggested = suggestDisplayCurrencyFromCountry(String(shopperArea?.country || ""));
-    setCurrencyState(isSupportedDisplayCurrency(suggested) ? suggested : BASE_CURRENCY);
+
+    function applyAutoCurrencyIfAllowed() {
+      const manualOverride = window.localStorage.getItem(DISPLAY_CURRENCY_MANUAL_OVERRIDE_KEY) === "true";
+      if (manualOverride) return;
+      setCurrencyState(resolveSuggestedCurrency());
+    }
+
+    const stored = window.localStorage.getItem(DISPLAY_CURRENCY_STORAGE_KEY);
+    const manualOverride = window.localStorage.getItem(DISPLAY_CURRENCY_MANUAL_OVERRIDE_KEY) === "true";
+    if (stored && isSupportedDisplayCurrency(stored) && manualOverride) {
+      setCurrencyState(stored);
+    } else {
+      applyAutoCurrencyIfAllowed();
+    }
+
+    const handleShopperAreaChange = () => {
+      applyAutoCurrencyIfAllowed();
+    };
+
+    window.addEventListener(SHOPPER_AREA_EVENT, handleShopperAreaChange as EventListener);
+    window.addEventListener("storage", handleShopperAreaChange);
+    return () => {
+      window.removeEventListener(SHOPPER_AREA_EVENT, handleShopperAreaChange as EventListener);
+      window.removeEventListener("storage", handleShopperAreaChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -69,21 +100,24 @@ export function DisplayCurrencyProvider({ children }: { children: React.ReactNod
     };
   }, []);
 
+  const resolvedCurrency = hasMounted ? currency : BASE_CURRENCY;
+
   const value = useMemo<DisplayCurrencyContextValue>(
     () => ({
-      currency,
+      currency: resolvedCurrency,
       rates,
       loading,
       setCurrency: (next) => {
         setCurrencyState(next);
         if (typeof window !== "undefined") {
           window.localStorage.setItem(DISPLAY_CURRENCY_STORAGE_KEY, next);
+          window.localStorage.setItem(DISPLAY_CURRENCY_MANUAL_OVERRIDE_KEY, "true");
           window.dispatchEvent(new CustomEvent("piessang:display-currency-changed", { detail: { currency: next } }));
         }
       },
-      formatMoney: (amountZar) => formatDisplayMoney(amountZar, currency, rates),
+      formatMoney: (amountZar) => formatDisplayMoney(amountZar, resolvedCurrency, rates),
     }),
-    [currency, loading, rates],
+    [loading, rates, resolvedCurrency],
   );
 
   return <DisplayCurrencyContext.Provider value={value}>{children}</DisplayCurrencyContext.Provider>;

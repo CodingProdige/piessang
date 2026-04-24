@@ -12,7 +12,6 @@ import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders
 import { sendTrackingUpdateNotifications } from "@/lib/orders/tracking-notifications";
 import { processStripeOrderRefund } from "@/lib/payments/stripe-refunds";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
-import { easyshipRateAdapter } from "@/lib/shipping/adapters/easyship";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
@@ -139,62 +138,7 @@ function buildPlatformShipmentBreakdownPatch({ sellerDeliveryEntry = null, platf
 }
 
 async function createPlatformCourierShipment({ order, sellerCode, sellerSlug, sellerDeliveryEntry, sellerItems }) {
-  const existingShipmentId = toStr(
-    sellerDeliveryEntry?.easyship_shipment_id ||
-    sellerDeliveryEntry?.shipment_id ||
-    sellerDeliveryEntry?.shipmentId,
-  );
-  if (existingShipmentId) {
-    return {
-      skipped: true,
-      shipmentId: existingShipmentId,
-      trackingNumber: toStr(sellerDeliveryEntry?.tracking_number || sellerDeliveryEntry?.courier_tracking_number || "") || null,
-      trackingUrl: toStr(sellerDeliveryEntry?.tracking_url || sellerDeliveryEntry?.courier_tracking_url || "") || null,
-      labelUrl: toStr(sellerDeliveryEntry?.label_url || "") || null,
-      status: toStr(sellerDeliveryEntry?.shipment_status || "created"),
-      metadata: sellerDeliveryEntry?.shipment_metadata && typeof sellerDeliveryEntry.shipment_metadata === "object" ? sellerDeliveryEntry.shipment_metadata : {},
-    };
-  }
-
-  const ownerDoc =
-    (sellerCode ? await findSellerOwnerByCode(sellerCode) : null) ??
-    (sellerSlug ? await findSellerOwnerBySlug(sellerSlug) : null);
-  const seller = ownerDoc?.data?.seller && typeof ownerDoc.data.seller === "object" ? ownerDoc.data.seller : {};
-  const origin = seller?.deliveryProfile?.origin && typeof seller.deliveryProfile.origin === "object" ? seller.deliveryProfile.origin : null;
-  if (!origin?.country) {
-    throw new Error("Seller shipping origin is missing, so Piessang cannot create the courier shipment yet.");
-  }
-
-  const destination = getOrderDeliveryAddress(order);
-  if (!destination.country) {
-    throw new Error("Customer delivery address is incomplete, so Piessang cannot create the courier shipment yet.");
-  }
-
-  const parcels = sellerItems.flatMap((item) => collectLineShipmentParcels(item));
-  const items = sellerItems.flatMap((item) => collectLineQuoteItems(item));
-  const availableQuotes = Array.isArray(sellerDeliveryEntry?.available_courier_quotes) ? sellerDeliveryEntry.available_courier_quotes : [];
-  const selectedQuoteId = toStr(sellerDeliveryEntry?.selected_courier_quote_id || "");
-  const selectedQuote = availableQuotes.find((quote) => toStr(quote?.id) === selectedQuoteId) || null;
-
-  return easyshipRateAdapter.createShipment({
-    sellerId: sellerCode || sellerSlug,
-    orderId: toStr(order?.order?.orderNumber || order?.order?.id || ""),
-    origin,
-    destination,
-    parcels,
-    serviceCode: selectedQuoteId || null,
-    metadata: {
-      items,
-      sellerCode,
-      sellerSlug,
-      orderNumber: toStr(order?.order?.orderNumber || ""),
-      companyName: toStr(seller?.vendorName || seller?.groupVendorName || seller?.companyName || "Piessang seller"),
-      recipientName: toStr(destination.recipientName || ""),
-      handoverMode: toStr(sellerDeliveryEntry?.courier_handover_mode || "pickup"),
-      courierName: toStr(selectedQuote?.carrier || sellerDeliveryEntry?.courier_carrier || ""),
-      serviceName: toStr(selectedQuote?.service || sellerDeliveryEntry?.courier_service || ""),
-    },
-  });
+  return null;
 }
 
 function getCustomerEmail(order) {
@@ -382,23 +326,9 @@ export async function POST(req) {
       return err(409, "Tracking Managed By Piessang", "This shipping method is tracked by Piessang, so sellers cannot add courier details manually.");
     }
 
-    let platformShipment = null;
-    let platformShipmentFailure = null;
-    if (status === "dispatched" && (trackingOwner === "platform" || trackingOwner === "piessang")) {
-      try {
-        platformShipment = await createPlatformCourierShipment({
-          order,
-          sellerCode,
-          sellerSlug,
-          sellerDeliveryEntry,
-          sellerItems: sellerSourceItems,
-        });
-      } catch (shipmentError) {
-        platformShipmentFailure = shipmentError instanceof Error ? shipmentError : new Error("Piessang could not create the courier shipment yet.");
-      }
-    }
-
-    const effectiveStatus = platformShipmentFailure ? currentSellerStatus : status;
+    const platformShipment = null;
+    const platformShipmentFailure = null;
+    const effectiveStatus = status;
     const nextItems = sourceItems.map((item) => {
       const lineSeller = getLineSellerIdentity(item);
       const matchesSeller =

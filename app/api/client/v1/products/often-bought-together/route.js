@@ -256,37 +256,6 @@ export async function GET(req) {
       return ok({ count: items.length, items, source: "co_purchase" });
     }
 
-    const sourceKeywords = buildSourceKeywords(source);
-    const pairingTerms = getPairingSeedTerms(source);
-    if (pairingTerms.length > 0) {
-      const fallbackSnap = await db.collection("products_v2").where("placement.isActive", "==", true).limit(120).get();
-      const fallbackItems = fallbackSnap.docs
-        .map((docSnap) => ({
-          id: docSnap.id,
-          data: getPublicMarketplaceSource(normalizeTimestamps(docSnap.data() || {})),
-        }))
-        .map((entry) => ({
-          ...entry,
-          pairingScore: scoreFallbackCandidate(source, entry.data, sourceKeywords, pairingTerms),
-        }))
-        .filter((entry) => Number.isFinite(entry.pairingScore) && entry.pairingScore >= 6)
-        .sort((a, b) => b.pairingScore - a.pairingScore)
-        .slice(0, 8)
-        .map((entry) => ({
-          id: entry.id,
-          data: entry.data,
-          pairingScore: entry.pairingScore,
-        }));
-
-      for (const item of fallbackItems) {
-        item.data = await hydrateProductSellerData(db, item.data);
-      }
-
-      if (fallbackItems.length > 0) {
-        return ok({ count: fallbackItems.length, items: fallbackItems, source: "catalog_pairing" });
-      }
-    }
-
     return ok({ count: 0, items: [], source: "none", message: "No current product combinations for this item yet." });
   } catch (e) {
     console.error("often bought together failed:", e);

@@ -33,6 +33,19 @@ function formatReason(kind) {
   return "platform_delivery_unavailable";
 }
 
+function buildDebugPayload(resolved, shopperArea, parcels, quoteItems) {
+  return {
+    kind: resolved?.kind || null,
+    label: resolved?.label || null,
+    shopperArea,
+    parcels,
+    quoteItems,
+    unavailableReasons: Array.isArray(resolved?.unavailableReasons) ? resolved.unavailableReasons : [],
+    metadata: resolved?.metadata || null,
+    matchedRule: resolved?.matchedRule || null,
+  };
+}
+
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -69,6 +82,7 @@ export async function POST(req) {
         supported: false,
         canPlaceOrder: false,
         reasonCode: "OUTSIDE_SERVICE_AREA",
+        debug: buildDebugPayload(resolved, shopperArea, parcels, quoteItems),
       });
     }
 
@@ -88,6 +102,7 @@ export async function POST(req) {
       distanceKm: resolved?.distanceKm ?? null,
       shipmentSummary: resolved?.shipmentSummary || null,
       metadata: resolved?.metadata || null,
+      debug: buildDebugPayload(resolved, shopperArea, parcels, quoteItems),
     });
   } catch (e) {
     return err(500, "Delivery Fee Error", e?.message || "Unexpected error.");

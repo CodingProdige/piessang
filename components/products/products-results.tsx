@@ -17,10 +17,11 @@ import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement, useProductImpressionTracker } from "@/lib/analytics/product-engagement-client";
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
 import { getCartQuantityGuard, getVariantAvailableQuantity } from "@/lib/cart/interaction-guards";
+import { resolveRawItemShippingEligibility } from "@/lib/catalogue/shipping-eligibility-adapters";
 import { formatCurrency } from "@/lib/seller/delivery-profile";
-import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
-import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
+import { appendShopperAreaSearchParams, isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
 import { getBadgeColorStyle } from "@/lib/analytics/product-engagement-badge-colors";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 
 export const PRODUCT_CARD_LIST_IMAGE_SIZES = "(max-width: 640px) calc(100vw - 2rem), 180px";
 export const PRODUCT_CARD_GRID_IMAGE_SIZES = "(max-width: 640px) 72vw, (max-width: 1024px) 40vw, 280px";
@@ -228,6 +229,12 @@ export type ProductItem = {
   };
 };
 
+type ListingProductItem = ProductItem | ShopperVisibleProductCard;
+
+function isResolvedProductCard(item: ListingProductItem | null | undefined): item is ShopperVisibleProductCard {
+  return Boolean(item && typeof item === "object" && "shipping" in item && "price" in item && !("data" in item));
+}
+
 const ATTRIBUTE_FILTER_KEYS = [
   "size",
   "color",
@@ -257,7 +264,8 @@ function normalizeAttributeValue(value: unknown) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-function itemMatchesAttributeFilter(item: ProductItem, key: AttributeFilterKey, expectedValue: string) {
+function itemMatchesAttributeFilter(item: ListingProductItem, key: AttributeFilterKey, expectedValue: string) {
+  if (isResolvedProductCard(item)) return true;
   const normalizedExpected = normalizeAttributeValue(expectedValue);
   if (!normalizedExpected) return true;
   const variants = Array.isArray(item.data?.variants) ? item.data.variants : [];
@@ -293,7 +301,7 @@ type CartPreview = {
   };
 };
 
-type SearchParamValue = string | string[] | undefined;
+export type SearchParamValue = string | string[] | undefined;
 
 const VAT_MULTIPLIER = 1.15;
 const VAT_DIVISOR = 1.15;
@@ -413,7 +421,7 @@ function buildHref(
   return query ? `${pathname}?${query}` : pathname;
 }
 
-function buildProductsApiUrl(searchParams: URLSearchParams) {
+function buildProductsApiUrl(searchParams: URLSearchParams, shopperArea?: ShopperDeliveryArea | null) {
   const params = new URLSearchParams();
 
   for (const [key, value] of searchParams.entries()) {
@@ -431,6 +439,8 @@ function buildProductsApiUrl(searchParams: URLSearchParams) {
   if (!params.has("isActive")) {
     params.set("isActive", "true");
   }
+
+  appendShopperAreaSearchParams(params, shopperArea);
 
   return `/api/catalogue/v1/products/product/get?${params.toString()}`;
 }
@@ -557,14 +567,18 @@ function getCompareAtVariantPriceExVat(variant?: ProductVariant) {
   return Math.max(...prices);
 }
 
-function getImageCount(item: ProductItem) {
+function getImageCount(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return item.image.imageCount;
   const productImages = item.data?.media?.images ?? [];
   const variantImages =
     item.data?.variants?.flatMap((variant) => variant.media?.images ?? []).filter((image) => Boolean(image?.imageUrl)) ?? [];
   return productImages.filter((image) => Boolean(image?.imageUrl)).length + variantImages.length;
 }
 
-function getDisplayImages(item: ProductItem) {
+function getDisplayImages(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) {
+    return item.image.imageUrl ? [{ imageUrl: item.image.imageUrl, blurHashUrl: item.image.blurHashUrl }] : [];
+  }
   const productImages = (item.data?.media?.images ?? []).filter((image) => Boolean(image?.imageUrl));
   if (productImages.length) return productImages;
 
@@ -575,33 +589,9 @@ function getDisplayImages(item: ProductItem) {
   return (defaultVariant?.media?.images ?? []).filter((image) => Boolean(image?.imageUrl));
 }
 
-export function hasShopperFacingProductImage(item: ProductItem | null | undefined) {
+export function hasShopperFacingProductImage(item: ListingProductItem | null | undefined) {
   if (!item) return false;
   return getDisplayImages(item).length > 0;
-}
-
-function getDeliveryPromise(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
-  return getShopperFacingDeliveryPromise({
-    fulfillmentMode: item.data?.fulfillment?.mode,
-    profile: item.data?.seller?.deliveryProfile,
-    sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea,
-    variant,
-  });
-}
-
-function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
-  return getShopperFacingDeliveryMessage({
-    fulfillmentMode: item.data?.fulfillment?.mode,
-    profile: item.data?.seller?.deliveryProfile,
-    courierProfile: (item.data?.seller as any)?.courierProfile,
-    productShipping: (item.data?.product as any)?.shipping,
-    sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea,
-    variant,
-    platformLabel: "Piessang shipping available",
-    missingProfileLabel: shopperArea ? "Delivery availability confirmed at checkout" : "Set your shipping location",
-  });
 }
 
 function getVariantCardMeta(variant?: ProductVariant | null) {
@@ -799,7 +789,8 @@ function StarIcon({ filled = false }: { filled?: boolean }) {
   );
 }
 
-function getSalePercent(item: ProductItem) {
+function getSalePercent(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return item.price.salePercent;
   const variant = pickDisplayVariant(item.data?.variants) ?? undefined;
   const salePrice = getVariantPriceExVat(variant);
   const compareAtPrice = getCompareAtVariantPriceExVat(variant);
@@ -827,7 +818,8 @@ function pickDisplayVariant(variants?: ProductVariant[]) {
   );
 }
 
-function getBrandLabel(item: ProductItem) {
+function getBrandLabel(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return item.brandLabel ?? "Piessang";
   return resolveBrandLabel(item.data);
 }
 
@@ -841,15 +833,21 @@ function normalizeSlug(value?: string | null) {
     .replace(/^-+|-+$/g, "");
 }
 
-function getBrandSlug(item: ProductItem) {
+function getBrandSlug(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return item.brandHref?.split("brand=")[1] || normalizeSlug(item.brandLabel) || "";
   return resolveBrandKey(item.data);
 }
 
-function getVendorLabel(item: ProductItem) {
+function getVendorLabel(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return item.vendorLabel ?? "Piessang";
   return item.data?.vendor?.title ?? item.data?.product?.vendorName ?? item.data?.shopify?.vendorName ?? "Piessang";
 }
 
-function getVendorSlug(item: ProductItem) {
+function getVendorSlug(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) {
+    const href = item.vendorHref || "";
+    return href.split("/vendors/")[1] || normalizeSlug(item.vendorLabel) || "piessang";
+  }
   return (
     item.data?.product?.sellerCode ??
     item.data?.seller?.sellerCode ??
@@ -859,16 +857,32 @@ function getVendorSlug(item: ProductItem) {
   ) || "piessang";
 }
 
-function getVariantCount(item: ProductItem) {
+function getVariantCount(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return 1;
   return item.data?.variants?.length ?? 0;
 }
 
-function getSelectedVariantLabel(item: ProductItem) {
+function getSelectedVariantLabel(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return item.subtitle;
   const variant = pickDisplayVariant(item.data?.variants) ?? undefined;
   return variant?.label?.trim() || null;
 }
 
-function getStockState(variant?: ProductVariant, item?: ProductItem) {
+function getStockState(variant?: ProductVariant, item?: ListingProductItem) {
+  if (item && isResolvedProductCard(item)) {
+    return {
+      label: item.stock.label,
+      tone:
+        item.stock.state === "in_stock"
+          ? ("success" as const)
+          : item.stock.state === "low_stock"
+            ? ("warning" as const)
+            : item.stock.state === "out_of_stock"
+              ? ("danger" as const)
+              : ("neutral" as const),
+      hideQuantity: item.stock.state === "in_stock",
+    };
+  }
   if (item?.data?.placement?.supplier_out_of_stock) {
     return { label: "Supplier out of stock", tone: "neutral" as const, hideQuantity: true };
   }
@@ -901,12 +915,21 @@ function getStockState(variant?: ProductVariant, item?: ProductItem) {
   return { label: "Stock unknown", tone: "neutral" as const, hideQuantity: false };
 }
 
-function isPreLovedProduct(item: ProductItem) {
+function isPreLovedProduct(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return item.merchandising.isPreLoved;
   const category = String(item.data?.grouping?.category || "").trim().toLowerCase();
   return category === "pre-loved" || category === "preloved";
 }
 
-function getReviewState(item: ProductItem) {
+function getReviewState(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) {
+    const average = item.review.average;
+    const count = item.review.count;
+    if (typeof average === "number" && typeof count === "number") {
+      return `${average.toFixed(1)} (${count} reviews)`;
+    }
+    return null;
+  }
   const average = item.data?.ratings?.average;
   const count = item.data?.ratings?.count;
   if (typeof average === "number" && typeof count === "number") {
@@ -915,11 +938,18 @@ function getReviewState(item: ProductItem) {
   return null;
 }
 
-function getRatingAverage(item: ProductItem) {
+function getRatingAverage(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return typeof item.review.average === "number" ? item.review.average : null;
   return typeof item.data?.ratings?.average === "number" ? item.data.ratings.average : null;
 }
 
-function getReviewMeta(item: ProductItem) {
+function getReviewMeta(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) {
+    if (typeof item.review.average === "number" && typeof item.review.count === "number") {
+      return { average: item.review.average, count: item.review.count };
+    }
+    return null;
+  }
   const average = getRatingAverage(item);
   const count = item.data?.ratings?.count;
   if (typeof average === "number" && typeof count === "number") {
@@ -928,17 +958,20 @@ function getReviewMeta(item: ProductItem) {
   return null;
 }
 
-function getSortPrice(item: ProductItem) {
+function getSortPrice(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) {
+    return typeof item.price.amountIncl === "number" ? item.price.amountIncl / VAT_DIVISOR : Number.POSITIVE_INFINITY;
+  }
   const variant = pickDisplayVariant(item.data?.variants) ?? undefined;
   return getVariantPriceExVat(variant) ?? Number.POSITIVE_INFINITY;
 }
 
-function getDisplayPrice(item: ProductItem) {
+function getDisplayPrice(item: ListingProductItem) {
   const price = getSortPrice(item);
   return Number.isFinite(price) ? price * VAT_MULTIPLIER : Number.POSITIVE_INFINITY;
 }
 
-function filterByPriceRange(items: ProductItem[], minPrice?: number, maxPrice?: number) {
+function filterByPriceRange(items: ListingProductItem[], minPrice?: number, maxPrice?: number) {
   const hasMin = Number.isFinite(minPrice);
   const hasMax = Number.isFinite(maxPrice);
   if (!hasMin && !hasMax) {
@@ -954,7 +987,7 @@ function filterByPriceRange(items: ProductItem[], minPrice?: number, maxPrice?: 
   });
 }
 
-function filterByMinRating(items: ProductItem[], minRating?: number) {
+function filterByMinRating(items: ListingProductItem[], minRating?: number) {
   if (!Number.isFinite(minRating)) {
     return items;
   }
@@ -962,7 +995,7 @@ function filterByMinRating(items: ProductItem[], minRating?: number) {
   return items.filter((item) => (getRatingAverage(item) ?? 0) >= (minRating as number));
 }
 
-function sortProducts(items: ProductItem[], sort: string) {
+function sortProducts(items: ListingProductItem[], sort: string) {
   const copy = [...items];
   switch (sort) {
     case "price-asc":
@@ -971,30 +1004,346 @@ function sortProducts(items: ProductItem[], sort: string) {
       return copy.sort((a, b) => getDisplayPrice(b) - getDisplayPrice(a));
     case "name-asc":
       return copy.sort((a, b) =>
-        (a.data?.product?.title ?? "").localeCompare(b.data?.product?.title ?? "", "en", {
+        (isResolvedProductCard(a) ? a.title : a.data?.product?.title ?? "").localeCompare(
+          isResolvedProductCard(b) ? b.title : b.data?.product?.title ?? "",
+          "en",
+          {
           sensitivity: "base",
-        }),
+          },
+        ),
       );
     case "name-desc":
       return copy.sort((a, b) =>
-        (b.data?.product?.title ?? "").localeCompare(a.data?.product?.title ?? "", "en", {
+        (isResolvedProductCard(b) ? b.title : b.data?.product?.title ?? "").localeCompare(
+          isResolvedProductCard(a) ? a.title : a.data?.product?.title ?? "",
+          "en",
+          {
           sensitivity: "base",
-        }),
+          },
+        ),
       );
     default:
       return copy;
   }
 }
 
-function getProductHref(item: ProductItem) {
-  const uniqueId = item.id ?? item.data?.docId ?? item.data?.product?.unique_id;
-  const slug =
-    item.data?.product?.title
-      ?.toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "") || "product";
+function getProductHref(item: ListingProductItem) {
+  const uniqueId = getListingItemId(item);
+  const slug = isResolvedProductCard(item)
+    ? item.slug || "product"
+    : item.data?.product?.title
+        ?.toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "") || "product";
   return uniqueId ? `/products/${slug}?unique_id=${encodeURIComponent(String(uniqueId))}` : "/products";
+}
+
+function getListingItemId(item: ListingProductItem): string {
+  if (isResolvedProductCard(item)) return String(item.id || "").trim();
+  return String(item.id ?? item.data?.docId ?? item.data?.product?.unique_id ?? "").trim();
+}
+
+function ResolvedShopperProductCard({
+  item,
+  view,
+  openInNewTab,
+  brandHref,
+  vendorHref,
+  brandLabel,
+  vendorLabel,
+  currentUrl,
+  onAddToCartSuccess,
+  cartBurstKey,
+}: {
+  item: ShopperVisibleProductCard;
+  view: "grid" | "list";
+  openInNewTab: boolean;
+  brandHref?: string;
+  vendorHref?: string;
+  brandLabel?: string;
+  vendorLabel?: string;
+  currentUrl?: string;
+  onAddToCartSuccess?: (cart: CartPreview | null) => void;
+  cartBurstKey?: number;
+}) {
+  const router = useRouter();
+  const { formatMoney } = useDisplayCurrency();
+  const {
+    isAuthenticated,
+    uid,
+    cartOwnerId,
+    openAuthModal,
+    refreshProfile,
+    refreshCart,
+    optimisticAddToCart,
+    cartProductCounts,
+    favoriteIds,
+  } = useAuth();
+  const [isFavorite, setIsFavorite] = useState(Boolean(favoriteIds?.includes(item.id)));
+  const [favoriteBusy, setFavoriteBusy] = useState(false);
+  const [cartBusy, setCartBusy] = useState(false);
+  const [cartJustAdded, setCartJustAdded] = useState(false);
+  const [cartBlockedNotice, setCartBlockedNotice] = useState<string | null>(null);
+  const titleText = item.title || "Untitled product";
+  const href = getProductHref(item);
+  const resolvedBrandLabel = brandLabel || item.brandLabel || "Piessang";
+  const resolvedVendorLabel = vendorLabel || item.vendorLabel || "Piessang";
+  const resolvedBrandHref = brandHref || item.brandHref || "#";
+  const resolvedVendorHref = vendorHref || item.vendorHref || "#";
+  const resolvedCurrentUrl = currentUrl || href;
+  const renderBrandLink = resolvedBrandHref !== resolvedCurrentUrl && resolvedBrandHref !== "#";
+  const renderVendorLink = resolvedVendorHref !== resolvedCurrentUrl && resolvedVendorHref !== "#";
+  const linkTarget = openInNewTab ? "_blank" : undefined;
+  const linkRel = openInNewTab ? "noreferrer noopener" : undefined;
+  const priceText =
+    typeof item.price.amountIncl === "number" ? formatMoney(item.price.amountIncl) : null;
+  const compareAtText =
+    item.price.onSale && typeof item.price.compareAtIncl === "number" ? formatMoney(item.price.compareAtIncl) : null;
+  const stockTone =
+    item.stock.state === "in_stock"
+      ? "success"
+      : item.stock.state === "low_stock"
+        ? "warning"
+        : item.stock.state === "out_of_stock"
+          ? "danger"
+          : "neutral";
+  const deliveryTone = item.shipping.deliveryTone;
+  const canAddToCart = item.shipping.isPurchasable && item.stock.state !== "out_of_stock" && !cartBusy;
+  const cartCount = cartProductCounts[item.id] ?? 0;
+
+  useEffect(() => {
+    setIsFavorite(Boolean(favoriteIds?.includes(item.id)));
+  }, [favoriteIds, item.id]);
+
+  useEffect(() => {
+    if (!cartJustAdded) return undefined;
+    const timeout = window.setTimeout(() => setCartJustAdded(false), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [cartJustAdded]);
+
+  useEffect(() => {
+    if (!cartBlockedNotice) return undefined;
+    const timeout = window.setTimeout(() => setCartBlockedNotice(null), 2200);
+    return () => window.clearTimeout(timeout);
+  }, [cartBlockedNotice]);
+
+  const openProduct = () => {
+    if (openInNewTab) {
+      window.open(href, "_blank", "noreferrer,noopener");
+      return;
+    }
+    router.push(href, { scroll: true });
+  };
+
+  const handleFavoriteToggle = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!isAuthenticated || !uid) {
+      openAuthModal("Sign in to save favourites.");
+      return;
+    }
+    if (favoriteBusy) return;
+    setFavoriteBusy(true);
+    try {
+      const response = await fetch("/api/client/v1/accounts/favorites/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid, unique_id: item.id }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) throw new Error("Unable to update favourites.");
+      setIsFavorite(typeof payload?.isFavorite === "boolean" ? payload.isFavorite : !isFavorite);
+      void refreshProfile();
+    } catch {
+      openAuthModal("We could not update your favourites right now.");
+    } finally {
+      setFavoriteBusy(false);
+    }
+  };
+
+  const handleAddToCart = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    if (!activeCartOwnerId) return;
+    if (!canAddToCart) {
+      setCartBlockedNotice(item.shipping.isPurchasable ? "This item cannot be added right now." : item.shipping.deliveryMessage);
+      return;
+    }
+    setCartBusy(true);
+    try {
+      const hydrate = await fetch(`/api/catalogue/v1/products/product/get?id=${encodeURIComponent(item.id)}`);
+      const hydrated = await hydrate.json().catch(() => ({}));
+      const productSnapshot = hydrated?.data;
+      const variants = Array.isArray(productSnapshot?.variants) ? productSnapshot.variants : [];
+      const defaultVariant =
+        variants.find((variant: any) => variant?.placement?.is_default === true) ||
+        variants.find((variant: any) => String(variant?.variant_id || "").trim()) ||
+        variants[0] ||
+        null;
+      const variantId = String(defaultVariant?.variant_id || "").trim();
+      if (!hydrate.ok || !productSnapshot || !variantId) {
+        throw new Error("Please open the product to choose a variant first.");
+      }
+      optimisticAddToCart(item.id, variantId, 1);
+      const response = await fetch("/api/client/v1/carts/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cartOwnerId: activeCartOwnerId,
+          product: productSnapshot,
+          variant_id: variantId,
+          mode: cartCount > 0 ? "increment" : "add",
+          qty: 1,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) throw new Error(payload?.message || "Unable to update cart.");
+      setCartJustAdded(true);
+      onAddToCartSuccess?.((payload?.data?.cart ?? null) as CartPreview | null);
+    } catch (error) {
+      setCartBlockedNotice(error instanceof Error ? error.message : "Unable to update cart.");
+      void refreshCart();
+    } finally {
+      setCartBusy(false);
+    }
+  };
+
+  const imageBadges = (
+    <>
+      {item.image.imageCount > 0 ? (
+        <span className="absolute bottom-2 left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-white/92 px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#4a4545] shadow-[0_4px_12px_rgba(20,24,27,0.12)]">
+          <CameraIcon />
+          <span>{item.image.imageCount}</span>
+        </span>
+      ) : null}
+      <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-4rem)] flex-col gap-2">
+        {item.merchandising.isPreLoved ? (
+          <span className="inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">Pre-Loved</span>
+        ) : null}
+        {item.merchandising.isNewArrival ? (
+          <span className="inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
+            <SparkIcon />
+            New
+          </span>
+        ) : null}
+        {item.badge?.label ? (
+          <span className="inline-flex h-6 items-center gap-1 rounded-full px-2 text-[9px] font-semibold uppercase tracking-[0.08em] shadow-[0_4px_12px_rgba(20,24,27,0.14)]" style={getBadgeColorStyle({
+            presetKey: "",
+            backgroundColor: item.badge.backgroundColor || "",
+            foregroundColor: item.badge.foregroundColor || "",
+            fallbackPreset: "amber",
+          })}>
+            <ProductBadgeIcon iconKey={item.badge.iconKey} iconUrl={item.badge.iconUrl} />
+            {item.badge.label}
+          </span>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        data-ignore-card-open="true"
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={handleFavoriteToggle}
+        disabled={favoriteBusy}
+        className={
+          isFavorite
+            ? "absolute right-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#f66b77] shadow-[0_4px_12px_rgba(20,24,27,0.12)]"
+            : "absolute right-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/92 shadow-[0_4px_12px_rgba(20,24,27,0.12)]"
+        }
+      >
+        <HeartIcon filled={isFavorite} />
+      </button>
+    </>
+  );
+
+  const article = (
+    <article
+      role="link"
+      tabIndex={0}
+      onClick={openProduct}
+      className={
+        view === "list"
+          ? "overflow-hidden rounded-[8px] bg-white shadow-[0_2px_2px_rgba(20,24,27,0.04),0_6px_16px_rgba(20,24,27,0.028)] transition-shadow duration-200 hover:shadow-[0_2px_3px_rgba(20,24,27,0.045),0_8px_18px_rgba(20,24,27,0.034)]"
+          : "flex h-full flex-col overflow-hidden rounded-[8px] bg-white shadow-[0_2px_2px_rgba(20,24,27,0.04),0_6px_16px_rgba(20,24,27,0.028)] transition-shadow duration-200 hover:shadow-[0_2px_3px_rgba(20,24,27,0.045),0_8px_18px_rgba(20,24,27,0.034)]"
+      }
+    >
+      <div className={view === "list" ? "flex flex-col gap-3 p-4 sm:flex-row" : "flex h-full flex-col"}>
+        <div className={view === "list" ? "relative h-[160px] w-full shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa] sm:w-[180px]" : "relative aspect-[1/1] overflow-hidden bg-[#fafafa]"}>
+          {imageBadges}
+          <BlurhashImage
+            src={item.image.imageUrl ?? ""}
+            blurHash={item.image.blurHashUrl ?? ""}
+            alt={titleText}
+            sizes={view === "list" ? PRODUCT_CARD_LIST_IMAGE_SIZES : PRODUCT_CARD_GRID_IMAGE_SIZES}
+            className="h-full w-full"
+            imageClassName="object-cover"
+          />
+        </div>
+        <div className={view === "list" ? "min-w-0 flex-1 space-y-1.5" : "flex flex-1 flex-col space-y-1.5 px-3 py-3 sm:px-4 sm:py-4"}>
+          <h2 className={view === "list" ? "text-[15px] font-normal leading-[1.2] text-[#202020] sm:text-[16px]" : "text-[12px] font-normal leading-[1.2] text-[#202020] sm:text-[15px]"}>{titleText}</h2>
+          {item.subtitle ? <p className="text-[10px] font-medium leading-none text-[#8b94a3] sm:text-[11px]">{item.subtitle}</p> : null}
+          <div className="flex flex-wrap items-center gap-2 text-[10px] font-normal leading-none sm:text-[11px]">
+            {renderBrandLink ? <Link href={resolvedBrandHref} target={linkTarget} rel={linkRel} scroll={false} onClick={(event) => event.stopPropagation()} className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]">{resolvedBrandLabel}</Link> : <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">{resolvedBrandLabel}</span>}
+            <span className="text-[#d6d6d6]">•</span>
+            {renderVendorLink ? <Link href={resolvedVendorHref} target={linkTarget} rel={linkRel} scroll={false} onClick={(event) => event.stopPropagation()} className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2 transition-colors hover:text-[#0037cc]">{resolvedVendorLabel}</Link> : <span className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">{resolvedVendorLabel}</span>}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 text-[9px] font-medium uppercase tracking-[0.08em] sm:gap-2 sm:text-[10px]">
+            <span className={stockTone === "success" ? "text-[#1a8553]" : stockTone === "warning" ? "text-[#b45309]" : stockTone === "danger" ? "text-[#b91c1c]" : "text-[#57636c]"}>{item.stock.label}</span>
+            <span className="text-[#d6d6d6]">•</span>
+            <span>{item.review.count > 0 && item.review.average != null ? `${item.review.average.toFixed(1)} (${item.review.count})` : "No reviews yet"}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold normal-case tracking-normal sm:text-[11px]">
+            <span
+              className={
+                deliveryTone === "success"
+                  ? "rounded-full bg-[rgba(26,133,83,0.1)] px-2 py-1 text-[#1a8553]"
+                  : deliveryTone === "danger"
+                    ? "rounded-full bg-[rgba(185,28,28,0.08)] px-2 py-1 text-[#b91c1c]"
+                    : "rounded-full bg-[rgba(87,99,108,0.08)] px-2 py-1 text-[#57636c]"
+              }
+            >
+              {item.shipping.deliveryPromiseLabel ?? item.shipping.deliveryMessage}
+            </span>
+          </div>
+          {priceText ? (
+            <div className="mt-auto flex flex-wrap items-end gap-2 pt-2">
+              <span className={`inline-flex items-start font-medium leading-none tracking-tight ${item.price.onSale ? "text-[#ff5963]" : "text-[#4a4545]"} ${view === "list" ? "text-[20px]" : "text-[18px]"}`}>{priceText}</span>
+              {item.price.onSale && compareAtText ? <p className="text-[11px] font-medium leading-none text-[#8b94a3] line-through">{compareAtText}</p> : null}
+            </div>
+          ) : <p className="mt-auto pt-2 text-[12px] text-[#8b94a3]">Price unavailable</p>}
+          <div className="mt-2.5 flex items-stretch gap-2 sm:mt-3">
+            <button
+              type="button"
+              data-ignore-card-open="true"
+              onMouseDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={handleAddToCart}
+              disabled={cartBusy}
+              className={`relative inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border px-4 text-[12px] font-semibold uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${cartJustAdded ? "border-[#1a8553] bg-[#1a8553] text-white shadow-[0_10px_24px_rgba(26,133,83,0.18)]" : !canAddToCart ? "border-black/10 bg-[#f5f5f5] text-[#7d7d7d]" : "border-black/20 bg-transparent text-[#202020] hover:border-[#cbb26b] hover:text-[#cbb26b]"}`}
+            >
+              <CartPlusIcon />
+              <span className="hidden whitespace-nowrap sm:inline">{cartBusy ? "Adding..." : cartJustAdded ? "Added to cart" : !canAddToCart ? "Unavailable" : "Add to cart"}</span>
+              <span className="whitespace-nowrap sm:hidden">{cartBusy ? "Adding" : cartJustAdded ? "Added" : !canAddToCart ? "Unavailable" : "Add"}</span>
+              {cartCount > 0 ? <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">{cartCount}</span> : null}
+              {cartBurstKey ? <span className="absolute -top-3 right-2 animate-bevgo-pop text-[10px] font-semibold text-[#cbb26b]">+1</span> : null}
+            </button>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+
+  return (
+    <>
+      {article}
+      <AppSnackbar
+        notice={cartBlockedNotice ? { tone: "info", message: cartBlockedNotice } : null}
+        onClose={() => setCartBlockedNotice(null)}
+      />
+    </>
+  );
 }
 
 export function BrowseProductCard({
@@ -1010,7 +1359,7 @@ export function BrowseProductCard({
   cartBurstKey,
   shopperArea,
 }: {
-  item: ProductItem;
+  item: ListingProductItem;
   view: "grid" | "list";
   openInNewTab: boolean;
   brandHref?: string;
@@ -1022,6 +1371,28 @@ export function BrowseProductCard({
   cartBurstKey?: number;
   shopperArea?: ShopperDeliveryArea | null;
 }) {
+  if (isResolvedProductCard(item)) {
+    return (
+      <ResolvedShopperProductCard
+        item={item}
+        view={view}
+        openInNewTab={openInNewTab}
+        brandHref={brandHref}
+        vendorHref={vendorHref}
+        brandLabel={brandLabel}
+        vendorLabel={vendorLabel}
+        currentUrl={currentUrl}
+        onAddToCartSuccess={onAddToCartSuccess}
+        cartBurstKey={cartBurstKey}
+      />
+    );
+  }
+
+  const resolvedShopperArea = shopperArea ?? null;
+  if (resolvedShopperArea && !isProductEligibleForShopperCountry(item, resolvedShopperArea)) {
+    return null;
+  }
+
   const router = useRouter();
   const { formatMoney } = useDisplayCurrency();
   const displayImages = getDisplayImages(item);
@@ -1103,18 +1474,24 @@ export function BrowseProductCard({
             ? "slate"
             : "amber",
   });
-  const resolvedShopperArea = shopperArea ?? null;
   const hasDeliveryEstimateLocation = Boolean(
     resolvedShopperArea?.country && hasPreciseShopperDeliveryArea(resolvedShopperArea),
   );
-  const deliveryPromise = hasDeliveryEstimateLocation ? getDeliveryPromise(item, resolvedShopperArea, defaultVariant) : null;
-  const sellerDeliveryMessage = hasDeliveryEstimateLocation
-    ? getSellerDeliveryMessage(item, resolvedShopperArea, defaultVariant)
+  const rawShipping = resolvedShopperArea
+    ? resolveRawItemShippingEligibility(
+        {
+          ...item,
+          data: {
+            ...(item.data || {}),
+            variants: defaultVariant ? [defaultVariant] : item.data?.variants,
+          },
+        },
+        resolvedShopperArea,
+      )
     : null;
-  const deliveryLabel = deliveryPromise?.label ?? sellerDeliveryMessage?.label ?? null;
-  const deliveryCutoffText = deliveryPromise?.cutoffText ?? null;
-  const deliveryTone: "success" | "danger" | "warning" | "neutral" =
-    deliveryPromise ? "success" : (sellerDeliveryMessage?.tone ?? "neutral");
+  const deliveryLabel = rawShipping?.deliveryPromiseLabel ?? rawShipping?.deliveryMessage ?? null;
+  const deliveryCutoffText = rawShipping?.deliveryCutoffText ?? null;
+  const deliveryTone: "success" | "danger" | "warning" | "neutral" = rawShipping?.deliveryTone ?? "neutral";
   const deliveryToneClass =
     {
       success: "inline-flex items-center gap-1 rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]",
@@ -1571,7 +1948,7 @@ export function BrowseProductCard({
           onFocus={handleCardFocus}
           onKeyDown={onCardKeyDown}
           data-clickable-container="true"
-          className="overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
+          className="overflow-hidden rounded-[8px] bg-white shadow-[0_2px_2px_rgba(20,24,27,0.04),0_6px_16px_rgba(20,24,27,0.028)] transition-shadow duration-200 hover:shadow-[0_2px_3px_rgba(20,24,27,0.045),0_8px_18px_rgba(20,24,27,0.034)]"
         >
           <div className="flex flex-col gap-3 p-4 sm:flex-row">
           <div
@@ -1802,7 +2179,7 @@ export function BrowseProductCard({
         onFocus={handleCardFocus}
         onKeyDown={onCardKeyDown}
         data-clickable-container="true"
-        className="flex h-full flex-col overflow-hidden rounded-[8px] bg-white shadow-[0_8px_20px_rgba(20,24,27,0.06)]"
+        className="flex h-full flex-col overflow-hidden rounded-[8px] bg-white shadow-[0_2px_2px_rgba(20,24,27,0.04),0_6px_16px_rgba(20,24,27,0.028)] transition-shadow duration-200 hover:shadow-[0_2px_3px_rgba(20,24,27,0.045),0_8px_18px_rgba(20,24,27,0.034)]"
       >
         <div className="flex h-full flex-col">
           <div className="relative aspect-[1/1] overflow-hidden bg-[#fafafa]">
@@ -2025,7 +2402,7 @@ export function ProductsResults({
   sponsoredPlacement,
   sponsoredContext,
 }: {
-  initialItems: ProductItem[];
+  initialItems: ListingProductItem[];
   currentSort: string;
   currentView: "grid" | "list";
   openInNewTab: boolean;
@@ -2035,8 +2412,8 @@ export function ProductsResults({
   sponsoredContext?: { category?: string; subCategory?: string; search?: string };
 }) {
   const router = useRouter();
-  const [items, setItems] = useState(() => initialItems.filter(hasShopperFacingProductImage));
-  const [sponsoredItems, setSponsoredItems] = useState<ProductItem[]>([]);
+  const [items, setItems] = useState<ListingProductItem[]>(() => initialItems.filter(hasShopperFacingProductImage));
+  const [sponsoredItems, setSponsoredItems] = useState<ShopperVisibleProductCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [priceRange, setPriceRange] = useState<{ min: number; max: number } | null>(null);
@@ -2119,7 +2496,8 @@ export function ProductsResults({
         });
         const payload = await response.json().catch(() => ({}));
         if (cancelled || !response.ok || payload?.ok === false) return;
-        setSponsoredItems(Array.isArray(payload?.data?.items) ? payload.data.items : []);
+        const sponsored = Array.isArray(payload?.data?.items) ? payload.data.items.filter(isResolvedProductCard) : [];
+        setSponsoredItems(sponsored);
       } catch {
         if (!cancelled) {
           setSponsoredItems([]);
@@ -2155,7 +2533,6 @@ export function ProductsResults({
     () =>
       filterByPriceRange(
         filterByMinRating(items, minRating).filter((item) =>
-          isProductEligibleForShopperCountry(item, shopperArea?.country || "") &&
           Object.entries(activeAttributeFilters).every(([key, value]) =>
             itemMatchesAttributeFilter(item, key as AttributeFilterKey, value),
           ),
@@ -2169,11 +2546,11 @@ export function ProductsResults({
     if (!filteredItems.length || !sponsoredItems.length || !sponsoredPlacement) return filteredItems;
     const sponsoredIds = new Set(
       sponsoredItems
-        .map((item) => String(item?.id ?? item?.data?.docId ?? item?.data?.product?.unique_id ?? "").trim())
+        .map((item) => getListingItemId(item))
         .filter(Boolean),
     );
     const organic = filteredItems.filter(
-      (item) => !sponsoredIds.has(String(item?.id ?? item?.data?.docId ?? item?.data?.product?.unique_id ?? "").trim()),
+      (item) => !sponsoredIds.has(getListingItemId(item)),
     );
     const next = [...organic];
     const slots = sponsoredPlacement === "search_results" ? [1, 6] : [3, 10];
@@ -2201,9 +2578,9 @@ export function ProductsResults({
     isFeatured: undefined,
     minRating: undefined,
   };
-  const makeBrandHref = (item: ProductItem) =>
+  const makeBrandHref = (item: ListingProductItem) =>
     buildHref("/products", filterParams, { ...clearCatalogFilters, brand: getBrandSlug(item) || undefined });
-  const makeVendorHref = (item: ProductItem) =>
+  const makeVendorHref = (item: ListingProductItem) =>
     `/vendors/${encodeURIComponent(getVendorSlug(item) || "piessang")}`;
 
   useEffect(() => {
@@ -2275,15 +2652,15 @@ export function ProductsResults({
         params.set("isActive", "true");
       }
 
-      const response = await fetch(buildProductsApiUrl(params));
-      const payload = (await response.json()) as { items?: ProductItem[]; groups?: Array<{ items?: ProductItem[] }>; count?: number; total?: number };
-      const raw = (payload.items ?? payload.groups?.flatMap((group) => group.items ?? []) ?? []).filter(
-        hasShopperFacingProductImage,
-      );
-      const merged = new Map<string, ProductItem>();
+      const response = await fetch(buildProductsApiUrl(params, shopperArea));
+      const payload = (await response.json()) as { items?: ShopperVisibleProductCard[]; groups?: Array<{ items?: ShopperVisibleProductCard[] }>; count?: number; total?: number };
+      const raw = (payload.items ?? payload.groups?.flatMap((group) => group.items ?? []) ?? [])
+        .filter(isResolvedProductCard)
+        .filter(hasShopperFacingProductImage);
+      const merged = new Map<string, ListingProductItem>();
 
       for (const item of [...items, ...raw]) {
-        const key = item.id ?? item.data?.docId ?? String(item.data?.product?.unique_id ?? "");
+        const key = getListingItemId(item);
         if (!key || merged.has(key)) continue;
         merged.set(key, item);
       }
@@ -2411,12 +2788,12 @@ export function ProductsResults({
         <div className="space-y-4">
           {sortedItems.map((item, index) => (
           <DeferredProductCard
-                key={item.id ?? item.data?.docId}
+                key={getListingItemId(item)}
                 eager={index < DEFERRED_CARD_EAGER_COUNT_LIST}
                 minHeight={248}
               >
           <BrowseProductCard
-                key={item.id ?? item.data?.docId}
+                key={getListingItemId(item)}
                 item={item}
                 view="list"
                 openInNewTab={openInNewTab}
@@ -2436,12 +2813,12 @@ export function ProductsResults({
         <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-4">
           {sortedItems.map((item, index) => (
             <DeferredProductCard
-              key={item.id ?? item.data?.docId}
+              key={getListingItemId(item)}
               eager={index < DEFERRED_CARD_EAGER_COUNT_GRID}
               minHeight={460}
             >
             <BrowseProductCard
-              key={item.id ?? item.data?.docId}
+              key={getListingItemId(item)}
               item={item}
               view="grid"
               openInNewTab={openInNewTab}

@@ -186,6 +186,7 @@ export function renderSharedLandingSectionContent({
         subtitle={toStr(section.props?.subtitle)}
         products={items}
         emptyMessage="No products available for this rail yet."
+        hideWhenEmpty
       />
     );
   }
@@ -200,6 +201,7 @@ export function renderSharedLandingSectionContent({
         subtitle={toStr(section.props?.subtitle)}
         products={selected}
         emptyMessage="Select up to two products for this feature."
+        hideWhenEmpty
       />
     );
   }
@@ -218,7 +220,7 @@ export function renderSharedLandingSectionContent({
           <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{toStr(section.props?.title, "Quick shop")}</p>
           <p className="mt-2 text-[13px] text-[#57636c] sm:text-[14px]">{toStr(section.props?.subtitle)}</p>
         </div>
-        <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
+        <div className="mt-5 flex flex-nowrap gap-5 overflow-x-auto pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-6">
           {selected.map((category) => {
             const content = (
               <>
@@ -256,7 +258,7 @@ export function renderSharedLandingSectionContent({
             Browse categories
           </Link>
         </div>
-        <div className="mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] sm:mt-5 sm:gap-4 [&::-webkit-scrollbar]:hidden">
+        <div className="mt-4 flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 [scrollbar-width:none] sm:mt-5 sm:gap-4 [&::-webkit-scrollbar]:hidden">
           {selected.map((category, index) => (
             <Link
               key={category.id}
@@ -322,7 +324,7 @@ export function renderSharedLandingSectionContent({
             )
           ) : null}
           {posts.length ? (
-            <div className="mt-5 flex gap-3 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-4">
+            <div className="mt-5 flex gap-3 overflow-x-auto pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-4">
               {posts.map((post: any, index: number) => {
                 const postHref = toExternalHref(post?.href);
                 const card = (

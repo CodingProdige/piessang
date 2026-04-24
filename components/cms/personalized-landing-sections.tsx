@@ -13,8 +13,49 @@ function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
 }
 
+function normalizeBadgeKey(label: unknown) {
+  const normalized = toStr(label).toLowerCase().replace(/\s+/g, "_");
+  if (normalized === "best_seller") return "best_seller";
+  if (normalized === "popular") return "popular";
+  if (normalized === "trending_now") return "trending_now";
+  if (normalized === "rising_star") return "rising_star";
+  return "";
+}
+
 function mapProduct(item: ProductGetItem): ProductItem | null {
-  const data = item?.data || item || {};
+  const source = item?.data || item || {};
+  const hasCanonicalShape = !item?.data && typeof source?.title === "string";
+  const data = hasCanonicalShape
+    ? {
+        product: {
+          unique_id: item?.id || source?.id || null,
+          title: source?.title || null,
+          brand: source?.brandLabel || null,
+          brandTitle: source?.brandLabel || null,
+          vendorName: source?.vendorLabel || null,
+        },
+        media: {
+          images: source?.image?.imageUrl
+            ? [{ imageUrl: source.image.imageUrl, blurHashUrl: source.image.blurHashUrl || null }]
+            : [],
+        },
+        grouping: {
+          category: source?.categorySlug || null,
+          categorySlug: source?.categorySlug || null,
+        },
+        is_new_arrival: source?.merchandising?.isNewArrival === true,
+        analytics: source?.badge
+          ? {
+              badge: normalizeBadgeKey(source.badge.label),
+              badgeLabel: source.badge.label || null,
+              badgeIconKey: source.badge.iconKey || null,
+              badgeIconUrl: source.badge.iconUrl || null,
+              badgeBackgroundColor: source.badge.backgroundColor || null,
+              badgeForegroundColor: source.badge.foregroundColor || null,
+            }
+          : {},
+      }
+    : source;
   const id = toStr(item?.id || data?.docId || data?.product?.unique_id);
   const title = toStr(data?.product?.title);
   if (!id || !title) return null;
@@ -91,7 +132,7 @@ function PersonalizedRailShell({
   subtitle,
   products,
   emptyMessage,
-  mobileLeadingSpacer = true,
+  mobileLeadingSpacer = false,
   viewAllHref,
 }: {
   title: string;
@@ -107,6 +148,7 @@ function PersonalizedRailShell({
       subtitle={subtitle}
       products={products}
       emptyMessage={emptyMessage}
+      hideWhenEmpty
       mobileLeadingSpacer={mobileLeadingSpacer}
       viewAllHref={viewAllHref}
     />

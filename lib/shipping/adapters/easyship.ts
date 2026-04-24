@@ -14,6 +14,16 @@ function roundMoney(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+class EasyshipRatesError extends Error {
+  debug?: Record<string, unknown>;
+
+  constructor(message: string, debug?: Record<string, unknown>) {
+    super(message);
+    this.name = "EasyshipRatesError";
+    this.debug = debug;
+  }
+}
+
 function findCountryAlpha2(input: unknown) {
   const value = toStr(input).toUpperCase();
   if (!value) return "";
@@ -242,36 +252,42 @@ export const easyshipRateAdapter: CourierAdapter = {
     const items = defaultQuoteItems(request);
     if (!items.length) return [];
 
+    const easyshipPayload = {
+      origin_address: originAddress,
+      destination_address: destinationAddress,
+      incoterms: "DDU",
+      calculate_tax_and_duties: true,
+      parcels: [
+        {
+          total_actual_weight: roundMoney(aggregated.totalActualWeight),
+          box: {
+            slug: "custom",
+            length: Math.max(1, Math.round(aggregated.lengthCm || 1)),
+            width: Math.max(1, Math.round(aggregated.widthCm || 1)),
+            height: Math.max(1, Math.round(aggregated.heightCm || 1)),
+          },
+          items,
+        },
+      ],
+    };
+
     const response = await fetch(`${baseUrl}/rates`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        origin_address: originAddress,
-        destination_address: destinationAddress,
-        incoterms: "DDU",
-        calculate_tax_and_duties: true,
-        parcels: [
-          {
-            total_actual_weight: roundMoney(aggregated.totalActualWeight),
-            box: {
-              slug: "custom",
-              length: Math.max(1, Math.round(aggregated.lengthCm || 1)),
-              width: Math.max(1, Math.round(aggregated.widthCm || 1)),
-              height: Math.max(1, Math.round(aggregated.heightCm || 1)),
-            },
-            items,
-          },
-        ],
-      }),
+      body: JSON.stringify(easyshipPayload),
     });
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = toStr(payload?.message || payload?.error || `Easyship rates request failed (${response.status}).`);
-      throw new Error(message);
+      throw new EasyshipRatesError(message, {
+        status: response.status,
+        request: easyshipPayload,
+        response: payload,
+      });
     }
 
     const preferredCouriers = parseAllowedCouriers(request?.metadata?.courierProfile?.allowedCouriers);
@@ -304,6 +320,7 @@ export const easyshipRateAdapter: CourierAdapter = {
             incoterms: toStr(quote?.incoterms),
             easyshipRating: quote?.easyship_rating ?? null,
             totalChargeRaw: quote?.total_charge ?? null,
+            debugRequest: easyshipPayload,
           },
         };
       });

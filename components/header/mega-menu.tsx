@@ -9,8 +9,8 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { DisplayCurrencySelector } from "@/components/currency/display-currency-provider";
 import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
+import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-modal";
 import {
-  DeliveryAreaGate,
   formatPreciseShopperDeliveryArea,
   hasPreciseShopperDeliveryArea,
   readShopperDeliveryArea,
@@ -19,6 +19,7 @@ import {
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
+import { appendShopperAreaSearchParams } from "@/lib/shipping/shopper-country";
 
 const CATEGORIES_ENDPOINT = "/api/catalogue/v1/categories/list";
 const SUBCATEGORIES_ENDPOINT = "/api/catalogue/v1/subCategories/list";
@@ -26,6 +27,10 @@ const BRANDS_ENDPOINT = "/api/catalogue/v1/brands/get";
 const PRODUCTS_PAGE = "/products";
 const MENU_HEIGHT = 430;
 const LANDING_PAGE_ENDPOINT = "/api/client/v1/landing-page/get";
+const MEGA_MENU_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const departmentCache = new Map<string, Department[]>();
+const subcategoryCache = new Map<string, SubCategory[]>();
+const brandCache = new Map<string, Brand[]>();
 const SearchBar = dynamic(() => import("@/components/header/header-search").then((mod) => mod.HeaderSearch), {
   ssr: false,
   loading: () => <HeaderSearchSkeleton />,
@@ -40,7 +45,6 @@ type CatalogueCategory = {
   title?: string;
   description?: string | null;
   position?: number;
-  productCount?: number;
   id?: string;
   data?: {
     docId?: string;
@@ -62,7 +66,6 @@ type CatalogueSubCategory = {
   title?: string;
   description?: string | null;
   position?: number;
-  productCount?: number;
   id?: string;
   data?: {
     docId?: string;
@@ -115,7 +118,6 @@ type Department = {
   title: string;
   description: string;
   position: number;
-  productCount: number;
 };
 
 type SubCategory = {
@@ -124,7 +126,6 @@ type SubCategory = {
   title: string;
   description: string;
   position: number;
-  productCount: number;
 };
 
 type Brand = {
@@ -160,8 +161,8 @@ type FixedHeroConfig = {
 };
 
 function formatDeliveryAreaLabel(area: ShopperDeliveryArea | null) {
-  if (!area?.country) return "All delivery countries";
-  return area.country;
+  if (!area) return "Set delivery address";
+  return formatPreciseShopperDeliveryArea(area) || area.country || "Set delivery address";
 }
 
 function HeaderDeliveryLocationControl({
@@ -173,7 +174,7 @@ function HeaderDeliveryLocationControl({
 }) {
   const router = useRouter();
   const [area, setArea] = useState<ShopperDeliveryArea | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     const stored = readShopperDeliveryArea();
@@ -185,98 +186,68 @@ function HeaderDeliveryLocationControl({
   const hasPreciseArea = hasPreciseShopperDeliveryArea(area);
 
   return (
-    <div className={`relative inline-flex min-w-0 items-center gap-1.5 border-r border-black/10 px-2 text-[12px] font-semibold text-[#4b5563] sm:gap-2 sm:px-5 ${className}`}>
+    <div className={`relative inline-flex min-w-0 items-center gap-2 border-r border-black/10 px-2 text-[12px] font-semibold text-[#4b5563] sm:px-5 ${className}`}>
       <span className="inline-flex shrink-0 items-center gap-2">
         <svg viewBox="0 0 20 20" className="h-4 w-4 fill-current" aria-hidden="true">
           <path d="M10 1.5a5.5 5.5 0 0 0-5.5 5.5c0 4.5 5.5 11.5 5.5 11.5S15.5 11.5 15.5 7A5.5 5.5 0 0 0 10 1.5Zm0 7.75A2.25 2.25 0 1 1 10 4.75a2.25 2.25 0 0 1 0 4.5Z" />
         </svg>
         <span className="hidden lg:inline">Deliver to</span>
       </span>
-      <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
-        <div className="relative min-w-0">
-          <select
-            id={triggerId}
-            value={area?.country || ""}
-            onChange={(event) => {
-              const nextCountry = String(event.target.value || "").trim();
-              if (!nextCountry) {
-                saveShopperDeliveryArea(null);
-                setArea(null);
-                router.refresh();
-                return;
+      <button
+        id={triggerId}
+        type="button"
+        onClick={() => setPickerOpen(true)}
+        className="inline-flex min-w-0 max-w-[240px] items-center gap-2 rounded-[10px] border border-black/10 bg-white px-3 py-2 text-left text-[12px] font-semibold text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.04)] hover:border-black/15"
+        aria-label={hasPreciseArea ? "Update delivery address" : "Set delivery address"}
+      >
+        <span className="truncate">{formatDeliveryAreaLabel(area)}</span>
+        <svg viewBox="0 0 20 20" className="ml-auto h-4 w-4 shrink-0 fill-current text-[#6b7280]" aria-hidden="true">
+          <path d="M5.5 7.5 10 12l4.5-4.5" />
+        </svg>
+      </button>
+      <GooglePlacePickerModal
+        open={pickerOpen}
+        title="Where should we deliver?"
+        initialValue={
+          area
+            ? {
+                formattedAddress: preciseLabel || area.country || undefined,
+                streetAddress: area.addressLine1 || undefined,
+                country: area.country || undefined,
+                region: area.province || undefined,
+                city: area.city || undefined,
+                suburb: area.suburb || undefined,
+                postalCode: area.postalCode || undefined,
+                latitude: area.latitude ?? undefined,
+                longitude: area.longitude ?? undefined,
               }
-              const countryChanged = String(area?.country || "").trim() !== nextCountry;
-              const nextArea = {
-                city: countryChanged ? "" : area?.city || "",
-                province: countryChanged ? "" : area?.province || "",
-                suburb: countryChanged ? "" : area?.suburb || "",
-                postalCode: countryChanged ? "" : area?.postalCode || "",
-                country: nextCountry,
-                latitude: countryChanged ? null : area?.latitude ?? null,
-                longitude: countryChanged ? null : area?.longitude ?? null,
-              };
-              saveShopperDeliveryArea(nextArea);
-              setArea(nextArea);
-              router.refresh();
-            }}
-            className="max-w-[120px] appearance-none rounded-[8px] border border-black/10 bg-white py-2 pl-2 pr-7 text-[11px] font-semibold text-[#202020] outline-none sm:max-w-none sm:pl-3 sm:pr-8 sm:text-[12px]"
-            aria-label="Choose delivery country"
-            title={formatDeliveryAreaLabel(area)}
-          >
-            <option value="">All delivery countries</option>
-            {SHOPPER_COUNTRY_OPTIONS.map((country) => (
-              <option key={country.code} value={country.label}>
-                {country.displayLabel}
-              </option>
-            ))}
-          </select>
-          <svg viewBox="0 0 20 20" className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 fill-current text-[#6b7280]" aria-hidden="true">
-            <path d="M5.5 7.5 10 12l4.5-4.5" />
-          </svg>
-        </div>
-        <button
-          type="button"
-          onClick={() => setDetailsOpen((open) => !open)}
-          className="inline-flex shrink-0 items-center rounded-[8px] border border-black/10 bg-white px-2.5 py-2 text-[10px] font-semibold text-[#4b5563] hover:text-[#202020] sm:px-3 sm:text-[11px]"
-          aria-label={hasPreciseArea ? "Update delivery location" : "Improve delivery accuracy"}
-        >
-          <span className="hidden sm:inline">{hasPreciseArea ? "Update location" : "Improve accuracy"}</span>
-          <span className="sm:hidden">{hasPreciseArea ? "Update" : "Locate"}</span>
-        </button>
-      </div>
-      {detailsOpen ? (
-        <div className="fixed inset-x-3 top-[56px] z-40 md:absolute md:inset-x-auto md:right-0 md:top-[calc(100%+10px)] md:w-[min(92vw,440px)]">
-          <div className="max-h-[calc(100vh-88px)] overflow-y-auto rounded-[12px] border border-black/10 bg-white p-4 shadow-[0_18px_50px_rgba(20,24,27,0.16)]">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Improve delivery accuracy</p>
-                <p className="mt-1 text-[13px] leading-[1.55] text-[#57636c]">
-                  Add your suburb or postal code for more accurate delivery availability and ETA before checkout.
-                </p>
-                {hasPreciseArea && preciseLabel ? (
-                  <p className="mt-2 text-[12px] font-semibold text-[#202020]">{preciseLabel}</p>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                onClick={() => setDetailsOpen(false)}
-                className="text-[12px] font-semibold text-[#57636c]"
-              >
-                Close
-              </button>
-            </div>
-            <div className="mt-4">
-              <DeliveryAreaGate
-                compact
-                onChange={(nextArea) => {
-                  setArea(nextArea);
-                  router.refresh();
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
+            : null
+        }
+        onClose={() => setPickerOpen(false)}
+        onSelect={(value) => {
+          const nextArea: ShopperDeliveryArea = {
+            countryCode:
+              SHOPPER_COUNTRY_OPTIONS.find((entry) => entry.label === String(value.country || "").trim())?.code || null,
+            province: String(value.region || "").trim() || null,
+            city: String(value.city || "").trim() || null,
+            suburb: String(value.suburb || "").trim() || null,
+            postalCode: String(value.postalCode || "").trim() || null,
+            addressLine1: String(value.streetAddress || value.formattedAddress || "").trim() || null,
+            lat: typeof value.latitude === "number" ? value.latitude : null,
+            lng: typeof value.longitude === "number" ? value.longitude : null,
+            source: "google_places",
+            precision:
+              typeof value.latitude === "number" && typeof value.longitude === "number" ? "coordinates" : "address",
+            country: String(value.country || "").trim() || null,
+            latitude: typeof value.latitude === "number" ? value.latitude : null,
+            longitude: typeof value.longitude === "number" ? value.longitude : null,
+          };
+          saveShopperDeliveryArea(nextArea);
+          setArea(nextArea);
+          setPickerOpen(false);
+          router.refresh();
+        }}
+      />
     </div>
   );
 }
@@ -294,18 +265,72 @@ function buildProductsHref(params: {
   return query ? `${PRODUCTS_PAGE}?${query}` : PRODUCTS_PAGE;
 }
 
-async function fetchDepartments(shopperCountry = ""): Promise<Department[]> {
+function getShopperAreaCacheKey(area: ShopperDeliveryArea | null) {
+  if (!area) return "none";
+  const lat = typeof area.latitude === "number" ? area.latitude.toFixed(2) : "";
+  const lng = typeof area.longitude === "number" ? area.longitude.toFixed(2) : "";
+  return [
+    area.countryCode || area.country || "",
+    area.province || "",
+    area.city || "",
+    area.suburb || "",
+    area.postalCode || "",
+    lat,
+    lng,
+  ]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .join("::");
+}
+
+function readMenuCache<T>(key: string): T | null {
+  if (typeof window === "undefined") return null;
   try {
-    const url = new URL(CATEGORIES_ENDPOINT, window.location.origin);
-    if (shopperCountry) {
-      url.searchParams.set("country", shopperCountry);
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { expiresAt?: number; value?: T };
+    if (!parsed || typeof parsed.expiresAt !== "number" || parsed.expiresAt < Date.now()) {
+      window.localStorage.removeItem(key);
+      return null;
     }
+    return parsed.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeMenuCache<T>(key: string, value: T) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        expiresAt: Date.now() + MEGA_MENU_CACHE_TTL_MS,
+        value,
+      }),
+    );
+  } catch {
+  }
+}
+
+async function fetchDepartments(shopperArea: ShopperDeliveryArea | null = null): Promise<Department[]> {
+  try {
+    const cacheKey = getShopperAreaCacheKey(shopperArea);
+    const cached = departmentCache.get(cacheKey);
+    if (cached) return cached;
+    const persistedCacheKey = `piessang:mega-menu:departments:${cacheKey}`;
+    const persisted = readMenuCache<Department[]>(persistedCacheKey);
+    if (persisted) {
+      departmentCache.set(cacheKey, persisted);
+      return persisted;
+    }
+    const url = new URL(CATEGORIES_ENDPOINT, window.location.origin);
+    appendShopperAreaSearchParams(url.searchParams, shopperArea);
     const response = await fetch(url.toString());
     if (!response.ok) throw new Error("Unable to load categories");
 
     const payload = (await response.json()) as { items?: CatalogueCategory[] };
 
-    return (payload.items ?? [])
+    const departments = (payload.items ?? [])
       .map((item) => {
         const slug = item.slug?.trim() || item.data?.category?.slug?.trim();
         const title = item.title?.trim() || item.data?.category?.title?.trim();
@@ -318,33 +343,32 @@ async function fetchDepartments(shopperCountry = ""): Promise<Department[]> {
           title,
           description: item.description?.trim() ?? item.data?.category?.description?.trim() ?? "",
           position: item.position ?? item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
-          productCount: Number(item.productCount ?? 0),
         };
       })
       .filter((item): item is Department => Boolean(item))
       .sort((a, b) => a.position - b.position);
+    departmentCache.set(cacheKey, departments);
+    writeMenuCache(persistedCacheKey, departments);
+    return departments;
   } catch {
     return [];
   }
 }
 
-function formatCategoryProductCount(count: number) {
-  const value = Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
-  const label = value === 1 ? "product" : "products";
-  return `${value.toLocaleString()} ${label}`;
-}
-
-function MenuItemCount({ count }: { count: number }) {
-  return <span className="mt-0.5 block text-[11px] font-medium text-[#7b8390]">{formatCategoryProductCount(count)}</span>;
-}
-
-async function fetchSubcategories(categorySlug: string, shopperCountry = ""): Promise<SubCategory[]> {
+async function fetchSubcategories(categorySlug: string, shopperArea: ShopperDeliveryArea | null = null): Promise<SubCategory[]> {
   try {
+    const cacheKey = `${categorySlug}::${getShopperAreaCacheKey(shopperArea)}`;
+    const cached = subcategoryCache.get(cacheKey);
+    if (cached) return cached;
+    const persistedCacheKey = `piessang:mega-menu:subcategories:${cacheKey}`;
+    const persisted = readMenuCache<SubCategory[]>(persistedCacheKey);
+    if (persisted) {
+      subcategoryCache.set(cacheKey, persisted);
+      return persisted;
+    }
     const url = new URL(SUBCATEGORIES_ENDPOINT, window.location.origin);
     url.searchParams.set("category", categorySlug);
-    if (shopperCountry) {
-      url.searchParams.set("country", shopperCountry);
-    }
+    appendShopperAreaSearchParams(url.searchParams, shopperArea);
     const response = await fetch(url.toString());
     if (!response.ok) throw new Error("Unable to load subcategories");
 
@@ -370,7 +394,6 @@ async function fetchSubcategories(categorySlug: string, shopperCountry = ""): Pr
           title,
           description: item.description?.trim() ?? item.data?.subCategory?.description?.trim() ?? "",
           position: item.position ?? item.data?.placement?.position ?? Number.MAX_SAFE_INTEGER,
-          productCount: Number(item.productCount ?? 0),
         };
       })
       .forEach((item) => {
@@ -381,14 +404,30 @@ async function fetchSubcategories(categorySlug: string, shopperCountry = ""): Pr
         }
       });
 
-    return [...unique.values()].sort((a, b) => a.position - b.position);
+    const subcategories = [...unique.values()].sort((a, b) => a.position - b.position);
+    subcategoryCache.set(cacheKey, subcategories);
+    writeMenuCache(persistedCacheKey, subcategories);
+    return subcategories;
   } catch {
     return [];
   }
 }
 
-async function fetchBrands(categorySlug: string, subCategorySlug?: string): Promise<Brand[]> {
+async function fetchBrands(
+  categorySlug: string,
+  subCategorySlug?: string,
+  shopperArea: ShopperDeliveryArea | null = null,
+): Promise<Brand[]> {
   try {
+    const cacheKey = `${categorySlug}::${subCategorySlug || "*"}::${getShopperAreaCacheKey(shopperArea)}`;
+    const cached = brandCache.get(cacheKey);
+    if (cached) return cached;
+    const persistedCacheKey = `piessang:mega-menu:brands:${cacheKey}`;
+    const persisted = readMenuCache<Brand[]>(persistedCacheKey);
+    if (persisted) {
+      brandCache.set(cacheKey, persisted);
+      return persisted;
+    }
     const url = new URL(BRANDS_ENDPOINT, window.location.origin);
     url.searchParams.set("category", categorySlug);
     url.searchParams.set("isActive", "true");
@@ -438,7 +477,10 @@ async function fetchBrands(categorySlug: string, subCategorySlug?: string): Prom
         }
       });
 
-    return [...unique.values()].sort((a, b) => a.position - b.position);
+    const brands = [...unique.values()].sort((a, b) => a.position - b.position);
+    brandCache.set(cacheKey, brands);
+    writeMenuCache(persistedCacheKey, brands);
+    return brands;
   } catch {
     return [];
   }
@@ -446,7 +488,7 @@ async function fetchBrands(categorySlug: string, subCategorySlug?: string): Prom
 
 function useCatalogueMenu(enabled = true): MenuState {
   const [allDepartments, setAllDepartments] = useState<Department[]>([]);
-  const [shopperCountry, setShopperCountry] = useState("");
+  const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
   const [hoveredSlug, setHoveredSlug] = useState("");
   const [hoveredSubcategorySlug, setHoveredSubcategorySlug] = useState("");
   const [subcategoriesByCategory, setSubcategoriesByCategory] = useState<Record<string, SubCategory[]>>(
@@ -459,9 +501,9 @@ function useCatalogueMenu(enabled = true): MenuState {
   const brandRequestId = useRef(0);
 
   useEffect(() => {
-    setShopperCountry(String(readShopperDeliveryArea()?.country || "").trim());
+    setShopperArea(readShopperDeliveryArea());
     return subscribeToShopperDeliveryArea((area) => {
-      setShopperCountry(String(area?.country || "").trim());
+      setShopperArea(area);
     });
   }, []);
 
@@ -469,7 +511,7 @@ function useCatalogueMenu(enabled = true): MenuState {
     if (!enabled) return;
     let cancelled = false;
 
-    void fetchDepartments(shopperCountry).then((items) => {
+    void fetchDepartments(shopperArea).then((items) => {
       if (cancelled) return;
       setAllDepartments(items);
     });
@@ -477,9 +519,21 @@ function useCatalogueMenu(enabled = true): MenuState {
     return () => {
       cancelled = true;
     };
-  }, [enabled, shopperCountry]);
+  }, [enabled, shopperArea]);
 
   const departments = allDepartments;
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (!departments.length) return;
+    departments.slice(0, 4).forEach((department) => {
+      void fetchSubcategories(department.slug, shopperArea).then((items) => {
+        setSubcategoriesByCategory((current) =>
+          current[department.slug] ? current : { ...current, [department.slug]: items },
+        );
+      });
+    });
+  }, [departments, enabled, shopperArea]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -493,11 +547,15 @@ function useCatalogueMenu(enabled = true): MenuState {
     if (!enabled) return;
     const categorySlug = hoveredSlug;
     if (!categorySlug) return;
+    if (subcategoriesByCategory[categorySlug]) {
+      setSubcategoriesLoading(false);
+      return;
+    }
 
     const requestId = ++subcategoryRequestId.current;
     setSubcategoriesLoading(true);
 
-    void fetchSubcategories(categorySlug, shopperCountry).then((items) => {
+    void fetchSubcategories(categorySlug, shopperArea).then((items) => {
       if (subcategoryRequestId.current !== requestId) return;
       setSubcategoriesByCategory((current) => ({
         ...current,
@@ -505,7 +563,7 @@ function useCatalogueMenu(enabled = true): MenuState {
       }));
       setSubcategoriesLoading(false);
     });
-  }, [hoveredSlug, enabled, shopperCountry]);
+  }, [hoveredSlug, enabled, shopperArea, subcategoriesByCategory]);
 
   const displayCategorySlug = hoveredSlug;
   const activeSubcategories = displayCategorySlug ? subcategoriesByCategory[displayCategorySlug] ?? [] : [];
@@ -528,12 +586,12 @@ function useCatalogueMenu(enabled = true): MenuState {
 
     const requestId = ++brandRequestId.current;
     setBrandsLoading(true);
-    void fetchBrands(displayCategorySlug, displaySubcategorySlug || undefined).then((items) => {
+    void fetchBrands(displayCategorySlug, displaySubcategorySlug || undefined, shopperArea).then((items) => {
       if (brandRequestId.current !== requestId) return;
       setBrandsByKey((current) => ({ ...current, [key]: items }));
       setBrandsLoading(false);
     });
-  }, [displayCategorySlug, displaySubcategorySlug, brandsByKey, enabled]);
+  }, [displayCategorySlug, displaySubcategorySlug, brandsByKey, enabled, shopperArea]);
 
   const activeBrands = displayCategorySlug
     ? (brandsByKey[`${displayCategorySlug}::${displaySubcategorySlug || "*"}`] ?? [])
@@ -1279,7 +1337,7 @@ function CategoryFlyout({
       <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_260px]">
         <div className="flex h-full min-h-0 flex-col border-r border-black/5 bg-white px-6 py-5">
           <p className="text-[16px] font-semibold text-[#202020]">{department.title}</p>
-          <div className="mt-4 flex-1 min-h-0 space-y-3 overflow-y-auto pr-2">
+          <div className="mt-4 flex-1 min-h-0 space-y-2 overflow-y-auto pr-2">
             {subcategories.map((subcategory) => (
               <Link
                 key={subcategory.id}
@@ -1289,14 +1347,13 @@ function CategoryFlyout({
                 })}
                 className={
                   subcategory.slug === hoveredSubcategorySlug
-                    ? "block w-full rounded-[8px] bg-[rgba(203,178,107,0.22)] px-2 py-1.5 text-left text-[#4a4545] transition-colors"
-                    : "block w-full rounded-[8px] px-2 py-1.5 text-left text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545]"
+                    ? "block w-full rounded-[8px] bg-[rgba(203,178,107,0.22)] px-2 py-0.5 text-left text-[#4a4545] transition-colors"
+                    : "block w-full rounded-[8px] px-2 py-0.5 text-left text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545]"
                 }
                 onMouseEnter={() => setHoveredSubcategorySlug(subcategory.slug)}
                 onMouseLeave={() => setHoveredSubcategorySlug("")}
               >
-                <span className="block truncate text-[14px] font-semibold">{subcategory.title}</span>
-                <MenuItemCount count={subcategory.productCount} />
+                <span className="block truncate text-[12px] font-semibold">{subcategory.title}</span>
               </Link>
             ))}
             {subcategoriesLoading ? (
@@ -1323,10 +1380,10 @@ function CategoryFlyout({
                     subCategory: hoveredSubcategorySlug || undefined,
                     brand: brand.slug,
                   })}
-                  className="flex w-full items-center gap-3 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-left shadow-[0_4px_12px_rgba(20,24,27,0.04)] transition-colors hover:bg-[rgba(203,178,107,0.18)]"
+                  className="flex w-full items-center gap-3 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-1.5 text-left shadow-[0_4px_12px_rgba(20,24,27,0.04)] transition-colors hover:bg-[rgba(203,178,107,0.18)]"
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-[13px] font-semibold text-[#202020]">
+                    <span className="block truncate text-[12px] font-semibold text-[#202020]">
                       {brand.title}
                     </span>
                     {brand.isFeatured ? (
@@ -1536,7 +1593,6 @@ function MobileDrawer({
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-[16px] font-medium">{department.title}</span>
-                    <MenuItemCount count={department.productCount} />
                   </span>
                   <span className="text-[#b8b8b8]">→</span>
                 </button>
@@ -1576,7 +1632,6 @@ function MobileDrawer({
                   >
                     <span className="min-w-0">
                       <span className="block truncate text-[16px] font-medium">{subCategory.title}</span>
-                      <MenuItemCount count={subCategory.productCount} />
                     </span>
                     <span className="text-[#b8b8b8]">→</span>
                   </Link>
@@ -1872,12 +1927,12 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
             >
               <div className="relative w-[300px] shrink-0" style={{ height: MENU_HEIGHT }}>
                 <aside className="relative h-full overflow-hidden rounded-[4px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-                  <div className="flex h-[48px] items-center justify-between bg-[#4a4545] px-5 text-[16px] font-semibold text-white">
+                  <div className="flex h-[38px] items-center justify-between bg-[#4a4545] px-3 text-[13px] font-semibold text-white">
                     <span>Shop by Category</span>
                     <span aria-hidden="true">⌄</span>
                   </div>
 
-                  <div className="flex h-[calc(100%-48px)] flex-col">
+                  <div className="flex h-[calc(100%-38px)] flex-col">
                     <div className="flex-1 overflow-y-auto">
                       {departments.length ? (
                         departments.map((department) => (
@@ -1886,8 +1941,8 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                             href={buildProductsHref({ category: department.slug })}
                             className={
                               department.slug === hoveredSlug
-                                ? "flex min-h-[52px] w-full items-center justify-between bg-[rgba(203,178,107,0.22)] px-5 py-2 text-[#4a4545] transition-colors"
-                                : "flex min-h-[52px] w-full items-center justify-between bg-white px-5 py-2 text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545] focus:bg-[rgba(203,178,107,0.22)] focus:text-[#4a4545]"
+                                ? "flex min-h-[36px] w-full items-center justify-between bg-[rgba(203,178,107,0.22)] px-3 py-1 text-[#4a4545] transition-colors"
+                                : "flex min-h-[36px] w-full items-center justify-between bg-white px-3 py-1 text-[#4f5965] transition-colors hover:bg-[rgba(203,178,107,0.22)] hover:text-[#4a4545] focus:bg-[rgba(203,178,107,0.22)] focus:text-[#4a4545]"
                             }
                             onMouseEnter={() => {
                               setHoveredSlug(department.slug);
@@ -1901,8 +1956,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                             }}
                           >
                             <span className="min-w-0">
-                              <span className="block truncate text-[14px] font-bold">{department.title}</span>
-                              <MenuItemCount count={department.productCount} />
+                              <span className="block truncate text-[12px] font-semibold">{department.title}</span>
                             </span>
                             <span aria-hidden="true">›</span>
                           </Link>

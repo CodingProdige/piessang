@@ -48,6 +48,18 @@ type BrandSuggestion = {
   title: string;
 };
 
+type EasyshipBoxOption = {
+  id: string;
+  slug?: string | null;
+  name: string;
+  type?: string | null;
+  courierUmbrellaName?: string | null;
+  lengthCm?: number | null;
+  widthCm?: number | null;
+  heightCm?: number | null;
+  emptyWeightKg?: number | null;
+};
+
 type SelectedBrand = BrandSuggestion & {
   exact: boolean;
   mode: "existing" | "new";
@@ -2828,6 +2840,9 @@ export function SellerCatalogueEditor({
   const [productCustomsCategory, setProductCustomsCategory] = useState("");
   const [productHsCode, setProductHsCode] = useState("");
   const [easyshipCustomsCategoryOptions, setEasyshipCustomsCategoryOptions] = useState<string[]>(() => [...EASYSHIP_CUSTOMS_CATEGORY_FALLBACK_OPTIONS]);
+  const [easyshipBoxOptions, setEasyshipBoxOptions] = useState<EasyshipBoxOption[]>([]);
+  const [easyshipBoxesLoading, setEasyshipBoxesLoading] = useState(false);
+  const [easyshipBoxesError, setEasyshipBoxesError] = useState("");
   const [productCustomsCategoryTouched, setProductCustomsCategoryTouched] = useState(false);
   const [productHsCodeTouched, setProductHsCodeTouched] = useState(false);
   const [easyshipSuggestedHsCode, setEasyshipSuggestedHsCode] = useState("");
@@ -3608,6 +3623,43 @@ export function SellerCatalogueEditor({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!sellerOriginCountry) {
+      setEasyshipBoxOptions([]);
+      setEasyshipBoxesError("");
+      setEasyshipBoxesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setEasyshipBoxesLoading(true);
+    setEasyshipBoxesError("");
+
+    fetch(`/api/client/v1/integrations/easyship/boxes?originCountry=${encodeURIComponent(sellerOriginCountry)}`, {
+      cache: "no-store",
+    })
+      .then((response) => response.json().catch(() => ({})))
+      .then((payload) => {
+        if (cancelled) return;
+        if (payload?.ok === false) {
+          throw new Error(String(payload?.message || "Unable to load Easyship box presets."));
+        }
+        setEasyshipBoxOptions(Array.isArray(payload?.boxes) ? payload.boxes : []);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setEasyshipBoxOptions([]);
+        setEasyshipBoxesError(error instanceof Error ? error.message : "Unable to load Easyship box presets.");
+      })
+      .finally(() => {
+        if (!cancelled) setEasyshipBoxesLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sellerOriginCountry]);
 
   useEffect(() => {
     let cancelled = false;
@@ -7209,7 +7261,7 @@ export function SellerCatalogueEditor({
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   {fulfillmentMode === "seller" ? (
                     <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[11px] text-[#57636c] sm:col-span-2">
-                      Delivery timing for seller-fulfilled products now comes from your shipping preferences. Update your local delivery radius or country shipping rates in Settings to control the delivery promise shown to shoppers.
+                      Delivery timing for seller-fulfilled products now comes from your shipping preferences. Update your local delivery settings or country shipping rates in Settings to control the delivery promise shown to shoppers.
                     </div>
                   ) : null}
                   {fulfillmentLocked ? (
@@ -8016,6 +8068,62 @@ export function SellerCatalogueEditor({
                                 <p className="text-[11px] leading-[1.4] text-[#57636c]">
                                   Piessang uses the preset as the packed parcel shape. Weight and dimensions below can still override it.
                                 </p>
+                              </div>
+                              <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fcfcfb] p-3">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="text-[12px] font-semibold text-[#202020]">Easyship carrier boxes</p>
+                                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
+                                      Loaded live from Easyship's boxes API for your seller origin country. Use these to mirror carrier package shapes from Easyship quoting.
+                                    </p>
+                                  </div>
+                                  {easyshipBoxesLoading ? (
+                                    <span className="rounded-full bg-[rgba(59,130,246,0.1)] px-2.5 py-1 text-[11px] font-semibold text-[#2563eb]">
+                                      Loading...
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {easyshipBoxesError ? (
+                                  <p className="mt-3 text-[11px] font-medium text-[#b91c1c]">{easyshipBoxesError}</p>
+                                ) : null}
+                                {easyshipBoxOptions.length ? (
+                                  <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                    {easyshipBoxOptions.slice(0, 12).map((box) => (
+                                      <button
+                                        key={box.id}
+                                        type="button"
+                                        onClick={() =>
+                                          setVariantDraft((current) => ({
+                                            ...current,
+                                            parcelPreset: "",
+                                            shippingClass: box.slug || current.shippingClass,
+                                            weightKg:
+                                              box.emptyWeightKg != null && box.emptyWeightKg > 0
+                                                ? String(box.emptyWeightKg)
+                                                : current.weightKg,
+                                            lengthCm: box.lengthCm != null ? String(box.lengthCm) : current.lengthCm,
+                                            widthCm: box.widthCm != null ? String(box.widthCm) : current.widthCm,
+                                            heightCm: box.heightCm != null ? String(box.heightCm) : current.heightCm,
+                                          }))
+                                        }
+                                        className="rounded-[10px] border border-black/8 bg-white px-3 py-2 text-left transition hover:border-[#cbb26b]/55 hover:bg-[#fcfbf6]"
+                                      >
+                                        <div className="text-[12px] font-semibold text-[#202020]">{box.name}</div>
+                                        <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-[#6b7280]">
+                                          {[box.courierUmbrellaName, box.type].filter(Boolean).join(" • ") || "Easyship"}
+                                        </p>
+                                        <p className="mt-1 text-[10px] text-[#57636c]">
+                                          {(box.lengthCm || 0).toFixed(2)} x {(box.widthCm || 0).toFixed(2)} x {(box.heightCm || 0).toFixed(2)} cm
+                                          {box.emptyWeightKg ? ` • ${box.emptyWeightKg} kg` : ""}
+                                        </p>
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : !easyshipBoxesLoading && !easyshipBoxesError ? (
+                                  <p className="mt-3 text-[11px] text-[#57636c]">
+                                    No Easyship carrier boxes were returned for this seller origin yet.
+                                  </p>
+                                ) : null}
                               </div>
                             </div>
                             {activeParcelPresetMeta ? (

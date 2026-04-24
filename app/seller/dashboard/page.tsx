@@ -92,7 +92,12 @@ type SidebarSection =
   | "notifications"
   | "integrations"
   | "team"
-  | "settings";
+  | "settings"
+  | "settings-profile"
+  | "settings-shipping"
+  | "settings-branding"
+  | "settings-business"
+  | "settings-payouts";
 
 type SellerContextItem = {
   sellerSlug: string;
@@ -301,6 +306,11 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   integrations: ["admin", "manager", "catalogue", "orders", "analytics"],
   team: ["admin"],
   settings: ["admin", "manager", "catalogue", "orders", "analytics"],
+  "settings-profile": ["admin", "manager", "catalogue", "orders", "analytics"],
+  "settings-shipping": ["admin", "manager", "catalogue", "orders", "analytics"],
+  "settings-branding": ["admin", "manager", "catalogue", "orders", "analytics"],
+  "settings-business": ["admin", "manager", "catalogue", "orders", "analytics"],
+  "settings-payouts": ["admin", "manager", "catalogue", "orders", "analytics"],
 };
 
 function canAccessSellerSection(role: SellerAccessRole, section: SidebarSection) {
@@ -1146,14 +1156,58 @@ function SidebarMenu({
 
         <section className="space-y-1">
           <p className={headingClass}>Settings</p>
-          <SidebarButton
-            label="Settings"
+          <SidebarGroup
+            title="Settings"
+            description="Seller account setup and operational preferences"
             icon="settings"
-            active={activeSection === "settings"}
             collapsed={compactDesktop}
-            locked={!canAccessSellerSection(sellerRole, "settings")}
-            onClick={() => handleNavigate("settings")}
-          />
+          >
+            <SidebarButton
+              label="Profile"
+              icon="team"
+              active={activeSection === "settings-profile"}
+              collapsed={compactDesktop}
+              locked={!canAccessSellerSection(sellerRole, "settings-profile")}
+              onClick={() => handleNavigate("settings-profile")}
+              nested
+            />
+            <SidebarButton
+              label="Shipping"
+              icon="truck"
+              active={activeSection === "settings-shipping"}
+              collapsed={compactDesktop}
+              locked={!canAccessSellerSection(sellerRole, "settings-shipping")}
+              onClick={() => handleNavigate("settings-shipping")}
+              nested
+            />
+            <SidebarButton
+              label="Branding"
+              icon="collections"
+              active={activeSection === "settings-branding"}
+              collapsed={compactDesktop}
+              locked={!canAccessSellerSection(sellerRole, "settings-branding")}
+              onClick={() => handleNavigate("settings-branding")}
+              nested
+            />
+            <SidebarButton
+              label="Business"
+              icon="shield"
+              active={activeSection === "settings-business"}
+              collapsed={compactDesktop}
+              locked={!canAccessSellerSection(sellerRole, "settings-business")}
+              onClick={() => handleNavigate("settings-business")}
+              nested
+            />
+            <SidebarButton
+              label="Payouts"
+              icon="cash"
+              active={activeSection === "settings-payouts"}
+              collapsed={compactDesktop}
+              locked={!canAccessSellerSection(sellerRole, "settings-payouts")}
+              onClick={() => handleNavigate("settings-payouts")}
+              nested
+            />
+          </SidebarGroup>
         </section>
       </nav>
     </div>
@@ -1282,6 +1336,16 @@ function SellerDashboardContent() {
         return "notifications";
       case "integrations":
         return "integrations";
+      case "settings-profile":
+        return "settings-profile";
+      case "settings-shipping":
+        return "settings-shipping";
+      case "settings-branding":
+        return "settings-branding";
+      case "settings-business":
+        return "settings-business";
+      case "settings-payouts":
+        return "settings-payouts";
       case "team":
         return "team";
       case "settings":
@@ -1917,6 +1981,16 @@ function SellerDashboardContent() {
         return "Integrations";
       case "team":
         return "Team";
+      case "settings-profile":
+        return "Profile settings";
+      case "settings-shipping":
+        return "Shipping settings";
+      case "settings-branding":
+        return "Branding settings";
+      case "settings-business":
+        return "Business settings";
+      case "settings-payouts":
+        return "Payout settings";
       case "settings":
         return "Settings";
       case "home":
@@ -1969,7 +2043,7 @@ function SellerDashboardContent() {
       case "admin-orders":
         return "See every marketplace order in one place, including payment, fulfilment, and delivery progress.";
       case "admin-platform-delivery":
-        return "Manage the Piessang fulfilment shipping origin, local-delivery radius, country shipping rates, and pickup rules.";
+        return "Manage the Piessang fulfilment shipping origin, local delivery settings, country shipping rates, and pickup rules.";
       case "admin-google-merchant-countries":
         return "Manage which countries Google Merchant product ads are allowed to target.";
       case "admin-google-merchant":
@@ -2012,6 +2086,16 @@ function SellerDashboardContent() {
         return "Connect Shopify, preview imported products, and control how catalogue sync should work for this seller account.";
       case "team":
         return "Manage teammate access and roles for this seller account.";
+      case "settings-profile":
+        return "Manage your seller identity, public vendor name, description, and seller code.";
+      case "settings-shipping":
+        return "Set seller shipping origin, local delivery rules, and broader shipping zones.";
+      case "settings-branding":
+        return "Manage your store banner, logo, and seller-facing brand presentation.";
+      case "settings-business":
+        return "Keep invoice-facing business and supplier details current.";
+      case "settings-payouts":
+        return "Manage where Piessang should send your seller payouts.";
       case "settings":
         return "Manage branding, seller account details, and seller access settings.";
       default:
@@ -2344,6 +2428,51 @@ function SellerDashboardContent() {
               />
             ) : activeSection === "team" ? (
               <SellerTeamPage showIntro={false} />
+            ) : activeSection === "settings-profile" ? (
+              <SellerSettingsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                vendorName={activeVendorName}
+                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                isSystemAdmin={isSystemAdmin}
+                visibleSections={["profile"]}
+                showDangerZone={false}
+              />
+            ) : activeSection === "settings-shipping" ? (
+              <SellerSettingsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                vendorName={activeVendorName}
+                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                isSystemAdmin={isSystemAdmin}
+                visibleSections={["shipping"]}
+                showDangerZone={false}
+              />
+            ) : activeSection === "settings-branding" ? (
+              <SellerSettingsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                vendorName={activeVendorName}
+                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                isSystemAdmin={isSystemAdmin}
+                visibleSections={["branding"]}
+                showDangerZone={false}
+              />
+            ) : activeSection === "settings-business" ? (
+              <SellerSettingsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                vendorName={activeVendorName}
+                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                isSystemAdmin={isSystemAdmin}
+                visibleSections={["business"]}
+                showDangerZone={false}
+              />
+            ) : activeSection === "settings-payouts" ? (
+              <SellerSettingsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                vendorName={activeVendorName}
+                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                isSystemAdmin={isSystemAdmin}
+                visibleSections={["payouts"]}
+                showDangerZone={false}
+              />
             ) : activeSection === "settings" ? (
               <SellerSettingsWorkspace
                 sellerSlug={resolvedSellerSlug}

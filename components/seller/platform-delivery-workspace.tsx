@@ -260,7 +260,7 @@ export function SellerPlatformDeliveryWorkspace() {
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
                   <p className="text-[13px] font-semibold text-[#202020]">Platform shipping origin</p>
-                  <p className="mt-1 text-[12px] text-[#57636c]">This is the Piessang dispatch point used to measure direct delivery radius and shipping rules.</p>
+                  <p className="mt-1 text-[12px] text-[#57636c]">This is the Piessang dispatch point used for fulfilment and shipping rules.</p>
                   <p className="mt-3 text-[13px] font-semibold text-[#202020]">{formatOriginSummary(deliveryProfile.origin) || "No origin chosen yet."}</p>
                 </div>
                 <button

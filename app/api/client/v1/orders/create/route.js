@@ -18,6 +18,7 @@ import { buildPlatformOrderDocument } from "@/lib/orders/platform-order";
 import { createGuestOrderAccessToken } from "@/lib/orders/guest-access";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
 import { resolveDeliveryQuote } from "@/lib/shipping/rating";
+import { resolveShippingForSellerGroup } from "@/lib/shipping/resolve";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -541,6 +542,123 @@ async function resolveLiveSellerDeliveryBreakdown({
   };
 }
 
+async function resolveShippingBreakdown({
+  items = [],
+  resolvedDeliveryAddress = null,
+}) {
+  const shopperArea = buildShopperArea(resolvedDeliveryAddress);
+  const groups = new Map();
+
+  for (const item of Array.isArray(items) ? items : []) {
+    const product = item?.product_snapshot || item?.product || {};
+    const seller = product?.seller || {};
+    const fulfillmentMode = String(product?.fulfillment?.mode || "").trim().toLowerCase();
+    const isSellerHandled = !fulfillmentMode || fulfillmentMode === "seller" || fulfillmentMode === "inherit" || fulfillmentMode === "seller_fulfilled";
+    const isPlatformHandled = fulfillmentMode === "bevgo" || fulfillmentMode === "piessang_fulfilled";
+    if (!isSellerHandled && !isPlatformHandled) continue;
+
+    const sellerCode = String(product?.product?.sellerCode || seller?.sellerCode || "").trim();
+    const sellerSlug = String(product?.product?.sellerSlug || seller?.sellerSlug || "").trim();
+    const sellerKey = sellerCode || sellerSlug || (isPlatformHandled ? "piessang_platform" : "");
+    if (!sellerKey) continue;
+
+    const existing = groups.get(sellerKey) || {
+      sellerKey,
+      sellerCode,
+      sellerSlug,
+      sellerName: String(seller?.vendorName || product?.product?.vendorName || "Seller").trim(),
+      sellerSnapshot: seller,
+      items: [],
+    };
+    existing.items.push(item);
+    groups.set(sellerKey, existing);
+  }
+
+  const db = getAdminDb();
+  const platformSnap = db ? await db.collection("system_settings").doc("platform_delivery").get().catch(() => null) : null;
+  const piessangFulfillmentShipping = platformSnap?.exists ? platformSnap.data()?.piessangFulfillmentShipping || null : null;
+
+  const breakdown = [];
+  for (const group of groups.values()) {
+    let seller = group.sellerSnapshot && typeof group.sellerSnapshot === "object" ? group.sellerSnapshot : {};
+    if (!seller?.shippingSettings && (group.sellerCode || group.sellerSlug)) {
+      const ownerDoc =
+        (group.sellerCode ? await findSellerOwnerByCode(group.sellerCode) : null) ??
+        (group.sellerSlug ? await findSellerOwnerBySlug(group.sellerSlug) : null);
+      seller = ownerDoc?.data?.seller && typeof ownerDoc.data.seller === "object" ? ownerDoc.data.seller : seller;
+    }
+
+    const resolved = await resolveShippingForSellerGroup({
+      seller,
+      items: group.items,
+      buyerDestination: {
+        countryCode: shopperArea?.country || "ZA",
+        province: shopperArea?.province || shopperArea?.stateProvinceRegion || "",
+        city: shopperArea?.city || shopperArea?.suburb || "",
+        postalCode: shopperArea?.postalCode || "",
+        latitude: shopperArea?.latitude ?? null,
+        longitude: shopperArea?.longitude ?? null,
+      },
+      piessangFulfillmentShipping,
+    });
+
+    if (!resolved.ok) {
+      breakdown.push({
+        sellerId: group.sellerCode || group.sellerSlug || group.sellerKey,
+        seller_key: group.sellerCode || group.sellerSlug || group.sellerKey,
+        seller_name: group.sellerName,
+        applicable: false,
+        delivery_type: "unavailable",
+        label: resolved.error || "Shipping unavailable",
+        reason: Array.isArray(resolved.errors) ? resolved.errors : [],
+      });
+      continue;
+    }
+
+    breakdown.push({
+      sellerId: group.sellerCode || group.sellerSlug || group.sellerKey,
+      seller_key: group.sellerCode || group.sellerSlug || group.sellerKey,
+      seller_name: group.sellerName,
+      applicable: true,
+      label: resolved.zone?.name || "Shipping",
+      delivery_type: "shipping",
+      fulfillmentMode: resolved.fulfillmentMode,
+      zoneId: resolved.zone?.id || null,
+      zoneName: resolved.zone?.name || null,
+      coverageMatchType: resolved.matchType,
+      pricingMode: resolved.pricingMode,
+      batchingMode: resolved.batchingMode,
+      destination: resolved.destination,
+      amount_incl: resolved.finalShippingFee,
+      amount_excl: resolved.finalShippingFee,
+      base_shipping_fee: resolved.baseShippingFee,
+      platform_shipping_margin: resolved.platformShippingMargin,
+      final_shipping_fee: resolved.finalShippingFee,
+      estimated_delivery_days: resolved.estimatedDeliveryDays,
+      items: resolved.items,
+      currency: "ZAR",
+    });
+  }
+
+  const totalIncl = r2(
+    breakdown.reduce((sum, entry) => sum + r2(entry?.final_shipping_fee ?? entry?.amount_incl ?? 0), 0),
+  );
+  const baseTotal = r2(
+    breakdown.reduce((sum, entry) => sum + r2(entry?.base_shipping_fee || 0), 0),
+  );
+  const marginTotal = r2(
+    breakdown.reduce((sum, entry) => sum + r2(entry?.platform_shipping_margin || 0), 0),
+  );
+
+  return {
+    total_incl: totalIncl,
+    total_excl: totalIncl,
+    base_total: baseTotal,
+    margin_total: marginTotal,
+    breakdown,
+  };
+}
+
 function getUserEmail(user = {}) {
   return (
     String(user?.email || "").trim() ||
@@ -758,14 +876,37 @@ export async function POST(req) {
       return err(400, "Empty Cart", "Cannot create order from empty cart.");
     }
 
-    const liveSellerDelivery = await resolveLiveSellerDeliveryBreakdown({
+    const liveSellerDelivery = await resolveShippingBreakdown({
       items: Array.isArray(cart?.items) ? cart.items : [],
-      pickupSelections,
-      courierSelections,
       resolvedDeliveryAddress,
     });
     const sellerDeliveryBreakdown = Array.isArray(liveSellerDelivery?.breakdown)
-      ? liveSellerDelivery.breakdown
+      ? liveSellerDelivery.breakdown.map((entry) => ({
+          seller_key: entry?.seller_key || entry?.sellerId || null,
+          seller_name: entry?.seller_name || null,
+          label: entry?.label || entry?.zoneName || "Shipping",
+          applicable: entry?.applicable !== false,
+          delivery_type: entry?.delivery_type || "shipping",
+          lead_time_days: entry?.estimated_delivery_days?.min ?? null,
+          matched_rule_id: entry?.zoneId || null,
+          matched_rule_label: entry?.zoneName || null,
+          amount_incl: entry?.final_shipping_fee ?? entry?.amount_incl ?? 0,
+          amount_excl: entry?.final_shipping_fee ?? entry?.amount_excl ?? 0,
+          currency: entry?.currency || "ZAR",
+          reason: Array.isArray(entry?.reason) ? entry.reason : [],
+          zoneId: entry?.zoneId || null,
+          zoneName: entry?.zoneName || null,
+          coverageMatchType: entry?.coverageMatchType || null,
+          pricingMode: entry?.pricingMode || null,
+          batchingMode: entry?.batchingMode || null,
+          base_shipping_fee: entry?.base_shipping_fee ?? 0,
+          platform_shipping_margin: entry?.platform_shipping_margin ?? 0,
+          final_shipping_fee: entry?.final_shipping_fee ?? entry?.amount_incl ?? 0,
+          estimated_delivery_days: entry?.estimated_delivery_days || null,
+          destination: entry?.destination || null,
+          items: Array.isArray(entry?.items) ? entry.items : [],
+          fulfillmentMode: entry?.fulfillmentMode || "seller_fulfilled",
+        }))
       : [];
     const unavailableSellerDeliveries = sellerDeliveryBreakdown.filter(
       (entry) => entry?.applicable === false && String(entry?.delivery_type || "").trim().toLowerCase() === "unavailable",
@@ -833,11 +974,6 @@ export async function POST(req) {
         cart?.totals?.delivery_fee_excl ??
         0
     );
-    const sellerDeliveryAmount = r2(
-      cart?.totals?.seller_delivery_fee_incl ??
-        cart?.totals?.seller_delivery_fee_excl ??
-        0
-    );
     const liveSellerDeliveryAmount = r2(
       liveSellerDelivery?.total_incl ??
         cart?.totals?.seller_delivery_fee_incl ??
@@ -857,6 +993,7 @@ export async function POST(req) {
       raw: deliveryFee || null,
       sellerAmountIncl: liveSellerDeliveryAmount,
       sellerBreakdown: sellerDeliveryBreakdown,
+      shippingBreakdown: Array.isArray(liveSellerDelivery?.breakdown) ? liveSellerDelivery.breakdown : [],
     };
 
     const totals = { ...(cart.totals || {}) };
@@ -871,6 +1008,9 @@ export async function POST(req) {
     totals.seller_delivery_fee_excl = liveSellerDeliveryAmount;
     totals.seller_delivery_fee_incl = liveSellerDeliveryAmount;
     totals.seller_delivery_breakdown = sellerDeliveryBreakdown;
+    totals.shippingBaseTotal = r2(liveSellerDelivery?.base_total || 0);
+    totals.shippingMarginTotal = r2(liveSellerDelivery?.margin_total || 0);
+    totals.shippingFinalTotal = liveSellerDeliveryAmount;
     if (Number.isFinite(Number(totals?.final_excl))) {
       totals.final_excl = r2(Number(totals.final_excl) + sellerDeliveryDelta);
     }
@@ -884,6 +1024,11 @@ export async function POST(req) {
       totals?.final_incl ??
         cart?.totals?.final_incl ??
         0
+    );
+    totals.grandTotal = r2(
+      totals?.final_payable_incl ??
+        cart?.totals?.final_payable_incl ??
+        finalInclForValidation
     );
     const creditAppliedIncl = r2(
       totals?.credit?.applied ??

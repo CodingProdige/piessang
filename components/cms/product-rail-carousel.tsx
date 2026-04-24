@@ -4,12 +4,12 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BrowseProductCard, type ProductItem } from "@/components/products/browse-product-card";
 import { hasShopperFacingProductImage } from "@/components/products/products-results";
+import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
 import {
   readShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
-import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
 
 export type ProductRailItem = ProductItem;
 
@@ -18,6 +18,7 @@ export function ProductRailCarousel({
   subtitle,
   products,
   emptyMessage,
+  hideWhenEmpty = false,
   mobileLeadingSpacer = true,
   viewAllHref = "/products",
   shopperArea: shopperAreaProp = null,
@@ -26,19 +27,19 @@ export function ProductRailCarousel({
   subtitle: string;
   products: ProductRailItem[];
   emptyMessage: string;
+  hideWhenEmpty?: boolean;
   mobileLeadingSpacer?: boolean;
   viewAllHref?: string;
   shopperArea?: ShopperDeliveryArea | null;
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
-  const visibleProducts = useMemo(
-    () =>
-      products
-        .filter(hasShopperFacingProductImage)
-        .filter((product) => isProductEligibleForShopperCountry(product, shopperArea?.country || "")),
-    [products, shopperArea?.country],
-  );
+  const visibleProducts = useMemo(() => {
+    return products.filter((product) => {
+      if (!hasShopperFacingProductImage(product)) return false;
+      return isProductEligibleForShopperCountry(product, shopperArea);
+    });
+  }, [products, shopperArea]);
 
   useEffect(() => {
     if (shopperAreaProp) {
@@ -51,6 +52,10 @@ export function ProductRailCarousel({
 
   const showControls = useMemo(() => visibleProducts.length > 1, [visibleProducts.length]);
 
+  if (hideWhenEmpty && visibleProducts.length === 0) {
+    return null;
+  }
+
   function scrollByCard(direction: -1 | 1) {
     const node = trackRef.current;
     if (!node) return;
@@ -61,18 +66,20 @@ export function ProductRailCarousel({
 
   return (
     <section className="w-full">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{title}</p>
-          <p className="mt-2 max-w-[56ch] text-[13px] leading-[1.55] text-[#57636c] sm:text-[14px]">{subtitle}</p>
-        </div>
-        <div className="flex shrink-0 items-start pt-1">
-          <Link
-            href={viewAllHref}
-            className="inline-flex items-center text-[13px] font-semibold text-[#145af2] transition-colors hover:text-[#0f49c7] sm:text-[14px]"
-          >
-            <span>View all</span>
-          </Link>
+      <div className="border-b border-[#e5e7eb] pb-3">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{title}</p>
+            <p className="mt-2 max-w-[56ch] text-[13px] leading-[1.55] text-[#57636c] sm:text-[14px]">{subtitle}</p>
+          </div>
+          <div className="flex shrink-0 items-start pt-1">
+            <Link
+              href={viewAllHref}
+              className="inline-flex items-center text-[13px] font-semibold text-[#145af2] transition-colors hover:text-[#0f49c7] sm:text-[14px]"
+            >
+              <span>View all</span>
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -101,8 +108,8 @@ export function ProductRailCarousel({
           <div
             ref={trackRef}
             className={[
-              "flex snap-x snap-mandatory gap-3 overflow-x-auto pb-2 [scrollbar-width:none] after:block after:h-px after:w-4 after:flex-none md:px-14 md:after:w-1 [&::-webkit-scrollbar]:hidden",
-              mobileLeadingSpacer ? "before:block before:h-px before:w-4 before:flex-none md:before:w-1" : "before:hidden md:before:hidden",
+              "flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 [scrollbar-width:none] after:block after:h-px after:w-4 after:flex-none [&::-webkit-scrollbar]:hidden",
+              mobileLeadingSpacer ? "before:block before:h-px before:w-4 before:flex-none" : "before:hidden",
             ].join(" ")}
           >
             {visibleProducts.map((product, index) => {

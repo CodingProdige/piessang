@@ -5,7 +5,7 @@ import { notFound } from "next/navigation";
 import Image from "next/image";
 import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
-import { ProductsResults } from "@/components/products/products-results";
+import { LegacyProductsResults } from "@/components/products/legacy-products-results";
 import { VendorFollowControls } from "@/components/vendors/vendor-follow-controls";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { getSellerFollowerCount } from "@/lib/social/seller-follows";
@@ -291,7 +291,7 @@ export default async function VendorPage({
         </section>
       ) : (
         <div className="mt-4">
-          <ProductsResults
+          <LegacyProductsResults
             initialItems={products}
             currentSort={currentParam(resolvedSearchParams, "sort") || "featured"}
             currentView="grid"

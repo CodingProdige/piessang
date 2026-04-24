@@ -13,11 +13,13 @@ import { GooglePlacePickerModal } from "@/components/shared/google-place-picker-
 import { PHONE_REGION_OPTIONS, PhoneInput, combinePhoneNumber, splitPhoneNumber } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
+import { resolveProductShippingEligibility } from "@/lib/catalogue/shipping-eligibility";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { getCardBrandFamily, resolveCardTheme } from "@/lib/payments/card-presentation";
 import { resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
-import { getShopperFacingDeliveryMessage } from "@/lib/shipping/display";
+import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
+import { normalizeShopperLocation } from "@/lib/shopper/location";
 
 type CartItem = {
   product_unique_id?: string | null;
@@ -326,7 +328,7 @@ function getSellerFulfillmentSummary(items: CartItem[]) {
   return "The seller handles local delivery or courier delivery for these items.";
 }
 
-function getSellerDeliverySummary(items: CartItem[], selectedLocation?: DeliveryLocation | null, pickupSelections: string[] = []) {
+function getSellerDeliverySummary(items: CartItem[], selectedLocation?: DeliveryLocation | null) {
   const fallbackArea = readShopperDeliveryArea();
   const sellerItems = items.filter(
     (item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "seller",
@@ -335,11 +337,6 @@ function getSellerDeliverySummary(items: CartItem[], selectedLocation?: Delivery
 
   const seller = sellerItems[0]?.product_snapshot?.seller;
   const deliveryProfile = seller?.deliveryProfile;
-  const sellerKey = getSellerGroupKey(sellerItems[0]);
-  const pickupSelected = Boolean(sellerKey && pickupSelections.includes(sellerKey));
-  if (pickupSelected && deliveryProfile?.pickup?.enabled) {
-    return { label: "Collection from seller", amount: 0, isPickup: true };
-  }
   if (!deliveryProfile) return { label: "Seller shipping settings still need to be confirmed", amount: 0 };
   const shopperArea = {
     city: selectedLocation?.city || selectedLocation?.suburb || fallbackArea?.city || "",
@@ -364,18 +361,64 @@ function getSellerDeliverySummary(items: CartItem[], selectedLocation?: Delivery
     shopperArea: shopperArea as any,
     parcels,
   } as any);
-  const shopperFacingMessage = getShopperFacingDeliveryMessage({
-    fulfillmentMode: "seller",
-    profile: deliveryProfile,
-    courierProfile: (seller as any)?.courierProfile,
-    productShipping: (sellerItems[0]?.product_snapshot as any)?.product?.shipping || (sellerItems[0]?.product_snapshot as any)?.shipping || null,
-    sellerBaseLocation: seller?.baseLocation || "",
-    shopperArea,
-    variant: sellerItems[0]?.selected_variant_snapshot || null,
-    missingProfileLabel: "Seller shipping settings still need to be confirmed",
+  const normalizedCourierProfile = normalizeSellerCourierProfile((seller as any)?.courierProfile || {});
+  const allowedCountries = Array.isArray(normalizedCourierProfile.allowedDestinationCountries)
+    ? normalizedCourierProfile.allowedDestinationCountries.map((entry) => String(entry).trim().toUpperCase()).filter(Boolean)
+    : [];
+  const shopperCountry = String(shopperArea.country || "").trim().toUpperCase();
+  const shippingEligibility = resolveProductShippingEligibility({
+    product: {
+      placement: { isActive: true, blocked: false },
+      fulfillment: { mode: "seller" },
+      shipping:
+        (sellerItems[0]?.product_snapshot as any)?.product?.shipping ||
+        (sellerItems[0]?.product_snapshot as any)?.shipping ||
+        null,
+      localDeliveryEnabled: true,
+      collectionEnabled: false,
+      listable: true,
+      variants: sellerItems
+        .map((item) => item?.selected_variant_snapshot || null)
+        .filter(Boolean) as Array<Record<string, unknown>>,
+    },
+    seller: {
+      fulfillmentMode: "seller",
+      origin: {
+        countryCode: (deliveryProfile as any)?.origin?.country || null,
+        country: (deliveryProfile as any)?.origin?.country || null,
+        lat: (deliveryProfile as any)?.origin?.latitude ?? null,
+        lng: (deliveryProfile as any)?.origin?.longitude ?? null,
+        latitude: (deliveryProfile as any)?.origin?.latitude ?? null,
+        longitude: (deliveryProfile as any)?.origin?.longitude ?? null,
+      },
+      deliveryProfile: deliveryProfile as any,
+      courierProfile: (seller as any)?.courierProfile || null,
+    },
+    shopperLocation: normalizeShopperLocation({
+      countryCode: shopperArea.country || null,
+      province: shopperArea.province || shopperArea.stateProvinceRegion || null,
+      city: shopperArea.city || null,
+      suburb: shopperArea.suburb || null,
+      postalCode: shopperArea.postalCode || null,
+      lat: shopperArea.latitude ?? null,
+      lng: shopperArea.longitude ?? null,
+      source: shopperArea.country ? "manual" : "none",
+      precision:
+        Number.isFinite(Number(shopperArea.latitude)) && Number.isFinite(Number(shopperArea.longitude))
+          ? "coordinates"
+          : shopperArea.country
+            ? "country"
+            : "none",
+    }),
+    context: {
+      courierRouteSupported: !shopperCountry || !allowedCountries.length ? true : allowedCountries.includes(shopperCountry),
+    },
   });
   return {
-    label: resolved.kind === "unavailable" ? resolved.label : shopperFacingMessage.label,
+    label:
+      resolved.kind === "unavailable"
+        ? resolved.label
+        : shippingEligibility.deliveryPromiseLabel || shippingEligibility.deliveryMessage,
     amount: Number(resolved.amountIncl || 0),
     isPickup: resolved.kind === "collection",
     isUnavailable: resolved.kind === "unavailable",
@@ -1203,20 +1246,19 @@ export function CartCheckout() {
   );
   const payableIncl = useMemo(() => normalizeMoneyAmount(cartTotalIncl), [cartTotalIncl]);
   const selectedCard = cards.find((card) => String(card?.id || "") === selectedCardId) || null;
-  const sellerGroups = cartItems.reduce<Array<{ seller: string; sellerKey: string; items: CartItem[]; pickupAvailable: boolean }>>((groups, item) => {
+  const sellerGroups = cartItems.reduce<Array<{ seller: string; sellerKey: string; items: CartItem[] }>>((groups, item) => {
     const seller = getSellerGroupLabel(item);
     const sellerKey = getSellerGroupKey(item) || seller;
-    const pickupAvailable = item?.product_snapshot?.seller?.deliveryProfile?.pickup?.enabled === true;
     const existing = groups.find((group) => group.sellerKey === sellerKey);
     if (existing) existing.items.push(item);
-    else groups.push({ seller, sellerKey, items: [item], pickupAvailable });
+    else groups.push({ seller, sellerKey, items: [item] });
     return groups;
   }, []);
   const sellerDeliverySummaries = sellerGroups
     .map((group) => ({
       seller: group.seller,
       sellerKey: group.sellerKey,
-      summary: getSellerDeliverySummary(group.items, selectedLocation, pickupSelections),
+      summary: getSellerDeliverySummary(group.items, selectedLocation),
     }))
     .filter((entry) => entry.summary);
   const unavailableLocalSellerGroups = sellerDeliverySummaries.filter(
@@ -3002,7 +3044,7 @@ export function CartCheckout() {
                 {sellerGroups.map((group) => (
                   <div key={group.seller} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
                     {(() => {
-                      const summary = getSellerDeliverySummary(group.items, selectedLocation, pickupSelections);
+                      const summary = getSellerDeliverySummary(group.items, selectedLocation);
                       const breakdownEntry = sellerDeliveryBreakdown.find(
                         (entry) => String(entry?.seller_key || "").trim() === group.sellerKey,
                       );
@@ -3060,7 +3102,7 @@ export function CartCheckout() {
                             const breakdownEntry = sellerDeliveryBreakdown.find(
                               (entry) => String(entry?.seller_key || "").trim() === group.sellerKey,
                             );
-                            const fallbackSummary = getSellerDeliverySummary(group.items, selectedLocation, pickupSelections);
+                            const fallbackSummary = getSellerDeliverySummary(group.items, selectedLocation);
                             const summaryLabel = String(breakdownEntry?.label || fallbackSummary?.label || "").trim();
                             return summaryLabel ? (
                             <p className="mt-1 text-[12px] font-semibold text-[#202020]">
@@ -3070,84 +3112,6 @@ export function CartCheckout() {
                           })()}
                         </div>
                       </div>
-                      {group.pickupAvailable ? (
-                        <label className="mt-3 inline-flex items-center gap-2 text-[12px] font-medium text-[#202020]">
-                          <input
-                            type="checkbox"
-                            checked={pickupSelections.includes(group.sellerKey)}
-                            onChange={(event) =>
-                              setPickupSelections((current) =>
-                                togglePickupSelection(current, group.sellerKey, event.target.checked),
-                              )
-                            }
-                            className="h-4 w-4 rounded border-black/20"
-                          />
-                          Collect these items from the seller instead
-                        </label>
-                      ) : null}
-                      {(() => {
-                        const breakdownEntry = sellerDeliveryBreakdown.find(
-                          (entry) => String(entry?.seller_key || "").trim() === group.sellerKey,
-                        );
-                        const courierQuotes = Array.isArray(breakdownEntry?.available_courier_quotes)
-                          ? breakdownEntry.available_courier_quotes
-                          : [];
-                        if (!courierQuotes.length || pickupSelections.includes(group.sellerKey)) return null;
-                        return (
-                          <div className="mt-3 rounded-[10px] border border-[#cbb26b]/30 bg-[rgba(203,178,107,0.08)] p-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Courier options</p>
-                                <p className="mt-1 text-[12px] text-[#57636c]">Choose how Piessang should ship this seller&apos;s items to your address.</p>
-                              </div>
-                            </div>
-                            <div className="mt-3 space-y-2">
-                              {courierQuotes.map((quote) => {
-                                const quoteId = String(quote?.id || "").trim();
-                                if (!quoteId) return null;
-                                const selected = courierSelections[group.sellerKey] === quoteId;
-                                return (
-                                  <label
-                                    key={`${group.sellerKey}-${quoteId}`}
-                                    className={[
-                                      "flex cursor-pointer items-start justify-between gap-3 rounded-[10px] border px-3 py-3 transition-colors",
-                                      selected
-                                        ? "border-[#cbb26b] bg-white"
-                                        : "border-black/10 bg-white/80 hover:border-[#cbb26b]/60",
-                                    ].join(" ")}
-                                  >
-                                    <div className="flex min-w-0 items-start gap-3">
-                                      <input
-                                        type="radio"
-                                        name={`courier-option-${group.sellerKey}`}
-                                        checked={selected}
-                                        onChange={() =>
-                                          setCourierSelections((current) => ({
-                                            ...current,
-                                            [group.sellerKey]: quoteId,
-                                          }))
-                                        }
-                                        className="mt-1 h-4 w-4 border-black/20"
-                                      />
-                                      <div className="min-w-0">
-                                        <p className="text-[13px] font-semibold text-[#202020]">
-                                          {[String(quote?.carrier || "").trim(), String(quote?.service || "").trim()].filter(Boolean).join(" • ")}
-                                        </p>
-                                        <p className="mt-1 text-[11px] text-[#57636c]">
-                                          {quote?.leadTimeDays ? `${quote.leadTimeDays} day${Number(quote.leadTimeDays) === 1 ? "" : "s"} estimated` : "Live courier rate"}
-                                        </p>
-                                      </div>
-                                    </div>
-                                    <div className="text-right">
-                                      <p className="text-[13px] font-semibold text-[#202020]">{formatMoney(Number(quote?.amountIncl || 0))}</p>
-                                    </div>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })()}
                     </div>
                     <div className="mt-3 space-y-3">
                       {group.items.map((item, index) => (

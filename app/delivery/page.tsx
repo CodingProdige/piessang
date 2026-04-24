@@ -112,7 +112,7 @@ export default function DeliveryPage() {
             title="Delivery eligibility and customer location"
             paragraphs={[
               "4.1 Delivery eligibility depends on the customer location selected or supplied through the Piessang storefront, account settings, delivery address selection, or checkout process. Piessang may use the customer’s chosen delivery area, saved address, or other delivery-location signals to determine whether delivery is available.",
-              "4.2 Seller-managed delivery and shipping options are matched against the seller’s configured delivery origin, local-delivery radius and fee, country shipping settings, collection availability, and any applicable order-value or operational rule.",
+              "4.2 Seller-managed delivery and shipping options are matched against the seller’s configured delivery origin, local delivery settings, country shipping settings, collection availability, and any applicable order-value or operational rule.",
               "4.3 It is the customer’s responsibility to ensure that the delivery location, contact details, collection preference, and any delivery notes submitted through Piessang are accurate, complete, and suitable for successful fulfilment. Piessang is not responsible for errors caused by inaccurate or incomplete customer-supplied delivery information.",
             ]}
           />
@@ -144,7 +144,7 @@ export default function DeliveryPage() {
             number="7"
             title="Seller fulfilment obligations"
             paragraphs={[
-              "7.1 Sellers using Piessang are responsible for maintaining accurate delivery and shipping settings, including their shipping origin, local-delivery radius and fee, country shipping rates, collection rules, cutoff times, delivery fees, and any related fulfilment information required for customers to make informed checkout decisions.",
+              "7.1 Sellers using Piessang are responsible for maintaining accurate delivery and shipping settings, including their shipping origin, local delivery settings, country shipping rates, collection rules, cutoff times, delivery fees, and any related fulfilment information required for customers to make informed checkout decisions.",
               "7.2 If a seller chooses to fulfil items directly, that seller must deliver, ship, or prepare collection for those items in accordance with the fulfilment option selected by the customer at checkout and in accordance with the seller’s own published fulfilment settings.",
               "7.3 Sellers must provide accurate fulfilment updates, courier details, collection readiness updates, or other operational confirmations through Piessang when required. Piessang may take marketplace action where a seller repeatedly fails to fulfil seller-managed orders in accordance with platform standards.",
             ]}

@@ -19,7 +19,6 @@ import { recordProductSalesMetrics } from "@/lib/analytics/product-engagement";
 import { markCheckoutSessionCompleted } from "@/lib/checkout/sessions";
 import { createGuestOrderAccessToken } from "@/lib/orders/guest-access";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
-import { easyshipRateAdapter } from "@/lib/shipping/adapters/easyship";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -191,53 +190,7 @@ function getLineSellerMatches(item, sellerKey, sellerName = "") {
 }
 
 async function createPlatformShipmentForPaidOrder({ db, order, sellerEntry }) {
-  const sellerKey = toStr(sellerEntry?.seller_key || sellerEntry?.sellerCode || sellerEntry?.seller_code || "");
-  const sellerName = toStr(sellerEntry?.seller_name || "");
-  const sellerItems = (Array.isArray(order?.items) ? order.items : []).filter((item) => getLineSellerMatches(item, sellerKey, sellerName));
-  if (!sellerItems.length) {
-    throw new Error("No seller items were found for this courier shipment.");
-  }
-
-  const firstSeller = getLineSellerIdentity(sellerItems[0]);
-  const ownerDoc =
-    (firstSeller?.sellerCode ? await findSellerOwnerByCode(firstSeller.sellerCode) : null) ??
-    (firstSeller?.sellerSlug ? await findSellerOwnerBySlug(firstSeller.sellerSlug) : null);
-  const seller = ownerDoc?.data?.seller && typeof ownerDoc.data.seller === "object" ? ownerDoc.data.seller : {};
-  const origin = seller?.deliveryProfile?.origin && typeof seller.deliveryProfile.origin === "object" ? seller.deliveryProfile.origin : null;
-  if (!origin?.country) {
-    throw new Error("Seller shipping origin is missing, so Piessang cannot create the courier shipment yet.");
-  }
-
-  const destination = getOrderDeliveryAddress(order);
-  if (!destination.country) {
-    throw new Error("Customer delivery address is incomplete, so Piessang cannot create the courier shipment yet.");
-  }
-
-  const parcels = sellerItems.flatMap((item) => collectLineShipmentParcels(item));
-  const items = sellerItems.flatMap((item) => collectLineQuoteItems(item));
-  const availableQuotes = Array.isArray(sellerEntry?.available_courier_quotes) ? sellerEntry.available_courier_quotes : [];
-  const selectedQuoteId = toStr(sellerEntry?.selected_courier_quote_id || "");
-  const selectedQuote = availableQuotes.find((quote) => toStr(quote?.id) === selectedQuoteId) || null;
-
-  return easyshipRateAdapter.createShipment({
-    sellerId: firstSeller?.sellerCode || firstSeller?.sellerSlug || sellerKey,
-    orderId: toStr(order?.order?.orderNumber || order?.order?.id || ""),
-    origin,
-    destination,
-    parcels,
-    serviceCode: selectedQuoteId || null,
-    metadata: {
-      items,
-      sellerCode: firstSeller?.sellerCode || "",
-      sellerSlug: firstSeller?.sellerSlug || "",
-      orderNumber: toStr(order?.order?.orderNumber || ""),
-      companyName: toStr(seller?.vendorName || seller?.groupVendorName || seller?.companyName || sellerName || "Piessang seller"),
-      recipientName: toStr(destination.recipientName || ""),
-      handoverMode: toStr(sellerEntry?.courier_handover_mode || "pickup"),
-      courierName: toStr(selectedQuote?.carrier || sellerEntry?.courier_carrier || ""),
-      serviceName: toStr(selectedQuote?.service || sellerEntry?.courier_service || ""),
-    },
-  });
+  return null;
 }
 
 function getLineProductId(item) {
@@ -937,134 +890,7 @@ export async function POST(req) {
         ? order.pricing_snapshot.sellerDeliveryBreakdown
         : [];
 
-    for (const entry of sellerCourierBreakdown) {
-      const deliveryType = toStr(entry?.delivery_type || entry?.method || entry?.type || "").toLowerCase();
-      const trackingOwner = toStr(entry?.tracking_owner || entry?.trackingOwner || "").toLowerCase();
-      const existingShipmentId = toStr(entry?.easyship_shipment_id || entry?.shipment_id || entry?.shipmentId || "");
-      if (!["courier_live_rate", "platform_courier_live_rate"].includes(deliveryType) || !["platform", "piessang"].includes(trackingOwner) || existingShipmentId) {
-        continue;
-      }
-
-      const sellerKey = toStr(entry?.seller_key || entry?.sellerCode || entry?.seller_code || "");
-      const sellerName = toStr(entry?.seller_name || "");
-      let shipmentPatch = {
-        shipment_creation_state: "failed",
-        shipment_error_message: "",
-        shipment_last_attempt_at: now(),
-        shipment_retryable: true,
-      };
-
-      try {
-        const shipment = await createPlatformShipmentForPaidOrder({ db, order, sellerEntry: entry });
-        shipmentPatch = {
-          easyship_shipment_id: shipment.shipmentId,
-          shipment_id: shipment.shipmentId,
-          tracking_number: shipment.trackingNumber,
-          tracking_url: shipment.trackingUrl,
-          label_url: shipment.labelUrl,
-          shipment_status: shipment.status,
-          shipment_metadata: shipment.metadata || {},
-          courier_carrier: toStr(shipment?.metadata?.courierName || entry?.courier_carrier || ""),
-          courier_service: toStr(shipment?.metadata?.serviceName || entry?.courier_service || ""),
-          shipment_creation_state: "created",
-          shipment_error_message: "",
-          shipment_last_attempt_at: now(),
-          shipment_retryable: false,
-        };
-
-        await db.collection("order_courier_shipments").doc(String(shipment.shipmentId)).set(
-          {
-            shipmentId: String(shipment.shipmentId),
-            orderId,
-            sellerKey: sellerKey || null,
-            sellerName: sellerName || null,
-            trackingNumber: shipment.trackingNumber || null,
-            trackingUrl: shipment.trackingUrl || null,
-            shipmentStatus: toStr(shipment.status || ""),
-            active: !["delivered", "cancelled"].includes(toLower(shipment.status)),
-            createdAt: now(),
-            updatedAt: now(),
-          },
-          { merge: true },
-        );
-      } catch (shipmentError) {
-        shipmentPatch = {
-          shipment_creation_state: "failed",
-          shipment_error_message: shipmentError instanceof Error ? shipmentError.message : "Piessang could not create the courier shipment yet.",
-          shipment_last_attempt_at: now(),
-          shipment_retryable: true,
-        };
-      }
-
-      const matchesEntry = (candidate) =>
-        toStr(candidate?.seller_key || candidate?.sellerCode || candidate?.seller_code || "") === sellerKey ||
-        toStr(candidate?.seller_name || "") === sellerName;
-
-      const nextItems = (Array.isArray(order?.items) ? order.items : []).map((item) => {
-        if (!getLineSellerMatches(item, sellerKey, sellerName)) return item;
-        return {
-          ...item,
-          fulfillment_tracking: {
-            ...(item?.fulfillment_tracking || {}),
-            shipmentId: toStr(shipmentPatch?.shipment_id || ""),
-            trackingNumber: toStr(shipmentPatch?.tracking_number || ""),
-            trackingUrl: toStr(shipmentPatch?.tracking_url || ""),
-            labelUrl: toStr(shipmentPatch?.label_url || ""),
-            shipmentStatus: toStr(shipmentPatch?.shipment_status || ""),
-          },
-        };
-      });
-
-      const nextPricingBreakdown = updateSellerBreakdownEntries(order?.pricing_snapshot?.sellerDeliveryBreakdown || [], matchesEntry, shipmentPatch);
-      const nextDeliveryBreakdown = updateSellerBreakdownEntries(order?.delivery?.fee?.seller_breakdown || [], matchesEntry, shipmentPatch);
-      const nextDeliverySnapshotBreakdown = updateSellerBreakdownEntries(order?.delivery_snapshot?.sellerDeliveryBreakdown || [], matchesEntry, shipmentPatch);
-
-      await ref.set(
-        {
-          items: nextItems,
-          pricing_snapshot: {
-            ...(order?.pricing_snapshot || {}),
-            sellerDeliveryBreakdown: nextPricingBreakdown,
-          },
-          delivery: {
-            ...(order?.delivery || {}),
-            fee: {
-              ...(order?.delivery?.fee || {}),
-              seller_breakdown: nextDeliveryBreakdown,
-            },
-          },
-          delivery_snapshot: {
-            ...(order?.delivery_snapshot || {}),
-            sellerDeliveryBreakdown: nextDeliverySnapshotBreakdown,
-          },
-          timestamps: {
-            ...(order?.timestamps || {}),
-            updatedAt: now(),
-          },
-        },
-        { merge: true },
-      );
-
-      order = {
-        ...order,
-        items: nextItems,
-        pricing_snapshot: {
-          ...(order?.pricing_snapshot || {}),
-          sellerDeliveryBreakdown: nextPricingBreakdown,
-        },
-        delivery: {
-          ...(order?.delivery || {}),
-          fee: {
-            ...(order?.delivery?.fee || {}),
-            seller_breakdown: nextDeliveryBreakdown,
-          },
-        },
-        delivery_snapshot: {
-          ...(order?.delivery_snapshot || {}),
-          sellerDeliveryBreakdown: nextDeliverySnapshotBreakdown,
-        },
-      };
-    }
+    // Easyship shipment creation is deprecated. Orders keep the stored shipping breakdown only.
 
     await recordLiveCommerceEvent("order_paid", {
       orderId,

@@ -10,6 +10,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { loadProductEngagementBadgeSettings } from "@/lib/platform/product-engagement-badge-settings";
 import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
+import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 import {
   getSellerUnavailableReason,
   isSellerAccountUnavailable,
@@ -21,6 +22,8 @@ import {
   variantTotalInStockItemsAvailable,
 } from "@/lib/catalogue/availability";
 import { buildProductStatus } from "@/lib/catalogue/product-status";
+import { readShopperAreaFromSearchParams, resolveCourierRouteEligibilityServer } from "@/lib/shipping/shopper-country";
+import { resolveShopperVisibleProducts } from "@/lib/catalogue/shopper-listing";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
@@ -115,6 +118,9 @@ function applySellerDisplayData(data, sellerOwner) {
   const deliveryProfile = normalizeSellerDeliveryProfile(
     seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
   );
+  const courierProfile = normalizeSellerCourierProfile(
+    seller?.courierProfile && typeof seller.courierProfile === "object" ? seller.courierProfile : {},
+  );
 
   return {
     ...data,
@@ -128,6 +134,7 @@ function applySellerDisplayData(data, sellerOwner) {
       activeSellerSlug: normStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug),
       groupSellerSlug: normStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug),
       deliveryProfile,
+      courierProfile,
     },
     product: {
       ...(data?.product && typeof data.product === "object" ? data.product : {}),
@@ -827,6 +834,7 @@ export async function GET(req){
     const packUnitCount= numParam("packUnitCount");
     const packUnitVolume= numParam("packUnitVolume");
     const packUnit     = normStr(searchParams.get("packUnit")).toLowerCase() || "";
+    const shopperArea = readShopperAreaFromSearchParams(searchParams);
 
     const keywords = keywordsRaw
       ? keywordsRaw.split(/[,\s]+/).map(s=>s.trim().toLowerCase()).filter(Boolean)
@@ -1052,12 +1060,6 @@ export async function GET(req){
       };
     }));
 
-    items = annotateItemsWithOfferGroupContext(items);
-
-    if (!includeUnavailable) {
-      items = groupItemsByCanonicalBarcode(items);
-    }
-
     // 4) Optional fuzzy search on product.title (after filters)
     const search = normText(searchRaw);
     if (search){
@@ -1092,71 +1094,6 @@ export async function GET(req){
       });
     }
 
-    // 4.5) Count total BEFORE applying limit
-    const total = items.length; 
-
-    // 4.6) Build filter options for drawer (from filtered set, pre-limit)
-    const optionSets = {
-      brands: new Set(),
-      categories: new Set(),
-      subCategories: new Set(),
-      kinds: new Set(),
-      packUnits: new Set(),
-      packUnitCounts: new Set(),
-      packUnitVolumes: new Set()
-    };
-    let hasOnSale = false;
-    let hasRental = false;
-    let hasFeatured = false;
-    let hasInStock = false;
-    let priceMinOpt = null;
-    let priceMaxOpt = null;
-
-    for (const it of items){
-      const g = it?.data?.grouping || {};
-      if (g.brand) optionSets.brands.add(String(g.brand));
-      if (g.category) optionSets.categories.add(String(g.category));
-      if (g.subCategory) optionSets.subCategories.add(String(g.subCategory));
-      if (g.kind) optionSets.kinds.add(String(g.kind));
-      if (it?.data?.placement?.isFeatured === true) hasFeatured = true;
-      if (!hasInStock && productInStock(it?.data)) hasInStock = true;
-
-      const vars = Array.isArray(it?.data?.variants) ? it.data.variants : [];
-      for (const v of vars){
-        if (v?.sale?.is_on_sale === true) hasOnSale = true;
-        if (v?.pack?.volume_unit) optionSets.packUnits.add(String(v.pack.volume_unit));
-        if (Number.isFinite(+v?.pack?.unit_count)) optionSets.packUnitCounts.add(Number(v.pack.unit_count));
-        if (Number.isFinite(+v?.pack?.volume)) optionSets.packUnitVolumes.add(Number(v.pack.volume));
-
-        const price = variantEffectivePriceExcl(v);
-        if (Number.isFinite(price)){
-          if (priceMinOpt == null || price < priceMinOpt) priceMinOpt = price;
-          if (priceMaxOpt == null || price > priceMaxOpt) priceMaxOpt = price;
-        }
-      }
-    }
-
-    const options = {
-      brands: Array.from(optionSets.brands).sort((a,b)=>a.localeCompare(b)),
-      categories: Array.from(optionSets.categories).sort((a,b)=>a.localeCompare(b)),
-      subCategories: Array.from(optionSets.subCategories).sort((a,b)=>a.localeCompare(b)),
-      kinds: Array.from(optionSets.kinds).sort((a,b)=>a.localeCompare(b)),
-      onSale: hasOnSale,
-      isRental: hasRental,
-      isFeatured: hasFeatured,
-      inStock: hasInStock,
-      packUnits: Array.from(optionSets.packUnits).sort((a,b)=>a.localeCompare(b)),
-      packUnitCounts: Array.from(optionSets.packUnitCounts).sort((a,b)=>a-b),
-      packUnitVolumes: Array.from(optionSets.packUnitVolumes).sort((a,b)=>a-b),
-      priceRange: {
-        min: priceMinOpt ?? 0,
-        max: priceMaxOpt ?? 0
-      }
-    };
-
-    // 5) Apply limit if any
-    if (!noTopLimit && lim != null) items = items.slice(0, lim);
-
     if (!includeUnavailable && items.length) {
       const badgeMap = await getMarketplaceProductEngagementBadgeSnapshotMap({
         productIds: items.map((item) => normStr(item?.data?.product?.unique_id || item?.id)).filter(Boolean),
@@ -1165,22 +1102,51 @@ export async function GET(req){
       items = applyEngagementBadges(items, badgeMap, badgeSettings);
     }
 
-    const count = items.length;
+    const finalListing = await resolveShopperVisibleProducts({
+      items,
+      shopperLocation: shopperArea,
+      page: 1,
+      pageSize: noTopLimit ? items.length : lim ?? 24,
+      getCourierContext: async ({ seller, shopperLocation }) => {
+        const originCountry = String(seller?.origin?.countryCode || seller?.origin?.country || "").trim();
+        const shopperCountry = String(shopperLocation?.countryCode || "").trim();
+        const handoverMode = String((seller?.courierProfile || {})?.handoverMode || "pickup").trim() || "pickup";
+        if (!originCountry || !shopperCountry) return { courierRouteSupported: null };
+        const courierRouteSupported = await resolveCourierRouteEligibilityServer({
+          originCountry,
+          shopperCountry,
+          handoverMode,
+        });
+        return { courierRouteSupported };
+      },
+    });
 
-    if (!groupByBrand) return ok({ total, count, items, options });
-
-    // 6) Optional group by brand
-    const map = new Map();
-    for (const it of items){
-      const b = String(it?.data?.grouping?.brand ?? "unknown");
-      if (!map.has(b)) map.set(b, []);
-      map.get(b).push(it);
+    if (!groupByBrand) {
+      return ok({
+        total: finalListing.total,
+        count: finalListing.items.length,
+        items: finalListing.items,
+        filters: finalListing.filters,
+      });
     }
-    const groups = Array.from(map.entries())
-      .sort(([a],[b])=>a.localeCompare(b))
-      .map(([brand, items])=>({ brand, items }));
 
-    return ok({ total, count, groups, options });
+    const grouped = new Map();
+    for (const item of finalListing.items) {
+      const key = String(item.brandLabel || "unknown");
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(item);
+    }
+
+    const groups = Array.from(grouped.entries())
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+      .map(([brand, groupedItems]) => ({ brand, items: groupedItems }));
+
+    return ok({
+      total: finalListing.total,
+      count: finalListing.items.length,
+      groups,
+      filters: finalListing.filters,
+    });
   }catch(e){
     console.error("products_v2/get (in-memory) failed:", e);
     return err(500,"Unexpected Error","Something went wrong while fetching products.");

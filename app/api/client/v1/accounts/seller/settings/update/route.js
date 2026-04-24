@@ -11,6 +11,13 @@ import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/selle
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
+import {
+  buildShippingSettingsFromLegacySeller,
+  normalizeShippingSettings,
+  shippingModeRequiresWeight,
+  validateShippingSettings,
+} from "@/lib/shipping/settings";
+import { validateShippingSettingsGoogleRegions } from "@/lib/server/google-admin-regions";
 import { encryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
 import { enqueueGoogleSyncForSeller } from "@/lib/integrations/google-sync-queue";
 import { enrichLocationWithGeocode } from "@/lib/server/google-geocode";
@@ -265,6 +272,8 @@ function parseDeliveryProfile(payload) {
   const normalized = normalizeSellerDeliveryProfile(payload && typeof payload === "object" ? payload : {});
   return {
     origin: {
+      streetAddress: sanitizeText(normalized.origin?.streetAddress),
+      addressLine2: sanitizeText(normalized.origin?.addressLine2),
       country: sanitizeText(normalized.origin?.country),
       region: sanitizeText(normalized.origin?.region),
       city: sanitizeText(normalized.origin?.city),
@@ -408,6 +417,54 @@ async function enforceSellerWeightShippingRequirements(db, sellerSlug, deliveryP
   };
 }
 
+async function enforceSellerShippingWeightRequirements(db, sellerSlug, shippingSettings) {
+  if (!sellerSlug || !shippingModeRequiresWeight(shippingSettings)) {
+    return { hasWeightBasedShipping: false, missingWeightCount: 0, affectedTitles: [], deactivatedCount: 0 };
+  }
+
+  const snap = await db.collection("products_v2").where("product.sellerSlug", "==", sellerSlug).get();
+  const affectedTitles = [];
+  let deactivatedCount = 0;
+  const writes = [];
+
+  for (const docSnap of snap.docs) {
+    const product = docSnap.data() || {};
+    const issues = collectProductWeightRequirementIssues(product);
+    if (!issues.includes("Variant weight")) continue;
+    affectedTitles.push(toStr(product?.product?.title || docSnap.id));
+    if (product?.placement?.isActive === true) {
+      deactivatedCount += 1;
+      writes.push(
+        docSnap.ref.set(
+          {
+            placement: {
+              ...(product?.placement || {}),
+              isActive: false,
+            },
+            listing_block_reason_code: "missing_variant_weight_for_shipping",
+            listing_block_reason:
+              "This product needs variant weight details before it can be published with weight-based shipping settings.",
+            timestamps: {
+              ...(product?.timestamps || {}),
+              updatedAt: new Date(),
+            },
+          },
+          { merge: true },
+        ),
+      );
+    }
+  }
+
+  if (writes.length) await Promise.all(writes);
+
+  return {
+    hasWeightBasedShipping: true,
+    missingWeightCount: affectedTitles.length,
+    affectedTitles: affectedTitles.slice(0, 8),
+    deactivatedCount,
+  };
+}
+
 export async function POST(req) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -419,7 +476,10 @@ export async function POST(req) {
     const branding = parseBranding(data?.branding || data);
     const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
     const courierProfile = parseCourierProfile(data?.courierProfile || data?.courier || {});
+    const providedShippingSettings = data?.shippingSettings && typeof data.shippingSettings === "object" ? data.shippingSettings : null;
     deliveryProfile.origin = await enrichLocationWithGeocode({
+      streetAddress: deliveryProfile.origin?.streetAddress,
+      addressLine2: deliveryProfile.origin?.addressLine2,
       country: deliveryProfile.origin?.country,
       region: deliveryProfile.origin?.region,
       city: deliveryProfile.origin?.city,
@@ -453,13 +513,31 @@ export async function POST(req) {
     if (!owner) return err(404, "Seller Not Found", "Could not find a seller account for that seller slug.");
 
     const currentSeller = owner.data?.seller && typeof owner.data.seller === "object" ? owner.data.seller : {};
+    const legacyDerivedShippingSettings = buildShippingSettingsFromLegacySeller({
+      ...currentSeller,
+      deliveryProfile,
+      courierProfile,
+    });
+    const shippingValidation = validateShippingSettings(providedShippingSettings || legacyDerivedShippingSettings);
+    if (!shippingValidation.valid) {
+      return err(400, "Invalid Shipping Settings", "Seller shipping settings are invalid.", {
+        issues: shippingValidation.issues,
+      });
+    }
+    const shippingSettings = normalizeShippingSettings(shippingValidation.settings);
+    const googleRegionIssues = await validateShippingSettingsGoogleRegions(shippingSettings);
+    if (googleRegionIssues.length) {
+      return err(400, "Invalid Shipping Settings", "Seller shipping settings are invalid.", {
+        issues: googleRegionIssues,
+      });
+    }
     const businessDetails = parseBusinessDetails(data?.businessDetails || data?.business || {}, currentSeller, owner.data || {});
     const nextVendorName = vendorName || toStr(currentSeller.vendorName || currentSeller.groupVendorName || "");
     const nextVendorDescription = sanitizeLongText(
       vendorDescription || currentSeller.vendorDescription || currentSeller.description || "",
     );
     const sellerCode = ensureSellerCode(currentSeller.sellerCode, owner.id);
-    const shippingWeightRequirements = await enforceSellerWeightShippingRequirements(db, sellerSlug, deliveryProfile);
+    const shippingWeightRequirements = await enforceSellerShippingWeightRequirements(db, sellerSlug, shippingSettings);
 
     await db.collection("users").doc(owner.id).update({
       "account.accountName": nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
@@ -474,6 +552,7 @@ export async function POST(req) {
       "seller.activeSellerCode": sellerCode,
       "seller.groupSellerCode": sellerCode,
       "seller.branding": branding,
+      "seller.shippingSettings": shippingSettings,
       "seller.deliveryProfile": deliveryProfile,
       "seller.courierProfile": courierProfile,
       "seller.payoutProfile": encryptedPayoutProfile,
@@ -503,6 +582,7 @@ export async function POST(req) {
       },
       propagatedProducts,
       branding,
+      shippingSettings,
       deliveryProfile,
       courierProfile,
       shippingWeightRequirements,

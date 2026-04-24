@@ -18,7 +18,9 @@ import { RenderWhenVisible } from "@/components/shared/render-when-visible";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement } from "@/lib/analytics/product-engagement-client";
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
+import { resolveRawItemShippingEligibility } from "@/lib/catalogue/shipping-eligibility-adapters";
 import { clampRequestedCartQty, getCartQuantityGuard, getVariantAvailableQuantity } from "@/lib/cart/interaction-guards";
+import { resolveEasyshipCategoryMapping } from "@/lib/integrations/easyship-taxonomy";
 import {
   buildVariantOptionMatrix,
   formatVariantAxisValue,
@@ -27,7 +29,8 @@ import {
   isOptionAvailableForSelection,
   type VariantAxis,
 } from "@/lib/catalogue/variant-options";
-import { getShopperFacingDeliveryMessage, getShopperFacingDeliveryPromise } from "@/lib/shipping/display";
+import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
+import { appendShopperAreaSearchParams } from "@/lib/shipping/shopper-country";
 
 type ProductVariant = {
   variant_id?: string | number;
@@ -113,6 +116,7 @@ type ProductItem = {
       title?: string | null;
       overview?: string | null;
       description?: string | null;
+      shipping?: Record<string, unknown> | null;
       keywords?: string[];
       vendorName?: string | null;
       vendorDescription?: string | null;
@@ -130,6 +134,7 @@ type ProductItem = {
       activeSellerSlug?: string | null;
       groupSellerSlug?: string | null;
       baseLocation?: string | null;
+      courierProfile?: Record<string, unknown> | null;
       deliveryProfile?: {
         localDeliveryRules?: Array<{
           id?: string | null;
@@ -250,6 +255,7 @@ type RecommendationPayload = {
 async function fetchRecommendationRail(
   endpoint: "often-bought-together" | "similar",
   productId: string,
+  shopperArea?: ShopperDeliveryArea | null,
 ): Promise<{
   items: ProductItem[];
   source: "co_purchase" | "catalog_pairing" | "none";
@@ -277,10 +283,11 @@ async function fetchRecommendationRail(
     let hydratedItems = rawItems;
     if (productIds.length) {
       try {
-        const hydrateResponse = await fetch(
-          `/api/catalogue/v1/products/product/get?ids=${encodeURIComponent(productIds.join(","))}&isActive=true`,
-          { cache: "no-store" },
-        );
+        const hydrateUrl = new URL("/api/catalogue/v1/products/product/get", window.location.origin);
+        hydrateUrl.searchParams.set("ids", productIds.join(","));
+        hydrateUrl.searchParams.set("isActive", "true");
+        appendShopperAreaSearchParams(hydrateUrl.searchParams, shopperArea);
+        const hydrateResponse = await fetch(hydrateUrl.toString(), { cache: "no-store" });
         const hydratePayload = (await hydrateResponse.json().catch(() => ({}))) as { ok?: boolean; items?: ProductItem[]; groups?: Array<{ items?: ProductItem[] }> };
         if (hydrateResponse.ok && hydratePayload?.ok !== false) {
           const candidates = Array.isArray(hydratePayload?.items)
@@ -526,6 +533,49 @@ function getVendorSlug(item: ProductItem) {
   );
 }
 
+function buildDeliveryAddressPayload(shopperArea: ShopperDeliveryArea | null | undefined) {
+  if (!shopperArea) return null;
+  return {
+    city: shopperArea.city || "",
+    suburb: shopperArea.suburb || "",
+    province: shopperArea.province || "",
+    stateProvinceRegion: shopperArea.province || "",
+    postalCode: shopperArea.postalCode || "",
+    country: shopperArea.country || "",
+    latitude: shopperArea.latitude ?? shopperArea.lat ?? null,
+    longitude: shopperArea.longitude ?? shopperArea.lng ?? null,
+  };
+}
+
+function buildProductDeliveryQuoteItem(item: ProductItem, variant?: ProductVariant | null) {
+  const productShipping =
+    item.data?.product?.shipping && typeof item.data.product.shipping === "object"
+      ? (item.data.product.shipping as Record<string, unknown>)
+      : null;
+  const categorySlug = String(item.data?.grouping?.category || "").trim();
+  const subCategorySlug = String(item.data?.grouping?.subCategory || "").trim();
+  const easyshipMapping = resolveEasyshipCategoryMapping({ categorySlug, subCategorySlug });
+  const unitValue =
+    typeof getVariantPriceInclVat(variant ?? undefined) === "number"
+      ? Number(getVariantPriceInclVat(variant ?? undefined) || 0)
+      : 0;
+
+  return {
+    categorySlug,
+    subCategorySlug,
+    productId: String(item.data?.product?.unique_id ?? item.id ?? "").trim(),
+    variantId: String(variant?.variant_id || "").trim(),
+    title: String(item.data?.product?.title || "").trim(),
+    description: String(item.data?.product?.title || item.data?.product?.overview || "Marketplace item").trim(),
+    quantity: 1,
+    unitValue,
+    customsCategory:
+      String(productShipping?.customsCategory || productShipping?.customs_category || easyshipMapping.itemCategory || "").trim(),
+    hsCode: String(productShipping?.hsCode || productShipping?.hs_code || "").trim(),
+    countryOfOrigin: String(productShipping?.countryOfOrigin || productShipping?.country_of_origin || "US").trim(),
+  };
+}
+
 function normalizeProductSlug(value?: string | null) {
   return String(value ?? "")
     .trim()
@@ -737,32 +787,6 @@ function getRecommendationCardImageCount(item: ProductItem | null | undefined) {
 
 function noopCartPreviewHandler() {}
 
-function getDeliveryPromise(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
-  return getShopperFacingDeliveryPromise({
-    fulfillmentMode: item.data?.fulfillment?.mode,
-    profile: item.data?.seller?.deliveryProfile,
-    sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea,
-    variant,
-  });
-}
-
-function getSellerDeliveryMessage(item: ProductItem, shopperArea: ShopperDeliveryArea | null, variant?: ProductVariant | null) {
-  return getShopperFacingDeliveryMessage({
-    fulfillmentMode: item.data?.fulfillment?.mode,
-    profile: item.data?.seller?.deliveryProfile,
-    courierProfile: (item.data?.seller as any)?.courierProfile,
-    productShipping: (item.data?.product as any)?.shipping,
-    sellerBaseLocation: item.data?.seller?.baseLocation || "",
-    shopperArea,
-    variant,
-    platformLabel: "Piessang handles shipping for this item",
-    missingProfileLabel: shopperArea
-      ? "Delivery availability confirmed at checkout"
-      : "Set your shipping location to check availability",
-  });
-}
-
 export function SingleProductView({
   item,
   selectedVariantId,
@@ -855,8 +879,31 @@ export function SingleProductView({
   const maxAddableQty = quantityGuard.maxAddableQty;
   const blockedCartMessage = quantityGuard.message;
   const hasDeliveryEstimateLocation = Boolean(shopperArea?.country && hasPreciseShopperDeliveryArea(shopperArea));
-  const deliveryPromise = hasDeliveryEstimateLocation ? getDeliveryPromise(item, shopperArea, activeVariant) : null;
-  const sellerDeliveryMessage = hasDeliveryEstimateLocation ? getSellerDeliveryMessage(item, shopperArea, activeVariant) : null;
+  const shippingEligibility = useMemo(
+    () =>
+      shopperArea
+        ? resolveRawItemShippingEligibility(
+            {
+              ...item,
+              data: {
+                ...(item.data || {}),
+                variants: activeVariant ? [activeVariant] : item.data?.variants,
+              },
+            },
+            shopperArea,
+          )
+        : null,
+    [activeVariant, item, shopperArea],
+  );
+  const sellerDeliveryProfile =
+    item.data?.seller?.deliveryProfile && typeof item.data.seller.deliveryProfile === "object"
+      ? item.data.seller.deliveryProfile
+      : null;
+  const sellerCourierProfile =
+    item.data?.seller?.courierProfile && typeof item.data.seller.courierProfile === "object"
+      ? item.data.seller.courierProfile
+      : null;
+  const sellerBaseLocation = String(item.data?.seller?.baseLocation || "").trim();
   const activeVariantExtraDetails = getVariantExtraDetails(activeVariant);
   const activeVariantHighlightDetails = getVariantHighlightDetails(activeVariant);
   const variantMatrix = useMemo(() => buildVariantOptionMatrix(variants), [variants]);
@@ -881,9 +928,7 @@ export function SingleProductView({
   const oftenBoughtSubtitle =
     resolvedRecommendationRails?.oftenBought?.source === "co_purchase"
       ? "Based on previous orders"
-      : resolvedRecommendationRails?.oftenBought?.source === "catalog_pairing"
-        ? "Suggested from matching products in our catalog"
-        : "Suggested from matching products in our catalog";
+      : "Based on previous orders";
   const brandLabel = getBrandLabel(item);
   const vendorLabel = getVendorLabel(item);
   const alternateOffers = (Array.isArray(item.data?.alternate_offers) ? item.data.alternate_offers : [])
@@ -914,6 +959,16 @@ export function SingleProductView({
   const [favoriteMessage, setFavoriteMessage] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [liveViewerCount, setLiveViewerCount] = useState(0);
+  const [shopperDeliveryQuote, setShopperDeliveryQuote] = useState<{
+    feeAmount: number;
+    deliveryType: string | null;
+    leadTimeDays: number | null;
+    label: string | null;
+    carrier: string | null;
+    service: string | null;
+  } | null>(null);
+  const [shopperDeliveryQuoteLoading, setShopperDeliveryQuoteLoading] = useState(false);
+  const [shopperDeliveryQuoteError, setShopperDeliveryQuoteError] = useState<string | null>(null);
   const isFavorite = favoriteState;
   const addToCartLabel = cartSubmittingAction === "cart"
     ? "Adding..."
@@ -964,6 +1019,185 @@ export function SingleProductView({
   }, []);
 
   useEffect(() => {
+    if (!hasDeliveryEstimateLocation || !shopperArea || !shippingEligibility?.isVisible) {
+      setShopperDeliveryQuote(null);
+      setShopperDeliveryQuoteLoading(false);
+      setShopperDeliveryQuoteError(null);
+      return;
+    }
+    const currentShippingEligibility = shippingEligibility;
+
+    const address = buildDeliveryAddressPayload(shopperArea);
+    const parcel = buildShipmentParcelFromVariant(activeVariant as unknown as Record<string, unknown> | null | undefined);
+    if (!address || !sellerDeliveryProfile) {
+      setShopperDeliveryQuote(null);
+      setShopperDeliveryQuoteLoading(false);
+      setShopperDeliveryQuoteError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setShopperDeliveryQuoteLoading(true);
+    setShopperDeliveryQuoteError(null);
+
+    async function loadDeliveryQuote() {
+      try {
+        const response = await fetch("/api/client/v1/delivery/fee", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            address,
+            subtotalIncl: typeof priceInclVat === "number" ? priceInclVat : 0,
+            deliveryProfile: sellerDeliveryProfile,
+            courierProfile: sellerCourierProfile,
+            productCourierEligible: currentShippingEligibility.courierEligible === true,
+            sellerBaseLocation,
+            quoteItems: [buildProductDeliveryQuoteItem(item, activeVariant)],
+            parcels: parcel ? [parcel] : [],
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(
+            typeof payload?.message === "string" && payload.message.trim()
+              ? payload.message.trim()
+              : "Delivery is not available for this address.",
+          );
+        }
+        if (cancelled) return;
+        const matchedRule = payload?.matchedRule && typeof payload.matchedRule === "object" ? payload.matchedRule : null;
+        setShopperDeliveryQuote({
+          feeAmount: Number(payload?.fee?.amount || 0),
+          deliveryType: typeof payload?.deliveryType === "string" ? payload.deliveryType : null,
+          leadTimeDays: typeof payload?.leadTimeDays === "number" ? payload.leadTimeDays : null,
+          label: typeof payload?.fee?.band === "string" ? payload.fee.band : null,
+          carrier: typeof matchedRule?.courierCarrier === "string" ? matchedRule.courierCarrier : null,
+          service: typeof matchedRule?.courierService === "string" ? matchedRule.courierService : null,
+        });
+        setShopperDeliveryQuoteError(null);
+      } catch (error) {
+        if (!cancelled) {
+          setShopperDeliveryQuote(null);
+          setShopperDeliveryQuoteError(
+            error instanceof Error ? error.message : "Delivery is not available for this address.",
+          );
+        }
+      } finally {
+        if (!cancelled) setShopperDeliveryQuoteLoading(false);
+      }
+    }
+
+    void loadDeliveryQuote();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeVariantId,
+    hasDeliveryEstimateLocation,
+    item.id,
+    priceInclVat,
+    sellerBaseLocation,
+    sellerCourierProfile,
+    sellerDeliveryProfile,
+    shopperArea?.city,
+    shopperArea?.country,
+    shopperArea?.latitude,
+    shopperArea?.longitude,
+    shopperArea?.postalCode,
+    shopperArea?.province,
+    shopperArea?.suburb,
+    shippingEligibility?.fulfillmentType,
+    shippingEligibility?.isVisible,
+  ]);
+
+  const shippingStatus = useMemo(() => {
+    if (!hasDeliveryEstimateLocation) {
+      return {
+        tone: "neutral" as const,
+        label: "Set your address in the header to see delivery estimation.",
+        meta: null as string | null,
+        showPinIcon: true,
+      };
+    }
+
+    if (!shippingEligibility) {
+      return null;
+    }
+
+    if (shopperDeliveryQuoteError) {
+      return {
+        tone: "danger" as const,
+        label: "Shipping unavailable for this address",
+        meta: shopperDeliveryQuoteError,
+        showPinIcon: false,
+      };
+    }
+
+    if (shopperDeliveryQuote?.deliveryType === "courier_live_rate" || shopperDeliveryQuote?.deliveryType === "shipping") {
+      const serviceLabel = [shopperDeliveryQuote.carrier, shopperDeliveryQuote.service].filter(Boolean).join(" ");
+      return {
+        tone: "success" as const,
+        label: `Shipping available from ${formatMoney(shopperDeliveryQuote.feeAmount)}`,
+        meta:
+          shopperDeliveryQuote.leadTimeDays != null
+            ? `${shopperDeliveryQuote.leadTimeDays} day${shopperDeliveryQuote.leadTimeDays === 1 ? "" : "s"} estimated${serviceLabel ? ` • ${serviceLabel}` : ""}`
+            : serviceLabel || null,
+        showPinIcon: false,
+      };
+    }
+
+    if (shopperDeliveryQuote?.deliveryType === "direct") {
+      return {
+        tone: "success" as const,
+        label: `Local delivery from ${formatMoney(shopperDeliveryQuote.feeAmount)}`,
+        meta:
+          shopperDeliveryQuote.leadTimeDays != null
+            ? `${shopperDeliveryQuote.leadTimeDays} day${shopperDeliveryQuote.leadTimeDays === 1 ? "" : "s"} estimated`
+            : null,
+        showPinIcon: false,
+      };
+    }
+
+    if (shippingEligibility.fulfillmentType === "courier") {
+      return {
+        tone: shippingEligibility.deliveryTone === "danger" ? "danger" as const : "success" as const,
+        label: shopperDeliveryQuoteLoading ? "Shipping available" : shippingEligibility.deliveryMessage,
+        meta: shopperDeliveryQuoteLoading ? "Checking shipping cost..." : null,
+        showPinIcon: false,
+      };
+    }
+
+    if (shippingEligibility.deliveryPromiseLabel) {
+      return {
+        tone: "success" as const,
+        label: shippingEligibility.deliveryPromiseLabel,
+        meta: shippingEligibility.deliveryCutoffText,
+        showPinIcon: false,
+      };
+    }
+
+    return {
+      tone:
+        shippingEligibility.deliveryTone === "success"
+          ? "success" as const
+          : shippingEligibility.deliveryTone === "danger"
+            ? "danger" as const
+            : "neutral" as const,
+      label: shippingEligibility.deliveryMessage,
+      meta: null,
+      showPinIcon: false,
+    };
+  }, [
+    formatMoney,
+    hasDeliveryEstimateLocation,
+    shopperDeliveryQuote,
+    shopperDeliveryQuoteError,
+    shopperDeliveryQuoteLoading,
+    shippingEligibility,
+  ]);
+
+  useEffect(() => {
     setResolvedRecommendationRails(recommendationRails);
   }, [recommendationRails]);
 
@@ -978,8 +1212,8 @@ export function SingleProductView({
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       const [oftenBought, similar] = await Promise.all([
-        fetchRecommendationRail("often-bought-together", productId),
-        fetchRecommendationRail("similar", productId),
+        fetchRecommendationRail("often-bought-together", productId, shopperArea),
+        fetchRecommendationRail("similar", productId, shopperArea),
       ]);
       if (!cancelled) {
         setResolvedRecommendationRails({
@@ -993,7 +1227,7 @@ export function SingleProductView({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [liteExperience, productId, recommendationRails, recommendationsActivated]);
+  }, [liteExperience, productId, recommendationRails, recommendationsActivated, shopperArea]);
 
   useEffect(() => {
     setFavoriteState(Boolean(item.data?.is_favorite) || Boolean(favoriteIds?.includes(productId)));
@@ -1559,14 +1793,10 @@ export function SingleProductView({
             onVisible={() => setRecommendationsActivated(true)}
           >
             <ProductPageRecommendations
-              title="Pairs well with"
+              title="Frequently bought together"
               subtitle={oftenBoughtSubtitle}
               products={oftenBoughtItems}
-              viewAllHref={`/products?recommendation=${encodeURIComponent(
-                resolvedRecommendationRails?.oftenBought?.source === "co_purchase"
-                  ? "often-bought-together"
-                  : "catalog-pairing",
-              )}&productId=${encodeURIComponent(productId)}`}
+              viewAllHref={`/products?recommendation=${encodeURIComponent("often-bought-together")}&productId=${encodeURIComponent(productId)}`}
               shopperArea={shopperArea}
             />
           </RenderWhenVisible>
@@ -1666,33 +1896,31 @@ export function SingleProductView({
             </div>
           ) : null}
 
-          {!hasDeliveryEstimateLocation ? (
-            <div className="inline-flex w-full max-w-[360px] items-center gap-2 rounded-full bg-[rgba(144,125,76,0.08)] px-3 py-2 text-left text-[12px] font-semibold text-[#907d4c]">
-              <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-                <path d="M10 1.8a5.9 5.9 0 0 1 5.9 5.9c0 4.1-4.7 9.4-5.2 9.9a1 1 0 0 1-1.4 0c-.5-.5-5.2-5.8-5.2-9.9A5.9 5.9 0 0 1 10 1.8Zm0 8a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2Z" />
-              </svg>
-              <span>Set your address in the header to see delivery estimation.</span>
-            </div>
-          ) : deliveryPromise ? (
-            <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#1a8553]">
+          {shippingStatus ? (
+            <div
+              className={
+                shippingStatus.showPinIcon
+                  ? "inline-flex w-full max-w-[420px] items-center gap-2 rounded-full bg-[rgba(144,125,76,0.08)] px-3 py-2 text-left text-[12px] font-semibold text-[#907d4c]"
+                  : shippingStatus.tone === "success"
+                    ? "flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#1a8553]"
+                    : shippingStatus.tone === "danger"
+                      ? "flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#b91c1c]"
+                      : "flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#57636c]"
+              }
+            >
               <span className="inline-flex items-center gap-1">
                 <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-                  <path d="M6 2a1 1 0 0 1 1 1v1h6V3a1 1 0 1 1 2 0v1h.5A2.5 2.5 0 0 1 18 6.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 15.5v-9A2.5 2.5 0 0 1 4.5 4H5V3a1 1 0 0 1 1-1zm9.5 6h-11a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5z" />
+                  {shippingStatus.showPinIcon ? (
+                    <path d="M10 1.8a5.9 5.9 0 0 1 5.9 5.9c0 4.1-4.7 9.4-5.2 9.9a1 1 0 0 1-1.4 0c-.5-.5-5.2-5.8-5.2-9.9A5.9 5.9 0 0 1 10 1.8Zm0 8a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2Z" />
+                  ) : shippingStatus.label.toLowerCase().includes("shipping") ? (
+                    <path d="M3 5.5A2.5 2.5 0 0 1 5.5 3H12a2 2 0 0 1 1.6.8l1.2 1.6H16a2 2 0 0 1 2 2V11a2 2 0 0 1-2 2h-.6a2.9 2.9 0 0 1-5.8 0H8.4a2.9 2.9 0 0 1-5.8 0H2V8a2.5 2.5 0 0 1 1-2Zm2.5-.5a.5.5 0 0 0-.5.5V11h.7a2.9 2.9 0 0 1 5.6 0H16V8a.5.5 0 0 0-.5-.5h-1.7l-1.8-2.5H5.5Zm0 9.5a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8Zm7 0a.9.9 0 1 0 0-1.8.9.9 0 0 0 0 1.8Z" />
+                  ) : (
+                    <path d="M6 2a1 1 0 0 1 1 1v1h6V3a1 1 0 1 1 2 0v1h.5A2.5 2.5 0 0 1 18 6.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 15.5v-9A2.5 2.5 0 0 1 4.5 4H5V3a1 1 0 0 1 1-1zm9.5 6h-11a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5z" />
+                  )}
                 </svg>
-                {deliveryPromise.label}
+                {shippingStatus.label}
               </span>
-              {deliveryPromise.cutoffText ? (
-                <span className="text-[#8b94a3]">{deliveryPromise.cutoffText}</span>
-              ) : null}
-            </div>
-          ) : sellerDeliveryMessage ? (
-            <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold text-[#57636c]">
-              <span className="inline-flex items-center gap-1">
-                <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-                  <path d="M10 1.8a5.9 5.9 0 0 1 5.9 5.9c0 4.1-4.7 9.4-5.2 9.9a1 1 0 0 1-1.4 0c-.5-.5-5.2-5.8-5.2-9.9A5.9 5.9 0 0 1 10 1.8Zm0 8a2.1 2.1 0 1 0 0-4.2 2.1 2.1 0 0 0 0 4.2Z" />
-                </svg>
-                {sellerDeliveryMessage.label}
-              </span>
+              {shippingStatus.meta ? <span className="text-[#8b94a3]">{shippingStatus.meta}</span> : null}
             </div>
           ) : null}
 
@@ -1711,22 +1939,6 @@ export function SingleProductView({
                 {showHotSales ? <FlameIcon /> : null}
                 {soldCountLabel}
               </span>
-            </div>
-          ) : null}
-
-          {sellerDeliveryMessage ? (
-            <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold">
-              <p
-                className={
-                  sellerDeliveryMessage.tone === "success"
-                    ? "text-[#1a8553]"
-                    : sellerDeliveryMessage.tone === "danger"
-                      ? "text-[#b91c1c]"
-                      : "text-[#57636c]"
-                }
-              >
-                {sellerDeliveryMessage.label}
-              </p>
             </div>
           ) : null}
 
@@ -2103,11 +2315,7 @@ export function SingleProductView({
           title="Frequently bought together"
           subtitle={oftenBoughtSubtitle}
           products={oftenBoughtItems}
-          viewAllHref={`/products?recommendation=${encodeURIComponent(
-            resolvedRecommendationRails?.oftenBought?.source === "co_purchase"
-              ? "often-bought-together"
-              : "catalog-pairing",
-          )}&productId=${encodeURIComponent(productId)}`}
+          viewAllHref={`/products?recommendation=${encodeURIComponent("often-bought-together")}&productId=${encodeURIComponent(productId)}`}
           shopperArea={shopperArea}
         />
       </RenderWhenVisible>

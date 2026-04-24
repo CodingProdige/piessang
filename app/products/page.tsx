@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import type { Metadata } from "next";
 import { PageBody } from "@/components/layout/page-body";
 import { FilterSnackbar } from "@/components/products/filter-snackbar";
 import { ProductsToolbar } from "@/components/products/products-toolbar";
 import { MobileProductFilters } from "@/components/products/mobile-filters";
 import { PriceRangeFilter } from "@/components/products/price-range-filter";
-import { ProductsResults } from "@/components/products/products-results";
+import { CanonicalProductsResults } from "@/components/products/canonical-products-results";
 import {
   PRODUCT_CARD_GRID_IMAGE_SIZES,
   PRODUCT_CARD_LIST_IMAGE_SIZES,
@@ -14,13 +14,10 @@ import {
 import { ResultsCount } from "@/components/products/results-count";
 import { SingleProductView } from "@/components/products/single-product-view";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
-import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
-import {
-  getAttributeFilterGroup,
-  getRelevantAttributeFilterKeys,
-  VARIANT_METADATA_GROUP_ORDER,
-} from "@/lib/catalogue/variant-context";
+import { resolveBrandLabel } from "@/lib/catalogue/brand-key";
+import { appendShopperAreaSearchParams, normalizeShopperArea } from "@/lib/shipping/shopper-country";
 import { buildSeoMetadata } from "@/lib/seo/page-overrides";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 
 export const revalidate = 300;
 
@@ -231,79 +228,24 @@ type ProductItem = {
   };
 };
 
-type BrandBanner = {
-  title: string;
-  description?: string | null;
-  productCount: number;
-  imageUrl?: string | null;
-  blurHashUrl?: string | null;
-};
-
 type FilterCountMap = Record<string, number>;
-type AttributeFilterConfig = {
-  key: string;
-  title: string;
-  variantKey: keyof ProductVariant;
-  group?: string;
-};
-
-const FILTER_OPTION_SETS: Partial<Record<keyof ProductVariant, string[]>> = {
-  size: ["XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "One Size"],
-  shade: ["Light", "Medium", "Tan", "Deep", "Clear", "Universal"],
-  scent: ["Floral", "Fresh", "Citrus", "Woody", "Sweet", "Unscented"],
-  skinType: ["All skin types", "Dry", "Oily", "Combination", "Sensitive", "Mature"],
-  hairType: ["All hair types", "Straight", "Wavy", "Curly", "Coily", "Dry or damaged"],
-  flavor: ["Flavorless", "Original", "Vanilla", "Chocolate", "Berry", "Lemon", "Mixed fruit"],
-  containerType: ["Bottle", "Can", "Carton", "Glass bottle", "Multipack"],
-  storageCapacity: ["32GB", "64GB", "128GB", "256GB", "512GB", "1TB"],
-  memoryRam: ["2GB", "4GB", "8GB", "16GB", "32GB", "64GB"],
-  connectivity: ["Wi-Fi", "4G", "5G", "Bluetooth", "Wired"],
-  sizeSystem: ["UK", "US", "EU", "CM"],
-  material: ["Leather", "Gold", "Silver", "Stainless steel", "Cotton", "Synthetic", "Wood"],
-  bookFormat: ["Paperback", "Hardcover", "eBook", "Audiobook", "DVD", "Blu-ray", "CD"],
-  language: ["English", "Afrikaans", "Zulu", "Xhosa", "French", "Portuguese"],
-  ageRange: ["0-3 months", "3-6 months", "6-12 months", "12-24 months", "2-4 years"],
-};
-
-const FILTER_OPTION_LOOKUPS: Partial<Record<keyof ProductVariant, Map<string, string>>> = Object.fromEntries(
-  Object.entries(FILTER_OPTION_SETS).map(([key, values]) => [
-    key,
-    new Map((values ?? []).map((value) => [value.trim().toLowerCase(), value])),
-  ]),
-) as Partial<Record<keyof ProductVariant, Map<string, string>>>;
 
 type ProductsPayload = {
   ok?: boolean;
   total?: number;
   count?: number;
-  items?: ProductItem[];
+  items?: ShopperVisibleProductCard[];
   id?: string;
   data?: ProductItem["data"];
   groups?: Array<{
     brand?: string;
-    items?: ProductItem[];
+    items?: ShopperVisibleProductCard[];
   }>;
-  options?: {
-    brands?: string[];
-    categories?: string[];
-    subCategories?: string[];
-    kinds?: string[];
-    onSale?: boolean;
-    isRental?: boolean;
-    isFeatured?: boolean;
-    inStock?: boolean;
-    packUnits?: string[];
-    packUnitCounts?: number[];
-    packUnitVolumes?: number[];
-    attributeFilters?: Array<{
-      key: string;
-      title: string;
-      items: string[];
-    }>;
-    priceRange?: {
-      min?: number;
-      max?: number;
-    };
+  filters?: {
+    categories?: Array<{ slug: string; title: string; count: number }>;
+    subCategories?: Array<{ slug: string; title: string; categorySlug: string; count: number }>;
+    brands?: Array<{ slug: string; title: string; count: number }>;
+    priceRange?: { min?: number; max?: number };
   };
   message?: string;
 };
@@ -352,75 +294,6 @@ type CatalogueBrandItem = {
 
 const VAT_MULTIPLIER = 1.15;
 const VAT_DIVISOR = 1.15;
-const ATTRIBUTE_FILTERS: AttributeFilterConfig[] = [
-  { key: "size", title: "Size", variantKey: "size" },
-  { key: "color", title: "Color", variantKey: "color" },
-  { key: "material", title: "Material", variantKey: "material" },
-  { key: "shade", title: "Shade", variantKey: "shade" },
-  { key: "scent", title: "Scent", variantKey: "scent" },
-  { key: "skinType", title: "Skin type", variantKey: "skinType" },
-  { key: "hairType", title: "Hair type", variantKey: "hairType" },
-  { key: "flavor", title: "Flavour", variantKey: "flavor" },
-  { key: "abv", title: "ABV", variantKey: "abv" },
-  { key: "containerType", title: "Container", variantKey: "containerType" },
-  { key: "caffeineLevel", title: "Caffeine", variantKey: "caffeineLevel" },
-  { key: "sweetenerType", title: "Sweetener", variantKey: "sweetenerType" },
-  { key: "storageCapacity", title: "Storage", variantKey: "storageCapacity" },
-  { key: "memoryRam", title: "Memory", variantKey: "memoryRam" },
-  { key: "connectivity", title: "Connectivity", variantKey: "connectivity" },
-  { key: "compatibility", title: "Compatibility", variantKey: "compatibility" },
-  { key: "fit", title: "Fit", variantKey: "fit" },
-  { key: "lengthSpec", title: "Length", variantKey: "lengthSpec" },
-  { key: "sleeveLength", title: "Sleeve length", variantKey: "sleeveLength" },
-  { key: "neckline", title: "Neckline", variantKey: "neckline" },
-  { key: "rise", title: "Rise", variantKey: "rise" },
-  { key: "pattern", title: "Pattern", variantKey: "pattern" },
-  { key: "ringSize", title: "Ring size", variantKey: "ringSize" },
-  { key: "strapLength", title: "Strap length", variantKey: "strapLength" },
-  { key: "heelHeight", title: "Heel height", variantKey: "heelHeight" },
-  { key: "stoneType", title: "Stone type", variantKey: "stoneType" },
-  { key: "sizeSystem", title: "Size system", variantKey: "sizeSystem" },
-  { key: "bookFormat", title: "Format", variantKey: "bookFormat" },
-  { key: "language", title: "Language", variantKey: "language" },
-  { key: "readingAge", title: "Reading age", variantKey: "readingAge" },
-  { key: "subtitleLanguage", title: "Subtitle language", variantKey: "subtitleLanguage" },
-  { key: "editionType", title: "Edition", variantKey: "editionType" },
-  { key: "gamePlatform", title: "Platform", variantKey: "gamePlatform" },
-  { key: "gameEdition", title: "Edition", variantKey: "gameEdition" },
-  { key: "genre", title: "Genre", variantKey: "genre" },
-  { key: "regionCode", title: "Region", variantKey: "regionCode" },
-  { key: "ageRating", title: "Age rating", variantKey: "ageRating" },
-  { key: "petSize", title: "Pet size", variantKey: "petSize" },
-  { key: "petLifeStage", title: "Life stage", variantKey: "petLifeStage" },
-  { key: "breedSize", title: "Breed size", variantKey: "breedSize" },
-  { key: "petFoodType", title: "Food type", variantKey: "petFoodType" },
-  { key: "activityLevel", title: "Activity level", variantKey: "activityLevel" },
-  { key: "luggageSize", title: "Luggage size", variantKey: "luggageSize" },
-  { key: "shellType", title: "Shell type", variantKey: "shellType" },
-  { key: "wheelCount", title: "Wheel count", variantKey: "wheelCount" },
-  { key: "closureType", title: "Closure type", variantKey: "closureType" },
-  { key: "cameraMount", title: "Camera mount", variantKey: "cameraMount" },
-  { key: "sensorFormat", title: "Sensor format", variantKey: "sensorFormat" },
-  { key: "lensMount", title: "Lens mount", variantKey: "lensMount" },
-  { key: "stabilization", title: "Stabilization", variantKey: "stabilization" },
-  { key: "megapixels", title: "Megapixels", variantKey: "megapixels" },
-  { key: "instrumentType", title: "Instrument type", variantKey: "instrumentType" },
-  { key: "stringCount", title: "String count", variantKey: "stringCount" },
-  { key: "bodySize", title: "Body size", variantKey: "bodySize" },
-  { key: "pickupType", title: "Pickup type", variantKey: "pickupType" },
-  { key: "ageRange", title: "Age range", variantKey: "ageRange" },
-  { key: "modelFitment", title: "Fitment", variantKey: "modelFitment" },
-  { key: "sizeRange", title: "Size range", variantKey: "sizeRange" },
-  { key: "feedingStage", title: "Feeding stage", variantKey: "feedingStage" },
-  { key: "safetyStandard", title: "Safety standard", variantKey: "safetyStandard" },
-  { key: "sidePosition", title: "Side / position", variantKey: "sidePosition" },
-  { key: "axlePosition", title: "Axle", variantKey: "axlePosition" },
-  { key: "vehicleMake", title: "Vehicle make", variantKey: "vehicleMake" },
-  { key: "energyRating", title: "Energy rating", variantKey: "energyRating" },
-  { key: "installationType", title: "Installation type", variantKey: "installationType" },
-  { key: "fuelType", title: "Fuel type", variantKey: "fuelType" },
-  { key: "noiseLevel", title: "Noise level", variantKey: "noiseLevel" },
-];
 
 function humanizeSlug(value: string) {
   return value
@@ -444,43 +317,6 @@ function titleCaseFilterValue(value: string) {
     .join(" ");
 }
 
-function normalizeVariantFilterValue(key: keyof ProductVariant, value: unknown) {
-  const raw = normalizeFilterValue(value);
-  if (!raw) return "";
-
-  const compact = raw.replace(/\s+/g, " ").trim();
-  const lookup = FILTER_OPTION_LOOKUPS[key];
-  const exactKnown = lookup?.get(compact.toLowerCase());
-  if (exactKnown) return exactKnown;
-
-  if (key === "storageCapacity" || key === "memoryRam") {
-    const normalized = compact.toUpperCase().replace(/\s+/g, "");
-    const known = lookup?.get(normalized.toLowerCase());
-    return known || normalized;
-  }
-
-  if (key === "abv") {
-    const normalized = compact.replace(/\s*abv$/i, "").replace(/\s+/g, "");
-    return normalized ? normalized.toUpperCase() : "";
-  }
-
-  if (key === "color") {
-    return compact.startsWith("#") ? compact.toUpperCase() : titleCaseFilterValue(compact);
-  }
-
-  if (key === "ringSize" || key === "strapLength" || key === "compatibility") {
-    return compact;
-  }
-
-  return titleCaseFilterValue(compact);
-}
-
-function sortFilterValues(values: string[]) {
-  return [...values].sort((left, right) =>
-    left.localeCompare(right, "en", { numeric: true, sensitivity: "base" }),
-  );
-}
-
 export function currentParam(searchParams: Record<string, SearchParamValue>, key: string) {
   const value = searchParams[key];
   return typeof value === "string" ? value : Array.isArray(value) ? value[0] : undefined;
@@ -496,7 +332,19 @@ function currentNumberParam(searchParams: Record<string, SearchParamValue>, key:
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
+function readServerShopperArea(cookieStore: Awaited<ReturnType<typeof cookies>>) {
+  const raw = cookieStore.get("piessang_shopper_delivery_area")?.value || "";
+  if (raw) {
+    try {
+      return normalizeShopperArea(JSON.parse(decodeURIComponent(raw)));
+    } catch {
+      // ignore malformed cookie payloads
+    }
+  }
+  return normalizeShopperArea({ country: cookieStore.get("piessang_shopper_country")?.value || "" });
+}
+
+function buildProductsUrl(searchParams: Record<string, SearchParamValue>, shopperArea?: any) {
   const params = new URLSearchParams();
   let previewMode = false;
 
@@ -541,11 +389,14 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>) {
     params.set("isActive", "true");
   }
 
+  appendShopperAreaSearchParams(params, shopperArea);
+
   return `/api/catalogue/v1/products/product/get?${params.toString()}`;
 }
 
 export async function fetchProducts(searchParams: Record<string, SearchParamValue>, origin: string) {
-  const response = await fetch(new URL(buildProductsUrl(searchParams), origin), {
+  const cookieStore = await cookies();
+  const response = await fetch(new URL(buildProductsUrl(searchParams, readServerShopperArea(cookieStore)), origin), {
     next: { revalidate },
   });
   return (await response.json()) as ProductsPayload;
@@ -816,10 +667,6 @@ function getBrandLabel(item: ProductItem) {
   return resolveBrandLabel(item.data);
 }
 
-function getBrandKey(item: ProductItem) {
-  return resolveBrandKey(item.data);
-}
-
 function getPageTitle(searchParams: Record<string, SearchParamValue>) {
   const personalized = currentParam(searchParams, "personalized");
   const category = currentParam(searchParams, "category");
@@ -839,10 +686,6 @@ function getPageTitle(searchParams: Record<string, SearchParamValue>) {
 
 function getVariantCount(item: ProductItem) {
   return item.data?.variants?.length ?? 0;
-}
-
-function getPackUnit(item: ProductItem) {
-  return pickDisplayVariant(item.data?.variants)?.pack?.volume_unit?.toLowerCase() ?? "";
 }
 
 function getStockState(variant?: ProductVariant, item?: ProductItem) {
@@ -871,28 +714,12 @@ function getStockState(variant?: ProductVariant, item?: ProductItem) {
   return { label: "Stock unknown", tone: "neutral" as const };
 }
 
-function getReviewState(item: ProductItem) {
-  const average = item.data?.ratings?.average;
-  const count = item.data?.ratings?.count;
-  if (typeof average === "number" && typeof count === "number") {
-    return {
-      label: `${average.toFixed(1)} (${count} reviews)`,
-      count,
-    };
-  }
-  return null;
+function getSortPrice(item: ShopperVisibleProductCard) {
+  const amountIncl = item?.price?.amountIncl;
+  return typeof amountIncl === "number" ? amountIncl / VAT_DIVISOR : Number.POSITIVE_INFINITY;
 }
 
-function getRatingAverage(item: ProductItem) {
-  return typeof item.data?.ratings?.average === "number" ? item.data.ratings.average : null;
-}
-
-function getSortPrice(item: ProductItem) {
-  const variant = pickDisplayVariant(item.data?.variants) ?? undefined;
-  return getVariantPriceExVat(variant) ?? Number.POSITIVE_INFINITY;
-}
-
-function getProductsPriceRange(items: ProductItem[]) {
+function getProductsPriceRange(items: ShopperVisibleProductCard[]) {
   const prices = items
     .map((item) => getSortPrice(item))
     .filter((price): price is number => Number.isFinite(price) && price !== Number.POSITIVE_INFINITY);
@@ -913,7 +740,7 @@ type PriceHistogramBucket = {
   count: number;
 };
 
-function buildPriceHistogram(items: ProductItem[], min: number, max: number): PriceHistogramBucket[] {
+function buildPriceHistogram(items: ShopperVisibleProductCard[], min: number, max: number): PriceHistogramBucket[] {
   const step = resolveStep(min, max);
   const uiMin = Math.max(0, Math.floor(min / step) * step);
   const uiMax = Math.max(max, resolveOptionMax(max, step));
@@ -972,54 +799,13 @@ function mergePriceRanges(
   return left ?? right ?? null;
 }
 
-function countBy(items: ProductItem[], getter: (item: ProductItem) => string) {
-  return items.reduce<FilterCountMap>((acc, item) => {
-    const key = getter(item);
-    if (!key) return acc;
-    acc[key] = (acc[key] ?? 0) + 1;
-    return acc;
-  }, {});
-}
-
-function getVariantAttributeValues(item: ProductItem, key: keyof ProductVariant) {
-  const values = Array.isArray(item.data?.variants) ? item.data.variants : [];
-  return Array.from(
-    new Set(
-      values
-        .map((variant) => normalizeVariantFilterValue(key, variant?.[key]))
-        .filter(Boolean),
-    ),
+function countRatings(items: ShopperVisibleProductCard[], threshold: number) {
+  return items.reduce(
+    (acc, item) =>
+      acc +
+      ((typeof item?.review?.average === "number" ? item.review.average : 0) >= threshold ? 1 : 0),
+    0,
   );
-}
-
-function buildAttributeFilterData(items: ProductItem[], category?: string, subCategory?: string) {
-  const relevantKeys = getRelevantAttributeFilterKeys(category, subCategory);
-  const configs = relevantKeys
-    ? ATTRIBUTE_FILTERS.filter((config) => relevantKeys.has(config.key))
-    : ATTRIBUTE_FILTERS;
-
-  return configs
-    .map((config) => {
-      const counts = items.reduce<FilterCountMap>((acc, item) => {
-        for (const value of getVariantAttributeValues(item, config.variantKey)) {
-          acc[value] = (acc[value] ?? 0) + 1;
-        }
-        return acc;
-      }, {});
-      const entries = sortFilterValues(Object.keys(counts));
-      if (!entries.length) return null;
-      return {
-        ...config,
-        group: getAttributeFilterGroup(config.key),
-        items: entries,
-        counts,
-      };
-    })
-    .filter(Boolean) as Array<AttributeFilterConfig & { items: string[]; counts: FilterCountMap }>;
-}
-
-function countRatings(items: ProductItem[], threshold: number) {
-  return items.reduce((acc, item) => acc + ((getRatingAverage(item) ?? 0) >= threshold ? 1 : 0), 0);
 }
 
 function getProductHref(item: ProductItem) {
@@ -1032,26 +818,7 @@ function getProductHref(item: ProductItem) {
   return uniqueId ? `/products/${title}?unique_id=${encodeURIComponent(String(uniqueId))}` : "/products";
 }
 
-function getBrandBanner(items: ProductItem[], currentBrand?: string): BrandBanner | null {
-  if (!currentBrand) {
-    return null;
-  }
-
-  const brandItems = items.filter((item) => getBrandKey(item) === currentBrand);
-  const match = brandItems[0];
-  if (!match) {
-    return null;
-  }
-
-  return {
-    title: match.data?.brand?.title ?? humanizeSlug(currentBrand),
-    description: match.data?.brand?.description ?? match.data?.product?.description ?? null,
-    productCount: brandItems.length,
-    imageUrl: match.data?.brand?.media?.images?.[0]?.imageUrl ?? match.data?.media?.images?.[0]?.imageUrl ?? null,
-  };
-}
-
-async function fetchBrandBannerImage(currentBrand?: string, origin?: string): Promise<Pick<BrandBanner, "title" | "description" | "imageUrl" | "blurHashUrl"> | null> {
+async function fetchBrandBannerImage(currentBrand?: string, origin?: string): Promise<{ title: string; description?: string | null; imageUrl?: string | null; blurHashUrl?: string | null } | null> {
   if (!currentBrand) return null;
 
   const attempts = [
@@ -1095,7 +862,7 @@ async function fetchBrandBannerImage(currentBrand?: string, origin?: string): Pr
   return null;
 }
 
-function sortProducts(items: ProductItem[], sort: string) {
+function sortProducts(items: ShopperVisibleProductCard[], sort: string) {
   const copy = [...items];
 
   switch (sort) {
@@ -1105,13 +872,13 @@ function sortProducts(items: ProductItem[], sort: string) {
       return copy.sort((a, b) => getSortPrice(b) - getSortPrice(a));
     case "name-asc":
       return copy.sort((a, b) =>
-        (a.data?.product?.title ?? "").localeCompare(b.data?.product?.title ?? "", "en", {
+        (a.title ?? "").localeCompare(b.title ?? "", "en", {
           sensitivity: "base",
         }),
       );
     case "name-desc":
       return copy.sort((a, b) =>
-        (b.data?.product?.title ?? "").localeCompare(a.data?.product?.title ?? "", "en", {
+        (b.title ?? "").localeCompare(a.title ?? "", "en", {
           sensitivity: "base",
         }),
       );
@@ -1255,40 +1022,6 @@ function RatingFilterGroup({
   );
 }
 
-function AttributeFilterGroupSection({
-  title,
-  filters,
-  currentAttributeFilters,
-  baseParams,
-}: {
-  title: string;
-  filters: Array<AttributeFilterConfig & { items: string[]; counts: FilterCountMap; group?: string }>;
-  currentAttributeFilters: Record<string, string>;
-  baseParams: Record<string, SearchParamValue>;
-}) {
-  if (!filters.length) return null;
-
-  return (
-    <section className="border-b border-black/5 pb-5 last:border-b-0 last:pb-0">
-      <h3 className="text-[13px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{title}</h3>
-      <div className="mt-3 space-y-5">
-        {filters.map((config) => (
-          <FilterGroup
-            key={config.key}
-            title={config.title}
-            items={config.items}
-            currentValue={currentAttributeFilters[config.key]}
-            baseParams={baseParams}
-            paramKey={config.key}
-            counts={config.counts}
-            formatItemLabel={(value) => value}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function ToggleFilter({
   title,
   enabled,
@@ -1320,182 +1053,6 @@ function ToggleFilter({
         {enabled ? "×" : "•"}
       </span>
       {title}
-    </Link>
-  );
-}
-
-function ProductCard({
-  item,
-  view,
-  openInNewTab = false,
-}: {
-  item: ProductItem;
-  view: "grid" | "list";
-  openInNewTab?: boolean;
-}) {
-  const image = item.data?.media?.images?.find((entry) => Boolean(entry?.imageUrl)) ?? null;
-  const titleText = item.data?.product?.title ?? "Untitled product";
-  const brandText = getBrandLabel(item);
-  const defaultVariant = pickDisplayVariant(item.data?.variants) ?? undefined;
-  const price = formatCurrencyInclVat(getVariantPriceExVat(defaultVariant) ?? undefined);
-  const stockState = getStockState(defaultVariant, item);
-  const reviewState = getReviewState(item);
-  const variantCount = getVariantCount(item);
-  const saleActive = Boolean(
-    item.data?.has_sale_variant ||
-      defaultVariant?.sale?.is_on_sale ||
-      defaultVariant?.pricing?.sale_price_excl,
-  );
-  const href = getProductHref(item);
-  const linkTarget = openInNewTab ? "_blank" : undefined;
-  const linkRel = openInNewTab ? "noreferrer noopener" : undefined;
-
-  if (view === "list") {
-    return (
-      <Link
-        href={href}
-        target={linkTarget}
-        rel={linkRel}
-        scroll={false}
-        data-clickable-container="true"
-        className="block overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
-      >
-        <div className="flex flex-col gap-4 p-4 sm:flex-row">
-          <div className="relative h-[160px] w-full shrink-0 overflow-hidden rounded-[8px] bg-white sm:w-[180px]">
-            <BlurhashImage
-              src={image?.imageUrl ?? ""}
-              blurHash={image?.blurHashUrl ?? ""}
-              alt={titleText}
-              sizes={PRODUCT_CARD_LIST_IMAGE_SIZES}
-              className="h-full w-full"
-              imageClassName="object-cover"
-            />
-          </div>
-
-          <div className="min-w-0 flex-1 space-y-2">
-            <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.08em]">
-              <span className="text-[#907d4c]">{brandText}</span>
-              {saleActive ? (
-                <span className="rounded-full bg-[rgba(203,178,107,0.18)] px-2 py-0.5 text-[#4a4545]">
-                  On sale
-                </span>
-              ) : null}
-              <span
-                className={
-                  stockState.tone === "success"
-                    ? "rounded-full bg-[rgba(26,133,83,0.12)] px-2 py-0.5 text-[#1a8553]"
-                    : stockState.tone === "danger"
-                      ? "rounded-full bg-[rgba(220,38,38,0.08)] px-2 py-0.5 text-[#b91c1c]"
-                      : "rounded-full bg-[#f7f7f7] px-2 py-0.5 text-[#57636c]"
-                }
-              >
-                {stockState.label}
-              </span>
-            </div>
-
-            <h2 className="text-[17px] font-semibold leading-[1.18] text-[#202020] sm:text-[18px]">
-              {titleText}
-            </h2>
-
-            <div className="flex flex-wrap items-center gap-2 text-[11px] leading-none text-[#57636c]">
-              <span>{variantCount} variants available</span>
-              {reviewState ? (
-                <>
-                  <span>•</span>
-                  <span className="text-[#4a4545]">{reviewState.label}</span>
-                </>
-              ) : null}
-            </div>
-
-            <div className="flex flex-wrap items-end gap-3">
-              {price ? (
-                <p className="text-[22px] font-semibold leading-none tracking-tight text-[#4a4545]">
-                  {price}
-                </p>
-              ) : (
-                <p className="text-[12px] text-[#8b94a3]">Price unavailable</p>
-              )}
-              {item.data?.is_favorite ? (
-                <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1.5 text-[11px] font-semibold text-[#4a4545]">
-                  In wishlist
-                </span>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      </Link>
-    );
-  }
-
-  return (
-    <Link
-      href={href}
-      target={linkTarget}
-      rel={linkRel}
-      scroll={false}
-      data-clickable-container="true"
-      className="block overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]"
-    >
-      <div className="relative aspect-[1/1] overflow-hidden bg-white">
-        <BlurhashImage
-          src={image?.imageUrl ?? ""}
-          blurHash={image?.blurHashUrl ?? ""}
-          alt={titleText}
-          sizes={PRODUCT_CARD_GRID_IMAGE_SIZES}
-          className="h-full w-full"
-          imageClassName="object-cover"
-        />
-      </div>
-
-      <div className="space-y-2 px-4 py-4 sm:px-4 sm:py-4">
-        <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.08em]">
-          <span className="text-[#907d4c]">{brandText}</span>
-          {saleActive ? (
-            <span className="rounded-full bg-[rgba(203,178,107,0.18)] px-2 py-0.5 text-[#4a4545]">
-              On sale
-            </span>
-          ) : null}
-        </div>
-
-        <h2 className="text-[15px] font-semibold leading-[1.18] text-[#202020] sm:text-[16px]">
-          {titleText}
-        </h2>
-
-        <div className="flex flex-wrap items-center gap-2 text-[11px] leading-none text-[#57636c]">
-          <span>{variantCount} variants</span>
-          <span>•</span>
-          <span
-            className={
-              stockState.tone === "success"
-                ? "text-[#1a8553]"
-                : stockState.tone === "danger"
-                  ? "text-[#b91c1c]"
-                  : "text-[#57636c]"
-            }
-          >
-            {stockState.label}
-          </span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 text-[11px] leading-none text-[#57636c]">
-          {reviewState ? (
-            <span className="inline-flex items-center gap-1 text-[#4a4545]">
-              <span className="text-[#cbb26b]">★</span>
-              {reviewState.label}
-            </span>
-          ) : (
-            <span>No reviews yet</span>
-          )}
-        </div>
-
-        {price ? (
-          <p className="pt-1 text-[20px] font-semibold leading-none tracking-tight text-[#4a4545]">
-            {price}
-          </p>
-        ) : (
-          <p className="pt-1 text-[12px] text-[#8b94a3]">Price unavailable</p>
-        )}
-      </div>
     </Link>
   );
 }
@@ -1560,44 +1117,29 @@ export async function ProductsPage({
     }
   }
 
-  const [payload, catalogPayload] = await Promise.all([
-    fetchProducts(resolvedSearchParams, origin),
-    fetchProducts({ isActive: "true", limit: "9999" }, origin),
-  ]);
+  const payload = await fetchProducts(resolvedSearchParams, origin);
   const rawItems = payload.items ?? payload.groups?.flatMap((group) => group.items ?? []) ?? [];
-
-  const catalogItems = catalogPayload.items ?? catalogPayload.groups?.flatMap((group) => group.items ?? []) ?? [];
-  const items = rawItems.filter((item): item is ProductItem => Boolean(item?.data));
+  const items = rawItems.filter((item): item is ShopperVisibleProductCard => Boolean(item?.id));
   const placement = currentParam(resolvedSearchParams, "search") ? "search_results" : "category_grid";
   const displayItems = items;
-  const countItems = catalogItems.filter((item): item is ProductItem => Boolean(item?.data));
-  const facetItems = displayItems;
-  const options = payload.options ?? {};
+  const filters = payload.filters ?? {};
   const title = payload.data?.product?.title ?? getPageTitle(resolvedSearchParams);
   const totalCount = payload.total ?? displayItems.length;
   const count = payload.count ?? displayItems.length;
   const derivedPriceRange = getProductsPriceRange(displayItems);
-  const categoryCounts = countBy(facetItems, (item) => item.data?.grouping?.category ?? "");
-  const subCategoryCounts = countBy(facetItems, (item) => item.data?.grouping?.subCategory ?? "");
-  const brandCounts = countBy(facetItems, (item) => item.data?.grouping?.brand ?? item.data?.brand?.slug ?? "");
-  const kindCounts = countBy(facetItems, (item) => item.data?.grouping?.kind ?? "");
-  const packUnitCounts = countBy(facetItems, (item) => getPackUnit(item));
+  const categoryCounts = Object.fromEntries((filters.categories ?? []).map((entry) => [entry.slug, entry.count])) as FilterCountMap;
+  const subCategoryCounts = Object.fromEntries((filters.subCategories ?? []).map((entry) => [entry.slug, entry.count])) as FilterCountMap;
+  const brandCounts = Object.fromEntries((filters.brands ?? []).map((entry) => [entry.slug, entry.count])) as FilterCountMap;
   const ratingCounts: FilterCountMap = {
-    4: countRatings(facetItems, 4),
-    3: countRatings(facetItems, 3),
-    2: countRatings(facetItems, 2),
-    1: countRatings(facetItems, 1),
+    4: countRatings(displayItems, 4),
+    3: countRatings(displayItems, 3),
+    2: countRatings(displayItems, 2),
+    1: countRatings(displayItems, 1),
   };
 
   const currentCategory = currentParam(resolvedSearchParams, "category");
   const currentSubCategory = currentParam(resolvedSearchParams, "subCategory");
   const currentBrand = currentParam(resolvedSearchParams, "brand");
-  const currentKind = currentParam(resolvedSearchParams, "kind");
-  const currentPackUnit = currentParam(resolvedSearchParams, "packUnit");
-  const attributeFilters = buildAttributeFilterData(facetItems, currentCategory, currentSubCategory);
-  const currentAttributeFilters = Object.fromEntries(
-    ATTRIBUTE_FILTERS.map((config) => [config.key, currentParam(resolvedSearchParams, config.key) ?? ""]),
-  ) as Record<string, string>;
   const currentInStock = currentParam(resolvedSearchParams, "inStock") === "true";
   const currentOnSale = currentParam(resolvedSearchParams, "onSale") === "true";
   const currentNewArrivals = currentParam(resolvedSearchParams, "newArrivals") === "true";
@@ -1610,15 +1152,11 @@ export async function ProductsPage({
   const imageSearchLabel = currentParam(resolvedSearchParams, "imageLabel");
   const currentBrandCount = currentBrand ? brandCounts[currentBrand] ?? 0 : 0;
   const baseParams = resolvedSearchParams;
-  const groupedAttributeFilters = VARIANT_METADATA_GROUP_ORDER.map((group) => ({
-    group,
-    filters: attributeFilters.filter((config) => config.group === group),
-  })).filter((entry) => entry.filters.length > 0);
   const optionPriceRange =
-    options.priceRange?.min != null && options.priceRange?.max != null
+    filters.priceRange?.min != null && filters.priceRange?.max != null
       ? {
-          min: toDisplayVat(options.priceRange.min) ?? options.priceRange.min,
-          max: toDisplayVat(options.priceRange.max) ?? options.priceRange.max,
+          min: toDisplayVat(filters.priceRange.min) ?? filters.priceRange.min,
+          max: toDisplayVat(filters.priceRange.max) ?? filters.priceRange.max,
         }
       : undefined;
   const priceRange = mergePriceRanges(derivedPriceRange, optionPriceRange);
@@ -1626,32 +1164,27 @@ export async function ProductsPage({
   const priceHistogram = activePriceRange
     ? buildPriceHistogram(displayItems, activePriceRange.min, activePriceRange.max)
     : [];
-  const filterOptions = { ...options, attributeFilters, priceRange: activePriceRange ?? undefined };
-  const brandBannerBase = getBrandBanner(countItems, currentBrand ?? undefined);
+  const filterOptions = {
+    categories: (filters.categories ?? []).map((entry) => entry.slug),
+    subCategories: (filters.subCategories ?? []).map((entry) => entry.slug),
+    brands: (filters.brands ?? []).map((entry) => entry.slug),
+    attributeFilters: [],
+    priceRange: activePriceRange ?? undefined,
+  };
   const brandBannerRemote = await fetchBrandBannerImage(currentBrand ?? undefined, origin);
-  const brandBanner = brandBannerBase
+  const brandBanner = brandBannerRemote
     ? {
-        ...brandBannerBase,
-        ...brandBannerRemote,
-        imageUrl: brandBannerRemote?.imageUrl ?? brandBannerBase.imageUrl ?? null,
-        blurHashUrl: brandBannerRemote?.blurHashUrl ?? brandBannerBase.blurHashUrl ?? null,
+        title: brandBannerRemote.title ?? humanizeSlug(currentBrand ?? ""),
+        description: brandBannerRemote.description ?? null,
+        productCount: currentBrandCount,
+        imageUrl: brandBannerRemote.imageUrl ?? null,
+        blurHashUrl: brandBannerRemote.blurHashUrl ?? null,
       }
-      : brandBannerRemote
-      ? {
-          title: brandBannerRemote.title ?? humanizeSlug(currentBrand ?? ""),
-          description: brandBannerRemote.description ?? null,
-          productCount: currentBrandCount,
-          imageUrl: brandBannerRemote.imageUrl ?? null,
-          blurHashUrl: brandBannerRemote.blurHashUrl ?? null,
-        }
-      : null;
+    : null;
   const hasActiveFilters =
     Boolean(currentCategory) ||
     Boolean(currentSubCategory) ||
     Boolean(currentBrand) ||
-    Boolean(currentKind) ||
-    Boolean(currentPackUnit) ||
-    attributeFilters.some((config) => Boolean(currentAttributeFilters[config.key])) ||
     currentInStock ||
     currentOnSale ||
     currentNewArrivals ||
@@ -1719,34 +1252,6 @@ export async function ProductsPage({
               scroll={false}
             />
           ) : null}
-          {currentKind ? (
-            <ToggleFilter
-              title={humanizeSlug(currentKind)}
-              enabled
-              href={buildProductsHref(baseParams, { kind: undefined })}
-              scroll={false}
-            />
-          ) : null}
-          {currentPackUnit ? (
-            <ToggleFilter
-              title={currentPackUnit}
-              enabled
-              href={buildProductsHref(baseParams, { packUnit: undefined })}
-              scroll={false}
-            />
-          ) : null}
-          {attributeFilters.map((config) => {
-            const activeValue = currentAttributeFilters[config.key];
-            return activeValue ? (
-              <ToggleFilter
-                key={`active-${config.key}`}
-                title={activeValue}
-                enabled
-                href={buildProductsHref(baseParams, { [config.key]: undefined })}
-                scroll={false}
-              />
-            ) : null;
-          })}
           {currentMinRating != null ? (
             <ToggleFilter
               title={`${currentMinRating} ★ and up`}
@@ -1801,9 +1306,9 @@ export async function ProductsPage({
         currentCategory={currentCategory ?? ""}
         currentSubCategory={currentSubCategory ?? ""}
         currentBrand={currentBrand ?? ""}
-        currentKind={currentKind ?? ""}
-        currentPackUnit={currentPackUnit ?? ""}
-        currentAttributeFilters={currentAttributeFilters}
+        currentKind=""
+        currentPackUnit=""
+        currentAttributeFilters={{}}
         currentMinRating={currentMinRating}
         currentInStock={currentInStock}
         currentOnSale={currentOnSale}
@@ -1816,9 +1321,6 @@ export async function ProductsPage({
           categories: categoryCounts,
           subCategories: subCategoryCounts,
           brands: brandCounts,
-          kinds: kindCounts,
-          packUnits: packUnitCounts,
-          attributes: Object.fromEntries(attributeFilters.map((config) => [config.key, config.counts])),
           ratings: ratingCounts,
         }}
       />
@@ -1835,7 +1337,7 @@ export async function ProductsPage({
           <div className="mt-5 space-y-5">
             <FilterGroup
               title="Category"
-              items={options.categories ?? []}
+              items={filterOptions.categories ?? []}
               currentValue={currentCategory}
               baseParams={baseParams}
               paramKey="category"
@@ -1843,7 +1345,7 @@ export async function ProductsPage({
             />
             <FilterGroup
               title="Sub category"
-              items={options.subCategories ?? []}
+              items={filterOptions.subCategories ?? []}
               currentValue={currentSubCategory}
               baseParams={baseParams}
               paramKey="subCategory"
@@ -1851,38 +1353,12 @@ export async function ProductsPage({
             />
             <FilterGroup
               title="Brand"
-              items={options.brands ?? []}
+              items={filterOptions.brands ?? []}
               currentValue={currentBrand}
               baseParams={baseParams}
               paramKey="brand"
               counts={brandCounts}
             />
-            <FilterGroup
-              title="Type"
-              items={options.kinds ?? []}
-              currentValue={currentKind}
-              baseParams={baseParams}
-              paramKey="kind"
-              counts={kindCounts}
-            />
-            <FilterGroup
-              title="Pack unit"
-              items={options.packUnits ?? []}
-              currentValue={currentPackUnit}
-              baseParams={baseParams}
-              paramKey="packUnit"
-              counts={packUnitCounts}
-              formatItemLabel={(value) => value}
-            />
-            {groupedAttributeFilters.map((entry) => (
-              <AttributeFilterGroupSection
-                key={entry.group}
-                title={entry.group}
-                filters={entry.filters}
-                currentAttributeFilters={currentAttributeFilters}
-                baseParams={baseParams}
-              />
-            ))}
             <RatingFilterGroup
               baseParams={baseParams}
               currentMinRating={currentMinRating}
@@ -1936,7 +1412,7 @@ export async function ProductsPage({
         </aside>
 
         <section className="min-w-0">
-        <ProductsResults
+        <CanonicalProductsResults
           initialItems={displayItems}
           currentSort={currentSort}
           currentView={currentView}

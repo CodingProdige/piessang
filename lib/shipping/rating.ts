@@ -229,12 +229,20 @@ export async function resolveDeliveryQuote({
       },
     };
   } catch (error: any) {
+    const baseMetadata =
+      baseResolution && "metadata" in baseResolution && baseResolution.metadata && typeof baseResolution.metadata === "object"
+        ? baseResolution.metadata
+        : {};
     return {
       ...baseResolution,
       unavailableReasons: [
         ...(Array.isArray(baseResolution?.unavailableReasons) ? baseResolution.unavailableReasons : []),
         toStr(error?.message || "Courier rates are temporarily unavailable."),
       ],
+      metadata: {
+        ...baseMetadata,
+        debug: error?.debug && typeof error.debug === "object" ? error.debug : null,
+      },
     };
   }
 }
