@@ -3357,200 +3357,143 @@ export function SellerSettingsWorkspace({
 
                   {zone.coverageType === "country" ? (
                     <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] p-3">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <label className="block">
-                          <FieldHelpLabel
-                            label="Pricing method"
-                            help="Choose how shipping should be calculated for the whole country in this zone. This is the country-wide rule buyers will use unless you switch the zone to a more specific coverage type."
-                            className="mb-1.5"
-                          />
-                          <select
-                            value={zone.defaultRate.pricingMode}
-                            onChange={(event) => setShippingSettings((current) => ({
-                              ...current,
-                              zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, pricingMode: event.target.value as SellerShippingRateDraft["pricingMode"] } } : entry),
-                            }))}
-                            disabled={!canEditSettings}
-                            className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                          >
-                            <option value="flat">Flat rate</option>
-                            <option value="weight_based">Weight based</option>
-                            <option value="tiered">Tiered by weight</option>
-                            <option value="order_value_based">Order value based</option>
-                            <option value="free_over_threshold">Free over threshold</option>
-                          </select>
-                        </label>
-                        {zone.defaultRate.pricingMode === "flat" ? (
-                          <label className="block">
-                            <FieldHelpLabel
-                              label="Flat shipping fee"
-                              help="This is the one fixed shipping amount charged for this entire country zone when flat-rate pricing is selected."
-                              className="mb-1.5"
-                            />
-                            <input
-                              value={zone.defaultRate.flatRate}
-                              onChange={(event) => setShippingSettings((current) => ({
-                                ...current,
-                                zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, flatRate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } : entry),
-                              }))}
-                              disabled={!canEditSettings}
-                              className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                              placeholder="100"
-                            />
-                          </label>
-                        ) : null}
-                        {zone.defaultRate.pricingMode !== "flat" ? (
-                          <label className="block">
-                            <FieldHelpLabel
-                              label={getDefaultRateLabel(zone.defaultRate.pricingMode)}
-                              help={getFallbackRateHelpText(zone.defaultRate.pricingMode)}
-                              className="mb-1.5"
-                            />
-                            <input
-                              value={zone.defaultRate.flatRate}
-                              onChange={(event) => setShippingSettings((current) => ({
-                                ...current,
-                                zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, flatRate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } : entry),
-                              }))}
-                              disabled={!canEditSettings}
-                              className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                              placeholder="100"
-                            />
-                          </label>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {zone.coverageType === "country" && zone.defaultRate.pricingMode === "weight_based" ? (
-                    <div className="mt-3 grid gap-3 md:grid-cols-4">
-                      <label className="block">
-                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Base rate</span>
-                        <input value={zone.defaultRate.weightBased.baseRate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, baseRate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="80" />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Included kg</span>
-                        <input value={zone.defaultRate.weightBased.includedKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, includedKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 6) } } } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="5" />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Extra per kg</span>
-                        <input value={zone.defaultRate.weightBased.additionalRatePerKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, additionalRatePerKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="12" />
-                      </label>
-                      <label className="flex items-end gap-2 rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] text-[#202020]">
-                        <input type="checkbox" checked={zone.defaultRate.weightBased.roundUpToNextKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, roundUpToNextKg: event.target.checked } } } : entry) }))} disabled={!canEditSettings} />
-                        Round up to next kg
-                      </label>
-                    </div>
-                  ) : null}
-
-                  {zone.coverageType === "country" && zone.defaultRate.pricingMode === "tiered" ? (
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <FieldHelpLabel
-                          label="Weight bands"
-                          help="Create weight ranges for this country rule. Each order matches the band that contains its combined basket weight."
-                        />
-                        <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, tiered: [...entry.defaultRate.tiered, { minWeightKg: "", maxWeightKg: "", rate: "" }] } } : entry) }))} disabled={!canEditSettings} className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#202020]"><span aria-hidden="true" className="text-[13px] leading-none">+</span>Add band</button>
-                      </div>
-                      <div className="mt-3 space-y-2">
-                        {zone.defaultRate.tiered.map((entry, tierIndex) => (
-                          <div key={`${zone.id}-tier-${tierIndex}`} className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
-                            <input value={entry.minWeightKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, tiered: item.defaultRate.tiered.map((tier, itemIndex) => itemIndex === tierIndex ? { ...tier, minWeightKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 6) } : tier) } } : item) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="0" />
-                            <input value={entry.maxWeightKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, tiered: item.defaultRate.tiered.map((tier, itemIndex) => itemIndex === tierIndex ? { ...tier, maxWeightKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 6) } : tier) } } : item) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="5" />
-                            <input value={entry.rate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, tiered: item.defaultRate.tiered.map((tier, itemIndex) => itemIndex === tierIndex ? { ...tier, rate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : tier) } } : item) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="80" />
-                            <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, tiered: item.defaultRate.tiered.filter((_, itemIndex) => itemIndex !== tierIndex) } } : item) }))} disabled={!canEditSettings || zone.defaultRate.tiered.length <= 1} className="rounded-[8px] border border-[#ef4444]/20 bg-white px-3 py-2.5 text-[11px] font-semibold text-[#b91c1c]">Remove</button>
+                      <div className="space-y-2">
+                        <div className="grid gap-3 rounded-[8px] border border-black/10 bg-white p-3">
+                          <div className={`grid gap-2 ${zone.defaultRate.pricingMode === "flat" ? "md:grid-cols-[220px_1fr]" : "md:grid-cols-[220px]"}`}>
+                            <label className="block">
+                              <FieldHelpLabel
+                                label="Pricing method"
+                                help="Choose how shipping should be calculated for this province override. This override applies only to buyers whose address falls inside this province."
+                                className="mb-1.5"
+                              />
+                              <select
+                                value={zone.defaultRate.pricingMode}
+                                onChange={(event) => setShippingSettings((current) => ({
+                                  ...current,
+                                  zones: current.zones.map((entry, index) => index === zoneIndex ? {
+                                    ...entry,
+                                    defaultRate: { ...entry.defaultRate, pricingMode: event.target.value as SellerShippingRateDraft["pricingMode"] },
+                                  } : entry),
+                                }))}
+                                disabled={!canEditSettings}
+                                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                              >
+                                <option value="flat">Flat rate</option>
+                                <option value="weight_based">Weight based</option>
+                                <option value="tiered">Tiered by weight</option>
+                                <option value="order_value_based">Order value based</option>
+                                <option value="free_over_threshold">Free over threshold</option>
+                              </select>
+                            </label>
+                            {zone.defaultRate.pricingMode === "flat" ? (
+                              <label className="block">
+                                <FieldHelpLabel
+                                  label="Flat shipping fee"
+                                  help="This is the fixed shipping amount charged when this province override uses flat-rate pricing."
+                                  className="mb-1.5"
+                                />
+                                <input
+                                  value={zone.defaultRate.flatRate}
+                                  onChange={(event) => setShippingSettings((current) => ({
+                                    ...current,
+                                    zones: current.zones.map((entry, index) => index === zoneIndex ? {
+                                      ...entry,
+                                      defaultRate: { ...entry.defaultRate, flatRate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) },
+                                    } : entry),
+                                  }))}
+                                  disabled={!canEditSettings}
+                                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                                  placeholder="80"
+                                />
+                              </label>
+                            ) : null}
                           </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
 
-                  {zone.coverageType === "country" && zone.defaultRate.pricingMode === "order_value_based" ? (
-                    <div className="mt-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <FieldHelpLabel
-                          label="Order value bands"
-                          help="Create basket-value ranges for this country rule. Each buyer will be charged the rate that matches their order total in this zone."
-                        />
-                        <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, orderValueBased: [...entry.defaultRate.orderValueBased, { minOrderValue: "", maxOrderValue: "", rate: "" }] } } : entry) }))} disabled={!canEditSettings} className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#202020]"><span aria-hidden="true" className="text-[13px] leading-none">+</span>Add band</button>
-                      </div>
-                      <div className="mt-3 space-y-2">
-                        {zone.defaultRate.orderValueBased.map((entry, bandIndex) => (
-                          <div key={`${zone.id}-order-band-${bandIndex}`} className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
-                            <input value={entry.minOrderValue} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, orderValueBased: item.defaultRate.orderValueBased.map((band, itemIndex) => itemIndex === bandIndex ? { ...band, minOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : band) } } : item) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="0" />
-                            <input value={entry.maxOrderValue} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, orderValueBased: item.defaultRate.orderValueBased.map((band, itemIndex) => itemIndex === bandIndex ? { ...band, maxOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : band) } } : item) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="500" />
-                            <input value={entry.rate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, orderValueBased: item.defaultRate.orderValueBased.map((band, itemIndex) => itemIndex === bandIndex ? { ...band, rate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : band) } } : item) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="75" />
-                            <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((item, index) => index === zoneIndex ? { ...item, defaultRate: { ...item.defaultRate, orderValueBased: item.defaultRate.orderValueBased.filter((_, itemIndex) => itemIndex !== bandIndex) } } : item) }))} disabled={!canEditSettings || zone.defaultRate.orderValueBased.length <= 1} className="rounded-[8px] border border-[#ef4444]/20 bg-white px-3 py-2.5 text-[11px] font-semibold text-[#b91c1c]">Remove</button>
+                          {zone.defaultRate.pricingMode === "weight_based" ? (
+                            <div className="grid gap-2 md:grid-cols-4">
+                              <input value={zone.defaultRate.weightBased.baseRate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, baseRate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Base rate" />
+                              <input value={zone.defaultRate.weightBased.includedKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, includedKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 6) } } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Included kg" />
+                              <input value={zone.defaultRate.weightBased.additionalRatePerKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, additionalRatePerKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Extra per kg" />
+                              <label className="flex items-center gap-2 rounded-[8px] border border-black/10 bg-[#fafafa] px-3 py-2.5 text-[12px] text-[#202020]"><input type="checkbox" checked={zone.defaultRate.weightBased.roundUpToNextKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, weightBased: { ...entry.defaultRate.weightBased, roundUpToNextKg: event.target.checked } } } : entry) }))} disabled={!canEditSettings} />Round up</label>
+                            </div>
+                          ) : null}
+
+                          {zone.defaultRate.pricingMode === "tiered" ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between gap-3">
+                                <FieldHelpLabel
+                                  label="Weight bands"
+                                  help="Create weight ranges for this province override. Each order matches the band that contains its combined basket weight."
+                                />
+                                <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, tiered: [...entry.defaultRate.tiered, { minWeightKg: "", maxWeightKg: "", rate: "" }] } } : entry) }))} disabled={!canEditSettings} className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#202020]"><span aria-hidden="true" className="text-[13px] leading-none">+</span>Add band</button>
+                              </div>
+                              {zone.defaultRate.tiered.map((tier, tierIndex) => (
+                                <div key={`${zone.id}-country-tier-${tierIndex}`} className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
+                                  <input value={tier.minWeightKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, tiered: entry.defaultRate.tiered.map((band, bandIndex) => bandIndex === tierIndex ? { ...band, minWeightKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 6) } : band) } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Min kg" />
+                                  <input value={tier.maxWeightKg} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, tiered: entry.defaultRate.tiered.map((band, bandIndex) => bandIndex === tierIndex ? { ...band, maxWeightKg: event.target.value.replace(/[^\d.]/g, "").slice(0, 6) } : band) } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Max kg" />
+                                  <input value={tier.rate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, tiered: entry.defaultRate.tiered.map((band, bandIndex) => bandIndex === tierIndex ? { ...band, rate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : band) } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Rate" />
+                                  <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, tiered: entry.defaultRate.tiered.filter((_, bandIndex) => bandIndex !== tierIndex) } } : entry) }))} disabled={!canEditSettings || zone.defaultRate.tiered.length <= 1} className="rounded-[8px] border border-[#ef4444]/20 bg-white px-3 py-2.5 text-[11px] font-semibold text-[#b91c1c]">Remove band</button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {zone.defaultRate.pricingMode === "order_value_based" ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between gap-3">
+                                <FieldHelpLabel
+                                  label="Order value bands"
+                                  help="Create basket-value ranges for this province override. Each buyer will be charged the rate that matches their order total in this province."
+                                />
+                                <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, orderValueBased: [...entry.defaultRate.orderValueBased, { minOrderValue: "", maxOrderValue: "", rate: "" }] } } : entry) }))} disabled={!canEditSettings} className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#202020]"><span aria-hidden="true" className="text-[13px] leading-none">+</span>Add band</button>
+                              </div>
+                              {zone.defaultRate.orderValueBased.map((band, bandIndex) => (
+                                <div key={`${zone.id}-country-order-${bandIndex}`} className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
+                                  <input value={band.minOrderValue} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, orderValueBased: entry.defaultRate.orderValueBased.map((entryBand, entryIndex) => entryIndex === bandIndex ? { ...entryBand, minOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entryBand) } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Min value" />
+                                  <input value={band.maxOrderValue} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, orderValueBased: entry.defaultRate.orderValueBased.map((entryBand, entryIndex) => entryIndex === bandIndex ? { ...entryBand, maxOrderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entryBand) } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Max value" />
+                                  <input value={band.rate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, orderValueBased: entry.defaultRate.orderValueBased.map((entryBand, entryIndex) => entryIndex === bandIndex ? { ...entryBand, rate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } : entryBand) } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Rate" />
+                                  <button type="button" onClick={() => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, orderValueBased: entry.defaultRate.orderValueBased.filter((_, entryIndex) => entryIndex !== bandIndex) } } : entry) }))} disabled={!canEditSettings || zone.defaultRate.orderValueBased.length <= 1} className="rounded-[8px] border border-[#ef4444]/20 bg-white px-3 py-2.5 text-[11px] font-semibold text-[#b91c1c]">Remove band</button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {zone.defaultRate.pricingMode === "free_over_threshold" ? (
+                            <div className="grid gap-2 md:grid-cols-2">
+                              <input value={zone.defaultRate.freeOverThreshold.threshold} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, freeOverThreshold: { ...entry.defaultRate.freeOverThreshold, threshold: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Free over value" />
+                              <input value={zone.defaultRate.freeOverThreshold.fallbackRate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, freeOverThreshold: { ...entry.defaultRate.freeOverThreshold, fallbackRate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="Otherwise charge" />
+                            </div>
+                          ) : null}
+
+                          <div className="grid gap-2 md:grid-cols-[1fr_1fr]">
+                            <label className="block">
+                              <FieldHelpLabel
+                                label="Batching"
+                                help="Choose how multiple items in this province override should be grouped for shipping. Per order charges one fee for the batch, highest item shipping uses the highest matched charge, combine weight uses total kg, and per item charges each unit separately."
+                                className="mb-1.5"
+                              />
+                              <select value={zone.batching.mode} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, batching: { ...entry.batching, mode: event.target.value as SellerShippingSettings["localDelivery"]["batching"]["mode"] } } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"><option value="single_shipping_fee">{getBatchingOptionLabel("single_shipping_fee")}</option><option value="highest_item_shipping">{getBatchingOptionLabel("highest_item_shipping")}</option><option value="combine_weight">{getBatchingOptionLabel("combine_weight")}</option><option value="per_item">{getBatchingOptionLabel("per_item")}</option></select>
+                            </label>
+                            <label className="block">
+                              <FieldHelpLabel
+                                label={getBatchLimitLabel(zone.batching.mode)}
+                                help="Optional cap for each shipping batch in this province override. If a basket exceeds this limit, checkout splits it into multiple batches and sums the shipping across them."
+                                className="mb-1.5"
+                              />
+                              <input value={zone.batching.maxBatchLimit} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, batching: { ...entry.batching, maxBatchLimit: event.target.value.replace(/[^\d]/g, "").slice(0, 3) } } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder={getBatchLimitPlaceholder(zone.batching.mode)} />
+                            </label>
                           </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {zone.coverageType === "country" && zone.defaultRate.pricingMode === "free_over_threshold" ? (
-                    <div className="mt-3 grid gap-3 md:grid-cols-2">
-                      <label className="block">
-                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Free over order value</span>
-                        <input value={zone.defaultRate.freeOverThreshold.threshold} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, freeOverThreshold: { ...entry.defaultRate.freeOverThreshold, threshold: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="1000" />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Otherwise charge</span>
-                        <input value={zone.defaultRate.freeOverThreshold.fallbackRate} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, defaultRate: { ...entry.defaultRate, freeOverThreshold: { ...entry.defaultRate.freeOverThreshold, fallbackRate: event.target.value.replace(/[^\d.]/g, "").slice(0, 8) } } } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="100" />
-                      </label>
-                    </div>
-                  ) : null}
-
-                  {zone.coverageType === "country" ? (
-                    <div className="mt-3">
-                      <div className="grid gap-2 md:grid-cols-[1fr_1fr]">
-                        <label className="block">
-                          <FieldHelpLabel
-                            label="Batching"
-                            help="Choose how multiple items in this country rule should be grouped for shipping. Per order charges one fee for the batch, highest item shipping uses the highest matched charge, combine weight uses total kg, and per item charges each unit separately."
-                            className="mb-1.5"
-                          />
-                          <select
-                            value={zone.batching.mode}
-                            onChange={(event) => setShippingSettings((current) => ({
-                              ...current,
-                              zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, batching: { ...entry.batching, mode: event.target.value as SellerShippingZoneDraft["batching"]["mode"] } } : entry),
-                            }))}
-                            disabled={!canEditSettings}
-                            className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                          >
-                            <option value="single_shipping_fee">{getBatchingOptionLabel("single_shipping_fee")}</option>
-                            <option value="highest_item_shipping">{getBatchingOptionLabel("highest_item_shipping")}</option>
-                            <option value="combine_weight">{getBatchingOptionLabel("combine_weight")}</option>
-                            <option value="per_item">{getBatchingOptionLabel("per_item")}</option>
-                          </select>
-                        </label>
-                        <label className="block">
-                          <FieldHelpLabel
-                            label={getBatchLimitLabel(zone.batching.mode)}
-                            help="Optional cap for each shipping batch in this country rule. If a basket exceeds this limit, checkout splits it into multiple batches and sums the shipping across them."
-                            className="mb-1.5"
-                          />
-                          <input
-                            value={zone.batching.maxBatchLimit}
-                            onChange={(event) => setShippingSettings((current) => ({
-                              ...current,
-                              zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, batching: { ...entry.batching, maxBatchLimit: event.target.value.replace(/[^\d]/g, "").slice(0, 3) } } : entry),
-                            }))}
-                            disabled={!canEditSettings}
-                            className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                            placeholder={getBatchLimitPlaceholder(zone.batching.mode)}
-                          />
-                        </label>
-                      </div>
-                      <div className="mt-3 grid gap-2 md:grid-cols-2">
-                        <label className="block">
-                          <FieldHelpLabel label="Min days" help="Shortest estimated delivery time for this country rule." className="mb-1.5" />
-                          <input value={zone.estimatedDeliveryDays.min} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, estimatedDeliveryDays: clampEtaDaysRange(entry.estimatedDeliveryDays, { min: event.target.value }) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="2" />
-                        </label>
-                        <label className="block">
-                          <FieldHelpLabel label="Max days" help="Longest estimated delivery time for this country rule." className="mb-1.5" />
-                          <input value={zone.estimatedDeliveryDays.max} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, estimatedDeliveryDays: clampEtaDaysRange(entry.estimatedDeliveryDays, { max: event.target.value }) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="5" />
-                        </label>
+                          <div className="grid gap-2 md:grid-cols-2">
+                            <label className="block">
+                              <FieldHelpLabel label="Min days" help="Shortest estimated delivery time for this zone province override." className="mb-1.5" />
+                              <input value={zone.estimatedDeliveryDays.min} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, estimatedDeliveryDays: clampEtaDaysRange(entry.estimatedDeliveryDays, { min: event.target.value }) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="2" />
+                            </label>
+                            <label className="block">
+                              <FieldHelpLabel label="Max days" help="Longest estimated delivery time for this zone province override." className="mb-1.5" />
+                              <input value={zone.estimatedDeliveryDays.max} onChange={(event) => setShippingSettings((current) => ({ ...current, zones: current.zones.map((entry, index) => index === zoneIndex ? { ...entry, estimatedDeliveryDays: clampEtaDaysRange(entry.estimatedDeliveryDays, { max: event.target.value }) } : entry) }))} disabled={!canEditSettings} className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none" placeholder="5" />
+                            </label>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ) : null}
