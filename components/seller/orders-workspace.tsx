@@ -45,6 +45,7 @@ type SellerOrderSlice = {
     selectedCourierQuoteId?: string;
     availableCourierCount?: number;
     selectedCourierHandoverOptions?: string[];
+    trackingNumber?: string;
     trackingUrl?: string;
     labelUrl?: string;
     shipmentStatus?: string;
@@ -128,6 +129,7 @@ type SellerOrderSlice = {
 type SellerActionDraft = {
   courierName: string;
   trackingNumber: string;
+  trackingUrl: string;
   notes: string;
   cancellationReason: string;
 };
@@ -961,7 +963,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   }
 
   function getDraft(orderId: string): SellerActionDraft {
-    return actionDrafts[orderId] || { courierName: "", trackingNumber: "", notes: "", cancellationReason: "" };
+    return actionDrafts[orderId] || { courierName: "", trackingNumber: "", trackingUrl: "", notes: "", cancellationReason: "" };
   }
 
   function updateDraft(orderId: string, patch: Partial<SellerActionDraft>) {
@@ -970,11 +972,47 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       [orderId]: {
         courierName: current[orderId]?.courierName || "",
         trackingNumber: current[orderId]?.trackingNumber || "",
+        trackingUrl: current[orderId]?.trackingUrl || "",
         notes: current[orderId]?.notes || "",
         cancellationReason: current[orderId]?.cancellationReason || "",
         ...patch,
       },
     }));
+  }
+
+  async function saveShippingTracking(item: SellerOrderSlice) {
+    const draft = getDraft(item.orderId);
+    const response = await fetch("/api/client/v1/orders/seller/shipping-tracking", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orderId: item.orderId,
+        sellerCode: sellerCode || item.sellerCode,
+        sellerSlug: sellerSlug || item.sellerSlug,
+        courierName: draft.courierName,
+        trackingNumber: draft.trackingNumber,
+        trackingUrl: draft.trackingUrl,
+        notes: draft.notes,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.message || "Unable to save shipping tracking.");
+    }
+    setItems((current) =>
+      current.map((entry) =>
+        entry.orderId !== item.orderId
+          ? entry
+          : {
+              ...entry,
+              deliveryOption: {
+                ...(entry.deliveryOption || {}),
+                trackingUrl: toStr(payload?.tracking?.trackingUrl || draft.trackingUrl || entry.deliveryOption?.trackingUrl || ""),
+                courierCarrier: toStr(payload?.tracking?.courierName || draft.courierName || entry.deliveryOption?.courierCarrier || ""),
+              },
+            },
+      ),
+    );
   }
 
   async function updateSellerOrderStatus(item: SellerOrderSlice, nextStatus: SellerFulfillmentAction) {
@@ -1257,6 +1295,16 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
   const activeItem = useMemo(() => items.find((item) => item.orderId === activeOrderId) || null, [activeOrderId, items]);
   const cancelModalItem = useMemo(() => items.find((item) => item.orderId === cancelModalOrderId) || null, [cancelModalOrderId, items]);
   const dispatchModalItem = useMemo(() => items.find((item) => item.orderId === dispatchModalOrderId) || null, [dispatchModalOrderId, items]);
+
+  useEffect(() => {
+    if (!dispatchModalItem) return;
+    updateDraft(dispatchModalItem.orderId, {
+      courierName: toStr(dispatchModalItem.deliveryOption?.courierCarrier || ""),
+      trackingNumber: toStr(dispatchModalItem.deliveryOption?.trackingNumber || ""),
+      trackingUrl: toStr(dispatchModalItem.deliveryOption?.trackingUrl || ""),
+      notes: getDraft(dispatchModalItem.orderId).notes,
+    });
+  }, [dispatchModalItem]);
   const dispatchModalHandoffDetails = dispatchModalItem ? handoffDetailsByOrder[dispatchModalItem.orderId] || null : null;
   const allVisibleSelected = filteredItems.length > 0 && filteredItems.every((item) => selectedOrderIds.includes(item.orderId));
   const selectedItems = useMemo(() => items.filter((item) => selectedOrderIds.includes(item.orderId)), [items, selectedOrderIds]);
@@ -1723,6 +1771,15 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                         placeholder="Tracking reference"
                       />
                     </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Tracking URL</span>
+                      <input
+                        value={getDraft(dispatchModalItem.orderId).trackingUrl}
+                        onChange={(event) => updateDraft(dispatchModalItem.orderId, { trackingUrl: event.target.value })}
+                        className="h-11 w-full rounded-[12px] border border-black/10 bg-white px-3 text-[14px] outline-none"
+                        placeholder="https://..."
+                      />
+                    </label>
                   </>
                 ) : null}
                 {isPlatformTracked(dispatchModalItem) ? (
@@ -1884,6 +1941,26 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                   className="rounded-[12px] border border-black/10 bg-white px-4 py-2.5 text-[13px] font-semibold text-[#202020] disabled:opacity-60"
                 >
                   Not now
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await saveShippingTracking(dispatchModalItem);
+                      setDocumentSnackbar({ tone: "success", message: `Tracking saved for ${dispatchModalItem.orderNumber || dispatchModalItem.orderId}.` });
+                    } catch (cause) {
+                      setDocumentSnackbar({ tone: "error", message: cause instanceof Error ? cause.message : "Unable to save tracking." });
+                    }
+                  }}
+                  disabled={
+                    updatingOrderId === dispatchModalItem.orderId ||
+                    (isCourierTracked(dispatchModalItem) &&
+                      !toStr(getDraft(dispatchModalItem.orderId).trackingNumber) &&
+                      !toStr(getDraft(dispatchModalItem.orderId).trackingUrl))
+                  }
+                  className="rounded-[12px] border border-black/10 bg-white px-4 py-2.5 text-[13px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Save tracking
                 </button>
                 <button
                   type="button"

@@ -2,109 +2,19 @@ export const runtime = "nodejs";
 export const preferredRegion = "fra1";
 
 import { NextResponse } from "next/server";
-import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
-import { resolveDeliveryQuote } from "@/lib/shipping/rating";
 
-const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
-const err = (s, t, m, e = {}) => NextResponse.json({ ok: false, title: t, message: m, ...e }, { status: s });
+const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 
-function toStr(value, fallback = "") {
-  return value == null ? fallback : String(value).trim();
-}
-
-function buildShopperArea(address = {}) {
-  return {
-    city: toStr(address?.city || address?.suburb),
-    suburb: toStr(address?.suburb),
-    province: toStr(address?.province || address?.stateProvinceRegion || address?.region),
-    stateProvinceRegion: toStr(address?.stateProvinceRegion || address?.province || address?.region),
-    postalCode: toStr(address?.postalCode),
-    country: toStr(address?.country || "South Africa"),
-    latitude: address?.latitude == null ? null : Number(address.latitude),
-    longitude: address?.longitude == null ? null : Number(address.longitude),
-  };
-}
-
-function formatReason(kind) {
-  if (kind === "direct") return "platform_direct_delivery";
-  if (kind === "shipping") return "platform_shipping";
-  if (kind === "courier_live_rate") return "platform_courier_live_rate";
-  if (kind === "collection") return "platform_collection";
-  return "platform_delivery_unavailable";
-}
-
-function buildDebugPayload(resolved, shopperArea, parcels, quoteItems) {
-  return {
-    kind: resolved?.kind || null,
-    label: resolved?.label || null,
-    shopperArea,
-    parcels,
-    quoteItems,
-    unavailableReasons: Array.isArray(resolved?.unavailableReasons) ? resolved.unavailableReasons : [],
-    metadata: resolved?.metadata || null,
-    matchedRule: resolved?.matchedRule || null,
-  };
-}
-
-export async function POST(req) {
-  try {
-    const body = await req.json().catch(() => ({}));
-    const address = body?.address && typeof body.address === "object" ? body.address : null;
-    const subtotalIncl = Number(body?.subtotalIncl || 0);
-
-    if (!address) {
-      return err(400, "Missing Address", "address is required.");
-    }
-
-    const shopperArea = buildShopperArea(address);
-    const profile = body?.deliveryProfile && typeof body.deliveryProfile === "object" ? body.deliveryProfile : null;
-    const courierProfile = body?.courierProfile && typeof body.courierProfile === "object" ? body.courierProfile : null;
-    const productCourierEligible = body?.productCourierEligible === true;
-    const quoteItems = Array.isArray(body?.quoteItems) ? body.quoteItems : [];
-    const sellerBaseLocation = toStr(body?.sellerBaseLocation || body?.baseLocation || "");
-    const parcels = Array.isArray(body?.parcels) ? body.parcels : [];
-    const resolved = profile
-      ? await resolveDeliveryQuote({
-          profile,
-          courierProfile,
-          productCourierEligible,
-          quoteItems,
-          sellerBaseLocation,
-          shopperArea,
-          subtotalIncl,
-          parcels,
-          currency: "ZAR",
-        })
-      : await resolvePlatformDeliveryOption({ shopperArea, subtotalIncl });
-
-    if (!resolved?.available) {
-      return err(400, "Delivery Area Not Supported", "Delivery is not available for this address.", {
-        supported: false,
-        canPlaceOrder: false,
-        reasonCode: "OUTSIDE_SERVICE_AREA",
-        debug: buildDebugPayload(resolved, shopperArea, parcels, quoteItems),
-      });
-    }
-
-    return ok({
-      supported: true,
-      canPlaceOrder: true,
-      fee: {
-        amount: Number(resolved?.amountIncl || 0),
-        currency: "ZAR",
-        band: resolved?.matchedRule?.label || resolved?.kind || null,
-        reason: formatReason(resolved?.kind),
-      },
-      deliveryType: resolved?.kind || null,
-      leadTimeDays: resolved?.leadTimeDays ?? null,
-      cutoffTime: resolved?.cutoffTime || null,
-      matchedRule: resolved?.matchedRule || null,
-      distanceKm: resolved?.distanceKm ?? null,
-      shipmentSummary: resolved?.shipmentSummary || null,
-      metadata: resolved?.metadata || null,
-      debug: buildDebugPayload(resolved, shopperArea, parcels, quoteItems),
-    });
-  } catch (e) {
-    return err(500, "Delivery Fee Error", e?.message || "Unexpected error.");
-  }
+export async function POST() {
+  return ok(
+    {
+      deprecated: true,
+      supported: false,
+      canPlaceOrder: false,
+      code: "DEPRECATED_ENDPOINT",
+      message:
+        "This delivery fee endpoint has been deprecated. Use /api/checkout/shipping-options and /api/checkout/validate-shipping.",
+    },
+    410,
+  );
 }

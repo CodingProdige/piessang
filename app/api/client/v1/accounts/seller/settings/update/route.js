@@ -3,14 +3,12 @@ export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
-import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
+import { collectProductWeightRequirementIssues } from "@/lib/seller/shipping-weight-requirements";
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { normalizeMoneyAmount } from "@/lib/money";
-import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 import {
   buildShippingSettingsFromLegacySeller,
   normalizeShippingSettings,
@@ -268,155 +266,6 @@ function parseBusinessDetails(payload, seller = {}, owner = {}) {
   };
 }
 
-function parseDeliveryProfile(payload) {
-  const normalized = normalizeSellerDeliveryProfile(payload && typeof payload === "object" ? payload : {});
-  return {
-    origin: {
-      streetAddress: sanitizeText(normalized.origin?.streetAddress),
-      addressLine2: sanitizeText(normalized.origin?.addressLine2),
-      country: sanitizeText(normalized.origin?.country),
-      region: sanitizeText(normalized.origin?.region),
-      city: sanitizeText(normalized.origin?.city),
-      suburb: sanitizeText(normalized.origin?.suburb),
-      postalCode: sanitizeText(normalized.origin?.postalCode),
-      utcOffsetMinutes: sanitizeOffsetMinutes(normalized.origin?.utcOffsetMinutes),
-      latitude: sanitizeCoordinate(normalized.origin?.latitude),
-      longitude: sanitizeCoordinate(normalized.origin?.longitude),
-    },
-    directDelivery: {
-      enabled: normalized.directDelivery?.enabled === true,
-      title: "Direct delivery",
-      radiusKm: sanitizePositiveInt(normalized.directDelivery?.radiusKm, 0),
-      leadTimeDays: sanitizePositiveInt(normalized.directDelivery?.leadTimeDays, 1),
-      cutoffTime: resolveCutoffTime(normalized.directDelivery?.cutoffTime),
-      pricingRules: [
-        {
-          id: toStr(normalized.directDelivery?.pricingRules?.[0]?.id || "direct-flat"),
-          label: sanitizeText(normalized.directDelivery?.pricingRules?.[0]?.label || "Direct delivery"),
-          minDistanceKm: null,
-          maxDistanceKm: null,
-          minOrderValue: null,
-          maxOrderValue: null,
-          fee: sanitizeMoney(normalized.directDelivery?.pricingRules?.[0]?.fee),
-          freeAboveOrderValue:
-            normalized.directDelivery?.pricingRules?.[0]?.freeAboveOrderValue == null
-              ? null
-              : sanitizeMoney(normalized.directDelivery.pricingRules[0].freeAboveOrderValue),
-          isActive: normalized.directDelivery?.enabled === true,
-        },
-      ],
-    },
-    shippingZones: Array.isArray(normalized.shippingZones)
-      ? (normalized.shippingZones.map((zone) => ({
-          id: toStr(zone.id),
-          label: sanitizeText(zone.label || zone.country),
-          scopeType: "country",
-          country: sanitizeText(zone.country),
-          region: "",
-          city: "",
-          postalCodes: [],
-          leadTimeDays: sanitizePositiveInt(zone.leadTimeDays, 2),
-          cutoffTime: resolveCutoffTime(zone.cutoffTime),
-          rateMode: "flat",
-          pricingBasis: ["per_order", "per_item", "per_kg"].includes(toStr(zone.pricingBasis || zone.pricing_basis || "per_order"))
-            ? toStr(zone.pricingBasis || zone.pricing_basis || "per_order")
-            : "per_order",
-          courierKey: "",
-          courierServiceLabel: "",
-          pricingRules: [
-            {
-              id: toStr(zone.pricingRules?.[0]?.id || `${toStr(zone.id || "zone")}-standard`),
-              label: sanitizeText(zone.pricingRules?.[0]?.label || zone.country || "Standard shipping"),
-              pricingBasis: ["per_order", "per_item", "per_kg"].includes(toStr(zone.pricingBasis || zone.pricing_basis || "per_order"))
-                ? toStr(zone.pricingBasis || zone.pricing_basis || "per_order")
-                : "per_order",
-              minDistanceKm: null,
-              maxDistanceKm: null,
-              minOrderValue: null,
-              maxOrderValue: null,
-              fee: sanitizeMoney(zone.pricingRules?.[0]?.fee),
-              freeAboveOrderValue:
-                zone.pricingRules?.[0]?.freeAboveOrderValue == null
-                  ? null
-                  : sanitizeMoney(zone.pricingRules[0].freeAboveOrderValue),
-              isActive: zone.isActive !== false,
-            },
-          ],
-          isFallback: false,
-          isActive: zone.isActive !== false,
-        }))
-          .filter((zone) => zone.country))
-      : [],
-    pickup: {
-      enabled: normalized.pickup?.enabled === true,
-      leadTimeDays: sanitizePositiveInt(normalized.pickup?.leadTimeDays, 0),
-    },
-    notes: sanitizeLongText(normalized.notes || ""),
-  };
-}
-
-function parseCourierProfile(payload) {
-  const normalized = normalizeSellerCourierProfile(payload && typeof payload === "object" ? payload : {});
-  return {
-    enabled: normalized.enabled === true,
-    provider: "easyship",
-    internationalEnabled: normalized.internationalEnabled !== false,
-    handoverMode: normalized.handoverMode === "dropoff" ? "dropoff" : "pickup",
-    allowedCouriers: [],
-    allowedDestinationCountries: [],
-    platformMarkupMode: "platform_default",
-  };
-}
-
-async function enforceSellerWeightShippingRequirements(db, sellerSlug, deliveryProfile) {
-  if (!sellerSlug || !sellerHasWeightBasedShipping(deliveryProfile)) {
-    return { hasWeightBasedShipping: false, missingWeightCount: 0, affectedTitles: [], deactivatedCount: 0 };
-  }
-
-  const hasLocalFallback = deliveryProfile?.directDelivery?.enabled === true;
-  const snap = await db.collection("products_v2").where("product.sellerSlug", "==", sellerSlug).get();
-  const affectedTitles = [];
-  let deactivatedCount = 0;
-  const writes = [];
-
-  for (const docSnap of snap.docs) {
-    const product = docSnap.data() || {};
-    const issues = collectProductWeightRequirementIssues(product);
-    if (!issues.includes("Variant weight")) continue;
-    affectedTitles.push(toStr(product?.product?.title || docSnap.id));
-    if (!hasLocalFallback && product?.placement?.isActive === true) {
-      deactivatedCount += 1;
-      writes.push(
-        docSnap.ref.set(
-          {
-            placement: {
-              ...(product?.placement || {}),
-              isActive: false,
-            },
-            listing_block_reason_code: "missing_variant_weight_for_shipping",
-            listing_block_reason:
-              "This product needs variant weight details before it can be published with per-kg shipping zones.",
-            timestamps: {
-              ...(product?.timestamps || {}),
-              updatedAt: new Date(),
-            },
-          },
-          { merge: true },
-        ),
-      );
-    }
-  }
-
-  if (writes.length) await Promise.all(writes);
-
-  return {
-    hasWeightBasedShipping: true,
-    missingWeightCount: affectedTitles.length,
-    affectedTitles: affectedTitles.slice(0, 8),
-    deactivatedCount,
-  };
-}
-
 async function enforceSellerShippingWeightRequirements(db, sellerSlug, shippingSettings) {
   if (!sellerSlug || !shippingModeRequiresWeight(shippingSettings)) {
     return { hasWeightBasedShipping: false, missingWeightCount: 0, affectedTitles: [], deactivatedCount: 0 };
@@ -474,20 +323,7 @@ export async function POST(req) {
     const db = getAdminDb();
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     const branding = parseBranding(data?.branding || data);
-    const deliveryProfile = parseDeliveryProfile(data?.deliveryProfile || data?.delivery || {});
-    const courierProfile = parseCourierProfile(data?.courierProfile || data?.courier || {});
     const providedShippingSettings = data?.shippingSettings && typeof data.shippingSettings === "object" ? data.shippingSettings : null;
-    deliveryProfile.origin = await enrichLocationWithGeocode({
-      streetAddress: deliveryProfile.origin?.streetAddress,
-      addressLine2: deliveryProfile.origin?.addressLine2,
-      country: deliveryProfile.origin?.country,
-      region: deliveryProfile.origin?.region,
-      city: deliveryProfile.origin?.city,
-      suburb: deliveryProfile.origin?.suburb,
-      postalCode: deliveryProfile.origin?.postalCode,
-      latitude: deliveryProfile.origin?.latitude,
-      longitude: deliveryProfile.origin?.longitude,
-    });
     const payoutProfile = parsePayoutProfile(data?.payoutProfile || data?.payout || {});
     const encryptedPayoutProfile = encryptPayoutProfile(payoutProfile);
     const payoutProvider = "wise";
@@ -513,11 +349,7 @@ export async function POST(req) {
     if (!owner) return err(404, "Seller Not Found", "Could not find a seller account for that seller slug.");
 
     const currentSeller = owner.data?.seller && typeof owner.data.seller === "object" ? owner.data.seller : {};
-    const legacyDerivedShippingSettings = buildShippingSettingsFromLegacySeller({
-      ...currentSeller,
-      deliveryProfile,
-      courierProfile,
-    });
+    const legacyDerivedShippingSettings = buildShippingSettingsFromLegacySeller(currentSeller);
     const shippingValidation = validateShippingSettings(providedShippingSettings || legacyDerivedShippingSettings);
     if (!shippingValidation.valid) {
       return err(400, "Invalid Shipping Settings", "Seller shipping settings are invalid.", {
@@ -525,6 +357,17 @@ export async function POST(req) {
       });
     }
     const shippingSettings = normalizeShippingSettings(shippingValidation.settings);
+    shippingSettings.shipsFrom = await enrichLocationWithGeocode({
+      streetAddress: shippingSettings.shipsFrom?.streetAddress,
+      addressLine2: shippingSettings.shipsFrom?.addressLine2,
+      country: shippingSettings.shipsFrom?.countryCode,
+      region: shippingSettings.shipsFrom?.province,
+      city: shippingSettings.shipsFrom?.city,
+      suburb: shippingSettings.shipsFrom?.suburb,
+      postalCode: shippingSettings.shipsFrom?.postalCode,
+      latitude: shippingSettings.shipsFrom?.latitude,
+      longitude: shippingSettings.shipsFrom?.longitude,
+    });
     const googleRegionIssues = await validateShippingSettingsGoogleRegions(shippingSettings);
     if (googleRegionIssues.length) {
       return err(400, "Invalid Shipping Settings", "Seller shipping settings are invalid.", {
@@ -553,8 +396,6 @@ export async function POST(req) {
       "seller.groupSellerCode": sellerCode,
       "seller.branding": branding,
       "seller.shippingSettings": shippingSettings,
-      "seller.deliveryProfile": deliveryProfile,
-      "seller.courierProfile": courierProfile,
       "seller.payoutProfile": encryptedPayoutProfile,
       "seller.payoutProvider": payoutProvider,
       "seller.businessDetails": businessDetails,
@@ -583,8 +424,6 @@ export async function POST(req) {
       propagatedProducts,
       branding,
       shippingSettings,
-      deliveryProfile,
-      courierProfile,
       shippingWeightRequirements,
       payoutProfile,
       payoutProvider,

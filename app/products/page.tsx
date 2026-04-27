@@ -7,13 +7,8 @@ import { ProductsToolbar } from "@/components/products/products-toolbar";
 import { MobileProductFilters } from "@/components/products/mobile-filters";
 import { PriceRangeFilter } from "@/components/products/price-range-filter";
 import { CanonicalProductsResults } from "@/components/products/canonical-products-results";
-import {
-  PRODUCT_CARD_GRID_IMAGE_SIZES,
-  PRODUCT_CARD_LIST_IMAGE_SIZES,
-} from "@/components/products/products-results";
 import { ResultsCount } from "@/components/products/results-count";
 import { SingleProductView } from "@/components/products/single-product-view";
-import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { resolveBrandLabel } from "@/lib/catalogue/brand-key";
 import { appendShopperAreaSearchParams, normalizeShopperArea } from "@/lib/shipping/shopper-country";
 import { buildSeoMetadata } from "@/lib/seo/page-overrides";
@@ -1145,7 +1140,6 @@ export async function ProductsPage({
   const currentNewArrivals = currentParam(resolvedSearchParams, "newArrivals") === "true";
   const currentFeatured = currentParam(resolvedSearchParams, "isFeatured") === "true";
   const currentMinRating = currentNumberParam(resolvedSearchParams, "minRating");
-  const currentView = currentParam(resolvedSearchParams, "view") === "list" ? "list" : "grid";
   const currentSort = currentParam(resolvedSearchParams, "sort") ?? "relevance";
   const personalizedMode = currentParam(resolvedSearchParams, "personalized");
   const imageSearchActive = currentParam(resolvedSearchParams, "imageSearch") === "true";
@@ -1295,7 +1289,6 @@ export async function ProductsPage({
       <section className="mt-5 overflow-hidden rounded-[8px] bg-white shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <ProductsToolbar
           resultsCount={count}
-          currentView={currentView}
           currentSort={currentSort}
           openInNewTab={openInNewTab}
         />
@@ -1415,7 +1408,6 @@ export async function ProductsPage({
         <CanonicalProductsResults
           initialItems={displayItems}
           currentSort={currentSort}
-          currentView={currentView}
           openInNewTab={openInNewTab}
           searchParams={resolvedSearchParams}
           totalCount={totalCount}

@@ -265,8 +265,18 @@ export function CartItemCard({
               type="button"
               onClick={onRemove}
               disabled={busy}
-              className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#b91c1c] disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#b91c1c] disabled:cursor-not-allowed disabled:opacity-40"
             >
+              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+                <path
+                  d="M5.5 2.5h5M2.75 4h10.5M4.25 4.75l.45 7.35c.05.78.7 1.4 1.48 1.4h3.64c.78 0 1.43-.62 1.48-1.4l.45-7.35M6.5 6.75v4M9.5 6.75v4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.4"
+                />
+              </svg>
               Remove
             </button>
           </div>

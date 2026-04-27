@@ -2,71 +2,21 @@
 
 import { useEffect, useState } from "react";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
-import type { ProductItem } from "@/components/products/products-results";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 
 const RECENTLY_VIEWED_STORAGE_KEY = "piessang_recently_viewed_products_v1";
 const SEARCH_HISTORY_STORAGE_KEY = "piessang_search_history_v1";
-
-type ProductGetItem = any;
 
 function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
 }
 
-function normalizeBadgeKey(label: unknown) {
-  const normalized = toStr(label).toLowerCase().replace(/\s+/g, "_");
-  if (normalized === "best_seller") return "best_seller";
-  if (normalized === "popular") return "popular";
-  if (normalized === "trending_now") return "trending_now";
-  if (normalized === "rising_star") return "rising_star";
-  return "";
-}
-
-function mapProduct(item: ProductGetItem): ProductItem | null {
-  const source = item?.data || item || {};
-  const hasCanonicalShape = !item?.data && typeof source?.title === "string";
-  const data = hasCanonicalShape
-    ? {
-        product: {
-          unique_id: item?.id || source?.id || null,
-          title: source?.title || null,
-          brand: source?.brandLabel || null,
-          brandTitle: source?.brandLabel || null,
-          vendorName: source?.vendorLabel || null,
-        },
-        media: {
-          images: source?.image?.imageUrl
-            ? [{ imageUrl: source.image.imageUrl, blurHashUrl: source.image.blurHashUrl || null }]
-            : [],
-        },
-        grouping: {
-          category: source?.categorySlug || null,
-          categorySlug: source?.categorySlug || null,
-        },
-        is_new_arrival: source?.merchandising?.isNewArrival === true,
-        analytics: source?.badge
-          ? {
-              badge: normalizeBadgeKey(source.badge.label),
-              badgeLabel: source.badge.label || null,
-              badgeIconKey: source.badge.iconKey || null,
-              badgeIconUrl: source.badge.iconUrl || null,
-              badgeBackgroundColor: source.badge.backgroundColor || null,
-              badgeForegroundColor: source.badge.foregroundColor || null,
-            }
-          : {},
-      }
-    : source;
-  const id = toStr(item?.id || data?.docId || data?.product?.unique_id);
-  const title = toStr(data?.product?.title);
-  if (!id || !title) return null;
-  return {
-    id,
-    data,
-  };
+function isShopperVisibleProductCard(item: unknown): item is ShopperVisibleProductCard {
+  return item != null && typeof item === "object" && !("data" in item) && typeof (item as { title?: unknown }).title === "string";
 }
 
 function withAnalyticsMeta(
-  products: ProductItem[],
+  products: ShopperVisibleProductCard[],
   analyticsById: Map<string, { clicks: number; productViews: number; hasHighClicks: boolean; metric: string }>,
 ) {
   return products.map((product) => {
@@ -75,21 +25,12 @@ function withAnalyticsMeta(
     if (!analytics) return product;
     return {
       ...product,
-      data: {
-        ...(product?.data || {}),
-        analytics: {
-          ...((product?.data as any)?.analytics || {}),
-          clicks: analytics.clicks,
-          productViews: analytics.productViews,
-          hasHighClicks: analytics.hasHighClicks,
-          metric: analytics.metric,
-        },
-      },
+      badge: product.badge,
     };
   });
 }
 
-async function loadProductsBySearchTerms(searchTerms: string[], limit: number) {
+async function loadProductsBySearchTerms(searchTerms: string[], limit: number): Promise<ShopperVisibleProductCard[]> {
   const queries = searchTerms.slice(0, 3);
   const results = await Promise.all(
     queries.map(async (term) => {
@@ -105,16 +46,19 @@ async function loadProductsBySearchTerms(searchTerms: string[], limit: number) {
       return Array.isArray(payload?.items) ? payload.items : [];
     }),
   );
-  const deduped = new Map<string, ProductItem>();
+  const deduped = new Map<string, ShopperVisibleProductCard>();
   results.flat().forEach((item) => {
-    const mapped = mapProduct(item);
+    const mapped =
+      item && typeof item === "object" && !("data" in item) && typeof item?.title === "string"
+        ? (item as ShopperVisibleProductCard)
+        : null;
     const mappedId = toStr(mapped?.id);
     if (mapped && mappedId && !deduped.has(mappedId)) deduped.set(mappedId, mapped);
   });
   return Array.from(deduped.values()).slice(0, limit);
 }
 
-async function loadProductsByIds(ids: string[]) {
+async function loadProductsByIds(ids: string[]): Promise<ShopperVisibleProductCard[]> {
   const params = new URLSearchParams({
     ids: ids.join(","),
     isActive: "true",
@@ -124,7 +68,7 @@ async function loadProductsByIds(ids: string[]) {
   });
   const payload = await response.json().catch(() => ({}));
   const items = Array.isArray(payload?.items) ? payload.items : [];
-  return items.map(mapProduct).filter(Boolean) as ProductItem[];
+  return items.filter(isShopperVisibleProductCard);
 }
 
 function PersonalizedRailShell({
@@ -137,7 +81,7 @@ function PersonalizedRailShell({
 }: {
   title: string;
   subtitle: string;
-  products: ProductItem[];
+  products: ShopperVisibleProductCard[];
   emptyMessage: string;
   mobileLeadingSpacer?: boolean;
   viewAllHref?: string;
@@ -164,7 +108,7 @@ export function RecentlyViewedRail({
   subtitle: string;
   limit?: number;
 }) {
-  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -217,7 +161,7 @@ export function SearchHistoryRail({
   subtitle: string;
   limit?: number;
 }) {
-  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -274,7 +218,7 @@ export function TrendingProductsRail({
   days?: number;
   mode?: "blended" | "clicked" | "viewed" | "searched";
 }) {
-  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -392,7 +336,7 @@ export function RecommendedForYouRail({
   subtitle: string;
   limit?: number;
 }) {
-  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -406,7 +350,7 @@ export function RecommendedForYouRail({
         const parsed = Array.isArray(JSON.parse(recentViewedRaw || "[]")) ? JSON.parse(recentViewedRaw || "[]") : [];
         const recentIds = parsed.map((item: any) => toStr(item?.id)).filter(Boolean).slice(0, 6);
 
-        let items: ProductItem[] = [];
+        let items: ShopperVisibleProductCard[] = [];
         if (recentSearches.length) {
           items = await loadProductsBySearchTerms(recentSearches, limit);
         }

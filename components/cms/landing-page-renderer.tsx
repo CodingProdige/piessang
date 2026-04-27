@@ -5,7 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import type { LandingSection } from "@/lib/cms/landing-page-schema";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
 import { DeferredSection } from "@/components/cms/deferred-section";
-import type { ProductItem } from "@/components/products/products-results";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 import { campaignsCollection, normalizeCampaignRecord } from "@/lib/campaigns";
 import { canServeCampaign } from "@/lib/campaign-serving";
 import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
@@ -23,10 +23,7 @@ import {
 } from "@/components/cms/shared-landing-section-content";
 import { appendShopperAreaSearchParams, normalizeShopperArea } from "@/lib/shipping/shopper-country";
 
-type ProductOption = ProductItem & {
-  title: string;
-  category: string;
-  categorySlug: string;
+type ProductOption = ShopperVisibleProductCard & {
   hasActiveCampaign: boolean;
 };
 
@@ -330,51 +327,10 @@ async function loadCatalogData(origin: string, shopperArea: any) {
   );
 
   const productItems = Array.isArray(productsResponse?.items) ? productsResponse.items : [];
-  const products = productItems.map((item: any) => {
-    const source = item?.data || item || {};
-    const hasCanonicalShape = !item?.data && typeof source?.title === "string";
-    const data = toPlainJsonValue(
-      hasCanonicalShape
-        ? {
-            product: {
-              unique_id: item?.id || source?.id || null,
-              title: source?.title || null,
-              brand: source?.brandLabel || null,
-              brandTitle: source?.brandLabel || null,
-              vendorName: source?.vendorLabel || null,
-            },
-            media: {
-              images: source?.image?.imageUrl
-                ? [{ imageUrl: source.image.imageUrl, blurHashUrl: source.image.blurHashUrl || null }]
-                : [],
-            },
-            grouping: {
-              category: source?.categorySlug || null,
-              categorySlug: source?.categorySlug || null,
-            },
-            is_new_arrival: source?.merchandising?.isNewArrival === true,
-            analytics: source?.badge
-              ? {
-                  badge: normalizeBadgeKey(source.badge.label),
-                  badgeLabel: source.badge.label || null,
-                  badgeIconKey: source.badge.iconKey || null,
-                  badgeIconUrl: source.badge.iconUrl || null,
-                  badgeBackgroundColor: source.badge.backgroundColor || null,
-                  badgeForegroundColor: source.badge.foregroundColor || null,
-                }
-              : {},
-          }
-        : source,
-    );
-    return {
-      id: toStr(item?.id || data?.docId || data?.product?.unique_id),
-      data,
-      title: toStr(data?.product?.title, "Product"),
-      category: toStr(data?.grouping?.category),
-      categorySlug: slugify(data?.grouping?.categorySlug || data?.grouping?.category),
-      hasActiveCampaign: activeCampaignProductIds.has(toStr(item?.id || data?.docId || data?.product?.unique_id)),
-    };
-  });
+  const products = productItems.map((item: any) => ({
+    ...item,
+    hasActiveCampaign: activeCampaignProductIds.has(toStr(item?.id)),
+  }));
 
   const categories = (Array.isArray(categoriesResponse?.items) ? categoriesResponse.items : []).map((item: any) => ({
     id: toStr(item?.id || item?.slug),
@@ -627,7 +583,7 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
           : source === "category_match"
             ? products.filter((product: ProductOption) => {
                 if (!selectedCategorySlugs.length) return true;
-                return selectedCategorySlugs.includes(slugify(product.categorySlug || product.category));
+                return selectedCategorySlugs.includes(slugify(product.categorySlug));
               })
             : products.slice().reverse();
       const items = sortProductsForRail(selectedProducts, prioritizeCampaigns, randomize).slice(0, resolveRailLimit(section.props, "desktop"));

@@ -902,6 +902,7 @@ function useHeaderAuthControlsState() {
     cartItemCount,
     cartOwnerId,
     cartPulseKey,
+    profile,
     openAuthModal,
     refreshProfile,
     signOut,
@@ -910,6 +911,7 @@ function useHeaderAuthControlsState() {
   const authSettled = authReady || isAuthenticated;
   const showAuthenticatedActions = isAuthenticated;
   const showGuestActions = authReady && !isAuthenticated;
+  const accountEmail = String(profile?.email || "").trim();
   const favoritesHref = useMemo(() => {
     if (!showAuthenticatedActions || !uid) return "/products";
     const params = new URLSearchParams({
@@ -987,6 +989,7 @@ function useHeaderAuthControlsState() {
     cartItemCount,
     cartOwnerId,
     cartPulseKey,
+    accountEmail,
     notificationUnreadCount,
     favoritesHref,
     notificationsHref,
@@ -1013,6 +1016,7 @@ function DesktopHeaderAuthControls({
     cartItemCount,
     cartOwnerId,
     cartPulseKey,
+    accountEmail,
     notificationUnreadCount,
     favoritesHref,
     notificationsHref,
@@ -1027,9 +1031,14 @@ function DesktopHeaderAuthControls({
         <>
           <Link
             href="/account"
-            className="border-r border-black/10 px-5 text-[12px] font-semibold text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
+            className="flex min-w-0 flex-col justify-center border-r border-black/10 px-5 text-[#4b5563] last:border-r-0 hover:text-[#2f343b]"
           >
-            My Account
+            <span className="text-[12px] font-semibold leading-tight">My Account</span>
+            {accountEmail ? (
+              <span className="mt-0.5 max-w-[180px] truncate text-[10px] font-medium leading-tight text-[#8b94a3]">
+                {accountEmail}
+              </span>
+            ) : null}
           </Link>
           {isSeller ? (
             <Link
@@ -1427,6 +1436,7 @@ function MobileDrawer({
     authSettled: authReady,
     showAuthenticatedActions: isAuthenticated,
     isSeller,
+    accountEmail,
     favoriteCount,
     cartItemCount,
     favoritesHref,
@@ -1516,6 +1526,13 @@ function MobileDrawer({
             </Link>
           </div>
         </div>
+
+        {isAuthenticated && accountEmail ? (
+          <div className="mx-3 mt-3 rounded-[14px] border border-black/5 bg-white px-4 py-3 shadow-[0_6px_18px_rgba(20,24,27,0.04)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Signed in as</p>
+            <p className="mt-1 truncate text-[13px] font-semibold text-[#4b5563]">{accountEmail}</p>
+          </div>
+        ) : null}
 
         <div className="flex flex-col py-3">
           {view === "root"

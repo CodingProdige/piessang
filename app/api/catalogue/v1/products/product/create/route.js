@@ -11,7 +11,6 @@ import { getVariantInventoryTotal } from "@/lib/seller/notifications";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { toSellerSlug } from "@/lib/seller/vendor-name";
 import { ensureSellerCode } from "@/lib/seller/seller-code";
-import { normalizeSellerCourierProfile, normalizeProductCourierSettings } from "@/lib/integrations/easyship-profile";
 import { loadMarketplaceFeeConfig } from "@/lib/marketplace/fees-store";
 import { buildOfferGroupMetadata } from "@/lib/catalogue/offer-group";
 import { enqueueGoogleSyncProducts } from "@/lib/integrations/google-sync-queue";
@@ -128,6 +127,42 @@ function parseImages(value){
   return arr;
 }
 
+function parseVideo(input, fallbackPos){
+  if (typeof input === "string") {
+    const sourceUrl = toStr(input, null) || null;
+    return { videoUrl: sourceUrl, sourceUrl, previewUrl: null, posterUrl: null, fileName: null, processingStatus: sourceUrl ? "ready" : null, ...(fallbackPos ? { position: fallbackPos } : {}) };
+  }
+  if (input && typeof input === "object") {
+    const sourceUrl = toStr(input.sourceUrl ?? input.originalUrl ?? input.videoUrl ?? input.url ?? input.video, null) || null;
+    const videoUrl = toStr(input.videoUrl ?? input.url ?? input.video, null) || sourceUrl;
+    const previewUrl = toStr(input.previewUrl, null) || null;
+    const posterUrl = toStr(input.posterUrl, null) || null;
+    const fileName = toStr(input.fileName ?? input.name ?? input.altText, null) || null;
+    const processingStatus = toStr(input.processingStatus ?? input.status, null) || (previewUrl && videoUrl && sourceUrl && videoUrl !== sourceUrl ? "ready" : "pending");
+    const pos = Number.isFinite(+input?.position) ? toInt(input.position) : undefined;
+    const base = { videoUrl, sourceUrl, previewUrl, posterUrl, fileName, processingStatus };
+    return pos != null ? { ...base, position: pos } : fallbackPos ? { ...base, position: fallbackPos } : base;
+  }
+  return { videoUrl: null, sourceUrl: null, previewUrl: null, posterUrl: null, fileName: null, processingStatus: null, ...(fallbackPos ? { position: fallbackPos } : {}) };
+}
+
+function parseVideos(value){
+  let arr = [];
+  if (Array.isArray(value)) {
+    arr = value.map((v, i) => parseVideo(v, i + 1)).filter((o) => o.videoUrl);
+  } else if (value) {
+    const one = parseVideo(value, 1);
+    if (one.videoUrl) arr = [one];
+  }
+  if (arr.length) {
+    arr = arr
+      .map((it, i) => ({ ...it, position: Number.isFinite(+it.position) ? toInt(it.position, i + 1) : i + 1 }))
+      .sort((a, b) => a.position - b.position)
+      .map((it, i) => ({ ...it, position: i + 1 }));
+  }
+  return arr;
+}
+
 function normalizeTimestamps(obj){
   if (!obj || typeof obj !== "object") return obj;
   const out={...obj};
@@ -233,8 +268,6 @@ export async function POST(req){
       sellerOwner?.id || uniqueId,
     );
     const marketplaceFeeConfig = await loadMarketplaceFeeConfig();
-    const sellerCourierProfile = normalizeSellerCourierProfile(sellerOwner?.data?.seller?.courierProfile || {});
-    const productShipping = normalizeProductCourierSettings(data?.product?.shipping || data?.shipping || {});
     const successFeeRule = resolveMarketplaceSuccessFeeRule(category, subCategory, marketplaceFeeConfig?.categories);
     const successFeePercent = estimateMarketplaceSuccessFeePercent(successFeeRule.rule, 0);
     const successFeeLabel = describeMarketplaceFeeRule(successFeeRule.rule);
@@ -322,7 +355,8 @@ export async function POST(req){
       media: {
         color: toStr(data?.media?.color,null) || null,
         images: parseImages(data?.media?.images),
-        video: toStr(data?.media?.video,null) || null,
+        videos: parseVideos(data?.media?.videos),
+        video: toStr(data?.media?.video,null) || parseVideos(data?.media?.videos)?.[0]?.videoUrl || null,
         icon:  toStr(data?.media?.icon, null) || null
       },
       product: {
@@ -341,18 +375,16 @@ export async function POST(req){
         description: toStr(data?.product?.description,null) || null,
         condition: toStr(data?.product?.condition, null) || null,
         vendorDescription,
-        shipping: productShipping,
         keywords: parseKeywords(data?.product?.keywords),
         ...(vendorName ? { vendorName } : {})
       },
       seller: {
         sellerSlug: sellerSlug || null,
         sellerCode,
-        deliveryProfile:
-          sellerOwner?.data?.seller?.deliveryProfile && typeof sellerOwner.data.seller.deliveryProfile === "object"
-            ? sellerOwner.data.seller.deliveryProfile
+        shippingSettings:
+          sellerOwner?.data?.seller?.shippingSettings && typeof sellerOwner.data.seller.shippingSettings === "object"
+            ? sellerOwner.data.seller.shippingSettings
             : {},
-        courierProfile: sellerCourierProfile,
       },
       moderation: {
         status: "draft",

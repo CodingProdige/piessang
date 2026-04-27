@@ -17,10 +17,9 @@ import { SHOPPER_COUNTRY_OPTIONS } from "@/components/products/delivery-area-gat
 import { getFlagEmoji } from "@/lib/currency/display-currency";
 import { clientStorage } from "@/lib/firebase";
 import { prepareImageAsset } from "@/lib/client/image-prep";
-import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
-import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 import { COUNTRY_CATALOG, normalizeCountryCode } from "@/lib/marketplace/country-config";
 import { SUPPORTED_PAYOUT_COUNTRIES, getDefaultPayoutCurrency } from "@/lib/seller/payout-config";
+import { getDirectCourierCatalogue } from "@/lib/shipping/courier-estimates/courier-catalogue";
 import { normalizeShippingSettings } from "@/lib/shipping/settings";
 
 type SellerBranding = {
@@ -173,6 +172,12 @@ type SellerShippingSettings = {
     province: string;
     city: string;
     postalCode: string;
+    streetAddress: string;
+    addressLine2: string;
+    suburb: string;
+    utcOffsetMinutes: number | null;
+    latitude: number | null;
+    longitude: number | null;
   };
   localDelivery: {
     enabled: boolean;
@@ -289,9 +294,10 @@ type SellerSettingsWorkspaceProps = {
   isSystemAdmin?: boolean;
   visibleSections?: SellerSettingsSectionKey[];
   showDangerZone?: boolean;
+  onSettingsSaved?: () => void;
 };
 
-export type SellerSettingsSectionKey = "profile" | "branding" | "shipping" | "business" | "payouts";
+export type SellerSettingsSectionKey = "profile" | "branding" | "shipping" | "estimator" | "business" | "payouts";
 
 const EMPTY_BRANDING: SellerBranding = {
   bannerImageUrl: "",
@@ -385,6 +391,12 @@ const EMPTY_SHIPPING_SETTINGS: SellerShippingSettings = {
     province: "",
     city: "",
     postalCode: "",
+    streetAddress: "",
+    addressLine2: "",
+    suburb: "",
+    utcOffsetMinutes: null,
+    latitude: null,
+    longitude: null,
   },
   localDelivery: {
     enabled: false,
@@ -703,79 +715,6 @@ function getDirectDeliveryRule(profile: SellerDeliveryProfile) {
       };
 }
 
-function mapPricingRules(rules: any[] = []) {
-  return Array.isArray(rules)
-    ? rules.map((rule) => ({
-        id: toStr(rule.id),
-        label: toStr(rule.label),
-        minDistanceKm: toStr(rule.minDistanceKm),
-        maxDistanceKm: toStr(rule.maxDistanceKm),
-        minOrderValue: toStr(rule.minOrderValue),
-        maxOrderValue: toStr(rule.maxOrderValue),
-        fee: toStr(rule.fee),
-        freeAboveOrderValue: toStr(rule.freeAboveOrderValue),
-        pricingBasis: toStr((rule as any).pricingBasis),
-      }))
-    : [];
-}
-
-function mapDeliveryProfile(profile: any): SellerDeliveryProfile {
-  const normalized = normalizeSellerDeliveryProfile(profile && typeof profile === "object" ? profile : {});
-  return {
-    origin: {
-      streetAddress: toStr(normalized?.origin?.streetAddress),
-      addressLine2: toStr(normalized?.origin?.addressLine2),
-      country: toStr(normalized?.origin?.country),
-      region: toStr(normalized?.origin?.region),
-      city: toStr(normalized?.origin?.city),
-      suburb: toStr(normalized?.origin?.suburb),
-      postalCode: toStr(normalized?.origin?.postalCode),
-      utcOffsetMinutes: toStr(normalized?.origin?.utcOffsetMinutes),
-      latitude: toStr(normalized?.origin?.latitude),
-      longitude: toStr(normalized?.origin?.longitude),
-    },
-    directDelivery: {
-      enabled: normalized?.directDelivery?.enabled === true,
-      leadTimeDays: toStr(normalized?.directDelivery?.leadTimeDays),
-      cutoffTime: toStr(normalized?.directDelivery?.cutoffTime),
-      pricingRules: mapPricingRules(normalized?.directDelivery?.pricingRules || []).slice(0, 1),
-    },
-    shippingZones: Array.isArray(normalized?.shippingZones)
-      ? normalized.shippingZones.map((zone) => ({
-          id: toStr(zone.id),
-          label: toStr(zone.label || zone.country),
-          scopeType: "country",
-          country: toStr(zone.country),
-          region: "",
-          city: "",
-          postalCodes: "",
-          leadTimeDays: toStr(zone.leadTimeDays),
-          cutoffTime: toStr(zone.cutoffTime),
-          rateMode: toStr((zone as any).rateMode || "flat"),
-          pricingBasis: toStr((zone as any).pricingBasis || "per_order"),
-          courierKey: toStr((zone as any).courierKey),
-          courierServiceLabel: toStr((zone as any).courierServiceLabel),
-          pricingRules: mapPricingRules(zone.pricingRules || []).slice(0, 1),
-          isFallback: false,
-        }))
-      : [],
-    pickup: {
-      enabled: normalized?.pickup?.enabled === true,
-      leadTimeDays: toStr(normalized?.pickup?.leadTimeDays),
-    },
-    notes: toStr(normalized?.notes).slice(0, 500),
-  };
-}
-
-function mapCourierProfile(profile: any): SellerCourierProfile {
-  const normalized = normalizeSellerCourierProfile(profile && typeof profile === "object" ? profile : {});
-  return {
-    enabled: normalized.enabled === true,
-    handoverMode: normalized.handoverMode === "dropoff" ? "dropoff" : "pickup",
-    allowedCouriers: Array.isArray(normalized.allowedCouriers) ? normalized.allowedCouriers : [],
-  };
-}
-
 function mapShippingRateDraft(rate: any): SellerShippingRateDraft {
   const source = rate && typeof rate === "object" ? rate : {};
   return {
@@ -818,6 +757,12 @@ function mapShippingSettings(settings: any): SellerShippingSettings {
       province: toStr(normalized.shipsFrom?.province),
       city: toStr(normalized.shipsFrom?.city),
       postalCode: toStr(normalized.shipsFrom?.postalCode),
+      streetAddress: toStr(normalized.shipsFrom?.streetAddress),
+      addressLine2: toStr(normalized.shipsFrom?.addressLine2),
+      suburb: toStr(normalized.shipsFrom?.suburb),
+      utcOffsetMinutes: normalized.shipsFrom?.utcOffsetMinutes ?? null,
+      latitude: normalized.shipsFrom?.latitude ?? null,
+      longitude: normalized.shipsFrom?.longitude ?? null,
     },
     localDelivery: {
       enabled: normalized.localDelivery?.enabled === true,
@@ -1023,6 +968,12 @@ function serializeShippingSettings(settings: SellerShippingSettings) {
       province: settings.shipsFrom.province,
       city: settings.shipsFrom.city,
       postalCode: settings.shipsFrom.postalCode,
+      streetAddress: settings.shipsFrom.streetAddress,
+      addressLine2: settings.shipsFrom.addressLine2,
+      suburb: settings.shipsFrom.suburb,
+      utcOffsetMinutes: settings.shipsFrom.utcOffsetMinutes,
+      latitude: settings.shipsFrom.latitude,
+      longitude: settings.shipsFrom.longitude,
     },
     localDelivery: {
       enabled: settings.localDelivery.enabled,
@@ -1174,27 +1125,49 @@ function useSellerAccessLabel(role: string) {
 function buildSettingsSnapshot(input: {
   branding: SellerBranding;
   shippingSettings: SellerShippingSettings;
-  deliveryProfile: SellerDeliveryProfile;
-  courierProfile: SellerCourierProfile;
   payoutProfile: SellerPayoutProfile;
   businessDetails: SellerBusinessDetails;
   vendorNameValue: string;
   vendorDescriptionValue: string;
 }) {
+  const payoutProfileSnapshot = {
+    provider: input.payoutProfile.provider,
+    payoutMethod: input.payoutProfile.payoutMethod,
+    accountHolderName: input.payoutProfile.accountHolderName,
+    bankName: input.payoutProfile.bankName,
+    bankCountry: input.payoutProfile.bankCountry,
+    bankAddress: input.payoutProfile.bankAddress,
+    branchCode: input.payoutProfile.branchCode,
+    accountNumber: input.payoutProfile.accountNumber,
+    iban: input.payoutProfile.iban,
+    swiftBic: input.payoutProfile.swiftBic,
+    routingNumber: input.payoutProfile.routingNumber,
+    accountType: input.payoutProfile.accountType,
+    country: input.payoutProfile.country,
+    currency: input.payoutProfile.currency,
+    beneficiaryReference: input.payoutProfile.beneficiaryReference,
+    beneficiaryAddressLine1: input.payoutProfile.beneficiaryAddressLine1,
+    beneficiaryAddressLine2: input.payoutProfile.beneficiaryAddressLine2,
+    beneficiaryCity: input.payoutProfile.beneficiaryCity,
+    beneficiaryRegion: input.payoutProfile.beneficiaryRegion,
+    beneficiaryPostalCode: input.payoutProfile.beneficiaryPostalCode,
+    beneficiaryCountry: input.payoutProfile.beneficiaryCountry,
+    recipientEmail: input.payoutProfile.recipientEmail,
+    wiseDetails: input.payoutProfile.wiseDetails,
+  };
+
   return JSON.stringify({
     branding: input.branding,
     shippingSettings: input.shippingSettings,
-    deliveryProfile: input.deliveryProfile,
-    courierProfile: input.courierProfile,
-    payoutProfile: input.payoutProfile,
+    payoutProfile: payoutProfileSnapshot,
     businessDetails: input.businessDetails,
     vendorNameValue: sanitizeVendorName(input.vendorNameValue),
     vendorDescriptionValue: toStr(input.vendorDescriptionValue).slice(0, 500),
   });
 }
 
-function formatSellerOriginSummary(origin: SellerDeliveryProfile["origin"]) {
-  return [origin.streetAddress, origin.addressLine2, origin.suburb, origin.city, origin.region, origin.country].filter(Boolean).join(", ");
+function formatSellerOriginSummary(origin: SellerShippingSettings["shipsFrom"]) {
+  return [origin.streetAddress, origin.addressLine2, origin.suburb, origin.city, origin.province, origin.countryCode].filter(Boolean).join(", ");
 }
 
 function formatShipsFromSummary(origin: SellerShippingSettings["shipsFrom"]) {
@@ -1380,6 +1353,7 @@ export function SellerSettingsWorkspace({
   isSystemAdmin = false,
   visibleSections,
   showDangerZone = true,
+  onSettingsSaved,
 }: SellerSettingsWorkspaceProps) {
   const router = useRouter();
   const { profile, refreshProfile } = useAuth();
@@ -1388,10 +1362,24 @@ export function SellerSettingsWorkspace({
   const [deleting, setDeleting] = useState(false);
   const [branding, setBranding] = useState<SellerBranding>(EMPTY_BRANDING);
   const [shippingSettings, setShippingSettings] = useState<SellerShippingSettings>(EMPTY_SHIPPING_SETTINGS);
-  const [deliveryProfile, setDeliveryProfile] = useState<SellerDeliveryProfile>(EMPTY_DELIVERY_PROFILE);
-  const [courierProfile, setCourierProfile] = useState<SellerCourierProfile>(EMPTY_COURIER_PROFILE);
   const [payoutProfile, setPayoutProfile] = useState<SellerPayoutProfile>(EMPTY_PAYOUT_PROFILE);
   const [businessDetails, setBusinessDetails] = useState<SellerBusinessDetails>(EMPTY_BUSINESS_DETAILS);
+  const [shippingEstimateInputs, setShippingEstimateInputs] = useState({
+    countryCode: "ZA",
+    province: "",
+    postalCode: "",
+    orderValue: "0",
+    totalWeight: "0",
+    itemCount: "1",
+    courierCode: "",
+    lengthCm: "",
+    widthCm: "",
+    heightCm: "",
+  });
+  const [shippingEstimateLoading, setShippingEstimateLoading] = useState(false);
+  const [shippingEstimateResult, setShippingEstimateResult] = useState<any | null>(null);
+  const [courierEstimateResult, setCourierEstimateResult] = useState<any | null>(null);
+  const [shippingEstimateError, setShippingEstimateError] = useState<string | null>(null);
   const [vendorNameValue, setVendorNameValue] = useState(vendorName);
   const [vendorDescriptionValue, setVendorDescriptionValue] = useState("");
   const [sellerCodeValue, setSellerCodeValue] = useState("");
@@ -1414,16 +1402,19 @@ export function SellerSettingsWorkspace({
   const [sectionOpen, setSectionOpen] = useState({
     branding: true,
     shipping: true,
+    estimator: true,
     business: true,
     payouts: true,
   });
   const [sellerNameCheck, setSellerNameCheck] = useState<{
     checking: boolean;
     unique: boolean | null;
+    current: boolean;
     suggestions: string[];
   }>({
     checking: false,
     unique: null,
+    current: false,
     suggestions: [],
   });
   const bannerInputRef = useRef<HTMLInputElement | null>(null);
@@ -1435,12 +1426,13 @@ export function SellerSettingsWorkspace({
   const canEditSettings = Boolean(isSystemAdmin || ["owner", "admin"].includes(String(sellerRole ?? "").trim().toLowerCase()));
   const canDeleteSeller = Boolean(isSystemAdmin || String(sellerRole ?? "").trim().toLowerCase() === "owner");
   const visibleSectionSet = useMemo(
-    () => new Set<SellerSettingsSectionKey>(Array.isArray(visibleSections) && visibleSections.length ? visibleSections : ["profile", "branding", "shipping", "business", "payouts"]),
+    () => new Set<SellerSettingsSectionKey>(Array.isArray(visibleSections) && visibleSections.length ? visibleSections : ["profile", "branding", "shipping", "estimator", "business", "payouts"]),
     [visibleSections],
   );
   const standaloneSection = Array.isArray(visibleSections) && visibleSections.length === 1 ? visibleSections[0] : null;
   const publicVendorIdentifier = sellerCodeValue || profile?.sellerCode || sellerSlug;
   const publicVendorHref = publicVendorIdentifier ? `/vendors/${encodeURIComponent(publicVendorIdentifier)}` : "/products";
+  const courierEstimateOptions = useMemo(() => getDirectCourierCatalogue(), []);
 
   const renderLoadingSkeleton = () => (
     <section className="space-y-4">
@@ -1505,20 +1497,184 @@ export function SellerSettingsWorkspace({
       buildSettingsSnapshot({
         branding,
         shippingSettings,
-        deliveryProfile,
-        courierProfile,
         payoutProfile,
         businessDetails,
         vendorNameValue,
         vendorDescriptionValue,
       }) !== savedSnapshot,
-    [branding, businessDetails, courierProfile, deliveryProfile, payoutProfile, savedSnapshot, shippingSettings, vendorDescriptionValue, vendorNameValue],
+    [branding, businessDetails, payoutProfile, savedSnapshot, shippingSettings, vendorDescriptionValue, vendorNameValue],
   );
   
   function showSnackbar(message: string, tone: "success" | "error" = "success") {
     setSnackbar({ message, tone });
     if (snackbarTimeoutRef.current) window.clearTimeout(snackbarTimeoutRef.current);
     snackbarTimeoutRef.current = window.setTimeout(() => setSnackbar(null), 1800);
+  }
+
+  function formatEstimateMoney(value: unknown) {
+    const numeric = Number(value || 0);
+    return new Intl.NumberFormat("en-ZA", {
+      style: "currency",
+      currency: "ZAR",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(Number.isFinite(numeric) ? numeric : 0);
+  }
+
+  function formatEstimateEta(days: any) {
+    const min = Number(days?.min);
+    const max = Number(days?.max);
+    if (Number.isFinite(min) && Number.isFinite(max)) return `${min}-${max} days`;
+    if (Number.isFinite(min)) return `${min}+ days`;
+    if (Number.isFinite(max)) return `Up to ${max} days`;
+    return "No ETA available";
+  }
+
+  function formatEstimateLabel(value: unknown) {
+    return String(value || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  async function runShippingEstimate() {
+    if (!sellerSlug) return;
+    setShippingEstimateLoading(true);
+    setShippingEstimateError(null);
+    setShippingEstimateResult(null);
+    setCourierEstimateResult(null);
+    try {
+      const response = await fetch(`/api/sellers/${encodeURIComponent(sellerSlug)}/shipping-estimate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          buyerDestination: {
+            countryCode: shippingEstimateInputs.countryCode,
+            province: shippingEstimateInputs.province,
+            postalCode: shippingEstimateInputs.postalCode,
+          },
+          orderValue: Number(shippingEstimateInputs.orderValue || 0),
+          totalWeight: Number(shippingEstimateInputs.totalWeight || 0),
+          itemCount: Number(shippingEstimateInputs.itemCount || 1),
+          courierCode: shippingEstimateInputs.courierCode || undefined,
+          parcel: {
+            lengthCm: Number(shippingEstimateInputs.lengthCm || 0),
+            widthCm: Number(shippingEstimateInputs.widthCm || 0),
+            heightCm: Number(shippingEstimateInputs.heightCm || 0),
+          },
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to estimate shipping.");
+      }
+      setShippingEstimateResult(payload?.estimate || null);
+      setCourierEstimateResult(payload?.courierEstimate || null);
+    } catch (cause) {
+      setShippingEstimateError(cause instanceof Error ? cause.message : "Unable to estimate shipping.");
+    } finally {
+      setShippingEstimateLoading(false);
+    }
+  }
+
+  function applyEstimateToRateDraft(rateDraft: SellerShippingRateDraft, amount: string): SellerShippingRateDraft {
+    if (rateDraft.pricingMode === "flat") return { ...rateDraft, flatRate: amount };
+    if (rateDraft.pricingMode === "weight_based") {
+      return { ...rateDraft, weightBased: { ...rateDraft.weightBased, baseRate: amount } };
+    }
+    if (rateDraft.pricingMode === "tiered") {
+      const tiered = rateDraft.tiered.length
+        ? rateDraft.tiered.map((entry, index) => (index === 0 ? { ...entry, rate: amount } : entry))
+        : [{ minWeightKg: "", maxWeightKg: "", rate: amount }];
+      return { ...rateDraft, tiered };
+    }
+    if (rateDraft.pricingMode === "order_value_based") {
+      const orderValueBased = rateDraft.orderValueBased.length
+        ? rateDraft.orderValueBased.map((entry, index) => (index === 0 ? { ...entry, rate: amount } : entry))
+        : [{ minOrderValue: "", maxOrderValue: "", rate: amount }];
+      return { ...rateDraft, orderValueBased };
+    }
+    return {
+      ...rateDraft,
+      freeOverThreshold: {
+        ...rateDraft.freeOverThreshold,
+        fallbackRate: amount,
+      },
+    };
+  }
+
+  function applyCourierEstimateToMatchedRule() {
+    if (!courierEstimateResult?.ok || !shippingEstimateResult?.matchedRuleId) return;
+    const amount = String(courierEstimateResult.estimatedFee ?? "");
+    if (!amount) return;
+
+    setShippingSettings((current) => {
+      if (shippingEstimateResult.matchedSource === "local_delivery") {
+        if (shippingEstimateResult.matchType === "province") {
+          return {
+            ...current,
+            localDelivery: {
+              ...current.localDelivery,
+              provinces: current.localDelivery.provinces.map((entry) =>
+                String(entry.placeId || entry.province) === String(shippingEstimateResult.matchedRuleId)
+                  ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
+                  : entry,
+              ),
+            },
+          };
+        }
+        if (shippingEstimateResult.matchType === "postal_exact" || shippingEstimateResult.matchType === "postal_range") {
+          return {
+            ...current,
+            localDelivery: {
+              ...current.localDelivery,
+              postalCodeGroups: current.localDelivery.postalCodeGroups.map((entry) =>
+                String(entry.name) === String(shippingEstimateResult.matchedRuleId)
+                  ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
+                  : entry,
+              ),
+            },
+          };
+        }
+      }
+
+      if (shippingEstimateResult.matchedSource === "shipping_zone") {
+        return {
+          ...current,
+          zones: current.zones.map((zone) => {
+            if (shippingEstimateResult.matchType === "country" && String(zone.id) === String(shippingEstimateResult.matchedRuleId)) {
+              return { ...zone, defaultRate: applyEstimateToRateDraft(zone.defaultRate, amount) };
+            }
+            if (shippingEstimateResult.matchType === "province") {
+              return {
+                ...zone,
+                provinces: zone.provinces.map((entry) =>
+                  String(entry.placeId || entry.province) === String(shippingEstimateResult.matchedRuleId)
+                    ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
+                    : entry,
+                ),
+              };
+            }
+            if (shippingEstimateResult.matchType === "postal_exact" || shippingEstimateResult.matchType === "postal_range") {
+              return {
+                ...zone,
+                postalCodeGroups: zone.postalCodeGroups.map((entry) =>
+                  String(entry.name) === String(shippingEstimateResult.matchedRuleId)
+                    ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
+                    : entry,
+                ),
+              };
+            }
+            return zone;
+          }),
+        };
+      }
+
+      return current;
+    });
+    showSnackbar("Courier estimate copied into the matched rule editor.");
   }
 
   useEffect(() => {
@@ -1532,16 +1688,25 @@ export function SellerSettingsWorkspace({
     if (!canEditSettings) return;
 
     const nextVendorName = sanitizeVendorName(vendorNameValue || vendorName);
+    const currentVendorName = sanitizeVendorName(vendorName);
     if (!nextVendorName || nextVendorName.length < 3) {
-      setSellerNameCheck({ checking: false, unique: null, suggestions: [] });
+      setSellerNameCheck({ checking: false, unique: null, current: false, suggestions: [] });
+      return;
+    }
+
+    if (currentVendorName && nextVendorName.toLowerCase() === currentVendorName.toLowerCase()) {
+      setSellerNameCheck({ checking: false, unique: null, current: true, suggestions: [] });
       return;
     }
 
     const controller = new AbortController();
+    let requestStarted = false;
     const timeout = window.setTimeout(async () => {
+      if (controller.signal.aborted) return;
       setSellerNameCheck((current) => ({ ...current, checking: true }));
 
       try {
+        requestStarted = true;
         const response = await fetch("/api/client/v1/accounts/seller/check-vendor-name", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1561,18 +1726,21 @@ export function SellerSettingsWorkspace({
         setSellerNameCheck({
           checking: false,
           unique: payload?.unique === true,
+          current: false,
           suggestions: Array.isArray(payload?.suggestions) ? payload.suggestions : [],
         });
       } catch {
         if (!controller.signal.aborted) {
-          setSellerNameCheck({ checking: false, unique: null, suggestions: [] });
+          setSellerNameCheck({ checking: false, unique: null, current: false, suggestions: [] });
         }
       }
     }, 350);
 
     return () => {
-      controller.abort();
       window.clearTimeout(timeout);
+      if (requestStarted && !controller.signal.aborted) {
+        controller.abort();
+      }
     };
   }, [canEditSettings, profile?.uid, sellerSlug, vendorName, vendorNameValue]);
 
@@ -1608,12 +1776,6 @@ export function SellerSettingsWorkspace({
         const nextShippingSettings = normalizeShippingSettings(
           payload?.shippingSettings && typeof payload.shippingSettings === "object" ? payload.shippingSettings : {},
         );
-        const nextDeliveryProfile = normalizeSellerDeliveryProfile(
-          payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {},
-        );
-        const nextCourierProfile = normalizeSellerCourierProfile(
-          payload?.courierProfile && typeof payload.courierProfile === "object" ? payload.courierProfile : {},
-        );
         const nextPayoutProfile = payload?.payoutProfile && typeof payload.payoutProfile === "object" ? payload.payoutProfile : {};
         const nextBusinessDetails = payload?.businessDetails && typeof payload.businessDetails === "object" ? payload.businessDetails : {};
         if (!cancelled && sellerRecord) {
@@ -1636,8 +1798,6 @@ export function SellerSettingsWorkspace({
           setVendorNameValue(nextVendorName || vendorName);
           setVendorDescriptionValue(nextVendorDescription);
           setShippingSettings(mapShippingSettings(nextShippingSettings));
-          setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
-          setCourierProfile(mapCourierProfile(nextCourierProfile));
           setPayoutProfile({
             provider: toStr(nextPayoutProfile?.provider || sellerRecord?.payoutProvider || "wise"),
             payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -1707,8 +1867,6 @@ export function SellerSettingsWorkspace({
                 logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
               },
               shippingSettings: mapShippingSettings(nextShippingSettings),
-              deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
-              courierProfile: mapCourierProfile(nextCourierProfile),
               payoutProfile: {
                 provider: toStr(nextPayoutProfile?.provider || sellerRecord?.payoutProvider || "wise"),
                 payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -1817,8 +1975,8 @@ export function SellerSettingsWorkspace({
     return "";
   })();
   const selectedShippingZoneCountries = useMemo(
-    () => deliveryProfile.shippingZones.map((zone) => normalizeCountryKey(zone.country)).filter(Boolean),
-    [deliveryProfile.shippingZones],
+    () => shippingSettings.zones.map((zone) => normalizeCountryKey(zone.countryCode)).filter(Boolean),
+    [shippingSettings.zones],
   );
   const hasDuplicateShippingZoneCountries = selectedShippingZoneCountries.length !== new Set(selectedShippingZoneCountries).size;
   const recipientId = payoutProvider === "wise" ? payoutProfile.wiseRecipientId : payoutProfile.stripeRecipientAccountId;
@@ -1891,7 +2049,7 @@ export function SellerSettingsWorkspace({
   );
 
   async function loadPayoutStatus() {
-    if (!profile?.uid || !sellerSlug) return;
+    if (!profile?.uid || !sellerSlug) return null;
     setPayoutStatusLoading(true);
     try {
       const response = await fetch(
@@ -1902,10 +2060,13 @@ export function SellerSettingsWorkspace({
       if (!response.ok || payload?.ok === false) {
         throw new Error(payload?.message || "Unable to load payout status.");
       }
-      setPayoutStatus(payload?.data || null);
+      const nextStatus = payload?.data || null;
+      setPayoutStatus(nextStatus);
+      return nextStatus;
     } catch (cause) {
       setPayoutStatus(null);
       showSnackbar(cause instanceof Error ? cause.message : "Unable to load payout status.", "error");
+      return null;
     } finally {
       setPayoutStatusLoading(false);
     }
@@ -1990,8 +2151,20 @@ export function SellerSettingsWorkspace({
         }));
       }
       if (!nextUrl) {
-        void loadPayoutStatus();
-        showSnackbar(payload?.data?.message || "Payout recipient saved successfully.", "success");
+        const latestStatus = await loadPayoutStatus();
+        const payoutConnected = Boolean(
+          latestStatus?.connected ||
+            latestStatus?.payoutsEnabled === true ||
+            latestStatus?.hasBankDestination === true ||
+            nextRecipientId ||
+            nextOnboardingStatus === "ready",
+        );
+        showSnackbar(
+          payoutConnected
+            ? payload?.data?.message || "Payout destination connected successfully."
+            : payload?.data?.message || "Payout details saved. Connection still needs attention.",
+          "success",
+        );
         return;
       }
       window.location.href = nextUrl;
@@ -2115,16 +2288,6 @@ export function SellerSettingsWorkspace({
           data: {
             branding,
             shippingSettings: serializeShippingSettings(shippingSettings),
-            deliveryProfile: {
-              ...deliveryProfile,
-              shippingZones: [],
-              pickup: {
-                ...deliveryProfile.pickup,
-                enabled: false,
-                leadTimeDays: "0",
-              },
-            },
-            courierProfile,
             payoutProfile,
             businessDetails,
             vendorName: nextVendorName,
@@ -2153,11 +2316,7 @@ export function SellerSettingsWorkspace({
         logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
       });
       const nextShippingSettings = normalizeShippingSettings(payload?.shippingSettings || {});
-      const nextDeliveryProfile = normalizeSellerDeliveryProfile(payload?.deliveryProfile || {});
-      const nextCourierProfile = normalizeSellerCourierProfile(payload?.courierProfile || {});
       setShippingSettings(mapShippingSettings(nextShippingSettings));
-      setDeliveryProfile(mapDeliveryProfile(nextDeliveryProfile));
-      setCourierProfile(mapCourierProfile(nextCourierProfile));
       setPayoutProfile({
         provider: toStr(nextPayoutProfile?.provider || payload?.payoutProvider || payoutProvider || "wise"),
         payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -2222,8 +2381,6 @@ export function SellerSettingsWorkspace({
             logoObjectPosition: normalizePlacement(nextBranding?.logoObjectPosition),
           },
           shippingSettings: mapShippingSettings(nextShippingSettings),
-          deliveryProfile: mapDeliveryProfile(nextDeliveryProfile),
-          courierProfile: mapCourierProfile(nextCourierProfile),
           payoutProfile: {
             provider: toStr(nextPayoutProfile?.provider || payload?.payoutProvider || payoutProvider || "wise"),
             payoutMethod: resolvePayoutMethodForCountry(nextPayoutProfile?.payoutMethod, nextPayoutProfile?.country || nextPayoutProfile?.bankCountry),
@@ -2286,6 +2443,7 @@ export function SellerSettingsWorkspace({
           "success",
         );
       }
+      onSettingsSaved?.();
       await refreshProfile();
       void loadPayoutStatus();
       return true;
@@ -2347,15 +2505,6 @@ export function SellerSettingsWorkspace({
 
   return (
     <section className="space-y-4">
-      <div className="flex justify-end">
-        <Link
-          href={publicVendorHref}
-          className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c] transition-colors hover:text-[#6f5d2d]"
-        >
-          View Public <span aria-hidden="true">→</span>
-        </Link>
-      </div>
-
       {visibleSectionSet.has("profile") ? (
       <div className="rounded-[8px] border border-black/5 bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
         <div className="flex items-start justify-between gap-3">
@@ -2366,9 +2515,17 @@ export function SellerSettingsWorkspace({
               Keep your vendor name and description current. Your seller code stays fixed and is used across Piessang.
             </p>
           </div>
-          <div className="rounded-[8px] border border-black/10 bg-[rgba(32,32,32,0.03)] px-3 py-2 text-[12px] text-[#57636c]">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8b94a3]">Seller code</p>
-            <p className="mt-1 font-semibold text-[#202020]">{sellerCodeValue || "Will be generated"}</p>
+          <div className="flex items-start gap-2">
+            <Link
+              href={publicVendorHref}
+              className="inline-flex h-9 shrink-0 items-center gap-1 rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c]"
+            >
+              View public profile <span aria-hidden="true">→</span>
+            </Link>
+            <div className="rounded-[8px] border border-black/10 bg-[rgba(32,32,32,0.03)] px-3 py-2 text-[12px] text-[#57636c]">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#8b94a3]">Seller code</p>
+              <p className="mt-1 font-semibold text-[#202020]">{sellerCodeValue || "Will be generated"}</p>
+            </div>
           </div>
         </div>
 
@@ -2394,6 +2551,8 @@ export function SellerSettingsWorkspace({
             </p>
             {sellerNameCheck.checking ? (
               <p className="mt-1 text-[11px] font-medium text-[#907d4c]">Checking availability...</p>
+            ) : sellerNameCheck.current ? (
+              <p className="mt-1 text-[11px] font-medium text-[#57636c]">This is your current vendor name.</p>
             ) : sellerNameCheck.unique === true ? (
               <p className="mt-1 text-[11px] font-semibold text-[#39a96b]">Vendor name available.</p>
             ) : sellerNameCheck.unique === false ? (
@@ -2663,7 +2822,7 @@ export function SellerSettingsWorkspace({
                 <div>
                   <p className="font-semibold text-[#202020]">Chosen origin</p>
                   <p className="mt-1 text-[13px] text-[#202020]">
-                    {formatSellerOriginSummary(deliveryProfile.origin) || formatShipsFromSummary(shippingSettings.shipsFrom) || "No shipping origin selected yet."}
+                    {formatSellerOriginSummary(shippingSettings.shipsFrom) || formatShipsFromSummary(shippingSettings.shipsFrom) || "No shipping origin selected yet."}
                   </p>
                   {shippingSettings.shipsFrom.postalCode ? (
                     <p className="mt-1">Postal code: {shippingSettings.shipsFrom.postalCode}</p>
@@ -2671,11 +2830,10 @@ export function SellerSettingsWorkspace({
                   <p className="mt-1">Set this once so zone logic can resolve from the right place.</p>
                 </div>
                 <button type="button" onClick={() => setOriginPickerOpen(true)} disabled={!canEditSettings} className="inline-flex h-9 shrink-0 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60">
-                  {formatSellerOriginSummary(deliveryProfile.origin) || formatShipsFromSummary(shippingSettings.shipsFrom) ? "Edit location" : "Choose location"}
+                  {formatSellerOriginSummary(shippingSettings.shipsFrom) || formatShipsFromSummary(shippingSettings.shipsFrom) ? "Edit location" : "Choose location"}
                 </button>
               </div>
             </div>
-          </div>
 
           <div className="rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
             <div className="flex items-start justify-between gap-3">
@@ -3225,7 +3383,7 @@ export function SellerSettingsWorkspace({
                 </div>
               ) : null}
 
-              {null}
+              </div>
             </div>
           </div>
 
@@ -3870,6 +4028,306 @@ export function SellerSettingsWorkspace({
       </SettingsSection>
       ) : null}
 
+      {visibleSectionSet.has("estimator") ? (
+      <SettingsSection
+        eyebrow="Shipping estimator"
+        title="Test your shipping rules"
+        description="Run advisory shipping estimates against a buyer destination before your rules go live."
+        expanded={standaloneSection === "estimator" ? true : sectionOpen.estimator}
+        onToggle={() => standaloneSection === "estimator" ? undefined : setSectionOpen((current) => ({ ...current, estimator: !current.estimator }))}
+      >
+        <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[13px] font-semibold text-[#202020]">Shipping estimator</p>
+              <p className="mt-1 text-[12px] text-[#57636c]">
+                Test your shipping rules against a buyer destination before they go live. This shows the final customer shipping charge only.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void runShippingEstimate()}
+              disabled={!canEditSettings || shippingEstimateLoading || !sellerSlug}
+              className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
+            >
+              {shippingEstimateLoading ? "Estimating..." : "Run estimate"}
+            </button>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Destination country</span>
+              <select
+                value={shippingEstimateInputs.countryCode}
+                onChange={(event) =>
+                  setShippingEstimateInputs((current) => ({
+                    ...current,
+                    countryCode: event.target.value,
+                  }))
+                }
+                disabled={!canEditSettings}
+                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+              >
+                {SELLER_SHIPPING_COUNTRY_OPTIONS.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.displayLabel}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Destination province / region</span>
+              <input
+                value={shippingEstimateInputs.province}
+                onChange={(event) =>
+                  setShippingEstimateInputs((current) => ({
+                    ...current,
+                    province: event.target.value.slice(0, 80),
+                  }))
+                }
+                disabled={!canEditSettings}
+                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                placeholder="Western Cape"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Destination postal code</span>
+              <input
+                value={shippingEstimateInputs.postalCode}
+                onChange={(event) =>
+                  setShippingEstimateInputs((current) => ({
+                    ...current,
+                    postalCode: event.target.value.slice(0, 20),
+                  }))
+                }
+                disabled={!canEditSettings}
+                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                placeholder="8001"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Order value</span>
+              <input
+                value={shippingEstimateInputs.orderValue}
+                onChange={(event) =>
+                  setShippingEstimateInputs((current) => ({
+                    ...current,
+                    orderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8),
+                  }))
+                }
+                disabled={!canEditSettings}
+                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                placeholder="1200"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Total weight (kg)</span>
+              <input
+                value={shippingEstimateInputs.totalWeight}
+                onChange={(event) =>
+                  setShippingEstimateInputs((current) => ({
+                    ...current,
+                    totalWeight: event.target.value.replace(/[^\d.]/g, "").slice(0, 8),
+                  }))
+                }
+                disabled={!canEditSettings}
+                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                placeholder="5"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Item count</span>
+              <input
+                value={shippingEstimateInputs.itemCount}
+                onChange={(event) =>
+                  setShippingEstimateInputs((current) => ({
+                    ...current,
+                    itemCount: event.target.value.replace(/[^\d]/g, "").slice(0, 3) || "1",
+                  }))
+                }
+                disabled={!canEditSettings}
+                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                placeholder="1"
+              />
+            </label>
+          </div>
+
+          <div className="mt-4 rounded-[8px] border border-black/10 bg-white p-4">
+            <div>
+              <p className="text-[13px] font-semibold text-[#202020]">Compare with courier estimate</p>
+              <p className="mt-1 text-[12px] text-[#57636c]">
+                Advisory only. Compare your current rule against a direct courier brand without changing checkout behavior.
+              </p>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <label className="block xl:col-span-2">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Courier to estimate with</span>
+                <select
+                  value={shippingEstimateInputs.courierCode}
+                  onChange={(event) =>
+                    setShippingEstimateInputs((current) => ({
+                      ...current,
+                      courierCode: event.target.value,
+                    }))
+                  }
+                  disabled={!canEditSettings}
+                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                >
+                  <option value="">Select a courier</option>
+                  {courierEstimateOptions.map((option) => (
+                    <option key={option.courierCode} value={option.courierCode}>
+                      {option.courierName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Length (cm)</span>
+                <input
+                  value={shippingEstimateInputs.lengthCm}
+                  onChange={(event) =>
+                    setShippingEstimateInputs((current) => ({
+                      ...current,
+                      lengthCm: event.target.value.replace(/[^\d.]/g, "").slice(0, 6),
+                    }))
+                  }
+                  disabled={!canEditSettings}
+                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                  placeholder="30"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Width (cm)</span>
+                <input
+                  value={shippingEstimateInputs.widthCm}
+                  onChange={(event) =>
+                    setShippingEstimateInputs((current) => ({
+                      ...current,
+                      widthCm: event.target.value.replace(/[^\d.]/g, "").slice(0, 6),
+                    }))
+                  }
+                  disabled={!canEditSettings}
+                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                  placeholder="20"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Height (cm)</span>
+                <input
+                  value={shippingEstimateInputs.heightCm}
+                  onChange={(event) =>
+                    setShippingEstimateInputs((current) => ({
+                      ...current,
+                      heightCm: event.target.value.replace(/[^\d.]/g, "").slice(0, 6),
+                    }))
+                  }
+                  disabled={!canEditSettings}
+                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
+                  placeholder="15"
+                />
+              </label>
+            </div>
+          </div>
+
+          {shippingEstimateError ? (
+            <div className="mt-4 rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
+              {shippingEstimateError}
+            </div>
+          ) : null}
+
+          {shippingEstimateResult ? (
+            <div className="mt-4 rounded-[8px] border border-black/10 bg-white p-4">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Matched source</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateLabel(String(shippingEstimateResult.matchedSource || "").replace(/_/g, " ")) || "Unknown"}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Matched rule</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{shippingEstimateResult.matchedRuleName || "Matched shipping rule"}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Match type</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateLabel(String(shippingEstimateResult.matchType || "").replace(/_/g, " ")) || "Unknown"}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Customer shipping charge</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateMoney(shippingEstimateResult.customerShippingCharge)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Pricing method</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateLabel(String(shippingEstimateResult.pricingMode || "").replace(/_/g, " "))}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Batching</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{getBatchingOptionLabel(shippingEstimateResult.batchingMode || "single_shipping_fee")}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">ETA</p>
+                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateEta(shippingEstimateResult.estimatedDeliveryDays)}</p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {courierEstimateResult ? (
+            <div className="mt-4 rounded-[8px] border border-black/10 bg-white p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[13px] font-semibold text-[#202020]">Courier estimate</p>
+                  <p className="mt-1 text-[12px] text-[#57636c]">
+                    Seller view shows the customer-facing courier charge only. Internal platform markup is never shown here.
+                  </p>
+                </div>
+                {courierEstimateResult.ok ? (
+                  <button
+                    type="button"
+                    onClick={applyCourierEstimateToMatchedRule}
+                    disabled={!canEditSettings || !shippingEstimateResult?.matchedRuleId}
+                    className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
+                  >
+                    Use this estimate as rule price
+                  </button>
+                ) : null}
+              </div>
+              {courierEstimateResult.ok ? (
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Courier</p>
+                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{courierEstimateResult.courierName}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Customer shipping charge</p>
+                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateMoney(courierEstimateResult.estimatedFee)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">ETA</p>
+                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateEta({ min: courierEstimateResult.minDays, max: courierEstimateResult.maxDays })}</p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Service</p>
+                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{courierEstimateResult.serviceName || "Estimate"}</p>
+                  </div>
+                  <div className="md:col-span-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Warnings</p>
+                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">
+                      {Array.isArray(courierEstimateResult.warnings) && courierEstimateResult.warnings.length
+                        ? courierEstimateResult.warnings.join(" ")
+                        : "No warnings"}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
+                  {courierEstimateResult.message || "Unable to estimate with that courier."}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </SettingsSection>
+      ) : null}
+
       {visibleSectionSet.has("business") ? (
       <SettingsSection
         eyebrow="Business details"
@@ -4182,20 +4640,24 @@ export function SellerSettingsWorkspace({
               </div>
             ))}
           </div>
-          <div className="mt-5">
-            <button
-              type="button"
-              onClick={() => void createPayoutRecipient()}
-              disabled={!canEditSettings || payoutConnectBusy}
-              className="inline-flex h-11 w-full items-center justify-center rounded-[10px] bg-[#202020] px-4 text-[14px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {payoutConnectBusy
-                ? "Preparing..."
-                : recipientId
-                  ? "Save and update payouts"
-                  : "Save and connect payouts"}
-            </button>
-          </div>
+          {!payoutRecipientReady || hasUnsavedChanges ? (
+            <div className="mt-5">
+              <button
+                type="button"
+                onClick={() => void createPayoutRecipient()}
+                disabled={!canEditSettings || payoutConnectBusy}
+                className="inline-flex h-11 w-full items-center justify-center rounded-[10px] bg-[#202020] px-4 text-[14px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {payoutConnectBusy
+                  ? "Preparing..."
+                  : payoutRecipientReady
+                    ? "Save payout changes"
+                    : recipientId
+                      ? "Save and update payouts"
+                      : "Save and connect payouts"}
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div
@@ -4264,16 +4726,16 @@ export function SellerSettingsWorkspace({
         open={originPickerOpen}
         title="Choose your shipping origin"
         initialValue={{
-          streetAddress: deliveryProfile.origin.streetAddress,
-          addressLine2: deliveryProfile.origin.addressLine2,
-          country: SHOPPER_COUNTRY_OPTIONS.find((option) => option.code === shippingSettings.shipsFrom.countryCode)?.label || deliveryProfile.origin.country || shippingSettings.shipsFrom.countryCode,
+          streetAddress: shippingSettings.shipsFrom.streetAddress,
+          addressLine2: shippingSettings.shipsFrom.addressLine2,
+          country: SHOPPER_COUNTRY_OPTIONS.find((option) => option.code === shippingSettings.shipsFrom.countryCode)?.label || shippingSettings.shipsFrom.countryCode,
           region: shippingSettings.shipsFrom.province,
           city: shippingSettings.shipsFrom.city,
-          suburb: deliveryProfile.origin.suburb,
+          suburb: shippingSettings.shipsFrom.suburb,
           postalCode: shippingSettings.shipsFrom.postalCode,
-          utcOffsetMinutes: Number.isFinite(Number(deliveryProfile.origin.utcOffsetMinutes)) ? Number(deliveryProfile.origin.utcOffsetMinutes) : null,
-          latitude: Number.isFinite(Number(deliveryProfile.origin.latitude)) ? Number(deliveryProfile.origin.latitude) : null,
-          longitude: Number.isFinite(Number(deliveryProfile.origin.longitude)) ? Number(deliveryProfile.origin.longitude) : null,
+          utcOffsetMinutes: Number.isFinite(Number(shippingSettings.shipsFrom.utcOffsetMinutes)) ? Number(shippingSettings.shipsFrom.utcOffsetMinutes) : null,
+          latitude: Number.isFinite(Number(shippingSettings.shipsFrom.latitude)) ? Number(shippingSettings.shipsFrom.latitude) : null,
+          longitude: Number.isFinite(Number(shippingSettings.shipsFrom.longitude)) ? Number(shippingSettings.shipsFrom.longitude) : null,
         }}
         onClose={() => setOriginPickerOpen(false)}
         onSelect={(value) => {
@@ -4282,25 +4744,15 @@ export function SellerSettingsWorkspace({
             shipsFrom: {
               ...current.shipsFrom,
               countryCode: normalizeCountryCode(value.country) || current.shipsFrom.countryCode,
-              province: toStr(value.region),
-              city: toStr(value.city),
-              postalCode: toStr(value.postalCode),
-            },
-          }));
-          setDeliveryProfile((current) => ({
-            ...current,
-            origin: {
-              ...current.origin,
               streetAddress: toStr(value.streetAddress),
               addressLine2: toStr(value.addressLine2),
-              country: toStr(value.country),
-              region: toStr(value.region),
+              province: toStr(value.region),
               city: toStr(value.city),
               suburb: toStr(value.suburb),
               postalCode: toStr(value.postalCode),
-              utcOffsetMinutes: toStr(value.utcOffsetMinutes),
-              latitude: toStr(value.latitude),
-              longitude: toStr(value.longitude),
+              utcOffsetMinutes: Number.isFinite(Number(value.utcOffsetMinutes)) ? Number(value.utcOffsetMinutes) : null,
+              latitude: Number.isFinite(Number(value.latitude)) ? Number(value.latitude) : null,
+              longitude: Number.isFinite(Number(value.longitude)) ? Number(value.longitude) : null,
             },
           }));
           setOriginPickerOpen(false);
@@ -4308,6 +4760,7 @@ export function SellerSettingsWorkspace({
       />
 
       <div className="flex flex-wrap items-center gap-3">
+        {standaloneSection !== "payouts" ? (
         <button
           type="button"
           onClick={() => void saveSettings()}
@@ -4316,6 +4769,7 @@ export function SellerSettingsWorkspace({
         >
           {saving ? "Saving..." : "Save settings"}
         </button>
+        ) : null}
         {showDangerZone ? (
           <button
             type="button"
@@ -4328,7 +4782,7 @@ export function SellerSettingsWorkspace({
         ) : null}
       </div>
 
-      {hasUnsavedChanges ? (
+      {hasUnsavedChanges && !standaloneSection ? (
         <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.08)] px-4 py-3 text-[13px] text-[#166534]">
           {payoutSectionVisible && payoutRecipientReady
             ? "Your payouts are already connected. You still have other unsaved seller settings on this page, so save your updates when you're ready."

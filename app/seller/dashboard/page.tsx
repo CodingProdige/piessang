@@ -21,7 +21,7 @@ import { SellerNewslettersWorkspace } from "@/components/seller/newsletters-work
 import { SellerNotificationsWorkspace } from "@/components/seller/notifications-workspace";
 import { SellerOrdersWorkspace } from "@/components/seller/orders-workspace";
 import { SellerPayoutBatchesWorkspace } from "@/components/seller/payout-batches-workspace";
-import { SellerPlatformDeliveryWorkspace } from "@/components/seller/platform-delivery-workspace";
+import { SellerPlatformShippingWorkspace } from "@/components/seller/platform-shipping-workspace";
 import { SellerGoogleMerchantCountriesWorkspace } from "@/components/seller/google-merchant-countries-workspace";
 import { SellerGoogleAnalyticsWorkspace } from "@/components/seller/google-analytics-workspace";
 import { SellerGoogleMerchantWorkspace } from "@/components/seller/google-merchant-workspace";
@@ -41,6 +41,7 @@ import { SellerPageIntro } from "@/components/seller/page-intro";
 import { SellerSettingsWorkspace } from "@/components/seller/settings-workspace";
 import { SellerSupportTicketsWorkspace } from "@/components/seller/support-tickets-workspace";
 import SellerTeamPage from "@/app/seller/team/page";
+import { normalizeShippingSettings } from "@/lib/shipping/settings";
 import {
   getSellerBlockReasonFix,
   getSellerBlockReasonLabel,
@@ -95,6 +96,7 @@ type SidebarSection =
   | "settings"
   | "settings-profile"
   | "settings-shipping"
+  | "settings-estimator"
   | "settings-branding"
   | "settings-business"
   | "settings-payouts";
@@ -308,6 +310,7 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   settings: ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-profile": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-shipping": ["admin", "manager", "catalogue", "orders", "analytics"],
+  "settings-estimator": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-branding": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-business": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-payouts": ["admin", "manager", "catalogue", "orders", "analytics"],
@@ -557,6 +560,7 @@ function SidebarButton({
   nested = false,
   badgeCount,
   collapsed = false,
+  complete = false,
 }: {
   active: boolean;
   label: string;
@@ -566,6 +570,7 @@ function SidebarButton({
   nested?: boolean;
   badgeCount?: number | null;
   collapsed?: boolean;
+  complete?: boolean;
 }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -639,6 +644,27 @@ function SidebarButton({
         <span className={`${collapsed ? "absolute right-1 top-1" : "ml-auto"} inline-flex min-w-[20px] items-center justify-center rounded-full bg-[rgba(203,178,107,0.16)] px-1.5 py-0.5 text-[10px] font-semibold text-[#8f7531]`}>
           {Number(badgeCount)}
         </span>
+      ) : !locked && complete ? (
+        <span
+          aria-hidden="true"
+          className={`inline-flex items-center justify-center rounded-full bg-[#1f9d55] text-white shadow-[0_2px_6px_rgba(31,157,85,0.22)] ${
+            collapsed
+              ? "absolute right-1 top-1 h-[14px] w-[14px]"
+              : "ml-auto h-[18px] w-[18px]"
+          }`}
+        >
+          <svg
+            viewBox="0 0 16 16"
+            className={collapsed ? "h-[9px] w-[9px]" : "h-[11px] w-[11px]"}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="m4 8 2.2 2.2L12 4.8" />
+          </svg>
+        </span>
       ) : null}
       {locked && !collapsed ? (
         <span className="ml-auto inline-flex h-4 w-4 items-center justify-center text-[#a8a8a8]">
@@ -677,9 +703,20 @@ function SidebarGroup({
   collapsed: boolean;
   children: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(true);
+  const interactive = !collapsed;
+
   return (
     <div className={`space-y-1 rounded-[16px] border border-black/6 bg-[#fbfbfb] ${collapsed ? "px-2 py-2" : "px-3 py-3"}`}>
-      <div className={`flex items-center gap-2 ${collapsed ? "justify-center px-0" : "px-2"}`}>
+      <button
+        type="button"
+        onClick={() => {
+          if (!interactive) return;
+          setOpen((current) => !current);
+        }}
+        className={`flex w-full items-center gap-2 text-left ${collapsed ? "justify-center px-0" : "px-2"} ${interactive ? "cursor-pointer" : ""}`}
+        aria-expanded={interactive ? open : undefined}
+      >
         <span className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] bg-[#f3efe2] text-[#8a6f25]">
           <SidebarIcon icon={icon} />
         </span>
@@ -687,8 +724,22 @@ function SidebarGroup({
           <p className="text-[14px] font-semibold text-[#202020]">{title}</p>
           <p className="text-[11px] text-[#8b94a3]">{description}</p>
         </div>
-      </div>
-      <div className={`${collapsed ? "" : "ml-3 border-l border-black/10 pl-3"}`}>{children}</div>
+        {!collapsed ? (
+          <span className="ml-auto inline-flex h-7 w-7 min-h-7 min-w-7 shrink-0 items-center justify-center rounded-[8px] border border-black/8 bg-white text-[#707070]">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+              className={`h-4 w-4 shrink-0 transition-transform duration-150 ${open ? "rotate-0" : "-rotate-90"}`}
+            >
+              <path d="m7 10 5 5 5-5" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+        ) : null}
+      </button>
+      {collapsed || open ? (
+        <div className={`${collapsed ? "" : "ml-3 border-l border-black/10 pl-3"}`}>{children}</div>
+      ) : null}
     </div>
   );
 }
@@ -735,6 +786,7 @@ function SidebarMenu({
   showAdminSection,
   adminBadges,
   sellerBadges,
+  settingsReady,
   onNavigate,
   onClose,
   onBackToMySeller,
@@ -763,6 +815,13 @@ function SidebarMenu({
     newOrders?: number;
     warehouse?: number;
     notifications?: number;
+  };
+  settingsReady?: {
+    profile: boolean;
+    shipping: boolean;
+    branding: boolean;
+    business: boolean;
+    payouts: boolean;
   };
   onNavigate: (nextSection: SidebarSection) => void;
   onClose?: () => void;
@@ -1053,7 +1112,7 @@ function SidebarMenu({
               onClick={() => handleNavigate("admin-orders")}
             />
             <SidebarButton
-              label="Platform delivery"
+              label="Platform shipping"
               icon="truck"
               active={activeSection === "admin-platform-delivery"}
               collapsed={compactDesktop}
@@ -1167,6 +1226,7 @@ function SidebarMenu({
               icon="team"
               active={activeSection === "settings-profile"}
               collapsed={compactDesktop}
+              complete={settingsReady?.profile === true}
               locked={!canAccessSellerSection(sellerRole, "settings-profile")}
               onClick={() => handleNavigate("settings-profile")}
               nested
@@ -1176,8 +1236,18 @@ function SidebarMenu({
               icon="truck"
               active={activeSection === "settings-shipping"}
               collapsed={compactDesktop}
+              complete={settingsReady?.shipping === true}
               locked={!canAccessSellerSection(sellerRole, "settings-shipping")}
               onClick={() => handleNavigate("settings-shipping")}
+              nested
+            />
+            <SidebarButton
+              label="Estimator"
+              icon="analytics"
+              active={activeSection === "settings-estimator"}
+              collapsed={compactDesktop}
+              locked={!canAccessSellerSection(sellerRole, "settings-estimator")}
+              onClick={() => handleNavigate("settings-estimator")}
               nested
             />
             <SidebarButton
@@ -1185,6 +1255,7 @@ function SidebarMenu({
               icon="collections"
               active={activeSection === "settings-branding"}
               collapsed={compactDesktop}
+              complete={settingsReady?.branding === true}
               locked={!canAccessSellerSection(sellerRole, "settings-branding")}
               onClick={() => handleNavigate("settings-branding")}
               nested
@@ -1194,6 +1265,7 @@ function SidebarMenu({
               icon="shield"
               active={activeSection === "settings-business"}
               collapsed={compactDesktop}
+              complete={settingsReady?.business === true}
               locked={!canAccessSellerSection(sellerRole, "settings-business")}
               onClick={() => handleNavigate("settings-business")}
               nested
@@ -1203,6 +1275,7 @@ function SidebarMenu({
               icon="cash"
               active={activeSection === "settings-payouts"}
               collapsed={compactDesktop}
+              complete={settingsReady?.payouts === true}
               locked={!canAccessSellerSection(sellerRole, "settings-payouts")}
               onClick={() => handleNavigate("settings-payouts")}
               nested
@@ -1340,6 +1413,8 @@ function SellerDashboardContent() {
         return "settings-profile";
       case "settings-shipping":
         return "settings-shipping";
+      case "settings-estimator":
+        return "settings-estimator";
       case "settings-branding":
         return "settings-branding";
       case "settings-business":
@@ -1370,6 +1445,13 @@ function SellerDashboardContent() {
   const [desktopMenuCollapsed, setDesktopMenuCollapsed] = useState(false);
   const [adminBadges, setAdminBadges] = useState({ sellerReviewCount: 0, brandRequestCount: 0, productReviewCount: 0, productReportCount: 0, newsletterCount: 0, orderCount: 0, payoutCount: 0, supportCount: 0, campaignReviewCount: 0 });
   const [sellerBadges, setSellerBadges] = useState({ newOrders: 0, warehouse: 0, notifications: 0 });
+  const [settingsReady, setSettingsReady] = useState({
+    profile: false,
+    shipping: false,
+    branding: false,
+    business: false,
+    payouts: false,
+  });
   const [adminSelectedSellerContext, setAdminSelectedSellerContext] = useState<SellerContextItem | null>(null);
   const [reviewRequestOpen, setReviewRequestOpen] = useState(false);
   const [reviewRequestReason, setReviewRequestReason] = useState("other");
@@ -1688,6 +1770,97 @@ function SellerDashboardContent() {
   }, [adminRequestedSellerPending, availableSellerContexts, resolvedSellerSlug]);
   const activeVendorName = activeSellerContext?.vendorName || vendorName;
   const activeSellerRole = normalizeSellerRole(activeSellerContext?.role || profile?.sellerTeamRole || "");
+  const [settingsRefreshKey, setSettingsRefreshKey] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSettingsReadiness() {
+      if (!resolvedSellerSlug) {
+        if (!cancelled) {
+          setSettingsReady({
+            profile: false,
+            shipping: false,
+            branding: false,
+            business: false,
+            payouts: false,
+          });
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `/api/client/v1/accounts/seller/settings/get?sellerSlug=${encodeURIComponent(resolvedSellerSlug)}`,
+          { cache: "no-store" },
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || "Unable to load seller settings readiness.");
+        }
+
+        const seller = payload?.seller && typeof payload.seller === "object" ? payload.seller : {};
+        const branding = payload?.branding && typeof payload.branding === "object" ? payload.branding : {};
+        const businessDetails = payload?.businessDetails && typeof payload.businessDetails === "object" ? payload.businessDetails : {};
+        const payoutProfile = payload?.payoutProfile && typeof payload.payoutProfile === "object" ? payload.payoutProfile : {};
+        const shippingSettings = normalizeShippingSettings(
+          payload?.shippingSettings && typeof payload.shippingSettings === "object" ? payload.shippingSettings : {},
+        );
+
+        const hasLocalProvinceRules =
+          shippingSettings.localDelivery.enabled &&
+          shippingSettings.localDelivery.mode === "province" &&
+          shippingSettings.localDelivery.provinces.some((item) => item.enabled !== false && item.province.trim());
+        const hasLocalPostalGroups =
+          shippingSettings.localDelivery.enabled &&
+          shippingSettings.localDelivery.mode === "postal_code_group" &&
+          shippingSettings.localDelivery.postalCodeGroups.some(
+            (item) => item.name.trim() && (item.postalCodes.length > 0 || item.postalCodeRanges.length > 0),
+          );
+        const hasShippingZones = shippingSettings.zones.some((zone) => zone.enabled !== false && zone.countryCode.trim());
+
+        if (!cancelled) {
+          setSettingsReady({
+            profile: Boolean(String(seller?.vendorName || activeVendorName || "").trim()),
+            shipping:
+              Boolean(
+                shippingSettings.shipsFrom.countryCode &&
+                  shippingSettings.shipsFrom.city &&
+                  shippingSettings.shipsFrom.postalCode,
+              ) && (hasLocalProvinceRules || hasLocalPostalGroups || hasShippingZones),
+            branding: Boolean(String(branding?.bannerImageUrl || "").trim() && String(branding?.logoImageUrl || "").trim()),
+            business: Boolean(
+              String(businessDetails?.companyName || "").trim() &&
+                (String(businessDetails?.email || "").trim() || String(businessDetails?.phoneNumber || "").trim()),
+            ),
+            payouts: Boolean(
+              payoutProfile?.payoutMethodEnabled === true ||
+                String(payoutProfile?.wiseRecipientId || "").trim() ||
+                ["verified", "ready"].includes(
+                  String(payoutProfile?.verificationStatus || payoutProfile?.onboardingStatus || "")
+                    .trim()
+                    .toLowerCase(),
+                ),
+            ),
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setSettingsReady({
+            profile: false,
+            shipping: false,
+            branding: false,
+            business: false,
+            payouts: false,
+          });
+        }
+      }
+    }
+
+    void loadSettingsReadiness();
+    return () => {
+      cancelled = true;
+    };
+  }, [resolvedSellerSlug, activeVendorName, settingsRefreshKey]);
   useEffect(() => {
     let cancelled = false;
     async function loadSellerBadges() {
@@ -1985,6 +2158,8 @@ function SellerDashboardContent() {
         return "Profile settings";
       case "settings-shipping":
         return "Shipping settings";
+      case "settings-estimator":
+        return "Shipping estimator";
       case "settings-branding":
         return "Branding settings";
       case "settings-business":
@@ -2043,7 +2218,7 @@ function SellerDashboardContent() {
       case "admin-orders":
         return "See every marketplace order in one place, including payment, fulfilment, and delivery progress.";
       case "admin-platform-delivery":
-        return "Manage the Piessang fulfilment shipping origin, local delivery settings, country shipping rates, and pickup rules.";
+        return "Manage Piessang platform shipping settings, including internal shipping markup applied to customer-facing shipping totals.";
       case "admin-google-merchant-countries":
         return "Manage which countries Google Merchant product ads are allowed to target.";
       case "admin-google-merchant":
@@ -2090,6 +2265,8 @@ function SellerDashboardContent() {
         return "Manage your seller identity, public vendor name, description, and seller code.";
       case "settings-shipping":
         return "Set seller shipping origin, local delivery rules, and broader shipping zones.";
+      case "settings-estimator":
+        return "Test your shipping rules and compare them with advisory courier estimates before going live.";
       case "settings-branding":
         return "Manage your store banner, logo, and seller-facing brand presentation.";
       case "settings-business":
@@ -2217,6 +2394,7 @@ function SellerDashboardContent() {
                 showAdminSection={canManageSellerDashboard}
                 adminBadges={adminBadges}
                 sellerBadges={sellerBadges}
+                settingsReady={settingsReady}
                 onNavigate={setSection}
                 onBackToMySeller={showReturnHome ? () => setSellerContext(homeSellerSlug) : undefined}
               />
@@ -2316,7 +2494,7 @@ function SellerDashboardContent() {
             ) : activeSection === "admin-orders" && canManageSellerDashboard ? (
               <SellerAdminOrdersWorkspace userId={profile?.uid || ""} />
             ) : activeSection === "admin-platform-delivery" && canManageSellerDashboard ? (
-              <SellerPlatformDeliveryWorkspace />
+              <SellerPlatformShippingWorkspace />
             ) : activeSection === "admin-google-merchant-countries" && canManageSellerDashboard ? (
               <SellerGoogleMerchantCountriesWorkspace />
             ) : activeSection === "admin-google-merchant" && canManageSellerDashboard ? (
@@ -2436,6 +2614,7 @@ function SellerDashboardContent() {
                 isSystemAdmin={isSystemAdmin}
                 visibleSections={["profile"]}
                 showDangerZone={false}
+                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
               />
             ) : activeSection === "settings-shipping" ? (
               <SellerSettingsWorkspace
@@ -2445,6 +2624,17 @@ function SellerDashboardContent() {
                 isSystemAdmin={isSystemAdmin}
                 visibleSections={["shipping"]}
                 showDangerZone={false}
+                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
+              />
+            ) : activeSection === "settings-estimator" ? (
+              <SellerSettingsWorkspace
+                sellerSlug={resolvedSellerSlug}
+                vendorName={activeVendorName}
+                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
+                isSystemAdmin={isSystemAdmin}
+                visibleSections={["estimator"]}
+                showDangerZone={false}
+                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
               />
             ) : activeSection === "settings-branding" ? (
               <SellerSettingsWorkspace
@@ -2454,6 +2644,7 @@ function SellerDashboardContent() {
                 isSystemAdmin={isSystemAdmin}
                 visibleSections={["branding"]}
                 showDangerZone={false}
+                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
               />
             ) : activeSection === "settings-business" ? (
               <SellerSettingsWorkspace
@@ -2463,6 +2654,7 @@ function SellerDashboardContent() {
                 isSystemAdmin={isSystemAdmin}
                 visibleSections={["business"]}
                 showDangerZone={false}
+                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
               />
             ) : activeSection === "settings-payouts" ? (
               <SellerSettingsWorkspace
@@ -2472,6 +2664,7 @@ function SellerDashboardContent() {
                 isSystemAdmin={isSystemAdmin}
                 visibleSections={["payouts"]}
                 showDangerZone={false}
+                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
               />
             ) : activeSection === "settings" ? (
               <SellerSettingsWorkspace
@@ -2479,6 +2672,7 @@ function SellerDashboardContent() {
                 vendorName={activeVendorName}
                 sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
                 isSystemAdmin={isSystemAdmin}
+                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
               />
             ) : activeSection === "create-product" ? (
               <div className="space-y-3">

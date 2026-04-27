@@ -3,8 +3,6 @@ export const preferredRegion = "fra1";
 export const dynamic = "force-dynamic";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
-import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 import { buildShippingSettingsFromLegacySeller } from "@/lib/shipping/settings";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { decryptPayoutProfile } from "@/lib/security/payout-profile-crypto";
@@ -122,8 +120,6 @@ export async function GET(req) {
         ? seller.media
         : {};
 
-    const deliveryProfile = normalizeSellerDeliveryProfile(seller?.deliveryProfile || {});
-    const courierProfile = normalizeSellerCourierProfile(seller?.courierProfile || {});
     const shippingSettings = buildShippingSettingsFromLegacySeller(seller);
     const payoutProfile = normalizePayoutProfile({
       ...decryptPayoutProfile(seller?.payoutProfile || {}),
@@ -141,8 +137,6 @@ export async function GET(req) {
       payoutProvider: "wise",
       },
       shippingSettings,
-      deliveryProfile,
-      courierProfile,
       payoutProfile,
       businessDetails,
       branding: {

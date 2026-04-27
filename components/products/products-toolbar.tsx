@@ -2,12 +2,10 @@
 
 import { useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
 import { ResultsCount } from "@/components/products/results-count";
 
 type ToolbarProps = {
   resultsCount: number;
-  currentView: "grid" | "list";
   currentSort: string;
   openInNewTab: boolean;
 };
@@ -28,7 +26,6 @@ function buildHref(
 
 export function ProductsToolbar({
   resultsCount,
-  currentView,
   currentSort,
   openInNewTab,
 }: ToolbarProps) {
@@ -55,7 +52,7 @@ export function ProductsToolbar({
             role="switch"
             aria-checked={openInNewTab}
             onClick={() => {
-              router.replace(buildHref(pathname, params, { openInNewTab: openInNewTab ? "false" : undefined }), {
+              router.replace(buildHref(pathname, params, { openInNewTab: openInNewTab ? undefined : "true" }), {
                 scroll: false,
               });
             }}
@@ -90,43 +87,6 @@ export function ProductsToolbar({
             <option value="name-asc">Name: A to Z</option>
             <option value="name-desc">Name: Z to A</option>
           </select>
-        </div>
-
-          <div className="inline-flex items-center rounded-[8px] bg-[#dfdfdf] p-0.5">
-          <Link
-            href={buildHref(pathname, params, { view: "grid" })}
-            scroll={false}
-            className={
-              currentView === "grid"
-              ? "inline-flex h-9 w-9 items-center justify-center rounded-[8px] bg-[#cbb26b] text-white shadow-[0_2px_6px_rgba(20,24,27,0.1)]"
-                : "inline-flex h-9 w-9 items-center justify-center rounded-[8px] text-[#5f5f5f] transition-colors hover:text-[#202020]"
-            }
-            aria-label="Grid view"
-          >
-            <span className="grid grid-cols-2 gap-0.5">
-              <span className="h-2 w-2 bg-current" />
-              <span className="h-2 w-2 bg-current" />
-              <span className="h-2 w-2 bg-current" />
-              <span className="h-2 w-2 bg-current" />
-            </span>
-          </Link>
-
-          <Link
-            href={buildHref(pathname, params, { view: "list" })}
-            scroll={false}
-            className={
-              currentView === "list"
-              ? "inline-flex h-9 w-9 items-center justify-center rounded-[8px] bg-[#cbb26b] text-white shadow-[0_2px_6px_rgba(20,24,27,0.1)]"
-                : "inline-flex h-9 w-9 items-center justify-center rounded-[8px] text-[#5f5f5f] transition-colors hover:text-[#202020]"
-            }
-            aria-label="List view"
-          >
-            <span className="grid gap-0.5">
-              <span className="h-0.5 w-5 bg-current" />
-              <span className="h-0.5 w-5 bg-current" />
-              <span className="h-0.5 w-5 bg-current" />
-            </span>
-          </Link>
         </div>
       </div>
     </div>

@@ -95,6 +95,12 @@ export type ShippingSettings = {
     province: string;
     city: string;
     postalCode: string;
+    streetAddress: string;
+    addressLine2: string;
+    suburb: string;
+    utcOffsetMinutes: number | null;
+    latitude: number | null;
+    longitude: number | null;
   };
   localDelivery: ShippingLocalDeliverySettings;
   zones: ShippingZone[];
@@ -324,6 +330,12 @@ export function defaultShippingSettings(): ShippingSettings {
       province: "",
       city: "",
       postalCode: "",
+      streetAddress: "",
+      addressLine2: "",
+      suburb: "",
+      utcOffsetMinutes: null,
+      latitude: null,
+      longitude: null,
     },
     localDelivery: {
       enabled: false,
@@ -368,6 +380,21 @@ export function normalizeShippingSettings(input: any): ShippingSettings {
     province: toStr(source.shipsFrom?.province || source.origin?.region || source.origin?.province || ""),
     city: toStr(source.shipsFrom?.city || source.origin?.city || ""),
     postalCode: normalizePostalCode(source.shipsFrom?.postalCode || source.origin?.postalCode || ""),
+    streetAddress: toStr(source.shipsFrom?.streetAddress || source.origin?.streetAddress || ""),
+    addressLine2: toStr(source.shipsFrom?.addressLine2 || source.origin?.addressLine2 || ""),
+    suburb: toStr(source.shipsFrom?.suburb || source.origin?.suburb || ""),
+    utcOffsetMinutes:
+      source.shipsFrom?.utcOffsetMinutes == null && source.origin?.utcOffsetMinutes == null
+        ? null
+        : toNum(source.shipsFrom?.utcOffsetMinutes ?? source.origin?.utcOffsetMinutes, 0),
+    latitude:
+      source.shipsFrom?.latitude == null && source.origin?.latitude == null
+        ? null
+        : toNum(source.shipsFrom?.latitude ?? source.origin?.latitude, 0),
+    longitude:
+      source.shipsFrom?.longitude == null && source.origin?.longitude == null
+        ? null
+        : toNum(source.shipsFrom?.longitude ?? source.origin?.longitude, 0),
   };
 
   const allZones = Array.isArray(source.zones) ? source.zones : [];
@@ -396,6 +423,12 @@ export function buildShippingSettingsFromLegacySeller(seller: any): ShippingSett
       province: deliveryProfile?.origin?.region || "",
       city: deliveryProfile?.origin?.city || "",
       postalCode: deliveryProfile?.origin?.postalCode || "",
+      streetAddress: deliveryProfile?.origin?.streetAddress || "",
+      addressLine2: deliveryProfile?.origin?.addressLine2 || "",
+      suburb: deliveryProfile?.origin?.suburb || "",
+      utcOffsetMinutes: deliveryProfile?.origin?.utcOffsetMinutes ?? null,
+      latitude: deliveryProfile?.origin?.latitude ?? null,
+      longitude: deliveryProfile?.origin?.longitude ?? null,
     },
     localDelivery: deriveLocalDeliveryFromLegacyProfile(deliveryProfile),
     zones: shippingZones.map((zone: any, index: number) => ({
@@ -447,6 +480,7 @@ function validateGeoPricingContainer(
   label: string,
   container: {
     countryCode: string;
+    coverageType?: ShippingCoverageType | "province" | "postal_code_group";
     defaultRate: ShippingRateOverride;
     provinces: ShippingProvinceRule[];
     postalCodeGroups: ShippingPostalCodeGroup[];
@@ -454,11 +488,15 @@ function validateGeoPricingContainer(
   issues: string[],
 ) {
   if (!container.countryCode) issues.push(`${label}: countryCode required`);
-  if (!container.defaultRate) issues.push(`${label}: defaultRate required`);
-  validateRateStructure(`${label}`, container.defaultRate, issues);
+  const requiresCountryDefault = (container.coverageType || "country") === "country";
+  if (requiresCountryDefault) {
+    if (!container.defaultRate) issues.push(`${label}: defaultRate required`);
+    validateRateStructure(`${label}`, container.defaultRate, issues);
+  }
 
   container.provinces.forEach((provinceRule) => {
     if (!provinceRule.province) issues.push(`${label}: province override requires province`);
+    if (!provinceRule.rateOverride) issues.push(`${label}: province override ${provinceRule.province || "override"} requires its own rate rule`);
     validateRateStructure(`${label} province ${provinceRule.province || "override"}`, provinceRule.rateOverride, issues);
   });
 
@@ -466,6 +504,7 @@ function validateGeoPricingContainer(
     if (!group.postalCodes.length && !group.postalCodeRanges.length) {
       issues.push(`${label}: postal code group ${group.name} must have postal codes or ranges`);
     }
+    if (!group.rateOverride) issues.push(`${label}: postal code group ${group.name || "group"} requires its own rate rule`);
     validateRateStructure(`${label} postal group ${group.name || "group"}`, group.rateOverride, issues);
   });
 }
@@ -475,6 +514,7 @@ function validateLocalDelivery(label: string, settings: ShippingLocalDeliverySet
     label,
     {
       countryCode: shipsFromCountryCode,
+      coverageType: settings.mode,
       defaultRate: settings.defaultRate,
       provinces: settings.mode === "province" ? settings.provinces : [],
       postalCodeGroups: settings.mode === "postal_code_group" ? settings.postalCodeGroups : [],
@@ -500,7 +540,8 @@ export function validateShippingSettings(settingsInput: any): { valid: boolean; 
 export function shippingModeRequiresWeight(settings: ShippingSettings): boolean {
   const containers = [settings.localDelivery, ...settings.zones];
   return containers.some((container) => {
-    if (container.defaultRate.pricingMode === "weight_based" || container.defaultRate.pricingMode === "tiered") return true;
+    const activeCoverage = "coverageType" in container ? container.coverageType : container.mode;
+    if (activeCoverage === "country" && (container.defaultRate.pricingMode === "weight_based" || container.defaultRate.pricingMode === "tiered")) return true;
     const provinceWeight = container.provinces.some((rule) => {
       const mode = rule.rateOverride?.pricingMode;
       return mode === "weight_based" || mode === "tiered";

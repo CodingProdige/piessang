@@ -6,6 +6,7 @@ import Image from "next/image";
 import { PageBody } from "@/components/layout/page-body";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { LegacyProductsResults } from "@/components/products/legacy-products-results";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 import { VendorFollowControls } from "@/components/vendors/vendor-follow-controls";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { getSellerFollowerCount } from "@/lib/social/seller-follows";
@@ -43,7 +44,7 @@ type VendorPayload = {
     branding?: VendorBranding | null;
     media?: VendorBranding | null;
   };
-  items?: Array<{ id?: string; data?: Record<string, any> }>;
+  items?: ShopperVisibleProductCard[];
   total?: number;
 };
 
@@ -294,7 +295,6 @@ export default async function VendorPage({
           <LegacyProductsResults
             initialItems={products}
             currentSort={currentParam(resolvedSearchParams, "sort") || "featured"}
-            currentView="grid"
             openInNewTab={true}
             searchParams={{ vendor: sellerCode }}
             totalCount={totalCount}

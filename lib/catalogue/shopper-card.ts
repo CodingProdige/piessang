@@ -15,6 +15,11 @@ export type ShopperVisibleProductCard = {
     imageUrl: string | null;
     blurHashUrl: string | null;
     imageCount: number;
+    videoUrl?: string | null;
+    images?: Array<{
+      imageUrl: string | null;
+      blurHashUrl: string | null;
+    }>;
   };
   price: {
     amountIncl: number | null;
@@ -22,6 +27,9 @@ export type ShopperVisibleProductCard = {
     onSale: boolean;
     salePercent: number | null;
     currencyCode: string;
+  };
+  purchase: {
+    defaultVariantId: string | null;
   };
   stock: {
     state: "in_stock" | "low_stock" | "out_of_stock" | "unknown";
@@ -60,7 +68,8 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function toStockState(availableQty: number | null): ShopperVisibleProductCard["stock"]["state"] {
+function toStockState(availableQty: number | null, continueSellingOutOfStock = false): ShopperVisibleProductCard["stock"]["state"] {
+  if (continueSellingOutOfStock) return "in_stock";
   if (availableQty == null) return "unknown";
   if (availableQty <= 0) return "out_of_stock";
   if (availableQty <= 2) return "low_stock";
@@ -82,6 +91,7 @@ export function buildShopperVisibleProductCard({
   eligibility: ProductShippingEligibilityResult;
 }): ShopperVisibleProductCard {
   const image = product.image && typeof product.image === "object" ? (product.image as Record<string, unknown>) : {};
+  const images = Array.isArray((image as any).images) ? ((image as any).images as Array<Record<string, unknown>>) : [];
   const price = product.price && typeof product.price === "object" ? (product.price as Record<string, unknown>) : {};
   const review = product.review && typeof product.review === "object" ? (product.review as Record<string, unknown>) : {};
   const merchandising =
@@ -95,7 +105,15 @@ export function buildShopperVisibleProductCard({
       product.availableQuantity ??
       (product.stock && typeof product.stock === "object" ? (product.stock as Record<string, unknown>).availableQty : null),
   );
-  const stockState = toStockState(availableQty);
+  const continueSellingOutOfStock =
+    product.continueSellingOutOfStock === true ||
+    product.continue_selling_out_of_stock === true ||
+    (product.stock && typeof product.stock === "object"
+      ? (product.stock as Record<string, unknown>).continueSellingOutOfStock === true ||
+        (product.stock as Record<string, unknown>).continue_selling_out_of_stock === true
+      : false);
+  const shopperAvailableQty = continueSellingOutOfStock ? null : availableQty;
+  const stockState = toStockState(shopperAvailableQty, continueSellingOutOfStock);
   const amountIncl = toNumber(price.amountIncl ?? price.amount_incl ?? product.amountIncl);
   const compareAtIncl = toNumber(price.compareAtIncl ?? price.compare_at_incl ?? product.compareAtIncl);
   const onSale = amountIncl != null && compareAtIncl != null && compareAtIncl > amountIncl;
@@ -119,6 +137,13 @@ export function buildShopperVisibleProductCard({
       imageUrl: toText(image.imageUrl ?? image.url ?? product.imageUrl),
       blurHashUrl: toText(image.blurHashUrl ?? image.blurHash ?? product.blurHashUrl),
       imageCount: Math.max(0, Number(image.imageCount ?? product.imageCount ?? 0) || 0),
+      videoUrl: toText(image.previewUrl ?? image.videoUrl ?? image.video ?? product.previewUrl ?? product.videoUrl ?? product.video),
+      images: images
+        .map((entry) => ({
+          imageUrl: toText(entry.imageUrl ?? entry.url),
+          blurHashUrl: toText(entry.blurHashUrl ?? entry.blurHash),
+        }))
+        .filter((entry) => Boolean(entry.imageUrl)),
     },
     price: {
       amountIncl,
@@ -127,10 +152,13 @@ export function buildShopperVisibleProductCard({
       salePercent,
       currencyCode: String(price.currencyCode ?? price.currency ?? product.currencyCode ?? "ZAR"),
     },
+    purchase: {
+      defaultVariantId: toText(product.defaultVariantId ?? product.variantId),
+    },
     stock: {
       state: stockState,
-      label: buildStockLabel(stockState, availableQty),
-      availableQty,
+      label: buildStockLabel(stockState, shopperAvailableQty),
+      availableQty: shopperAvailableQty,
     },
     review: {
       average: toNumber(review.average ?? review.averageRating),

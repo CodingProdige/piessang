@@ -267,20 +267,23 @@ export function applyShippingMargin({
   baseShippingFee: number;
   margin?: { enabled?: boolean; mode?: "fixed" | "percentage"; value?: number } | null;
 }): {
+  platformShippingMarkup: number;
   platformShippingMargin: number;
   finalShippingFee: number;
 } {
   const base = roundMoney(baseShippingFee);
   if (!margin?.enabled) {
     return {
+      platformShippingMarkup: 0,
       platformShippingMargin: 0,
       finalShippingFee: base,
     };
   }
   const value = toNum(margin.value, 0);
-  const platformShippingMargin = roundMoney(margin.mode === "percentage" ? (base * value) / 100 : value);
+  const platformShippingMarkup = roundMoney(margin.mode === "percentage" ? (base * value) / 100 : value);
   return {
-    platformShippingMargin,
-    finalShippingFee: roundMoney(base + platformShippingMargin),
+    platformShippingMarkup,
+    platformShippingMargin: platformShippingMarkup,
+    finalShippingFee: roundMoney(base + platformShippingMarkup),
   };
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadPlatformShippingSettings } from "@/lib/platform/shipping-settings";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import { resolveShippingForSellerGroup } from "@/lib/shipping/resolve";
 
@@ -27,11 +28,8 @@ function getSellerIdentity(item: any) {
 }
 
 async function loadPlatformShippingConfig() {
-  const db = getAdminDb();
-  if (!db) return null;
-  const snap = await db.collection("system_settings").doc("platform_delivery").get();
-  const data = snap.exists ? snap.data() || {} : {};
-  return data?.piessangFulfillmentShipping || null;
+  const settings = await loadPlatformShippingSettings();
+  return settings || null;
 }
 
 export async function POST(req: NextRequest) {
@@ -52,7 +50,7 @@ export async function POST(req: NextRequest) {
     groups.set(key, existing);
   }
 
-  const piessangFulfillmentShipping = await loadPlatformShippingConfig();
+  const platformShipping = await loadPlatformShippingConfig();
   const options = [];
   const errors = [];
   for (const group of groups.values()) {
@@ -64,15 +62,16 @@ export async function POST(req: NextRequest) {
       seller,
       items: group.items,
       buyerDestination,
-      piessangFulfillmentShipping,
+      piessangFulfillmentShipping: platformShipping?.piessangFulfillmentShipping || null,
+      platformShippingMarkup: platformShipping?.platformShippingMarkup || null,
     });
 
     if (!resolved.ok) {
       errors.push({
         sellerId: group.sellerCode || group.sellerSlug,
         sellerName: group.sellerName,
-        code: resolved.error,
-        message: toShippingErrorMessage(resolved.error),
+        code: resolved.code,
+        message: resolved.message || toShippingErrorMessage(resolved.code),
         reasons: resolved.errors || [],
         debug: resolved.debug || null,
       });
@@ -83,14 +82,14 @@ export async function POST(req: NextRequest) {
       sellerId: group.sellerCode || group.sellerSlug,
       sellerName: group.sellerName,
       fulfillmentMode: resolved.fulfillmentMode,
-      zoneId: resolved.zone?.id || null,
-      zoneName: resolved.zone?.name || null,
+      matchedSource: resolved.matchedSource,
+      matchedRuleId: resolved.matchedRuleId,
+      matchedRuleName: resolved.matchedRuleName,
       coverageMatchType: resolved.matchType,
       pricingMode: resolved.pricingMode,
       batchingMode: resolved.batchingMode,
       destination: resolved.destination,
       baseShippingFee: resolved.baseShippingFee,
-      platformShippingMargin: resolved.platformShippingMargin,
       finalShippingFee: resolved.finalShippingFee,
       estimatedDeliveryDays: resolved.estimatedDeliveryDays,
       items: resolved.items,

@@ -18,12 +18,12 @@ const TICKET_CATEGORIES = [
   },
   {
     value: "delivery",
-    label: "Delivery or shipping",
+    label: "Shipping",
     issues: [
-      { value: "delivery_delay", label: "Delivery delayed" },
-      { value: "delivery_fee", label: "Delivery fee question" },
-      { value: "tracking_help", label: "Tracking or fulfilment help" },
-      { value: "collection_help", label: "Collection or pickup help" },
+      { value: "delivery_delay", label: "Shipping delayed" },
+      { value: "delivery_fee", label: "Shipping fee question" },
+      { value: "tracking_help", label: "Tracking or shipping help" },
+      { value: "shipping_help", label: "Shipping issue" },
     ],
   },
   {

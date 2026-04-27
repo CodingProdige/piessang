@@ -9,16 +9,15 @@ import { buildMarketplaceFeeSnapshot, normalizeMarketplaceVariantLogistics } fro
 import { getAdminDb } from "@/lib/firebase/admin";
 import { markCheckoutSessionPaymentPending } from "@/lib/checkout/sessions";
 import { releaseVariantCheckoutReservationsForItems } from "@/lib/cart/checkout-reservations";
-import { resolvePlatformDeliveryOption } from "@/lib/platform/delivery-settings";
 import { consumeReservedStockLots, consumeStockLotsFifo } from "@/lib/warehouse/stock-lots";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
 import { normalizeMoneyAmount } from "@/lib/money";
 import { buildPlatformOrderDocument } from "@/lib/orders/platform-order";
 import { createGuestOrderAccessToken } from "@/lib/orders/guest-access";
-import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
-import { resolveDeliveryQuote } from "@/lib/shipping/rating";
 import { resolveShippingForSellerGroup } from "@/lib/shipping/resolve";
+import { loadPlatformShippingSettings } from "@/lib/platform/shipping-settings";
+import { normalizeCountryCode } from "@/lib/marketplace/country-config";
 
 /* ───────────────── HELPERS ───────────────── */
 
@@ -35,61 +34,19 @@ const now = () => new Date().toISOString();
 const VAT_RATE = 0.15;
 const r2 = v => normalizeMoneyAmount(Number(v) || 0);
 
-function buildDeliveryOwnershipMeta(resolved = null) {
-  const kind = String(resolved?.kind || "").trim().toLowerCase();
-  if (kind === "courier_live_rate") {
-    return {
-      delivery_owner: "platform",
-      tracking_owner: "platform",
-      tracking_mode: "courier",
-      rate_mode: "live_rate",
-      courier_key: "easyship",
-      courier_carrier: resolved?.matchedRule?.courierCarrier || null,
-      courier_service: resolved?.matchedRule?.courierService || null,
-    };
-  }
-  if (kind === "shipping") {
-    return {
-      delivery_owner: "seller",
-      tracking_owner: "seller",
-      tracking_mode: "courier",
-      rate_mode: "flat",
-      courier_key: null,
-      courier_carrier: null,
-      courier_service: null,
-    };
-  }
-  if (kind === "direct_delivery") {
-    return {
-      delivery_owner: "seller",
-      tracking_owner: "seller",
-      tracking_mode: "direct",
-      rate_mode: "seller_direct",
-      courier_key: null,
-      courier_carrier: null,
-      courier_service: null,
-    };
-  }
-  return {
-    delivery_owner: "seller",
-    tracking_owner: "seller",
-    tracking_mode: "hidden",
-    rate_mode: "manual",
-    courier_key: null,
-    courier_carrier: null,
-    courier_service: null,
-  };
-}
-
 function buildShopperArea(address = null) {
   if (!address || typeof address !== "object") return null;
+  const normalizedCountryCode = normalizeCountryCode(
+    address?.countryCode || address?.country_code || address?.country || "ZA"
+  );
   return {
     city: address?.city || address?.suburb || "",
     suburb: address?.suburb || "",
     province: address?.province || address?.stateProvinceRegion || "",
     stateProvinceRegion: address?.stateProvinceRegion || address?.province || "",
     postalCode: address?.postalCode || "",
-    country: address?.country || "South Africa",
+    countryCode: normalizedCountryCode || "ZA",
+    country: address?.country || normalizedCountryCode || "South Africa",
     latitude: address?.latitude == null ? null : Number(address.latitude),
     longitude: address?.longitude == null ? null : Number(address.longitude),
   };
@@ -384,162 +341,11 @@ function computeLineFinalIncl(item) {
   return r2(unitIncl * quantity);
 }
 
-function collectLineShipmentParcels(item) {
-  const parcel = buildShipmentParcelFromVariant(item?.selected_variant_snapshot || item?.selected_variant || item?.variant || null);
-  const quantity = getLineQty(item);
-  if (!parcel || quantity <= 0) return [];
-  return Array.from({ length: quantity }, () => parcel);
-}
-
-function isLineCourierEligible(item) {
-  const product = item?.product_snapshot || item?.product || {};
-  return product?.product?.shipping?.courierEnabled === true;
-}
-
-function collectLineQuoteItems(item) {
-  const product = item?.product_snapshot || item?.product || {};
-  const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
-  const quantity = getLineQty(item);
-  if (quantity <= 0) return [];
-  const lineTotal = computeLineFinalIncl(item);
-  const unitValue = quantity > 0 ? r2(lineTotal / quantity) : 0;
-  return [
-    {
-      description: String(product?.product?.title || variant?.label || "Marketplace item").trim(),
-      quantity,
-      unitValue,
-      customsCategory: product?.product?.shipping?.customsCategory || product?.shipping?.customsCategory || null,
-      hsCode: product?.product?.shipping?.hsCode || product?.shipping?.hsCode || null,
-      countryOfOrigin: product?.product?.shipping?.countryOfOrigin || product?.shipping?.countryOfOrigin || null,
-    },
-  ];
-}
-
-async function resolveLiveSellerDeliveryBreakdown({
-  items = [],
-  pickupSelections = [],
-  courierSelections = {},
-  resolvedDeliveryAddress = null,
-}) {
-  const shopperArea = buildShopperArea(resolvedDeliveryAddress);
-  const pickupSet = new Set(
-    (Array.isArray(pickupSelections) ? pickupSelections : [])
-      .map((value) => String(value || "").trim())
-      .filter(Boolean),
-  );
-  const groups = new Map();
-
-  for (const item of Array.isArray(items) ? items : []) {
-    const product = item?.product_snapshot || item?.product || {};
-    const seller = product?.seller || {};
-    const fulfillmentMode = String(product?.fulfillment?.mode || "").trim().toLowerCase();
-    if (fulfillmentMode !== "seller") continue;
-
-    const sellerCode = String(product?.product?.sellerCode || seller?.sellerCode || "").trim();
-    const sellerSlug = String(product?.product?.sellerSlug || seller?.sellerSlug || "").trim();
-    const sellerKey = sellerCode || sellerSlug;
-    if (!sellerKey) continue;
-
-    const existing = groups.get(sellerKey) || {
-      sellerKey,
-      sellerCode,
-      sellerSlug,
-      sellerName: String(seller?.vendorName || product?.product?.vendorName || "Seller").trim(),
-      sellerBaseLocation: String(seller?.baseLocation || "").trim(),
-      subtotalIncl: 0,
-      deliveryProfile: seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : null,
-      courierProfile: seller?.courierProfile && typeof seller.courierProfile === "object" ? seller.courierProfile : null,
-      productCourierEligible: true,
-      quoteItems: [],
-      parcels: [],
-    };
-    existing.subtotalIncl = r2(existing.subtotalIncl + computeLineFinalIncl(item));
-    existing.productCourierEligible = existing.productCourierEligible && isLineCourierEligible(item);
-    existing.quoteItems.push(...collectLineQuoteItems(item));
-    existing.parcels.push(...collectLineShipmentParcels(item));
-    groups.set(sellerKey, existing);
-  }
-
-  const breakdown = [];
-  for (const group of groups.values()) {
-    let profile = group.deliveryProfile;
-    let courierProfile = group.courierProfile;
-    let sellerBaseLocation = group.sellerBaseLocation;
-
-    if (!profile) {
-      const ownerDoc =
-        (group.sellerCode ? await findSellerOwnerByCode(group.sellerCode) : null) ??
-        (group.sellerSlug ? await findSellerOwnerBySlug(group.sellerSlug) : null);
-      const sellerData = ownerDoc?.data?.seller && typeof ownerDoc.data.seller === "object" ? ownerDoc.data.seller : {};
-      profile = sellerData?.deliveryProfile && typeof sellerData.deliveryProfile === "object" ? sellerData.deliveryProfile : {};
-      courierProfile = sellerData?.courierProfile && typeof sellerData.courierProfile === "object" ? sellerData.courierProfile : {};
-      sellerBaseLocation = sellerBaseLocation || String(sellerData?.baseLocation || "").trim();
-    }
-
-    if (pickupSet.has(group.sellerKey) && profile?.pickup?.enabled === true) {
-      breakdown.push({
-        seller_key: group.sellerKey,
-        seller_name: group.sellerName,
-        label: "Collection from seller",
-        applicable: true,
-        delivery_type: "collection",
-        lead_time_days: profile?.pickup?.leadTimeDays ?? null,
-        matched_rule_id: null,
-        matched_rule_label: "pickup",
-        amount_incl: 0,
-        amount_excl: 0,
-        currency: "ZAR",
-        delivery_owner: "seller",
-        tracking_owner: "seller",
-        tracking_mode: "hidden",
-        rate_mode: "collection",
-      });
-      continue;
-    }
-
-    const resolved = await resolveDeliveryQuote({
-      profile: profile || {},
-      courierProfile: courierProfile || {},
-      productCourierEligible: group.productCourierEligible === true,
-      quoteItems: group.quoteItems,
-      selectedCourierQuoteId: String(courierSelections?.[group.sellerKey] || "").trim(),
-      sellerBaseLocation,
-      shopperArea,
-      subtotalIncl: group.subtotalIncl,
-      parcels: group.parcels,
-      currency: "ZAR",
-    });
-    const amount = r2(Number(resolved?.amountIncl || 0));
-    breakdown.push({
-      seller_key: group.sellerKey,
-      seller_name: group.sellerName,
-      label: String(resolved?.label || "Seller delivery unavailable for this address"),
-      applicable: resolved?.available === true,
-      delivery_type: resolved?.kind || "unavailable",
-      lead_time_days: resolved?.leadTimeDays ?? null,
-      matched_rule_id: resolved?.matchedRule?.id || null,
-      matched_rule_label: resolved?.matchedRule?.label || null,
-      amount_incl: amount,
-      amount_excl: amount,
-      currency: "ZAR",
-      reason: Array.isArray(resolved?.unavailableReasons) ? resolved.unavailableReasons : [],
-      available_courier_quotes:
-        Array.isArray(resolved?.metadata?.availableQuotes) ? resolved.metadata.availableQuotes : [],
-      selected_courier_quote_id:
-        String(resolved?.metadata?.selectedQuoteId || resolved?.matchedRule?.id || "").trim() || null,
-      courier_handover_mode: String(courierProfile?.handoverMode || "").trim().toLowerCase() === "dropoff" ? "dropoff" : "pickup",
-      distance_km: Number.isFinite(Number(resolved?.distanceKm)) ? Number(resolved.distanceKm) : null,
-      shipment_summary: resolved?.shipmentSummary || null,
-      ...buildDeliveryOwnershipMeta(resolved),
-    });
-  }
-
-  const totalIncl = r2(breakdown.reduce((sum, entry) => sum + r2(entry?.amount_incl || 0), 0));
-  return {
-    total_incl: totalIncl,
-    total_excl: totalIncl,
-    breakdown,
-  };
+function buildShippingErrorMessage(code = "", sellerName = "This seller") {
+  if (code === "SELLER_DOES_NOT_SHIP_TO_LOCATION") return `${sellerName} does not ship to this address.`;
+  if (code === "WEIGHT_REQUIRED_FOR_SHIPPING_MODE") return `${sellerName} needs product weight details before this shipping rule can be used.`;
+  if (code === "INVALID_SHIPPING_SETTINGS") return `${sellerName} has invalid shipping settings and cannot be checked out right now.`;
+  return `${sellerName} shipping could not be resolved for this address.`;
 }
 
 async function resolveShippingBreakdown({
@@ -574,11 +380,12 @@ async function resolveShippingBreakdown({
     groups.set(sellerKey, existing);
   }
 
-  const db = getAdminDb();
-  const platformSnap = db ? await db.collection("system_settings").doc("platform_delivery").get().catch(() => null) : null;
-  const piessangFulfillmentShipping = platformSnap?.exists ? platformSnap.data()?.piessangFulfillmentShipping || null : null;
+  const platformShipping = await loadPlatformShippingSettings();
+  const piessangFulfillmentShipping = platformShipping?.piessangFulfillmentShipping || null;
+  const platformShippingMarkup = platformShipping?.platformShippingMarkup || null;
 
   const breakdown = [];
+  const errors = [];
   for (const group of groups.values()) {
     let seller = group.sellerSnapshot && typeof group.sellerSnapshot === "object" ? group.sellerSnapshot : {};
     if (!seller?.shippingSettings && (group.sellerCode || group.sellerSlug)) {
@@ -592,7 +399,7 @@ async function resolveShippingBreakdown({
       seller,
       items: group.items,
       buyerDestination: {
-        countryCode: shopperArea?.country || "ZA",
+        countryCode: shopperArea?.countryCode || normalizeCountryCode(shopperArea?.country) || "ZA",
         province: shopperArea?.province || shopperArea?.stateProvinceRegion || "",
         city: shopperArea?.city || shopperArea?.suburb || "",
         postalCode: shopperArea?.postalCode || "",
@@ -600,31 +407,33 @@ async function resolveShippingBreakdown({
         longitude: shopperArea?.longitude ?? null,
       },
       piessangFulfillmentShipping,
+      platformShippingMarkup,
     });
 
     if (!resolved.ok) {
-      breakdown.push({
+      errors.push({
         sellerId: group.sellerCode || group.sellerSlug || group.sellerKey,
-        seller_key: group.sellerCode || group.sellerSlug || group.sellerKey,
-        seller_name: group.sellerName,
-        applicable: false,
-        delivery_type: "unavailable",
-        label: resolved.error || "Shipping unavailable",
-        reason: Array.isArray(resolved.errors) ? resolved.errors : [],
+        sellerName: group.sellerName,
+        code: resolved.code,
+        message: resolved.message || buildShippingErrorMessage(resolved.code, group.sellerName),
+        debug: resolved.debug || null,
+        errors: Array.isArray(resolved.errors) ? resolved.errors : [],
       });
       continue;
     }
 
     breakdown.push({
       sellerId: group.sellerCode || group.sellerSlug || group.sellerKey,
+      sellerCode: group.sellerCode || null,
+      sellerSlug: group.sellerSlug || null,
       seller_key: group.sellerCode || group.sellerSlug || group.sellerKey,
       seller_name: group.sellerName,
       applicable: true,
-      label: resolved.zone?.name || "Shipping",
+      label: resolved.matchedRuleName || "Shipping",
       delivery_type: "shipping",
       fulfillmentMode: resolved.fulfillmentMode,
-      zoneId: resolved.zone?.id || null,
-      zoneName: resolved.zone?.name || null,
+      zoneId: resolved.matchedRuleId || null,
+      zoneName: resolved.matchedRuleName || null,
       coverageMatchType: resolved.matchType,
       pricingMode: resolved.pricingMode,
       batchingMode: resolved.batchingMode,
@@ -632,6 +441,7 @@ async function resolveShippingBreakdown({
       amount_incl: resolved.finalShippingFee,
       amount_excl: resolved.finalShippingFee,
       base_shipping_fee: resolved.baseShippingFee,
+      platform_shipping_markup: resolved.platformShippingMarkup,
       platform_shipping_margin: resolved.platformShippingMargin,
       final_shipping_fee: resolved.finalShippingFee,
       estimated_delivery_days: resolved.estimatedDeliveryDays,
@@ -647,10 +457,15 @@ async function resolveShippingBreakdown({
     breakdown.reduce((sum, entry) => sum + r2(entry?.base_shipping_fee || 0), 0),
   );
   const marginTotal = r2(
-    breakdown.reduce((sum, entry) => sum + r2(entry?.platform_shipping_margin || 0), 0),
+    breakdown.reduce((sum, entry) => sum + r2((entry?.platform_shipping_markup ?? entry?.platform_shipping_margin) || 0), 0),
   );
 
+  const firstError = errors[0] || null;
   return {
+    ok: errors.length === 0,
+    code: firstError?.code || null,
+    message: firstError?.message || null,
+    errors,
     total_incl: totalIncl,
     total_excl: totalIncl,
     base_total: baseTotal,
@@ -732,6 +547,10 @@ function buildSellerNotificationRecipients(ownerDoc) {
   return Array.from(recipients.values());
 }
 
+function computeSubtotalIncl(items = []) {
+  return r2((Array.isArray(items) ? items : []).reduce((sum, item) => sum + computeLineFinalIncl(item), 0));
+}
+
 /* ───────────────── ENDPOINT ───────────────── */
 
 export async function POST(req) {
@@ -749,12 +568,8 @@ export async function POST(req) {
       source = "web",
       customerNote = null,
       deliverySpeed = "standard",
-      deliveryFee = null,
-      inStoreCollection = false,
       deliveryAddress = null,
       onBehalfOfCustomerId = null,
-      pickupSelections = [],
-      courierSelections = {},
       checkoutSessionId = null,
       customerEmail = null,
     } = await req.json();
@@ -850,9 +665,9 @@ export async function POST(req) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerId: cartId,
+          userId: cartId,
           deliveryAddress: resolvedDeliveryAddress,
-          pickupSelections: Array.isArray(pickupSelections) ? pickupSelections : [],
-          courierSelections: courierSelections && typeof courierSelections === "object" ? courierSelections : {},
+          includeDelivery: false,
           ...(safeOnBehalfOf ? { onBehalfOfUid: targetCustomerId } : {})
         })
       }
@@ -880,12 +695,27 @@ export async function POST(req) {
       items: Array.isArray(cart?.items) ? cart.items : [],
       resolvedDeliveryAddress,
     });
+    if (!liveSellerDelivery?.ok) {
+      const firstError = Array.isArray(liveSellerDelivery?.errors) ? liveSellerDelivery.errors[0] : null;
+      return err(
+        400,
+        "Shipping Unavailable",
+        firstError?.message || "Shipping could not be resolved for this order.",
+        {
+          code: firstError?.code || liveSellerDelivery?.code || "INVALID_SHIPPING_SETTINGS",
+          errors: Array.isArray(liveSellerDelivery?.errors) ? liveSellerDelivery.errors : [],
+        }
+      );
+    }
+
     const sellerDeliveryBreakdown = Array.isArray(liveSellerDelivery?.breakdown)
       ? liveSellerDelivery.breakdown.map((entry) => ({
+          sellerCode: entry?.sellerCode || null,
+          sellerSlug: entry?.sellerSlug || null,
           seller_key: entry?.seller_key || entry?.sellerId || null,
           seller_name: entry?.seller_name || null,
           label: entry?.label || entry?.zoneName || "Shipping",
-          applicable: entry?.applicable !== false,
+          applicable: true,
           delivery_type: entry?.delivery_type || "shipping",
           lead_time_days: entry?.estimated_delivery_days?.min ?? null,
           matched_rule_id: entry?.zoneId || null,
@@ -908,27 +738,6 @@ export async function POST(req) {
           fulfillmentMode: entry?.fulfillmentMode || "seller_fulfilled",
         }))
       : [];
-    const unavailableSellerDeliveries = sellerDeliveryBreakdown.filter(
-      (entry) => entry?.applicable === false && String(entry?.delivery_type || "").trim().toLowerCase() === "unavailable",
-    );
-    if (!inStoreCollection && unavailableSellerDeliveries.length > 0) {
-      const sellerNames = unavailableSellerDeliveries
-        .map((entry) => String(entry?.seller_name || "Seller").trim())
-        .filter(Boolean);
-      return err(
-        400,
-        "Seller Delivery Unavailable",
-        sellerNames.length
-          ? `Delivery is not available for ${sellerNames.join(", ")} to this address.`
-          : "One or more seller-delivered items are not available for this address.",
-        {
-          supported: false,
-          canPlaceOrder: false,
-          reasonCode: "SELLER_DELIVERY_UNAVAILABLE",
-          sellers: sellerNames,
-        }
-      );
-    }
 
     /* ───── Validate 50-minute eligibility ───── */
 
@@ -938,129 +747,66 @@ export async function POST(req) {
       return err(400, "Delivery Not Eligible", "This cart is not eligible for 50-minute delivery.");
     }
 
-    /* ───── Validate general delivery area support ───── */
-
-    if (!inStoreCollection) {
-      const cartItems = Array.isArray(cart?.items) ? cart.items : [];
-      const hasPiessangFulfilledItems = cartItems.some(
-        (item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "bevgo",
-      );
-      const platformDelivery = hasPiessangFulfilledItems
-        ? await resolvePlatformDeliveryOption({
-            shopperArea: buildShopperArea(resolvedDeliveryAddress),
-            subtotalIncl: Number(cart?.totals?.final_incl || 0),
-          })
-        : null;
-      if (hasPiessangFulfilledItems && !platformDelivery?.available) {
-        return err(
-          400,
-          "Delivery Area Not Supported",
-          "Delivery is not available for this address.",
-          {
-            supported: false,
-            canPlaceOrder: false,
-            reasonCode: "OUTSIDE_SERVICE_AREA"
-          }
-        );
-      }
-    }
-
     const timestamp = now();
 
     /* ───── Build Order Document ───── */
-
-    const platformDeliveryAmount = r2(
-      cart?.totals?.delivery_fee_incl ??
-        cart?.totals?.delivery_fee_excl ??
-        0
-    );
-    const liveSellerDeliveryAmount = r2(
-      liveSellerDelivery?.total_incl ??
-        cart?.totals?.seller_delivery_fee_incl ??
-        cart?.totals?.seller_delivery_fee_excl ??
-        0
-    );
+    const subtotalIncl = computeSubtotalIncl(cart.items);
+    const subtotalExcl = r2(cart?.totals?.subtotal_excl ?? Math.max(subtotalIncl / (1 + VAT_RATE), 0));
+    const vatTotal = r2(cart?.totals?.vat_total ?? Math.max(subtotalIncl - subtotalExcl, 0));
+    const shippingBaseTotal = r2(liveSellerDelivery?.base_total || 0);
+    const shippingMarginTotal = r2(liveSellerDelivery?.margin_total || 0);
+    const shippingFinalTotal = r2(liveSellerDelivery?.total_incl || 0);
+    const finalIncl = r2(subtotalIncl + shippingFinalTotal);
+    const creditAppliedIncl = r2(cart?.totals?.credit?.applied ?? 0);
+    const finalPayableIncl = r2(Math.max(finalIncl - creditAppliedIncl, 0));
+    const grandTotal = finalPayableIncl;
 
     const deliveryFeeData = {
-      amountIncl: platformDeliveryAmount,
-      amountExcl: platformDeliveryAmount,
+      amountIncl: 0,
+      amountExcl: 0,
       vat: 0,
       currency: "ZAR",
       band: null,
       distanceKm: null,
       durationMinutes: null,
-      reason: "distance_band",
-      raw: deliveryFee || null,
-      sellerAmountIncl: liveSellerDeliveryAmount,
+      reason: null,
+      raw: null,
+      sellerAmountIncl: shippingFinalTotal,
       sellerBreakdown: sellerDeliveryBreakdown,
       shippingBreakdown: Array.isArray(liveSellerDelivery?.breakdown) ? liveSellerDelivery.breakdown : [],
     };
 
-    const totals = { ...(cart.totals || {}) };
-    const previousSellerDeliveryAmount = r2(
-      totals?.seller_delivery_fee_incl ??
-        totals?.seller_delivery_fee_excl ??
-        cart?.totals?.seller_delivery_fee_incl ??
-        cart?.totals?.seller_delivery_fee_excl ??
-        0
-    );
-    const sellerDeliveryDelta = r2(liveSellerDeliveryAmount - previousSellerDeliveryAmount);
-    totals.seller_delivery_fee_excl = liveSellerDeliveryAmount;
-    totals.seller_delivery_fee_incl = liveSellerDeliveryAmount;
-    totals.seller_delivery_breakdown = sellerDeliveryBreakdown;
-    totals.shippingBaseTotal = r2(liveSellerDelivery?.base_total || 0);
-    totals.shippingMarginTotal = r2(liveSellerDelivery?.margin_total || 0);
-    totals.shippingFinalTotal = liveSellerDeliveryAmount;
-    if (Number.isFinite(Number(totals?.final_excl))) {
-      totals.final_excl = r2(Number(totals.final_excl) + sellerDeliveryDelta);
-    }
-    if (Number.isFinite(Number(totals?.final_incl))) {
-      totals.final_incl = r2(Number(totals.final_incl) + sellerDeliveryDelta);
-    }
-    if (Number.isFinite(Number(totals?.final_payable_incl))) {
-      totals.final_payable_incl = r2(Math.max(Number(totals.final_payable_incl) + sellerDeliveryDelta, 0));
-    }
-    const finalInclForValidation = r2(
-      totals?.final_incl ??
-        cart?.totals?.final_incl ??
-        0
-    );
-    totals.grandTotal = r2(
-      totals?.final_payable_incl ??
-        cart?.totals?.final_payable_incl ??
-        finalInclForValidation
-    );
-    const creditAppliedIncl = r2(
-      totals?.credit?.applied ??
-        cart?.totals?.credit?.applied ??
-        0
-    );
-    const expectedFinalPayableIncl = r2(
-      Math.max(finalInclForValidation - creditAppliedIncl, 0)
-    );
-    const providedFinalPayableIncl = r2(
-      totals?.final_payable_incl ??
-        cart?.totals?.final_payable_incl ??
-        expectedFinalPayableIncl
-    );
-    if (creditAppliedIncl > finalInclForValidation + 0.01) {
+    const totals = {
+      subtotal_excl: subtotalExcl,
+      subtotal_incl: subtotalIncl,
+      vat_total: vatTotal,
+      delivery_fee_excl: 0,
+      delivery_fee_incl: 0,
+      seller_delivery_fee_excl: shippingFinalTotal,
+      seller_delivery_fee_incl: shippingFinalTotal,
+      seller_delivery_breakdown: sellerDeliveryBreakdown,
+      shippingBaseTotal,
+      shippingMarginTotal,
+      shippingFinalTotal,
+      final_excl: r2(subtotalExcl + shippingFinalTotal),
+      final_incl: finalIncl,
+      final_payable_incl: finalPayableIncl,
+      grandTotal,
+      credit: {
+        ...(cart?.totals?.credit || {}),
+        applied: creditAppliedIncl,
+      },
+    };
+
+    if (creditAppliedIncl > finalIncl + 0.01) {
       return err(
         400,
         "Invalid Credit Application",
         "Applied credit cannot exceed order final total."
       );
     }
-    if (Math.abs(providedFinalPayableIncl - expectedFinalPayableIncl) > 0.01) {
-      return err(
-        400,
-        "Invalid Totals",
-        "final_payable_incl does not match final_incl minus applied credit."
-      );
-    }
     const creditAllocations = normalizeCreditAllocations(
-      totals?.credit?.applied_allocations ??
-        cart?.totals?.credit?.applied_allocations ??
-        []
+      cart?.totals?.credit?.applied_allocations ?? []
     );
     const creditAllocationsTotal = r2(
       creditAllocations.reduce((sum, entry) => sum + r2(entry?.amount_incl), 0)
@@ -1084,8 +830,8 @@ export async function POST(req) {
     const createIntentKey = hashCreateIntent({
       customerId: targetCustomerId,
       cartId,
-      finalIncl: totals?.final_incl || 0,
-      finalPayableIncl: totals?.final_payable_incl || 0,
+      finalIncl,
+      finalPayableIncl,
       allocations: creditAllocations
     });
 

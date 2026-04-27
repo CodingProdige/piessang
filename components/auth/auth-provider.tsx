@@ -1791,23 +1791,48 @@ export function AuthProvider({
                       ) : null}
                     </label>
 
-                    <label className="block">
-                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">
+                    <div className="block">
+                      <label
+                        htmlFor="seller-contact-email-input"
+                        className="mb-1.5 block text-[12px] font-semibold text-[#202020]"
+                      >
                         Contact email <span className="text-[#d11c1c]">*</span>
-                      </span>
+                      </label>
+                      <input
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        autoComplete="username"
+                        className="hidden"
+                        name="seller-contact-email-decoy"
+                        type="text"
+                      />
+                      <input
+                        tabIndex={-1}
+                        aria-hidden="true"
+                        autoComplete="email"
+                        className="hidden"
+                        name="seller-contact-email-decoy-hidden"
+                        type="email"
+                      />
                       <input
                         required
+                        id="seller-contact-email-input"
                         type="email"
-                        autoComplete="email"
+                        name="seller-contact-email-input"
+                        autoComplete="new-password"
                         autoCapitalize="none"
                         autoCorrect="off"
                         spellCheck={false}
                         inputMode="email"
+                        readOnly
                         data-lpignore="true"
                         data-1p-ignore="true"
                         data-bwignore="true"
                         data-protonpass-ignore="true"
                         value={sellerModal.contactEmail}
+                        onFocus={(event) => {
+                          event.currentTarget.removeAttribute("readonly");
+                        }}
                         onChange={(event) =>
                           setSellerModal((current) => ({ ...current, contactEmail: sanitizeEmailInput(event.target.value) }))
                         }
@@ -1825,7 +1850,7 @@ export function AuthProvider({
                         className="w-full rounded-[8px] border border-black/10 bg-white px-4 py-3 text-[13px] outline-none transition-colors placeholder:text-[#9aa3af] focus:border-[#cbb26b]"
                         placeholder="you@example.com"
                       />
-                    </label>
+                    </div>
 
                     <div className="grid gap-3 sm:grid-cols-[0.38fr_0.62fr]">
                       <div className="sm:col-span-2">

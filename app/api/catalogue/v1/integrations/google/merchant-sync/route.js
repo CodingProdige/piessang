@@ -8,7 +8,7 @@ import { formatMoneyExact, normalizeMoneyAmount } from "@/lib/money";
 import { resolveGoogleTargetCountries, resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
 import { loadGoogleMerchantSettings } from "@/lib/platform/google-merchant-settings";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
-import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { buildShippingSettingsFromLegacySeller, validateShippingSettings } from "@/lib/shipping/settings";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { getCanonicalOfferBarcode } from "@/lib/catalogue/offer-group";
 import { googleAvailabilityForVariant, variantIsListable } from "@/lib/catalogue/availability";
@@ -214,8 +214,8 @@ function getSellerIdentifier(product = {}) {
 async function hydrateProductSeller(product = {}) {
   const embeddedSeller =
     product?.seller && typeof product.seller === "object" ? product.seller : {};
-  const hasEmbeddedDeliveryProfile =
-    embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object";
+  const hasEmbeddedShippingSettings =
+    embeddedSeller?.shippingSettings && typeof embeddedSeller.shippingSettings === "object";
   const hasEmbeddedSellerIdentity =
     Boolean(
       embeddedSeller?.sellerCode ||
@@ -226,7 +226,7 @@ async function hydrateProductSeller(product = {}) {
         product?.product?.sellerSlug
     );
 
-  if (hasEmbeddedDeliveryProfile && hasEmbeddedSellerIdentity) {
+  if (hasEmbeddedShippingSettings && hasEmbeddedSellerIdentity) {
     return product;
   }
 
@@ -277,12 +277,8 @@ async function hydrateProductSeller(product = {}) {
       vendorName:
         toStr(sellerNode?.vendorName || sellerNode?.groupVendorName || embeddedSeller?.vendorName || product?.product?.vendorName) ||
         null,
-      deliveryProfile: normalizeSellerDeliveryProfile(
-        sellerNode?.deliveryProfile && typeof sellerNode.deliveryProfile === "object"
-          ? sellerNode.deliveryProfile
-          : embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object"
-            ? embeddedSeller.deliveryProfile
-            : {}
+      shippingSettings: buildShippingSettingsFromLegacySeller(
+        sellerNode || embeddedSeller || {},
       ),
     },
   };
@@ -328,13 +324,13 @@ async function getProductGoogleSkipReasons(product, activeSets, merchantCountryC
   if (category && !activeSets.categorySlugs.has(category)) reasons.push("inactive_category");
   if (subCategory && !activeSets.subCategorySlugs.has(subCategory)) reasons.push("inactive_subcategory");
   if (brand && !activeSets.brandSlugs.has(brand)) reasons.push("inactive_brand");
-  if (!sellerDeliverySettingsReady(product?.seller?.deliveryProfile || {})) {
+  if (!validateShippingSettings(buildShippingSettingsFromLegacySeller(product?.seller || {})).valid) {
     reasons.push("missing_delivery_settings");
   }
   if (!(await resolveGoogleTargetCountries({
     seller: product?.seller,
     sellerCountry: product?.seller?.sellerCountry,
-    deliveryProfile: product?.seller?.deliveryProfile,
+    shippingSettings: product?.seller?.shippingSettings,
     merchantCountryCodes,
   })).length) {
     reasons.push("no_supported_google_target_countries");
@@ -680,7 +676,7 @@ export async function runSync({ secret = "", dryRun = false, limit = null, produ
     const targetCountries = await resolveGoogleTargetCountries({
       seller: p?.seller,
       sellerCountry: p?.seller?.sellerCountry,
-      deliveryProfile: p?.seller?.deliveryProfile,
+      shippingSettings: p?.seller?.shippingSettings,
       merchantCountryCodes,
     });
 

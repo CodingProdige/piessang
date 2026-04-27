@@ -8,9 +8,7 @@ import { getMarketplaceProductEngagementBadgeSnapshotMap } from "@/lib/analytics
 import { PRODUCT_ENGAGEMENT_BADGE_CONFIG } from "@/lib/analytics/product-engagement-badges";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { loadProductEngagementBadgeSettings } from "@/lib/platform/product-engagement-badge-settings";
-import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
 import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
-import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 import {
   getSellerUnavailableReason,
   isSellerAccountUnavailable,
@@ -19,10 +17,13 @@ import { getCanonicalOfferBarcode as resolveCanonicalOfferBarcode, pickPrimaryOf
 import {
   productHasListableAvailability,
   variantCanContinueSellingOutOfStock,
+  variantIsListable,
   variantTotalInStockItemsAvailable,
 } from "@/lib/catalogue/availability";
 import { buildProductStatus } from "@/lib/catalogue/product-status";
-import { readShopperAreaFromSearchParams, resolveCourierRouteEligibilityServer } from "@/lib/shipping/shopper-country";
+import { readShopperAreaFromSearchParams } from "@/lib/shipping/shopper-country";
+import { buildShippingSettingsFromLegacySeller, validateShippingSettings } from "@/lib/shipping/settings";
+import { normalizeCategorySlug } from "@/lib/catalogue/category-normalize";
 import { resolveShopperVisibleProducts } from "@/lib/catalogue/shopper-listing";
 
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
@@ -115,12 +116,7 @@ function applySellerDisplayData(data, sellerOwner) {
   const sellerCode = normStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode);
   const vendorName = normStr(seller?.vendorName || seller?.groupVendorName || "");
   const vendorDescription = normStr(seller?.vendorDescription || seller?.description || "");
-  const deliveryProfile = normalizeSellerDeliveryProfile(
-    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
-  );
-  const courierProfile = normalizeSellerCourierProfile(
-    seller?.courierProfile && typeof seller.courierProfile === "object" ? seller.courierProfile : {},
-  );
+  const shippingSettings = buildShippingSettingsFromLegacySeller(seller);
 
   return {
     ...data,
@@ -133,8 +129,7 @@ function applySellerDisplayData(data, sellerOwner) {
       sellerSlug: normStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug),
       activeSellerSlug: normStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug),
       groupSellerSlug: normStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug),
-      deliveryProfile,
-      courierProfile,
+      shippingSettings,
     },
     product: {
       ...(data?.product && typeof data.product === "object" ? data.product : {}),
@@ -150,7 +145,7 @@ function productMissingSellerDeliverySettings(data, sellerOwner) {
   const fulfillmentMode = String(data?.fulfillment?.mode ?? "seller").trim().toLowerCase();
   if (fulfillmentMode !== "seller") return false;
   const seller = sellerOwner?.data?.seller && typeof sellerOwner.data.seller === "object" ? sellerOwner.data.seller : {};
-  return !sellerDeliverySettingsReady(seller?.deliveryProfile || {});
+  return !validateShippingSettings(buildShippingSettingsFromLegacySeller(seller)).valid;
 }
 
 function normText(v){
@@ -196,17 +191,22 @@ function fuzzyScore(hay, needle){
  */
 function matchesGrouping(data, { category, subCategory, brand }) {
   const g = data?.grouping || {};
-  const recordBrand = normStr(g?.brand || data?.brand?.slug);
+  const recordBrand = normalizeCategorySlug(g?.brand || data?.brand?.slug);
+  const recordSubCategory = normalizeCategorySlug(g?.subCategory);
+  const recordCategory = normalizeCategorySlug(g?.category);
+  const requestedBrand = normalizeCategorySlug(brand);
+  const requestedSubCategory = normalizeCategorySlug(subCategory);
+  const requestedCategory = normalizeCategorySlug(category);
   // Hard conflicts (product declares a level that doesn't match filter)
-  if (brand && recordBrand && recordBrand !== brand) return false;
-  if (subCategory && g.subCategory && g.subCategory !== subCategory) return false;
-  if (category && g.category && g.category !== category) return false;
+  if (requestedBrand && recordBrand && recordBrand !== requestedBrand) return false;
+  if (requestedSubCategory && recordSubCategory && recordSubCategory !== requestedSubCategory) return false;
+  if (requestedCategory && recordCategory && recordCategory !== requestedCategory) return false;
 
-  const anyFilterProvided = !!(brand || subCategory || category);
+  const anyFilterProvided = !!(requestedBrand || requestedSubCategory || requestedCategory);
   const anyPositiveMatch =
-    (brand && recordBrand === brand) ||
-    (subCategory && g.subCategory === subCategory) ||
-    (category && g.category === category);
+    (requestedBrand && recordBrand === requestedBrand) ||
+    (requestedSubCategory && recordSubCategory === requestedSubCategory) ||
+    (requestedCategory && recordCategory === requestedCategory);
 
   return anyFilterProvided ? anyPositiveMatch : true;
 }
@@ -262,12 +262,7 @@ function variantInventoryHasStock(variant){
 
 function hasInStockVariants(data){
   const variants = Array.isArray(data?.variants) ? data.variants : [];
-  return variants.some((variant) => {
-    if (typeof variant?.total_in_stock_items_available === "number") {
-      return Number(variant.total_in_stock_items_available) > 0;
-    }
-    return variantTotalInStockItemsAvailable(variant) > 0;
-  });
+  return variants.some((variant) => variantIsListable(variant));
 }
 
 function enrichVariantsWithAvailability(variants, reservationMap = new Map()){
@@ -293,22 +288,7 @@ function productInStock(data){
   if (placement?.in_stock === false) return false;
   if (placement?.supplier_out_of_stock === true) return false;
 
-  const inv = Array.isArray(data?.inventory) ? data.inventory : [];
-  if (inv.length > 0){
-    return inv.some(r =>
-      (r?.in_stock ?? true) === true &&
-      Number(r?.unit_stock_qty ?? r?.in_stock_qty ?? 0) > 0 &&
-      r?.supplier_out_of_stock !== true
-    );
-  }
-
-  const vars = Array.isArray(data?.variants) ? data.variants : [];
-  const vInvRows = vars.flatMap(v => (Array.isArray(v?.inventory) ? v.inventory : []));
-  if (vInvRows.length > 0){
-    return vInvRows.some(r => Number(r?.in_stock_qty ?? r?.unit_stock_qty ?? 0) > 0);
-  }
-
-  return placement?.in_stock !== false;
+  return productHasListableAvailability(data);
 }
 
 function getVariantPriceIncl(variant) {
@@ -781,7 +761,7 @@ export async function GET(req){
               : null,
           listing_block_reason_message:
             sellerIdentifier && productMissingSellerDeliverySettings(dataWithVariantAvailability, singleSellerOwner)
-              ? "This self-fulfilled product is hidden until delivery settings are completed."
+              ? "This self-fulfilled product is hidden until shipping settings are completed."
               : null,
           analytics: engagement
             ? {
@@ -835,6 +815,9 @@ export async function GET(req){
     const packUnitVolume= numParam("packUnitVolume");
     const packUnit     = normStr(searchParams.get("packUnit")).toLowerCase() || "";
     const shopperArea = readShopperAreaFromSearchParams(searchParams);
+    const isDev = process.env.NODE_ENV !== "production";
+    const requestedCategoryRaw = category || "";
+    const normalizedRequestedCategory = normalizeCategorySlug(category || "");
 
     const keywords = keywordsRaw
       ? keywordsRaw.split(/[,\s]+/).map(s=>s.trim().toLowerCase()).filter(Boolean)
@@ -929,6 +912,7 @@ export async function GET(req){
       }),
     );
     // 3) In-memory filters (inclusive grouping logic + others)
+    const countBeforeCategoryFilter = items.length;
     items = items.filter(({ data })=>{
       const productSellerIdentifier = getSellerIdentifier(data);
       if (productSellerIdentifier && sellerBlockMap.get(productSellerIdentifier) === true) return false;
@@ -1017,6 +1001,7 @@ export async function GET(req){
 
       return true;
     });
+    const countAfterCategoryFilter = items.length;
 
     items = await Promise.all(items.map(async ({ id, data })=>{
       const reservationMap = await buildVariantCheckoutReservationMap(data);
@@ -1094,6 +1079,14 @@ export async function GET(req){
       });
     }
 
+    if (includeUnavailable) {
+      return ok({
+        total: items.length,
+        count: items.length,
+        items,
+      });
+    }
+
     if (!includeUnavailable && items.length) {
       const badgeMap = await getMarketplaceProductEngagementBadgeSnapshotMap({
         productIds: items.map((item) => normStr(item?.data?.product?.unique_id || item?.id)).filter(Boolean),
@@ -1107,19 +1100,27 @@ export async function GET(req){
       shopperLocation: shopperArea,
       page: 1,
       pageSize: noTopLimit ? items.length : lim ?? 24,
-      getCourierContext: async ({ seller, shopperLocation }) => {
-        const originCountry = String(seller?.origin?.countryCode || seller?.origin?.country || "").trim();
-        const shopperCountry = String(shopperLocation?.countryCode || "").trim();
-        const handoverMode = String((seller?.courierProfile || {})?.handoverMode || "pickup").trim() || "pickup";
-        if (!originCountry || !shopperCountry) return { courierRouteSupported: null };
-        const courierRouteSupported = await resolveCourierRouteEligibilityServer({
-          originCountry,
-          shopperCountry,
-          handoverMode,
-        });
-        return { courierRouteSupported };
-      },
     });
+    const countAfterShippingVisibility = finalListing.total;
+    const debugCategory = isDev
+      ? {
+          requestedCategoryRaw,
+          normalizedRequestedCategory,
+          countBeforeCategoryFilter,
+          countAfterCategoryFilter,
+          countAfterShippingVisibility,
+          shopperDestination: {
+            countryCode: shopperArea?.countryCode || shopperArea?.country || null,
+            province: shopperArea?.province || shopperArea?.stateProvinceRegion || shopperArea?.region || null,
+            city: shopperArea?.city || null,
+            postalCode: shopperArea?.postalCode || null,
+          },
+        }
+      : null;
+
+    if (isDev && normalizedRequestedCategory === "pre-loved") {
+      console.log("[products_v2/get][category-debug]", debugCategory);
+    }
 
     if (!groupByBrand) {
       return ok({
@@ -1127,6 +1128,7 @@ export async function GET(req){
         count: finalListing.items.length,
         items: finalListing.items,
         filters: finalListing.filters,
+        ...(debugCategory ? { debugCategory } : {}),
       });
     }
 
@@ -1146,6 +1148,7 @@ export async function GET(req){
       count: finalListing.items.length,
       groups,
       filters: finalListing.filters,
+      ...(debugCategory ? { debugCategory } : {}),
     });
   }catch(e){
     console.error("products_v2/get (in-memory) failed:", e);

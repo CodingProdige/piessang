@@ -4,7 +4,10 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { resolveShopperVisibleProducts } from "@/lib/catalogue/shopper-listing";
+import { categoryMatches } from "@/lib/catalogue/category-normalize";
+import { normalizeShopperLocation } from "@/lib/shopper/location";
+import { buildShippingSettingsFromLegacySeller } from "@/lib/shipping/settings";
 import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
@@ -65,9 +68,7 @@ function applySellerDisplayData(data, sellerOwner) {
   const sellerCode = toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode);
   const vendorName = toStr(seller?.vendorName || seller?.groupVendorName || "");
   const vendorDescription = toStr(seller?.vendorDescription || seller?.description || "");
-  const deliveryProfile = normalizeSellerDeliveryProfile(
-    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
-  );
+  const shippingSettings = buildShippingSettingsFromLegacySeller(seller);
 
   return {
     ...data,
@@ -80,7 +81,7 @@ function applySellerDisplayData(data, sellerOwner) {
       sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug) || null,
       activeSellerSlug: toStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug) || null,
       groupSellerSlug: toStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug) || null,
-      deliveryProfile,
+      shippingSettings,
     },
     product: {
       ...(data?.product && typeof data.product === "object" ? data.product : {}),
@@ -90,6 +91,19 @@ function applySellerDisplayData(data, sellerOwner) {
       sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.product?.sellerSlug) || null,
     },
   };
+}
+
+function buildShopperLocationFromSearchParams(searchParams) {
+  return normalizeShopperLocation({
+    countryCode: searchParams.get("shopperCountry") || searchParams.get("country") || null,
+    province: searchParams.get("shopperProvince") || null,
+    city: searchParams.get("shopperCity") || null,
+    suburb: searchParams.get("shopperSuburb") || null,
+    postalCode: searchParams.get("shopperPostalCode") || null,
+    lat: searchParams.get("shopperLatitude") || null,
+    lng: searchParams.get("shopperLongitude") || null,
+    source: "manual",
+  });
 }
 
 async function hydrateProductSellerData(db, data) {
@@ -113,6 +127,14 @@ function getCanonicalOfferBarcode(source) {
   return "";
 }
 
+function matchesCategoryLike(candidate, sourceCategory, sourceSubCategory) {
+  const candidateCategory = toStr(candidate?.grouping?.category);
+  const candidateSubCategory = toStr(candidate?.grouping?.subCategory);
+  if (sourceSubCategory && categoryMatches(candidateSubCategory, sourceSubCategory)) return true;
+  if (sourceCategory && categoryMatches(candidateCategory, sourceCategory)) return true;
+  return false;
+}
+
 async function findProductDoc(db, productId) {
   const byDoc = await db.collection("products_v2").doc(productId).get();
   if (byDoc.exists) return byDoc;
@@ -126,6 +148,7 @@ export async function GET(req) {
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
 
     const { searchParams } = new URL(req.url);
+    const shopperLocation = buildShopperLocationFromSearchParams(searchParams);
     const productId = toStr(searchParams.get("productId") || searchParams.get("product_unique_id") || searchParams.get("id"));
     if (!productId) return err(400, "Missing Product", "Provide a productId to load similar products.");
 
@@ -169,14 +192,50 @@ export async function GET(req) {
       .sort((a, b) => b.similarityScore - a.similarityScore)
       .slice(0, 12);
 
-    ranked = await Promise.all(
+    if (ranked.length === 0 && (sourceCategory || sourceSubCategory)) {
+      const fallbackSnap = await db.collection("products_v2").where("placement.isActive", "==", true).limit(96).get();
+      ranked = fallbackSnap.docs
+        .map((docSnap) => ({
+          id: docSnap.id,
+          data: getPublicMarketplaceSource(normalizeTimestamps(docSnap.data() || {})),
+        }))
+        .filter((item) => {
+          const candidateUniqueId = toStr(item?.data?.product?.unique_id || item?.id);
+          if (candidateUniqueId === sourceUniqueId) return false;
+          const candidateBarcode = getCanonicalOfferBarcode(item?.data);
+          if (sourceBarcode && candidateBarcode && candidateBarcode === sourceBarcode) return false;
+          return matchesCategoryLike(item?.data, sourceCategory, sourceSubCategory);
+        })
+        .map((item) => {
+          let score = 0;
+          if (sourceSubCategory && categoryMatches(item?.data?.grouping?.subCategory, sourceSubCategory)) score += 4;
+          if (sourceCategory && categoryMatches(item?.data?.grouping?.category, sourceCategory)) score += 2;
+          if (sourceBrand && toStr(item?.data?.brand?.slug || item?.data?.grouping?.brand) === sourceBrand) score += 1;
+          if (item?.data?.placement?.isFeatured === true) score += 0.5;
+          return { ...item, similarityScore: score };
+        })
+        .sort((a, b) => b.similarityScore - a.similarityScore)
+        .slice(0, 12);
+    }
+
+    const hydratedRanked = await Promise.all(
       ranked.map(async (item) => ({
         ...item,
         data: await hydrateProductSellerData(db, item.data),
       })),
     );
 
-    return ok({ count: ranked.length, items: ranked });
+    const finalListing = await resolveShopperVisibleProducts({
+      items: hydratedRanked.map((item) => ({
+        id: item.id,
+        data: item.data,
+      })),
+      shopperLocation,
+      page: 1,
+      pageSize: hydratedRanked.length,
+    });
+
+    return ok({ count: finalListing.items.length, items: finalListing.items });
   } catch (e) {
     console.error("similar products failed:", e);
     return err(500, "Unexpected Error", "Unable to load similar products.", {

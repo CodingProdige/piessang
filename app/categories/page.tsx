@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { PageBody } from "@/components/layout/page-body";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { categoryMatches, normalizeCategorySlug } from "@/lib/catalogue/category-normalize";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
 import { buildSeoMetadata } from "@/lib/seo/page-overrides";
@@ -64,7 +65,7 @@ async function loadCategoryData() {
     .map((doc) => {
       const data = doc.data() || {};
       return {
-        slug: String(data?.category?.slug || "").trim(),
+        slug: normalizeCategorySlug(data?.category?.slug || data?.category?.title),
         title: String(data?.category?.title || "").trim(),
       };
     })
@@ -116,22 +117,23 @@ async function loadCategoryData() {
       const subSnapshot = await db
         .collection("sub_categories")
         .where("placement.isActive", "==", true)
-        .where("grouping.category", "==", category.slug)
         .get()
         .catch(() => null);
 
       const categoryProducts = allProducts.filter(
-        (item) => String(item?.data?.grouping?.category || "").trim() === category.slug,
+        (item) => categoryMatches(item?.data?.grouping?.category, category.slug),
       );
 
       const subcategories = (subSnapshot?.docs || [])
         .map((item) => {
           const data = item.data() || {};
-          const slug = String(data?.subCategory?.slug || "").trim();
+          const slug = normalizeCategorySlug(data?.subCategory?.slug || data?.subCategory?.title);
           const title = String(data?.subCategory?.title || "").trim();
+          const parentCategorySlug = normalizeCategorySlug(data?.grouping?.category);
           if (!slug || !title) return null;
+          if (!categoryMatches(parentCategorySlug, category.slug)) return null;
           const productCount = categoryProducts.filter(
-            (product) => String(product?.data?.grouping?.subCategory || "").trim() === slug,
+            (product) => categoryMatches(product?.data?.grouping?.subCategory, slug),
           ).length;
           return { slug, title, productCount };
         })

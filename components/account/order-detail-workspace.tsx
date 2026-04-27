@@ -12,6 +12,7 @@ import { DocumentSnackbar } from "@/components/ui/document-snackbar";
 import { collectCustomerSellerInvoiceGroups, getCustomerBusinessDetails } from "@/lib/orders/customer-seller-invoices";
 import { getFrozenLineTotalIncl, getFrozenOrderPaidIncl, getFrozenOrderPayableIncl, getFrozenOrderProductsIncl } from "@/lib/orders/frozen-money";
 import { formatMoneyExact } from "@/lib/money";
+import { formatShippingDestinationLabel, getOrderShippingAddress, getSellerShippingEntry } from "@/lib/orders/shipping-breakdown";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 
 type OrderData = {
@@ -58,7 +59,19 @@ type OrderData = {
   totals?: {
     seller_delivery_fee_incl?: number;
     delivery_fee_incl?: number;
+    shippingFinalTotal?: number;
   };
+  shippingBreakdown?: Array<{
+    sellerCode?: string;
+    sellerSlug?: string;
+    sellerId?: string;
+    matchedRuleName?: string;
+    matchType?: string;
+    finalShippingFee?: number;
+    estimatedDeliveryDays?: { min?: number; max?: number };
+    destination?: { city?: string; province?: string; postalCode?: string; country?: string };
+    status?: string;
+  }>;
   pricing_snapshot?: {
     sellerDeliveryBreakdown?: Array<{
       sellerCode?: string;
@@ -282,19 +295,8 @@ function getLineImage(item: any) {
   );
 }
 
-function isCourierDeliveryType(value: unknown) {
-  const normalized = toStr(value).toLowerCase();
-  return normalized === "shipping" || normalized === "courier_live_rate" || normalized === "platform_courier_live_rate";
-}
-
-function isCollectionDeliveryType(value: unknown) {
-  const normalized = toStr(value).toLowerCase();
-  return normalized === "collection";
-}
-
 function getShipmentProgressSteps(mode: unknown, status: unknown) {
   const normalized = toStr(status).toLowerCase();
-  const isCollection = isCollectionDeliveryType(mode);
   const activeIndex =
     normalized === "delivered"
       ? 3
@@ -303,11 +305,7 @@ function getShipmentProgressSteps(mode: unknown, status: unknown) {
         : normalized === "processing" || normalized === "confirmed"
           ? 1
           : 0;
-  const labels = isCollection
-    ? ["Confirmed", "Prepared", "Ready for pickup", "Collected"]
-    : isCourierDeliveryType(mode)
-      ? ["Confirmed", "Prepared", "In transit", "Delivered"]
-      : ["Confirmed", "Preparing", "Out for delivery", "Delivered"];
+  const labels = ["Confirmed", "Prepared", "In transit", "Delivered"];
   return labels.map((label, index) => ({
     key: `${toStr(mode || "delivery")}-${index}`,
     label,
@@ -322,37 +320,18 @@ function getShipmentSummaryCopy(group: {
   latestStatus?: string;
   courierName?: string;
   trackingNumber?: string;
+  destination?: string;
+  eta?: string;
 }) {
-  if (isCollectionDeliveryType(group.deliveryType)) {
-    return {
-      eyebrow: "Collection progress",
-      subtext: "The seller will prepare this order for collection and update you when it is ready.",
-      meta: "",
-    };
-  }
-  if (isCourierDeliveryType(group.deliveryType)) {
-    return {
-      eyebrow: "Shipment progress",
-      subtext: "Live courier updates for this seller shipment.",
-      meta: [toStr(group.courierName), toStr(group.trackingNumber)].filter(Boolean).join(" • "),
-    };
-  }
   return {
-    eyebrow: "Delivery progress",
-    subtext: "The seller is delivering this order directly and updates will appear here as it moves.",
-    meta: "",
+    eyebrow: "Shipment progress",
+    subtext: "Shipping updates for this seller shipment.",
+    meta: [toStr(group.courierName), toStr(group.trackingNumber), toStr(group.destination), toStr(group.eta)].filter(Boolean).join(" • "),
   };
 }
 
 function getSellerGroups(order: OrderData | null) {
   const items = Array.isArray(order?.items) ? order.items : [];
-  const pricingSnapshot = order?.pricing_snapshot && typeof (order as any)?.pricing_snapshot === "object" ? (order as any).pricing_snapshot : {};
-  const delivery = order?.delivery && typeof (order as any)?.delivery === "object" ? (order as any).delivery : {};
-  const sellerDeliveryBreakdown = Array.isArray(pricingSnapshot?.sellerDeliveryBreakdown)
-    ? pricingSnapshot.sellerDeliveryBreakdown
-    : Array.isArray(delivery?.fee?.seller_breakdown)
-      ? delivery.fee.seller_breakdown
-      : [];
   const sliceMeta = new Map<string, { vendorName: string; sellerCode: string; sellerSlug: string; quantity: number }>();
   for (const slice of Array.isArray(order?.seller_slices) ? order!.seller_slices! : []) {
     const sliceKey = toStr(slice?.sellerCode || slice?.sellerSlug || slice?.vendorName);
@@ -364,7 +343,7 @@ function getSellerGroups(order: OrderData | null) {
       quantity: Math.max(0, Number(slice?.quantity || 0)),
     });
   }
-  const groups = new Map<string, { key: string; vendorName: string; sellerCode: string; sellerSlug: string; items: any[]; totalQty: number; progressSum: number; latestStatus: string; deliveryType: string; trackingUrl: string; trackingNumber: string; courierName: string }>();
+  const groups = new Map<string, { key: string; vendorName: string; sellerCode: string; sellerSlug: string; items: any[]; totalQty: number; progressSum: number; latestStatus: string; deliveryType: string; trackingUrl: string; trackingNumber: string; courierName: string; destination: string; eta: string }>();
   for (const item of items) {
     const productSnapshot: any = item?.product_snapshot || {};
     const snapshotProduct = productSnapshot?.product || {};
@@ -403,6 +382,8 @@ function getSellerGroups(order: OrderData | null) {
       trackingUrl: "",
       trackingNumber: "",
       courierName: "",
+      destination: "",
+      eta: "",
     };
     current.items.push(item);
     current.totalQty += quantity;
@@ -411,17 +392,21 @@ function getSellerGroups(order: OrderData | null) {
     const nextRank = ["not_started", "confirmed", "processing", "dispatched", "delivered"].indexOf(nextStatus);
     const currentRank = ["not_started", "confirmed", "processing", "dispatched", "delivered"].indexOf(current.latestStatus);
     if (nextRank > currentRank) current.latestStatus = nextStatus;
-    const deliveryMatch = sellerDeliveryBreakdown.find((entry: any) => {
-      const entryCode = toStr(entry?.sellerCode || entry?.seller_code || entry?.seller_key);
-      const entrySlug = toStr(entry?.sellerSlug || entry?.seller_slug);
-      return Boolean((sellerCode && entryCode === sellerCode) || (sellerSlug && entrySlug === sellerSlug));
-    });
-    if (deliveryMatch) {
-      current.deliveryType = toStr(deliveryMatch?.delivery_type || deliveryMatch?.method || current.deliveryType);
-      current.trackingUrl = toStr(deliveryMatch?.tracking_url || current.trackingUrl);
-      current.trackingNumber = toStr(deliveryMatch?.tracking_number || current.trackingNumber);
-      current.courierName = toStr(deliveryMatch?.courier_carrier || current.courierName);
+    const shippingMatch = getSellerShippingEntry(order || {}, sellerCode, sellerSlug);
+    if (shippingMatch) {
+      current.deliveryType = "shipping";
+      current.destination = formatShippingDestinationLabel(shippingMatch?.destination || {});
+      current.eta =
+        Number(shippingMatch?.estimatedDeliveryDays?.min || 0) > 0 || Number(shippingMatch?.estimatedDeliveryDays?.max || 0) > 0
+          ? `${Number(shippingMatch?.estimatedDeliveryDays?.min || 0)}-${Number(shippingMatch?.estimatedDeliveryDays?.max || 0)} days`
+          : "";
+      current.trackingUrl = toStr(shippingMatch?.tracking?.trackingUrl || current.trackingUrl);
+      current.trackingNumber = toStr(shippingMatch?.tracking?.trackingNumber || current.trackingNumber);
+      current.courierName = toStr(shippingMatch?.tracking?.courierName || current.courierName);
     }
+    current.trackingUrl = toStr(item?.fulfillment_tracking?.trackingUrl || current.trackingUrl);
+    current.trackingNumber = toStr(item?.fulfillment_tracking?.trackingNumber || current.trackingNumber);
+    current.courierName = toStr(item?.fulfillment_tracking?.courierName || current.courierName);
     groups.set(key, current);
   }
   return Array.from(groups.values()).map((group) => ({
@@ -902,7 +887,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
   }
 
   const productsSubtotal = getFrozenOrderProductsIncl(order || {});
-  const deliveryFee = Number(order?.totals?.seller_delivery_fee_incl || 0) + Number(order?.totals?.delivery_fee_incl || 0);
+  const deliveryFee = Number(order?.totals?.shippingFinalTotal || 0) || Number(order?.totals?.seller_delivery_fee_incl || 0) + Number(order?.totals?.delivery_fee_incl || 0);
   const totalIncl = getFrozenOrderPayableIncl(order || {});
   const paidIncl = getFrozenOrderPaidIncl(order || {}) || totalIncl;
   const paymentMethodLabel = useMemo(() => {
@@ -910,17 +895,13 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
     const method = toStr(order?.payment?.method || "");
     return [provider, method].filter(Boolean).map(sentenceStatus).join(" / ") || "Card payment";
   }, [order?.payment?.method, order?.payment?.provider]);
-  const resolvedAddress =
-    order?.delivery_snapshot?.address ||
-    order?.delivery?.address_snapshot ||
-    order?.delivery_address ||
-    {};
+  const resolvedAddress = getOrderShippingAddress(order || {});
   const deliveryAddress = [
     resolvedAddress?.streetAddress,
     resolvedAddress?.addressLine2,
     resolvedAddress?.suburb,
     resolvedAddress?.city,
-    resolvedAddress?.stateProvinceRegion || resolvedAddress?.province,
+    resolvedAddress?.province,
     resolvedAddress?.postalCode,
     resolvedAddress?.country,
   ].filter(Boolean);

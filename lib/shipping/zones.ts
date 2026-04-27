@@ -12,7 +12,40 @@ function toStr(value: unknown, fallback = ""): string {
 }
 
 function normalizeText(value: unknown): string {
-  return toStr(value).replace(/\s+/g, " ").trim().toLowerCase();
+  return toStr(value)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeProvinceLabel(value: unknown): string {
+  const normalized = normalizeText(value);
+  if (!normalized) return "";
+
+  const compact = normalized.replace(/\s+/g, " ");
+  switch (compact) {
+    case "western cape":
+      return "western cape";
+    case "eastern cape":
+      return "eastern cape";
+    case "northern cape":
+      return "northern cape";
+    case "free state":
+      return "free state";
+    case "kwazulu natal":
+      return "kwazulu natal";
+    case "north west":
+      return "north west";
+    case "gauteng":
+      return "gauteng";
+    case "mpumalanga":
+      return "mpumalanga";
+    case "limpopo":
+      return "limpopo";
+    default:
+      return compact;
+  }
 }
 
 function normalizePostalCode(value: unknown): string {
@@ -31,9 +64,11 @@ function groupMatchesPostalCode(group: ShippingPostalCodeGroup, postalCode: stri
 }
 
 function provinceMatches(zone: ShippingZone, province: string): ShippingProvinceRule | null {
-  const normalizedProvince = normalizeText(province);
+  const normalizedProvince = normalizeProvinceLabel(province);
   if (!normalizedProvince) return null;
-  const match = zone.provinces.find((entry) => entry.enabled !== false && normalizeText(entry.province) === normalizedProvince);
+  const match = zone.provinces.find(
+    (entry) => entry.enabled !== false && normalizeProvinceLabel(entry.province) === normalizedProvince,
+  );
   return match || null;
 }
 
@@ -49,6 +84,7 @@ export function matchShippingZone({
   matchType: CoverageMatchType | null;
   matchName: string | null;
   batchingOverride?: ShippingZone["batching"] | null;
+  estimatedDeliveryDays?: ShippingZone["estimatedDeliveryDays"] | null;
   errors: string[];
 } {
   const activeZones = (Array.isArray(zones) ? zones : []).filter((zone) => zone?.enabled !== false);
@@ -61,37 +97,42 @@ export function matchShippingZone({
     if (toStr(zone.countryCode).toUpperCase() !== countryCode) continue;
 
     const postalGroup = zone.postalCodeGroups.find((group) => groupMatchesPostalCode(group, postalCode));
-    if (postalGroup) {
+    if (zone.coverageType === "postal_code_group" && postalGroup) {
       return {
         zone,
         rate: postalGroup.rateOverride || zone.defaultRate,
         matchType: "postal_code",
         matchName: postalGroup.name,
         batchingOverride: postalGroup.batching || null,
+        estimatedDeliveryDays: postalGroup.estimatedDeliveryDays || null,
         errors,
       };
     }
 
     const provinceRule = provinceMatches(zone, province);
-    if (provinceRule?.rateOverride) {
+    if (zone.coverageType === "province" && provinceRule?.rateOverride) {
       return {
         zone,
         rate: provinceRule.rateOverride,
         matchType: "province",
         matchName: province,
         batchingOverride: provinceRule.batching || null,
+        estimatedDeliveryDays: provinceRule.estimatedDeliveryDays || null,
         errors,
       };
     }
 
-    return {
-      zone,
-      rate: zone.defaultRate,
-      matchType: "country",
-      matchName: zone.name,
-      batchingOverride: null,
-      errors,
-    };
+    if (zone.coverageType === "country") {
+      return {
+        zone,
+        rate: zone.defaultRate,
+        matchType: "country",
+        matchName: zone.name,
+        batchingOverride: zone.batching || null,
+        estimatedDeliveryDays: zone.estimatedDeliveryDays || null,
+        errors,
+      };
+    }
   }
 
   return {
@@ -100,6 +141,7 @@ export function matchShippingZone({
     matchType: null,
     matchName: null,
     batchingOverride: null,
+    estimatedDeliveryDays: null,
     errors,
   };
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { loadPlatformShippingSettings } from "@/lib/platform/shipping-settings";
 import { resolveShippingForSellerGroup } from "@/lib/shipping/resolve";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
-import { getAdminDb } from "@/lib/firebase/admin";
 
 const ok = (payload: Record<string, unknown> = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
 const err = (status: number, title: string, message: string, extra: Record<string, unknown> = {}) =>
@@ -19,11 +19,8 @@ function toShippingErrorMessage(code: unknown) {
 }
 
 async function loadPlatformShippingConfig() {
-  const db = getAdminDb();
-  if (!db) return null;
-  const snap = await db.collection("system_settings").doc("platform_delivery").get();
-  const data = snap.exists ? snap.data() || {} : {};
-  return data?.piessangFulfillmentShipping || null;
+  const settings = await loadPlatformShippingSettings();
+  return settings || null;
 }
 
 export async function POST(req: NextRequest) {
@@ -32,7 +29,7 @@ export async function POST(req: NextRequest) {
   const buyerDestination = body?.buyerDestination && typeof body.buyerDestination === "object" ? body.buyerDestination : null;
   if (!buyerDestination) return err(400, "Missing Destination", "buyerDestination is required.");
 
-  const piessangFulfillmentShipping = await loadPlatformShippingConfig();
+  const platformShipping = await loadPlatformShippingConfig();
   const validations = [];
   const errors = [];
 
@@ -47,13 +44,14 @@ export async function POST(req: NextRequest) {
       seller,
       items: Array.isArray(group?.items) ? group.items : [],
       buyerDestination,
-      piessangFulfillmentShipping,
+      piessangFulfillmentShipping: platformShipping?.piessangFulfillmentShipping || null,
+      platformShippingMarkup: platformShipping?.platformShippingMarkup || null,
     });
-    if (!resolved.ok || (selectedZoneId && selectedZoneId !== toStr(resolved.zone?.id))) {
+    if (!resolved.ok || (selectedZoneId && selectedZoneId !== toStr(resolved.matchedRuleId))) {
       errors.push({
         sellerId,
-        code: resolved.ok ? "INVALID_SELECTION" : resolved.error,
-        message: resolved.ok ? "Selected shipping option is no longer valid." : toShippingErrorMessage(resolved.error),
+        code: resolved.ok ? "INVALID_SELECTION" : resolved.code,
+        message: resolved.ok ? "Selected shipping option is no longer valid." : (resolved.message || toShippingErrorMessage(resolved.code)),
         debug: resolved.debug || null,
       });
       continue;
@@ -61,7 +59,7 @@ export async function POST(req: NextRequest) {
     validations.push({
       sellerId,
       valid: true,
-      zoneId: resolved.zone?.id || null,
+      zoneId: resolved.matchedRuleId || null,
       finalShippingFee: resolved.finalShippingFee,
       pricingMode: resolved.pricingMode,
       batchingMode: resolved.batchingMode,

@@ -6,7 +6,6 @@ import type {
 } from "@/lib/catalogue/shipping-eligibility";
 import { resolveProductShippingEligibility } from "@/lib/catalogue/shipping-eligibility";
 import { normalizeShopperLocation, type ShopperLocation } from "@/lib/shopper/location";
-import { normalizeSellerCourierProfile } from "@/lib/integrations/easyship-profile";
 
 function toText(value: unknown): string {
   return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -17,44 +16,42 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-export function buildShippingEligibilitySellerInputFromRawItem(item: any): ShippingEligibilitySellerInput {
+function resolveSellerPayload(item: any): Record<string, unknown> {
   const data = item?.data && typeof item.data === "object" ? item.data : {};
-  const seller = data?.seller && typeof data.seller === "object" ? data.seller : {};
-  const deliveryProfile =
-    seller?.deliveryProfile && typeof seller.deliveryProfile === "object"
-      ? (seller.deliveryProfile as ShippingEligibilitySellerInput["deliveryProfile"])
+  return data?.seller && typeof data.seller === "object" ? (data.seller as Record<string, unknown>) : {};
+}
+
+export function buildShippingEligibilitySellerInputFromRawItem(item: any): ShippingEligibilitySellerInput {
+  const seller = resolveSellerPayload(item);
+  const shippingSettings =
+    seller?.shippingSettings && typeof seller.shippingSettings === "object"
+      ? (seller.shippingSettings as Record<string, unknown>)
       : null;
-  const deliveryProfileRecord =
+  const deliveryProfile =
     seller?.deliveryProfile && typeof seller.deliveryProfile === "object"
       ? (seller.deliveryProfile as Record<string, unknown>)
       : null;
-  const courierProfile =
-    seller?.courierProfile && typeof seller.courierProfile === "object"
-      ? (seller.courierProfile as Record<string, unknown>)
-      : null;
-  const origin =
-    deliveryProfileRecord?.origin && typeof deliveryProfileRecord.origin === "object"
-      ? (deliveryProfileRecord.origin as Record<string, unknown>)
-      : null;
 
   return {
-    fulfillmentMode: toText((data as any)?.fulfillment?.mode),
+    id: toText(seller?.uid || seller?.id || seller?.sellerId || seller?.sellerCode || ""),
+    sellerCode: toText(seller?.sellerCode || ""),
+    sellerSlug: toText(seller?.sellerSlug || ""),
+    fulfillmentMode: toText((item?.data as any)?.fulfillment?.mode || ""),
     origin: {
-      countryCode: toText((origin as any)?.country || ""),
-      country: toText((origin as any)?.country || ""),
-      lat: toNumber((origin as any)?.latitude),
-      lng: toNumber((origin as any)?.longitude),
-      latitude: toNumber((origin as any)?.latitude),
-      longitude: toNumber((origin as any)?.longitude),
+      countryCode: toText((shippingSettings as any)?.shipsFrom?.countryCode || (deliveryProfile as any)?.origin?.country || ""),
+      country: toText((shippingSettings as any)?.shipsFrom?.countryCode || (deliveryProfile as any)?.origin?.country || ""),
+      lat: toNumber((deliveryProfile as any)?.origin?.latitude),
+      lng: toNumber((deliveryProfile as any)?.origin?.longitude),
+      latitude: toNumber((deliveryProfile as any)?.origin?.latitude),
+      longitude: toNumber((deliveryProfile as any)?.origin?.longitude),
     },
-    deliveryProfile: deliveryProfile || null,
-    courierProfile,
+    shippingSettings,
+    deliveryProfile,
   };
 }
 
 export function buildShippingEligibilityProductInputFromRawItem(item: any): ShippingEligibilityProductInput {
   const data = item?.data && typeof item.data === "object" ? item.data : {};
-  const product = data?.product && typeof data.product === "object" ? data.product : {};
 
   return {
     placement:
@@ -66,52 +63,38 @@ export function buildShippingEligibilityProductInputFromRawItem(item: any): Ship
         ? (data.fulfillment as ShippingEligibilityProductInput["fulfillment"])
         : null,
     shipping:
-      product?.shipping && typeof product.shipping === "object"
-        ? (product.shipping as Record<string, unknown>)
+      data?.product && typeof data.product === "object" && (data.product as any).shipping && typeof (data.product as any).shipping === "object"
+        ? ((data.product as any).shipping as Record<string, unknown>)
         : null,
-    localDeliveryEnabled: (product as any)?.localDeliveryEnabled ?? true,
-    collectionEnabled: (product as any)?.collectionEnabled ?? true,
     listable: (data as any)?.is_eligible_by_variant_availability !== false,
     variants: Array.isArray((data as any)?.variants)
       ? ((data as any).variants as Array<Record<string, unknown>>)
       : [],
+    data,
   };
-}
-
-function normalizeCountry(value: unknown): string {
-  return String(value ?? "").trim().toUpperCase();
 }
 
 export function buildShopperLocationFromDeliveryArea(shopperArea: any): ShopperLocation {
   return normalizeShopperLocation({
-    countryCode: shopperArea?.country || null,
-    province: shopperArea?.province || shopperArea?.stateProvinceRegion || null,
+    countryCode: shopperArea?.countryCode || shopperArea?.country || null,
+    province: shopperArea?.province || shopperArea?.stateProvinceRegion || shopperArea?.region || null,
     city: shopperArea?.city || null,
     suburb: shopperArea?.suburb || null,
     postalCode: shopperArea?.postalCode || null,
     addressLine1: shopperArea?.addressLine1 || null,
-    lat: shopperArea?.latitude ?? null,
-    lng: shopperArea?.longitude ?? null,
-    source: shopperArea?.country ? "manual" : "none",
-    precision:
-      Number.isFinite(Number(shopperArea?.latitude)) && Number.isFinite(Number(shopperArea?.longitude))
-        ? "coordinates"
-        : shopperArea?.country
-          ? "country"
-          : "none",
+    lat: shopperArea?.lat ?? shopperArea?.latitude ?? null,
+    lng: shopperArea?.lng ?? shopperArea?.longitude ?? null,
+    source:
+      shopperArea?.countryCode || shopperArea?.country || shopperArea?.postalCode || shopperArea?.city
+        ? "manual"
+        : "none",
   });
 }
 
-export function buildShippingEligibilityContextFromRawItem(item: any, shopperArea: any): ShippingEligibilityContext {
-  const courierProfile = normalizeSellerCourierProfile(item?.data?.seller?.courierProfile || {});
-  const allowedCountries = Array.isArray(courierProfile.allowedDestinationCountries)
-    ? courierProfile.allowedDestinationCountries.map((entry) => normalizeCountry(entry)).filter(Boolean)
-    : [];
-  const shopperCountry = normalizeCountry(shopperArea?.country);
-  if (!shopperCountry || !allowedCountries.length) {
-    return { courierRouteSupported: true };
-  }
-  return { courierRouteSupported: allowedCountries.includes(shopperCountry) };
+export function buildShippingEligibilityContextFromRawItem(_item: any, shopperArea: any): ShippingEligibilityContext {
+  const location = buildShopperLocationFromDeliveryArea(shopperArea);
+  const destinationKnown = Boolean(location.countryCode && (location.postalCode || location.province || location.city || location.suburb));
+  return { destinationKnown };
 }
 
 export function resolveRawItemShippingEligibility(item: any, shopperArea: any): ProductShippingEligibilityResult {
@@ -121,4 +104,17 @@ export function resolveRawItemShippingEligibility(item: any, shopperArea: any): 
     shopperLocation: buildShopperLocationFromDeliveryArea(shopperArea),
     context: buildShippingEligibilityContextFromRawItem(item, shopperArea),
   });
+}
+
+export function buildShippingMessageFromEligibility(eligibility: ProductShippingEligibilityResult | null | undefined): string | null {
+  if (!eligibility) return "Shipping calculated at checkout";
+  return eligibility.deliveryPromiseLabel ?? eligibility.deliveryMessage ?? null;
+}
+
+export function formatEligibilityEta(eligibility: ProductShippingEligibilityResult | null | undefined): string | null {
+  if (!eligibility) return null;
+  const minDays = toNumber(eligibility.estimatedMinDays);
+  const maxDays = toNumber(eligibility.estimatedMaxDays);
+  if (minDays == null || maxDays == null) return null;
+  return minDays === maxDays ? `${maxDays} day${maxDays === 1 ? "" : "s"}` : `${minDays}-${maxDays} days`;
 }

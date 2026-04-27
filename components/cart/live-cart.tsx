@@ -8,8 +8,9 @@ import { CartActionStack } from "@/components/cart/cart-actions";
 import { CartItemCard } from "@/components/cart/cart-item-card";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import { readShopperDeliveryArea } from "@/components/products/delivery-area-gate";
+import { PHONE_REGION_OPTIONS } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
-import { resolveSellerDeliveryOption } from "@/lib/seller/delivery-profile";
+import { fetchCheckoutShippingPreview, type CheckoutShippingPreview } from "@/lib/shipping/client-preview";
 
 type CartItem = {
   cart_item_key?: string;
@@ -167,29 +168,64 @@ function getSellerFulfillmentSummary(items: CartItem[]) {
   return "The seller handles shipping for these items.";
 }
 
-function getSellerDeliveryFeeForGroup(items: CartItem[]) {
-  const availableItems = items.filter(
-    (item) => String(item?.availability?.status || "").trim().toLowerCase() === "available",
-  );
-  const shopperArea = readShopperDeliveryArea();
-  const sellerItems = availableItems.filter(
-    (item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase() === "seller",
-  );
-  if (!sellerItems.length) {
-    return null;
-  }
+function getSellerGroupKey(item: CartItem) {
+  const productSnapshot = item?.product_snapshot as any;
+  return String(
+    productSnapshot?.product?.sellerCode ||
+      productSnapshot?.seller?.sellerCode ||
+      productSnapshot?.seller?.sellerSlug ||
+      "",
+  ).trim();
+}
 
-  const seller = sellerItems[0]?.product_snapshot?.seller;
-  const deliveryProfile = seller?.deliveryProfile;
-  if (!deliveryProfile) {
-    return "Set your shipping location to confirm seller shipping";
+function toCountryCode(countryValue?: string | null) {
+  const normalized = String(countryValue || "").trim().toLowerCase();
+  if (!normalized) return "";
+  const match = PHONE_REGION_OPTIONS.find((option) => option.label.replace(/\s*\(\+\d+\)$/, "").trim().toLowerCase() === normalized);
+  return match?.iso || String(countryValue || "").trim().toUpperCase();
+}
+
+function buildBuyerDestinationFromShopperArea() {
+  const shopperArea = readShopperDeliveryArea() as any;
+  if (!shopperArea) return null;
+  const country = String(shopperArea.country || "").trim();
+  const province = String(shopperArea.province || shopperArea.stateProvinceRegion || "").trim();
+  const postalCode = String(shopperArea.postalCode || "").trim();
+  const city = String(shopperArea.city || shopperArea.suburb || "").trim();
+  const countryCode = toCountryCode(country);
+  if (!countryCode && !province && !postalCode && !city) return null;
+  return {
+    countryCode,
+    province,
+    city,
+    postalCode,
+  };
+}
+
+function formatEta(estimatedDeliveryDays?: { min?: number | null; max?: number | null } | null) {
+  const min = Number(estimatedDeliveryDays?.min);
+  const max = Number(estimatedDeliveryDays?.max);
+  if (Number.isFinite(min) && Number.isFinite(max)) {
+    return min === max ? `${min} day${min === 1 ? "" : "s"}` : `${min}-${max} days`;
   }
-  const resolved = resolveSellerDeliveryOption({
-    profile: deliveryProfile,
-    sellerBaseLocation: seller?.baseLocation || "",
-    shopperArea: shopperArea as any,
-  });
-  return resolved.label;
+  if (Number.isFinite(min)) return `${min}+ days`;
+  if (Number.isFinite(max)) return `Up to ${max} days`;
+  return "";
+}
+
+function formatGroupShippingLabel(
+  sellerKey: string,
+  preview: CheckoutShippingPreview | null,
+  destinationKnown: boolean,
+  formatMoney: (amount: number) => string,
+) {
+  if (!destinationKnown) return "Shipping calculated at checkout";
+  const error = preview?.errors.find((entry) => String(entry?.sellerId || "").trim() === sellerKey);
+  if (error) return error.message || "This seller does not ship to the selected destination.";
+  const option = preview?.options.find((entry) => String(entry?.sellerId || "").trim() === sellerKey);
+  if (!option) return "Shipping unavailable";
+  const eta = formatEta(option.estimatedDeliveryDays);
+  return eta ? `${formatMoney(option.finalShippingFee)} · ${eta}` : formatMoney(option.finalShippingFee);
 }
 
 export function LiveCart({ compact = false }: { compact?: boolean }) {
@@ -207,6 +243,8 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
   const [sharedCartLoading, setSharedCartLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [copyingSharedCart, setCopyingSharedCart] = useState(false);
+  const [shippingPreview, setShippingPreview] = useState<CheckoutShippingPreview | null>(null);
+  const [shippingPreviewLoading, setShippingPreviewLoading] = useState(false);
   const cartRef = useRef<CartPayload | null>(null);
   const lineSyncTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const lineBaselineCartRef = useRef<Record<string, CartPayload | null>>({});
@@ -317,21 +355,27 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
   }, [authReady, cartOwnerId, syncCartState, uid]);
 
   const items = Array.isArray(cart?.items) ? cart.items : [];
+  const buyerDestination = buildBuyerDestinationFromShopperArea();
+  const destinationKnown = Boolean(buyerDestination);
   const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
-  const totalIncl = cart?.totals?.final_payable_incl ?? cart?.totals?.final_incl ?? 0;
+  const productsTotalIncl = items.reduce((sum, item) => sum + Math.max(0, Number(item?.line_totals?.final_incl || 0) || 0), 0);
+  const totalIncl = destinationKnown
+    ? productsTotalIncl + Number(shippingPreview?.shippingFinalTotal || 0)
+    : productsTotalIncl;
   const showSharedCartView = Boolean(sharedCart && !sharedCart.isOwner);
   const displayedCart = showSharedCartView ? sharedCart?.cart ?? null : cart;
   const displayedItems = Array.isArray(displayedCart?.items) ? displayedCart.items : [];
   const displayedItemCount = displayedCart?.cart?.item_count ?? displayedItems.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const displayedTotalIncl = displayedCart?.totals?.final_payable_incl ?? displayedCart?.totals?.final_incl ?? 0;
   const showCartLoading = !authReady || !hasLoaded || sharedCartLoading;
-  const sellerGroups = items.reduce<Array<{ seller: string; items: CartItem[] }>>((groups, item) => {
+  const sellerGroups = items.reduce<Array<{ seller: string; sellerKey: string; items: CartItem[] }>>((groups, item) => {
     const seller = getSellerGroupLabel(item);
-    const existing = groups.find((group) => group.seller === seller);
+    const sellerKey = getSellerGroupKey(item) || seller;
+    const existing = groups.find((group) => group.sellerKey === sellerKey);
     if (existing) {
       existing.items.push(item);
     } else {
-      groups.push({ seller, items: [item] });
+      groups.push({ seller, sellerKey, items: [item] });
     }
     return groups;
   }, []);
@@ -339,7 +383,16 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
     const status = String(item?.availability?.status || "").trim().toLowerCase();
     return status === "out_of_stock" || status === "unavailable";
   });
-  const checkoutBlocked = unavailableItems.length > 0;
+  const shippingBlockedSellerKeys = new Set(
+    (shippingPreview?.errors || [])
+      .filter((entry) =>
+        String(entry?.code || "").trim() === "SELLER_DOES_NOT_SHIP_TO_LOCATION" ||
+        String(entry?.code || "").trim() === "WEIGHT_REQUIRED_FOR_SHIPPING_MODE",
+      )
+      .map((entry) => String(entry?.sellerId || "").trim())
+      .filter(Boolean),
+  );
+  const checkoutBlocked = unavailableItems.length > 0 || shippingBlockedSellerKeys.size > 0;
   const unavailableStateSummary = unavailableItems.reduce(
     (summary, item) => {
       const status = String(item?.availability?.status || "").trim().toLowerCase();
@@ -354,18 +407,52 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
       ? `${unavailableStateSummary.noLongerAvailable} item${unavailableStateSummary.noLongerAvailable === 1 ? "" : "s"} in your cart ${unavailableStateSummary.noLongerAvailable === 1 ? "is" : "are"} no longer available. Remove ${unavailableStateSummary.noLongerAvailable === 1 ? "it" : "them"} before continuing to checkout.`
       : unavailableStateSummary.outOfStock > 0 && unavailableStateSummary.noLongerAvailable === 0
         ? `${unavailableStateSummary.outOfStock} item${unavailableStateSummary.outOfStock === 1 ? "" : "s"} in your cart ${unavailableStateSummary.outOfStock === 1 ? "is" : "are"} out of stock. Remove ${unavailableStateSummary.outOfStock === 1 ? "it" : "them"} before continuing to checkout.`
-        : `${unavailableItems.length} item${unavailableItems.length === 1 ? "" : "s"} in your cart need attention before checkout. Remove the unavailable item${unavailableItems.length === 1 ? "" : "s"} first.`
+        : unavailableItems.length > 0
+          ? `${unavailableItems.length} item${unavailableItems.length === 1 ? "" : "s"} in your cart need attention before checkout. Remove the unavailable item${unavailableItems.length === 1 ? "" : "s"} first.`
+          : "One or more sellers do not ship to your selected destination. Update your destination or remove those items before checkout."
     : "";
-  const displayedSellerGroups = displayedItems.reduce<Array<{ seller: string; items: CartItem[] }>>((groups, item) => {
+  const displayedSellerGroups = displayedItems.reduce<Array<{ seller: string; sellerKey: string; items: CartItem[] }>>((groups, item) => {
     const seller = getSellerGroupLabel(item);
-    const existing = groups.find((group) => group.seller === seller);
+    const sellerKey = getSellerGroupKey(item) || seller;
+    const existing = groups.find((group) => group.sellerKey === sellerKey);
     if (existing) {
       existing.items.push(item);
     } else {
-      groups.push({ seller, items: [item] });
+      groups.push({ seller, sellerKey, items: [item] });
     }
     return groups;
   }, []);
+
+  useEffect(() => {
+    if (showSharedCartView) {
+      setShippingPreview(null);
+      setShippingPreviewLoading(false);
+      return;
+    }
+    if (!items.length || !destinationKnown || checkoutBlocked && unavailableItems.length > 0) {
+      setShippingPreview(null);
+      setShippingPreviewLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setShippingPreviewLoading(true);
+    fetchCheckoutShippingPreview({
+      items: items as Array<Record<string, unknown>>,
+      buyerDestination: buyerDestination as Record<string, unknown>,
+    })
+      .then((preview) => {
+        if (!cancelled) setShippingPreview(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setShippingPreview({ options: [], errors: [], shippingBaseTotal: 0, shippingFinalTotal: 0 });
+      })
+      .finally(() => {
+        if (!cancelled) setShippingPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [buyerDestination, destinationKnown, items, showSharedCartView, unavailableItems.length]);
 
   const updateLine = async (item: CartItem, action: "increment" | "decrement" | "remove") => {
     const activeCartOwnerId = cartOwnerId || uid || null;
@@ -597,7 +684,8 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
           displayedSellerGroups.map((group) => (
             <section key={group.seller} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
               {(() => {
-                const sellerDeliveryLabel = getSellerDeliveryFeeForGroup(group.items);
+                const sellerDeliveryLabel = formatGroupShippingLabel(group.sellerKey, shippingPreview, destinationKnown, formatMoney);
+                const sellerShippingError = shippingPreview?.errors.find((entry) => String(entry?.sellerId || "").trim() === group.sellerKey);
                 return (
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-black/5 pb-3">
                 <div>
@@ -607,7 +695,7 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
                 <div className="max-w-[34ch] text-right">
                   <p className="text-[12px] text-[#57636c]">{getSellerFulfillmentSummary(group.items)}</p>
                   {sellerDeliveryLabel ? (
-                    <p className="mt-1 text-[12px] font-semibold text-[#202020]">{sellerDeliveryLabel}</p>
+                    <p className={`mt-1 text-[12px] font-semibold ${sellerShippingError ? "text-[#b91c1c]" : "text-[#202020]"}`}>{sellerDeliveryLabel}</p>
                   ) : null}
                 </div>
               </div>

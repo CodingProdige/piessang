@@ -4,9 +4,11 @@ import dynamic from "next/dynamic";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
+import { ProductMoney } from "@/components/currency/product-money";
 import {
   hasPreciseShopperDeliveryArea,
   readShopperDeliveryArea,
@@ -20,7 +22,6 @@ import { trackProductEngagement } from "@/lib/analytics/product-engagement-clien
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
 import { resolveRawItemShippingEligibility } from "@/lib/catalogue/shipping-eligibility-adapters";
 import { clampRequestedCartQty, getCartQuantityGuard, getVariantAvailableQuantity } from "@/lib/cart/interaction-guards";
-import { resolveEasyshipCategoryMapping } from "@/lib/integrations/easyship-taxonomy";
 import {
   buildVariantOptionMatrix,
   formatVariantAxisValue,
@@ -29,7 +30,7 @@ import {
   isOptionAvailableForSelection,
   type VariantAxis,
 } from "@/lib/catalogue/variant-options";
-import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 import { appendShopperAreaSearchParams } from "@/lib/shipping/shopper-country";
 
 type ProductVariant = {
@@ -89,6 +90,16 @@ type ProductVariant = {
       imageUrl?: string | null;
       blurHashUrl?: string | null;
     }>;
+    videos?: Array<{
+      videoUrl?: string | null;
+      previewUrl?: string | null;
+      sourceUrl?: string | null;
+      posterUrl?: string | null;
+      url?: string | null;
+      fileName?: string | null;
+      position?: number | null;
+    }>;
+    video?: string | null;
   };
   sales?: {
     total_units_sold?: number;
@@ -209,6 +220,16 @@ type ProductItem = {
         imageUrl?: string | null;
         blurHashUrl?: string | null;
       }>;
+      videos?: Array<{
+        videoUrl?: string | null;
+        previewUrl?: string | null;
+        sourceUrl?: string | null;
+        posterUrl?: string | null;
+        url?: string | null;
+        fileName?: string | null;
+        position?: number | null;
+      }>;
+      video?: string | null;
     };
     placement?: {
       supplier_out_of_stock?: boolean;
@@ -234,12 +255,12 @@ type ProductItem = {
 
 type RecommendationRailsState = {
   oftenBought?: {
-    items?: ProductItem[];
+    items?: ShopperVisibleProductCard[];
     source?: "co_purchase" | "catalog_pairing" | "none";
     message?: string | null;
   };
-  similar?: {
-    items?: ProductItem[];
+  category?: {
+    items?: ShopperVisibleProductCard[];
     source?: "co_purchase" | "catalog_pairing" | "none";
     message?: string | null;
   };
@@ -247,17 +268,17 @@ type RecommendationRailsState = {
 
 type RecommendationPayload = {
   ok?: boolean;
-  items?: ProductItem[];
+  items?: ShopperVisibleProductCard[];
   source?: "co_purchase" | "catalog_pairing" | "none";
   message?: string;
 };
 
 async function fetchRecommendationRail(
-  endpoint: "often-bought-together" | "similar",
+  endpoint: "often-bought-together",
   productId: string,
   shopperArea?: ShopperDeliveryArea | null,
 ): Promise<{
-  items: ProductItem[];
+  items: ShopperVisibleProductCard[];
   source: "co_purchase" | "catalog_pairing" | "none";
   message: string | null;
 }> {
@@ -266,7 +287,10 @@ async function fetchRecommendationRail(
   }
 
   try {
-    const response = await fetch(`/api/client/v1/products/${endpoint}?productId=${encodeURIComponent(productId)}`, {
+    const url = new URL(`/api/client/v1/products/${endpoint}`, window.location.origin);
+    url.searchParams.set("productId", productId);
+    appendShopperAreaSearchParams(url.searchParams, shopperArea);
+    const response = await fetch(url.toString(), {
       cache: "no-store",
     });
     const payload = (await response.json().catch(() => ({}))) as RecommendationPayload;
@@ -274,44 +298,54 @@ async function fetchRecommendationRail(
       return { items: [], source: "none", message: payload?.message ?? null };
     }
 
-    const rawItems = Array.isArray(payload?.items) ? payload.items : [];
-    const productIds = rawItems
-      .map((item) => String(item?.data?.product?.unique_id ?? item?.id ?? "").trim())
-      .filter((value, index, array) => /^\d{8}$/.test(value) && array.indexOf(value) === index)
-      .slice(0, 12);
-
-    let hydratedItems = rawItems;
-    if (productIds.length) {
-      try {
-        const hydrateUrl = new URL("/api/catalogue/v1/products/product/get", window.location.origin);
-        hydrateUrl.searchParams.set("ids", productIds.join(","));
-        hydrateUrl.searchParams.set("isActive", "true");
-        appendShopperAreaSearchParams(hydrateUrl.searchParams, shopperArea);
-        const hydrateResponse = await fetch(hydrateUrl.toString(), { cache: "no-store" });
-        const hydratePayload = (await hydrateResponse.json().catch(() => ({}))) as { ok?: boolean; items?: ProductItem[]; groups?: Array<{ items?: ProductItem[] }> };
-        if (hydrateResponse.ok && hydratePayload?.ok !== false) {
-          const candidates = Array.isArray(hydratePayload?.items)
-            ? hydratePayload.items
-            : Array.isArray(hydratePayload?.groups)
-              ? hydratePayload.groups.flatMap((group) => group.items ?? [])
-              : [];
-          const candidatesById = new Map(
-            candidates.map((item) => [String(item?.data?.product?.unique_id ?? item?.id ?? "").trim(), item]),
-          );
-          hydratedItems = productIds
-            .map((id) => candidatesById.get(id))
-            .filter((item): item is ProductItem => Boolean(item));
-        }
-      } catch {
-        // Keep the initial recommendation payload if hydration fails.
-      }
-    }
-
     return {
-      items: hydratedItems,
+      items: Array.isArray(payload?.items) ? payload.items : [],
       source: payload?.source ?? "none",
       message: payload?.message ?? null,
     };
+  } catch {
+    return { items: [], source: "none", message: null };
+  }
+}
+
+type CatalogueProductsPayload = {
+  ok?: boolean;
+  items?: ShopperVisibleProductCard[];
+  message?: string;
+};
+
+async function fetchCategoryProductsRail({
+  categorySlug,
+  currentProductId,
+  shopperArea,
+}: {
+  categorySlug: string;
+  currentProductId: string;
+  shopperArea?: ShopperDeliveryArea | null;
+}): Promise<{
+  items: ShopperVisibleProductCard[];
+  source: "catalog_pairing" | "none";
+  message: string | null;
+}> {
+  const category = String(categorySlug || "").trim();
+  if (!category) return { items: [], source: "none", message: null };
+
+  try {
+    const url = new URL("/api/catalogue/v1/products/product/get", window.location.origin);
+    url.searchParams.set("category", category);
+    url.searchParams.set("isActive", "true");
+    url.searchParams.set("limit", "24");
+    appendShopperAreaSearchParams(url.searchParams, shopperArea);
+    const response = await fetch(url.toString(), { cache: "no-store" });
+    const payload = (await response.json().catch(() => ({}))) as CatalogueProductsPayload;
+    if (!response.ok || payload?.ok === false) {
+      return { items: [], source: "none", message: payload?.message ?? null };
+    }
+
+    const currentId = String(currentProductId || "").trim();
+    const items = (Array.isArray(payload?.items) ? payload.items : [])
+      .filter((entry) => String(entry?.id || "").trim() !== currentId);
+    return { items, source: items.length ? "catalog_pairing" : "none", message: null };
   } catch {
     return { items: [], source: "none", message: null };
   }
@@ -380,20 +414,6 @@ function prefersLiteProductExperience() {
   return effectiveType === "slow-2g" || effectiveType === "2g" || effectiveType === "3g";
 }
 
-function splitCurrencyParts(formattedValue?: string | null) {
-  if (!formattedValue) return null;
-  const normalized = String(formattedValue).trim();
-  const match = normalized.match(/^([^0-9-]*)(-?[0-9\s.,]+)$/);
-  if (!match) return null;
-  const symbol = (match[1] || "").trimEnd();
-  const numeric = (match[2] || "").trim();
-  const lastSeparatorIndex = Math.max(numeric.lastIndexOf("."), numeric.lastIndexOf(","));
-  if (lastSeparatorIndex === -1) return { whole: `${symbol}${numeric}`, cents: "00" };
-  const whole = `${symbol}${numeric.slice(0, lastSeparatorIndex)}`;
-  const cents = numeric.slice(lastSeparatorIndex + 1).padEnd(2, "0").slice(0, 2);
-  return { whole, cents };
-}
-
 function getDiscountPercent(compareAt?: number | null, salePrice?: number | null) {
   if (
     typeof compareAt !== "number" ||
@@ -438,30 +458,12 @@ function formatSoldCount(value?: number | null) {
   return `${Math.round(count)} sold`;
 }
 
-function StorefrontPrice({
-  value,
-  tone = "default",
-  size = "lg",
-}: {
-  value?: number | null;
-  tone?: "default" | "sale" | "muted";
-  size?: "md" | "lg";
-}) {
-  const { formatMoney } = useDisplayCurrency();
-  const parts = splitCurrencyParts(typeof value === "number" ? formatMoney(value) : null);
-  if (!parts) return null;
-
-  const toneClass =
-    tone === "sale" ? "text-[#ff5963]" : tone === "muted" ? "text-[#8b94a3]" : "text-[#202020]";
-  const wholeClass = size === "lg" ? "text-[28px]" : "text-[18px]";
-  const centsClass = size === "lg" ? "text-[16px]" : "text-[11px]";
-
-  return (
-    <span className={`inline-flex items-start font-semibold leading-none ${toneClass}`}>
-      <span className={wholeClass}>{parts.whole}</span>
-      <span className={`ml-[1px] ${centsClass} leading-none`}>{parts.cents}</span>
-    </span>
-  );
+function formatBoughtPastMonth(value?: number | null) {
+  const count = Number(value || 0);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  if (count >= 1000) return `${Math.floor(count / 1000)}K+ bought in past month`;
+  if (count >= 100) return `${Math.floor(count / 100) * 100}+ bought in past month`;
+  return `${Math.round(count)} bought in past month`;
 }
 
 function getVariantPriceInclVat(variant?: ProductVariant) {
@@ -533,49 +535,6 @@ function getVendorSlug(item: ProductItem) {
   );
 }
 
-function buildDeliveryAddressPayload(shopperArea: ShopperDeliveryArea | null | undefined) {
-  if (!shopperArea) return null;
-  return {
-    city: shopperArea.city || "",
-    suburb: shopperArea.suburb || "",
-    province: shopperArea.province || "",
-    stateProvinceRegion: shopperArea.province || "",
-    postalCode: shopperArea.postalCode || "",
-    country: shopperArea.country || "",
-    latitude: shopperArea.latitude ?? shopperArea.lat ?? null,
-    longitude: shopperArea.longitude ?? shopperArea.lng ?? null,
-  };
-}
-
-function buildProductDeliveryQuoteItem(item: ProductItem, variant?: ProductVariant | null) {
-  const productShipping =
-    item.data?.product?.shipping && typeof item.data.product.shipping === "object"
-      ? (item.data.product.shipping as Record<string, unknown>)
-      : null;
-  const categorySlug = String(item.data?.grouping?.category || "").trim();
-  const subCategorySlug = String(item.data?.grouping?.subCategory || "").trim();
-  const easyshipMapping = resolveEasyshipCategoryMapping({ categorySlug, subCategorySlug });
-  const unitValue =
-    typeof getVariantPriceInclVat(variant ?? undefined) === "number"
-      ? Number(getVariantPriceInclVat(variant ?? undefined) || 0)
-      : 0;
-
-  return {
-    categorySlug,
-    subCategorySlug,
-    productId: String(item.data?.product?.unique_id ?? item.id ?? "").trim(),
-    variantId: String(variant?.variant_id || "").trim(),
-    title: String(item.data?.product?.title || "").trim(),
-    description: String(item.data?.product?.title || item.data?.product?.overview || "Marketplace item").trim(),
-    quantity: 1,
-    unitValue,
-    customsCategory:
-      String(productShipping?.customsCategory || productShipping?.customs_category || easyshipMapping.itemCategory || "").trim(),
-    hsCode: String(productShipping?.hsCode || productShipping?.hs_code || "").trim(),
-    countryOfOrigin: String(productShipping?.countryOfOrigin || productShipping?.country_of_origin || "US").trim(),
-  };
-}
-
 function normalizeProductSlug(value?: string | null) {
   return String(value ?? "")
     .trim()
@@ -635,6 +594,72 @@ function getVariantImages(item: ProductItem, variant?: ProductVariant | null) {
     }))
     .filter((image) => Boolean(image.imageUrl));
   return Array.from(new Map(images.map((image) => [image.imageUrl, image])).values());
+}
+
+type ProductMediaItem =
+  | {
+      type: "image";
+      imageUrl: string;
+      blurHashUrl: string;
+      position: number;
+    }
+  | {
+      type: "video";
+      videoUrl: string;
+      previewUrl: string;
+      sourceUrl: string;
+      posterUrl: string;
+      fileName: string;
+      position: number;
+    };
+
+function getProductMediaItems(item: ProductItem, variant?: ProductVariant | null): ProductMediaItem[] {
+  const variantImages = (variant?.media?.images ?? [])
+    .map((image, index) => ({
+      type: "image" as const,
+      imageUrl: image?.imageUrl?.trim() ?? "",
+      blurHashUrl: image?.blurHashUrl?.trim() ?? "",
+      position: index + 1,
+    }))
+    .filter((image) => Boolean(image.imageUrl));
+  const productImages = (item.data?.media?.images ?? [])
+    .map((image, index) => ({
+      type: "image" as const,
+      imageUrl: image?.imageUrl?.trim() ?? "",
+      blurHashUrl: image?.blurHashUrl?.trim() ?? "",
+      position: Number((image as any)?.position) || index + 1,
+    }))
+    .filter((image) => Boolean(image.imageUrl));
+  const productVideos = Array.isArray(item.data?.media?.videos)
+    ? item.data.media.videos
+        .map((video, index) => ({
+          type: "video" as const,
+          videoUrl: String(video?.videoUrl ?? video?.url ?? video?.sourceUrl ?? "").trim(),
+          previewUrl: String(video?.previewUrl ?? "").trim(),
+          sourceUrl: String(video?.sourceUrl ?? video?.videoUrl ?? video?.url ?? "").trim(),
+          posterUrl: String(video?.posterUrl ?? "").trim(),
+          fileName: String(video?.fileName ?? `Product video ${index + 1}`).trim(),
+          position: Number(video?.position) || productImages.length + index + 1,
+        }))
+        .filter((video) => Boolean(video.videoUrl))
+    : [];
+  const legacyVideoUrl = String(item.data?.media?.video ?? "").trim();
+  const videos = productVideos.length || !legacyVideoUrl
+    ? productVideos
+    : [{ type: "video" as const, videoUrl: legacyVideoUrl, previewUrl: "", sourceUrl: legacyVideoUrl, posterUrl: "", fileName: "Product video", position: productImages.length + 1 }];
+  const sortedProductMedia = [...productImages, ...videos].sort((left, right) => left.position - right.position);
+  const seenImages = new Set<string>();
+  const merged: ProductMediaItem[] = [];
+
+  [...variantImages, ...sortedProductMedia].forEach((media) => {
+    if (media.type === "image") {
+      if (seenImages.has(media.imageUrl)) return;
+      seenImages.add(media.imageUrl);
+    }
+    merged.push(media);
+  });
+
+  return merged;
 }
 
 function getStockLabel(variant?: ProductVariant | null, item?: ProductItem) {
@@ -768,6 +793,61 @@ function CartPlusIcon() {
   );
 }
 
+function PlayIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M8 5.5v13l10-6.5-10-6.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function BundleCheckbox({
+  checked,
+  onToggle,
+  disabled = false,
+  label,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={disabled}
+      aria-pressed={checked}
+      aria-label={label}
+      className={
+        checked
+          ? "inline-flex h-7 w-7 items-center justify-center rounded-[4px] bg-[#2a69a6] text-white shadow-[inset_0_0_0_1px_rgba(0,0,0,0.08)] disabled:cursor-default"
+          : "inline-flex h-7 w-7 items-center justify-center rounded-[4px] border border-[#d5d9d9] bg-white text-transparent disabled:cursor-not-allowed disabled:bg-[#f8f8f8]"
+      }
+    >
+      <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 fill-current">
+        <path d="M7.7 13.6 4.4 10.3 3 11.7l4.7 4.7L17 7.1l-1.4-1.4z" />
+      </svg>
+    </button>
+  );
+}
+
+function BundlePlus() {
+  return <span className="select-none text-[42px] font-semibold leading-none text-[#565959]">+</span>;
+}
+
+function RatingStars() {
+  return (
+    <span className="inline-flex items-center gap-[1px] text-[#ff5a00]" aria-hidden="true">
+      {Array.from({ length: 5 }).map((_, index) => (
+        <svg key={index} viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+          <path d="m10 1.6 2.5 5.1 5.6.8-4 4 1 5.5-5-2.6L5 17l1-5.5-4-4 5.6-.8L10 1.6Z" />
+        </svg>
+      ))}
+    </span>
+  );
+}
+
 function getRecommendationCardImageCount(item: ProductItem | null | undefined) {
   const productImages = Array.isArray(item?.data?.media?.images)
     ? item.data.media.images.filter((entry) => Boolean(entry?.imageUrl)).length
@@ -826,7 +906,9 @@ export function SingleProductView({
   const initialIndex = initialVariant ? Math.max(0, variants.findIndex((variant) => variant === initialVariant)) : 0;
   const [activeIndex, setActiveIndex] = useState(initialIndex);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
-  const [zoomPoint, setZoomPoint] = useState<{ x: number; y: number } | null>(null);
+  const [isZoomActive, setIsZoomActive] = useState(false);
+  const zoomPaneRef = useRef<HTMLDivElement | null>(null);
+  const zoomLensRef = useRef<HTMLDivElement | null>(null);
   const [favoriteState, setFavoriteState] = useState(false);
   const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
   const [resolvedRecommendationRails, setResolvedRecommendationRails] = useState<RecommendationRailsState | undefined>(
@@ -834,7 +916,8 @@ export function SingleProductView({
   );
   const [liteExperience, setLiteExperience] = useState(false);
   const [recommendationsActivated, setRecommendationsActivated] = useState(
-    Boolean(recommendationRails?.oftenBought?.items?.length) || Boolean(recommendationRails?.similar?.items?.length),
+    Boolean(recommendationRails?.oftenBought?.items?.length) ||
+      Boolean(recommendationRails?.category?.items?.length),
   );
 
   useEffect(() => {
@@ -844,10 +927,55 @@ export function SingleProductView({
 
   useEffect(() => {
     setActiveImageIndex(0);
-    setZoomPoint(null);
+    setIsZoomActive(false);
     setSelectedQty(1);
     setHoveredVariantIndex(null);
   }, [activeIndex]);
+
+  const updateZoomPreview = (event: React.MouseEvent<HTMLDivElement>) => {
+    const image = activeMediaItems[activeImageIndex];
+    if (!image || image.type !== "image" || !image.imageUrl) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const rawX = ((event.clientX - rect.left) / rect.width) * 100;
+    const rawY = ((event.clientY - rect.top) / rect.height) * 100;
+    const x = Math.max(0, Math.min(100, rawX));
+    const y = Math.max(0, Math.min(100, rawY));
+
+    if (zoomPaneRef.current) {
+      const paneWidth = zoomPaneRef.current.offsetWidth || 440;
+      const viewportPadding = 24;
+      const maxLeft = Math.max(viewportPadding, window.innerWidth - paneWidth - viewportPadding);
+      const preferredLeft = rect.right + 28;
+      const left = preferredLeft > maxLeft ? maxLeft : preferredLeft;
+      const top = Math.min(rect.top, Math.max(viewportPadding, window.innerHeight - zoomPaneRef.current.offsetHeight - viewportPadding));
+      zoomPaneRef.current.style.backgroundImage = `url(${image.imageUrl})`;
+      zoomPaneRef.current.style.backgroundPosition = `${x}% ${y}%`;
+      zoomPaneRef.current.style.left = `${left}px`;
+      zoomPaneRef.current.style.top = `${top}px`;
+    }
+
+    if (zoomLensRef.current) {
+      const lensWidth = rect.width * 0.16;
+      const lensHeight = rect.height * 0.16;
+      const left = Math.max(0, Math.min(rect.width - lensWidth, event.clientX - rect.left - lensWidth / 2));
+      const top = Math.max(0, Math.min(rect.height - lensHeight, event.clientY - rect.top - lensHeight / 2));
+      zoomLensRef.current.style.width = `${lensWidth}px`;
+      zoomLensRef.current.style.height = `${lensHeight}px`;
+      zoomLensRef.current.style.left = `${left}px`;
+      zoomLensRef.current.style.top = `${top}px`;
+    }
+  };
+
+  const handleZoomEnter = (event: React.MouseEvent<HTMLDivElement>) => {
+    const media = activeMediaItems[activeImageIndex];
+    if (!media || media.type !== "image" || !media.imageUrl) return;
+    setIsZoomActive(true);
+    updateZoomPreview(event);
+  };
+
+  const handleZoomLeave = () => {
+    setIsZoomActive(false);
+  };
 
   const activeVariant = variants[activeIndex] ?? initialVariant ?? null;
   const priceInclVat = getVariantPriceInclVat(activeVariant ?? undefined);
@@ -862,8 +990,15 @@ export function SingleProductView({
       item.data?.product?.sales?.total_units_sold ??
       0,
   );
-  const soldCountLabel = formatSoldCount(totalUnitsSold);
-  const showHotSales = totalUnitsSold >= HOT_SALES_FIRE_THRESHOLD;
+  const boughtPastMonthLabel = formatBoughtPastMonth(totalUnitsSold);
+  const ratingAverage =
+    typeof item.data?.ratings?.average === "number" && Number.isFinite(item.data.ratings.average)
+      ? item.data.ratings.average
+      : null;
+  const ratingCount =
+    typeof item.data?.ratings?.count === "number" && Number.isFinite(item.data.ratings.count)
+      ? Math.max(0, Math.round(item.data.ratings.count))
+      : 0;
   const productId = String(item.data?.product?.unique_id ?? item.id ?? "").trim();
   const stock = getStockLabel(activeVariant, item);
   const activeVariantId = String(activeVariant?.variant_id || "").trim();
@@ -879,31 +1014,7 @@ export function SingleProductView({
   const maxAddableQty = quantityGuard.maxAddableQty;
   const blockedCartMessage = quantityGuard.message;
   const hasDeliveryEstimateLocation = Boolean(shopperArea?.country && hasPreciseShopperDeliveryArea(shopperArea));
-  const shippingEligibility = useMemo(
-    () =>
-      shopperArea
-        ? resolveRawItemShippingEligibility(
-            {
-              ...item,
-              data: {
-                ...(item.data || {}),
-                variants: activeVariant ? [activeVariant] : item.data?.variants,
-              },
-            },
-            shopperArea,
-          )
-        : null,
-    [activeVariant, item, shopperArea],
-  );
-  const sellerDeliveryProfile =
-    item.data?.seller?.deliveryProfile && typeof item.data.seller.deliveryProfile === "object"
-      ? item.data.seller.deliveryProfile
-      : null;
-  const sellerCourierProfile =
-    item.data?.seller?.courierProfile && typeof item.data.seller.courierProfile === "object"
-      ? item.data.seller.courierProfile
-      : null;
-  const sellerBaseLocation = String(item.data?.seller?.baseLocation || "").trim();
+  const [shippingEligibility, setShippingEligibility] = useState<any>(null);
   const activeVariantExtraDetails = getVariantExtraDetails(activeVariant);
   const activeVariantHighlightDetails = getVariantHighlightDetails(activeVariant);
   const variantMatrix = useMemo(() => buildVariantOptionMatrix(variants), [variants]);
@@ -917,18 +1028,18 @@ export function SingleProductView({
   const previewVariant = hoveredVariantIndex != null ? variants[hoveredVariantIndex] ?? null : null;
   const displayVariant = previewVariant ?? activeVariant;
   const activeImages = getVariantImages(item, displayVariant);
+  const activeMediaItems = useMemo(() => getProductMediaItems(item, displayVariant), [displayVariant, item]);
+  const activeMediaItem = activeMediaItems[activeImageIndex] ?? null;
   const overview = item.data?.product?.overview ?? null;
   const description = item.data?.product?.description ?? "No description available.";
   const oftenBoughtItems = Array.isArray(resolvedRecommendationRails?.oftenBought?.items)
     ? resolvedRecommendationRails.oftenBought.items
     : [];
-  const similarItems = Array.isArray(resolvedRecommendationRails?.similar?.items)
-    ? resolvedRecommendationRails.similar.items
+  const categoryItems = Array.isArray(resolvedRecommendationRails?.category?.items)
+    ? resolvedRecommendationRails.category.items
     : [];
-  const oftenBoughtSubtitle =
-    resolvedRecommendationRails?.oftenBought?.source === "co_purchase"
-      ? "Based on previous orders"
-      : "Based on previous orders";
+  const bundleRecommendations = oftenBoughtItems.slice(0, 2);
+  const [selectedBundleIds, setSelectedBundleIds] = useState<string[]>([]);
   const brandLabel = getBrandLabel(item);
   const vendorLabel = getVendorLabel(item);
   const alternateOffers = (Array.isArray(item.data?.alternate_offers) ? item.data.alternate_offers : [])
@@ -958,17 +1069,16 @@ export function SingleProductView({
   const [favoriteSubmitting, setFavoriteSubmitting] = useState(false);
   const [favoriteMessage, setFavoriteMessage] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
+  const selectedBundleItems = useMemo(
+    () => bundleRecommendations.filter((entry) => selectedBundleIds.includes(String(entry.id || "").trim())),
+    [bundleRecommendations, selectedBundleIds],
+  );
+  const bundleTotal = useMemo(() => {
+    const currentPrice = typeof priceInclVat === "number" ? priceInclVat : 0;
+    return currentPrice + selectedBundleItems.reduce((sum, entry) => sum + (typeof entry.price.amountIncl === "number" ? entry.price.amountIncl : 0), 0);
+  }, [priceInclVat, selectedBundleItems]);
+  const bundleItemCount = 1 + selectedBundleItems.length;
   const [liveViewerCount, setLiveViewerCount] = useState(0);
-  const [shopperDeliveryQuote, setShopperDeliveryQuote] = useState<{
-    feeAmount: number;
-    deliveryType: string | null;
-    leadTimeDays: number | null;
-    label: string | null;
-    carrier: string | null;
-    service: string | null;
-  } | null>(null);
-  const [shopperDeliveryQuoteLoading, setShopperDeliveryQuoteLoading] = useState(false);
-  const [shopperDeliveryQuoteError, setShopperDeliveryQuoteError] = useState<string | null>(null);
   const isFavorite = favoriteState;
   const addToCartLabel = cartSubmittingAction === "cart"
     ? "Adding..."
@@ -993,15 +1103,27 @@ export function SingleProductView({
             ? "Out of stock"
             : "Buy now";
 
-  const categoryLabel = item.data?.grouping?.category ? String(item.data.grouping.category).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Products";
-  const subCategoryLabel = item.data?.grouping?.subCategory ? String(item.data.grouping.subCategory).replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "";
+  const categorySlug = String(item.data?.grouping?.category || "").trim();
+  const categoryLabel = categorySlug ? categorySlug.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()) : "Products";
+  const categoryProductsHref = categorySlug ? `/products?category=${encodeURIComponent(categorySlug)}` : "/products";
   const isPreLoved = isPreLovedCategory(item.data?.grouping?.category);
-  const hasThumbnailRail = activeImages.length > 1;
+  const hasThumbnailRail = activeMediaItems.length > 1;
 
   useEffect(() => {
     setShopperArea(readShopperDeliveryArea());
     return subscribeToShopperDeliveryArea(setShopperArea);
   }, []);
+
+  useEffect(() => {
+    if (activeImageIndex < activeMediaItems.length) return;
+    setActiveImageIndex(0);
+  }, [activeImageIndex, activeMediaItems.length]);
+
+  useEffect(() => {
+    if (activeMediaItem?.type === "video") {
+      setIsZoomActive(false);
+    }
+  }, [activeMediaItem?.type]);
 
   useEffect(() => {
     if (typeof maxAddableQty !== "number") return;
@@ -1019,87 +1141,36 @@ export function SingleProductView({
   }, []);
 
   useEffect(() => {
-    if (!hasDeliveryEstimateLocation || !shopperArea || !shippingEligibility?.isVisible) {
-      setShopperDeliveryQuote(null);
-      setShopperDeliveryQuoteLoading(false);
-      setShopperDeliveryQuoteError(null);
-      return;
-    }
-    const currentShippingEligibility = shippingEligibility;
-
-    const address = buildDeliveryAddressPayload(shopperArea);
-    const parcel = buildShipmentParcelFromVariant(activeVariant as unknown as Record<string, unknown> | null | undefined);
-    if (!address || !sellerDeliveryProfile) {
-      setShopperDeliveryQuote(null);
-      setShopperDeliveryQuoteLoading(false);
-      setShopperDeliveryQuoteError(null);
-      return;
-    }
-
     let cancelled = false;
-    setShopperDeliveryQuoteLoading(true);
-    setShopperDeliveryQuoteError(null);
 
-    async function loadDeliveryQuote() {
-      try {
-        const response = await fetch("/api/client/v1/delivery/fee", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            address,
-            subtotalIncl: typeof priceInclVat === "number" ? priceInclVat : 0,
-            deliveryProfile: sellerDeliveryProfile,
-            courierProfile: sellerCourierProfile,
-            productCourierEligible: currentShippingEligibility.courierEligible === true,
-            sellerBaseLocation,
-            quoteItems: [buildProductDeliveryQuoteItem(item, activeVariant)],
-            parcels: parcel ? [parcel] : [],
-          }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload?.ok === false) {
-          throw new Error(
-            typeof payload?.message === "string" && payload.message.trim()
-              ? payload.message.trim()
-              : "Delivery is not available for this address.",
-          );
-        }
-        if (cancelled) return;
-        const matchedRule = payload?.matchedRule && typeof payload.matchedRule === "object" ? payload.matchedRule : null;
-        setShopperDeliveryQuote({
-          feeAmount: Number(payload?.fee?.amount || 0),
-          deliveryType: typeof payload?.deliveryType === "string" ? payload.deliveryType : null,
-          leadTimeDays: typeof payload?.leadTimeDays === "number" ? payload.leadTimeDays : null,
-          label: typeof payload?.fee?.band === "string" ? payload.fee.band : null,
-          carrier: typeof matchedRule?.courierCarrier === "string" ? matchedRule.courierCarrier : null,
-          service: typeof matchedRule?.courierService === "string" ? matchedRule.courierService : null,
-        });
-        setShopperDeliveryQuoteError(null);
-      } catch (error) {
-        if (!cancelled) {
-          setShopperDeliveryQuote(null);
-          setShopperDeliveryQuoteError(
-            error instanceof Error ? error.message : "Delivery is not available for this address.",
-          );
-        }
-      } finally {
-        if (!cancelled) setShopperDeliveryQuoteLoading(false);
+    async function loadShippingEligibility() {
+      if (!shopperArea) {
+        setShippingEligibility(null);
+        return;
       }
+
+      const eligibility = await resolveRawItemShippingEligibility(
+        {
+          ...item,
+          data: {
+            ...(item.data || {}),
+            variants: activeVariant ? [activeVariant] : item.data?.variants,
+          },
+        },
+        shopperArea,
+      );
+
+      if (!cancelled) setShippingEligibility(eligibility);
     }
 
-    void loadDeliveryQuote();
+    void loadShippingEligibility();
 
     return () => {
       cancelled = true;
     };
   }, [
     activeVariantId,
-    hasDeliveryEstimateLocation,
     item.id,
-    priceInclVat,
-    sellerBaseLocation,
-    sellerCourierProfile,
-    sellerDeliveryProfile,
     shopperArea?.city,
     shopperArea?.country,
     shopperArea?.latitude,
@@ -1107,8 +1178,6 @@ export function SingleProductView({
     shopperArea?.postalCode,
     shopperArea?.province,
     shopperArea?.suburb,
-    shippingEligibility?.fulfillmentType,
-    shippingEligibility?.isVisible,
   ]);
 
   const shippingStatus = useMemo(() => {
@@ -1125,45 +1194,28 @@ export function SingleProductView({
       return null;
     }
 
-    if (shopperDeliveryQuoteError) {
+    if (!shippingEligibility.isVisible) {
       return {
         tone: "danger" as const,
         label: "Shipping unavailable for this address",
-        meta: shopperDeliveryQuoteError,
+        meta: shippingEligibility.deliveryMessage,
         showPinIcon: false,
       };
     }
 
-    if (shopperDeliveryQuote?.deliveryType === "courier_live_rate" || shopperDeliveryQuote?.deliveryType === "shipping") {
-      const serviceLabel = [shopperDeliveryQuote.carrier, shopperDeliveryQuote.service].filter(Boolean).join(" ");
+    if (typeof shippingEligibility.finalShippingFee === "number") {
       return {
         tone: "success" as const,
-        label: `Shipping available from ${formatMoney(shopperDeliveryQuote.feeAmount)}`,
+        label:
+          shippingEligibility.finalShippingFee > 0
+            ? `Shipping available from ${formatMoney(shippingEligibility.finalShippingFee)}`
+            : "Shipping available",
         meta:
-          shopperDeliveryQuote.leadTimeDays != null
-            ? `${shopperDeliveryQuote.leadTimeDays} day${shopperDeliveryQuote.leadTimeDays === 1 ? "" : "s"} estimated${serviceLabel ? ` • ${serviceLabel}` : ""}`
-            : serviceLabel || null,
-        showPinIcon: false,
-      };
-    }
-
-    if (shopperDeliveryQuote?.deliveryType === "direct") {
-      return {
-        tone: "success" as const,
-        label: `Local delivery from ${formatMoney(shopperDeliveryQuote.feeAmount)}`,
-        meta:
-          shopperDeliveryQuote.leadTimeDays != null
-            ? `${shopperDeliveryQuote.leadTimeDays} day${shopperDeliveryQuote.leadTimeDays === 1 ? "" : "s"} estimated`
+          shippingEligibility.estimatedMinDays != null && shippingEligibility.estimatedMaxDays != null
+            ? shippingEligibility.estimatedMinDays === shippingEligibility.estimatedMaxDays
+              ? `${shippingEligibility.estimatedMaxDays} day${shippingEligibility.estimatedMaxDays === 1 ? "" : "s"} estimated`
+              : `${shippingEligibility.estimatedMinDays}-${shippingEligibility.estimatedMaxDays} days estimated`
             : null,
-        showPinIcon: false,
-      };
-    }
-
-    if (shippingEligibility.fulfillmentType === "courier") {
-      return {
-        tone: shippingEligibility.deliveryTone === "danger" ? "danger" as const : "success" as const,
-        label: shopperDeliveryQuoteLoading ? "Shipping available" : shippingEligibility.deliveryMessage,
-        meta: shopperDeliveryQuoteLoading ? "Checking shipping cost..." : null,
         showPinIcon: false,
       };
     }
@@ -1191,9 +1243,6 @@ export function SingleProductView({
   }, [
     formatMoney,
     hasDeliveryEstimateLocation,
-    shopperDeliveryQuote,
-    shopperDeliveryQuoteError,
-    shopperDeliveryQuoteLoading,
     shippingEligibility,
   ]);
 
@@ -1202,23 +1251,41 @@ export function SingleProductView({
   }, [recommendationRails]);
 
   useEffect(() => {
+    setSelectedBundleIds((current) => {
+      const availableIds = bundleRecommendations.map((entry) => String(entry.id || "").trim()).filter(Boolean);
+      const retained = current.filter((id) => availableIds.includes(id));
+      const autoSelected = availableIds.filter((id) => {
+        const entry = bundleRecommendations.find((candidate) => String(candidate.id || "").trim() === id);
+        return entry?.stock?.state !== "out_of_stock";
+      });
+      const next = retained.length ? retained : autoSelected;
+      return next.join("|") === current.join("|") ? current : next;
+    });
+  }, [bundleRecommendations]);
+
+  useEffect(() => {
     if (!recommendationsActivated) return;
     if (liteExperience) return;
     if (!productId) return;
     const hasServerRecommendations =
-      Boolean(recommendationRails?.oftenBought?.items?.length) || Boolean(recommendationRails?.similar?.items?.length);
+      Boolean(recommendationRails?.oftenBought?.items?.length) ||
+      Boolean(recommendationRails?.category?.items?.length);
     if (hasServerRecommendations) return;
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
-      const [oftenBought, similar] = await Promise.all([
+      const [oftenBought, category] = await Promise.all([
         fetchRecommendationRail("often-bought-together", productId, shopperArea),
-        fetchRecommendationRail("similar", productId, shopperArea),
+        fetchCategoryProductsRail({
+          categorySlug,
+          currentProductId: productId,
+          shopperArea,
+        }),
       ]);
       if (!cancelled) {
         setResolvedRecommendationRails({
           oftenBought,
-          similar,
+          category,
         });
       }
     }, 0);
@@ -1227,20 +1294,21 @@ export function SingleProductView({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [liteExperience, productId, recommendationRails, recommendationsActivated, shopperArea]);
+  }, [categorySlug, liteExperience, productId, recommendationRails, recommendationsActivated, shopperArea]);
 
   useEffect(() => {
     setFavoriteState(Boolean(item.data?.is_favorite) || Boolean(favoriteIds?.includes(productId)));
   }, [favoriteIds, item.data?.is_favorite, productId]);
 
   useEffect(() => {
-    const activeImageUrl = String(activeImages[activeImageIndex]?.imageUrl || "").trim();
+    const activeMedia = activeMediaItems[activeImageIndex];
+    const activeImageUrl = activeMedia?.type === "image" ? String(activeMedia.imageUrl || "").trim() : "";
     if (!activeImageUrl || typeof window === "undefined") return;
     const preloadImage = new window.Image();
     preloadImage.decoding = "async";
     preloadImage.loading = "eager";
     preloadImage.src = activeImageUrl;
-  }, [activeImageIndex, activeImages]);
+  }, [activeImageIndex, activeMediaItems]);
 
   useEffect(() => {
     if (liteExperience) return;
@@ -1392,6 +1460,82 @@ export function SingleProductView({
       setReportFeedback(cause instanceof Error ? cause.message : "Unable to submit the report.");
     } finally {
       setReportSubmitting(false);
+    }
+  }
+
+  async function addBundleToCart() {
+    const activeCartOwnerId = cartOwnerId || profile?.uid || null;
+    if (!activeCartOwnerId) {
+      openAuthModal("Sign in to add this bundle to your cart.");
+      return;
+    }
+    if (!activeVariant?.variant_id || !activeVariantId) return;
+    if (!quantityGuard.canAdd) {
+      const stockMessage = quantityGuard.message || "This variant is unavailable right now.";
+      setCartMessage(stockMessage);
+      setSnackbarMessage(stockMessage);
+      return;
+    }
+
+    const bundleEntries: Array<{
+      productId: string;
+      variantId: string;
+      productData?: typeof item.data;
+    }> = [
+      {
+        productId,
+        variantId: activeVariantId,
+        productData: item.data,
+      },
+      ...selectedBundleItems
+        .map((entry) => ({
+          productId: String(entry.id || "").trim(),
+          variantId: String(entry.purchase?.defaultVariantId || "").trim(),
+        }))
+        .filter((entry) => entry.productId && entry.variantId),
+    ];
+
+    if (bundleEntries.length === 0) return;
+
+    setCartSubmittingAction("cart");
+    setCartAddedFlash(false);
+    setCartMessage("Adding bundle to cart...");
+    setSnackbarMessage("Adding bundle to cart...");
+
+    try {
+      let latestCart: unknown = null;
+      for (const entry of bundleEntries) {
+        const response = await fetch("/api/client/v1/carts/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cartOwnerId: activeCartOwnerId,
+            productId: entry.productId,
+            variantId: entry.variantId,
+            ...(entry.productData ? { product: entry.productData } : {}),
+            mode: "change",
+            qty: 1,
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload?.ok === false) {
+          throw new Error(payload?.message || "Unable to add the selected bundle to your cart.");
+        }
+        latestCart = payload?.data?.cart ?? latestCart;
+      }
+
+      syncCartState(latestCart ?? null);
+      setCartAddedFlash(true);
+      setCartMessage(`Added ${bundleEntries.length} item${bundleEntries.length === 1 ? "" : "s"} to cart.`);
+      setSnackbarMessage(`Added ${bundleEntries.length} item${bundleEntries.length === 1 ? "" : "s"} to cart.`);
+    } catch (cause) {
+      void refreshCart();
+      const message = cause instanceof Error ? cause.message : "Unable to add bundle to cart.";
+      setCartMessage(message);
+      setSnackbarMessage(message);
+    } finally {
+      setCartSubmittingAction(null);
+      window.setTimeout(() => setCartMessage(null), 1800);
     }
   }
 
@@ -1580,6 +1724,7 @@ export function SingleProductView({
                         src={optionImage.imageUrl}
                         blurHash={optionImage.blurHashUrl}
                         alt={option.label}
+                        sizes="104px"
                         className="h-full w-full"
                         imageClassName="object-cover"
                       />
@@ -1630,9 +1775,9 @@ export function SingleProductView({
                 <p className="text-[15px] font-semibold leading-tight text-[#202020]">{option.label}</p>
                 {axisHasPriceVariance && typeof optionPrice === "number" ? (
                   <div className="mt-2">
-                    <StorefrontPrice value={optionPrice} tone={optionOnSale ? "sale" : "default"} size="md" />
+                    <ProductMoney value={optionPrice} tone={optionOnSale ? "sale" : "default"} size="sm" />
                     {optionOnSale && typeof optionCompareAtPrice === "number" ? (
-                      <p className="mt-1 text-[11px] text-[#8b94a3] line-through">{formatMoney(optionCompareAtPrice)}</p>
+                      <ProductMoney value={optionCompareAtPrice} tone="muted" size="xs" strike className="mt-1" />
                     ) : null}
                   </div>
                 ) : available ? (
@@ -1670,16 +1815,16 @@ export function SingleProductView({
         {reportFeedback ? <p className="mt-3 text-[12px] text-[#57636c]">{reportFeedback}</p> : null}
       </section>
       <section data-safe-grid="product" className="grid gap-4 lg:items-start lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-        <div className="space-y-4 self-start">
+        <div className="self-start lg:sticky lg:top-4 lg:h-fit">
           <div data-safe-card="padded" className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
             <div className={hasThumbnailRail ? "grid gap-3 md:grid-cols-[88px_minmax(0,1fr)]" : "grid gap-3"}>
               {hasThumbnailRail ? (
                 <div className="order-2 flex gap-2 overflow-x-auto md:order-1 md:max-h-[620px] md:flex-col md:overflow-y-auto md:overflow-x-hidden md:pr-1">
-                  {activeImages.map((image, index) => {
+                  {activeMediaItems.map((media, index) => {
                     const selected = index === activeImageIndex;
                     return (
                       <button
-                        key={`${image.imageUrl}-${index}`}
+                        key={`${media.type}-${media.type === "image" ? media.imageUrl : media.videoUrl}-${index}`}
                         type="button"
                         onClick={() => setActiveImageIndex(index)}
                         className={
@@ -1688,68 +1833,96 @@ export function SingleProductView({
                             : "relative h-[84px] min-w-[84px] overflow-hidden rounded-[8px] border border-black/10 bg-white"
                         }
                       >
-                        <BlurhashImage
-                          src={image.imageUrl}
-                          blurHash={image.blurHashUrl}
-                          alt={`${item.data?.product?.title ?? "Product"} ${index + 1}`}
-                          className="h-full w-full"
-                          imageClassName="object-cover"
-                        />
+                        {media.type === "video" ? (
+                          <>
+                            {media.posterUrl ? (
+                              <img src={media.posterUrl} alt="" aria-hidden="true" className="absolute inset-0 h-full w-full object-cover" loading="lazy" />
+                            ) : (
+                              <video
+                                src={media.previewUrl || media.videoUrl}
+                                className="absolute inset-0 h-full w-full object-cover"
+                                muted
+                                playsInline
+                                preload="metadata"
+                              />
+                            )}
+                            <span className="absolute inset-0 bg-black/16" aria-hidden="true" />
+                            <span className="absolute left-1/2 top-1/2 inline-flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[#202020] shadow-[0_8px_18px_rgba(20,24,27,0.18)]">
+                              <PlayIcon className="ml-0.5 h-4 w-4" />
+                            </span>
+                          </>
+                        ) : (
+                          <BlurhashImage
+                            src={media.imageUrl}
+                            blurHash={media.blurHashUrl}
+                            alt={`${item.data?.product?.title ?? "Product"} ${index + 1}`}
+                            sizes="84px"
+                            className="h-full w-full"
+                            imageClassName="object-cover"
+                          />
+                        )}
                       </button>
                     );
                   })}
                 </div>
               ) : null}
 
-              <div className="order-1">
+              <div className="order-1 relative">
                 <div
                   data-safe-media
                   className="relative aspect-[1/1] overflow-hidden rounded-[8px] bg-white"
-                  onMouseMove={(event) => {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    setZoomPoint({
-                      x: ((event.clientX - rect.left) / rect.width) * 100,
-                      y: ((event.clientY - rect.top) / rect.height) * 100,
-                    });
-                  }}
-                  onMouseLeave={() => setZoomPoint(null)}
+                  onMouseEnter={handleZoomEnter}
+                  onMouseMove={updateZoomPreview}
+                  onMouseLeave={handleZoomLeave}
                 >
-                  {activeImages[activeImageIndex] ? (
+                  {activeMediaItem ? (
                     <>
                       {isPreLoved ? (
                         <span className="absolute left-3 top-3 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
                           Pre-Loved
                         </span>
                       ) : null}
-                      <BlurhashImage
-                        src={activeImages[activeImageIndex].imageUrl}
-                        blurHash={activeImages[activeImageIndex].blurHashUrl}
-                        alt={item.data?.product?.title ?? "Product image"}
-                        sizes="(max-width: 768px) 100vw, 60vw"
-                        priority={activeImageIndex === 0}
-                        className="h-full w-full"
-                        imageClassName="object-cover"
-                      />
-                      {activeImages.length > 1 ? (
+                      {activeMediaItem.type === "video" ? (
+                        <video
+                          key={activeMediaItem.videoUrl}
+                          src={activeMediaItem.videoUrl}
+                          poster={activeMediaItem.posterUrl || undefined}
+                          className="h-full w-full bg-black object-contain"
+                          controls
+                          playsInline
+                          preload="metadata"
+                        />
+                      ) : (
+                        <BlurhashImage
+                          src={activeMediaItem.imageUrl}
+                          blurHash={activeMediaItem.blurHashUrl}
+                          alt={item.data?.product?.title ?? "Product image"}
+                          sizes="(max-width: 768px) 100vw, 60vw"
+                          priority={activeImageIndex === 0}
+                          className="h-full w-full"
+                          imageClassName="object-cover"
+                        />
+                      )}
+                      {activeMediaItems.length > 1 ? (
                         <>
                           <button
                             type="button"
-                            onClick={() => setActiveImageIndex((current) => (current === 0 ? activeImages.length - 1 : current - 1))}
+                            onClick={() => setActiveImageIndex((current) => (current === 0 ? activeMediaItems.length - 1 : current - 1))}
                             className="absolute left-3 top-1/2 z-20 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
-                            aria-label="Previous image"
+                            aria-label="Previous media"
                           >
                             ‹
                           </button>
                           <button
                             type="button"
-                            onClick={() => setActiveImageIndex((current) => (current === activeImages.length - 1 ? 0 : current + 1))}
+                            onClick={() => setActiveImageIndex((current) => (current === activeMediaItems.length - 1 ? 0 : current + 1))}
                             className="absolute right-3 top-1/2 z-20 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[18px] font-semibold text-[#202020] shadow-[0_8px_24px_rgba(20,24,27,0.14)]"
-                            aria-label="Next image"
+                            aria-label="Next media"
                           >
                             ›
                           </button>
                           <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-[rgba(20,24,27,0.56)] px-3 py-1.5">
-                            {activeImages.map((_, index) => (
+                            {activeMediaItems.map((_, index) => (
                               <span
                                 key={`indicator-${index}`}
                                 className={index === activeImageIndex ? "h-2 w-2 rounded-full bg-white" : "h-2 w-2 rounded-full bg-white/35"}
@@ -1758,23 +1931,12 @@ export function SingleProductView({
                           </div>
                         </>
                       ) : null}
-                      {zoomPoint && activeImages[activeImageIndex]?.imageUrl ? (
-                        <div
-                          className="pointer-events-none absolute z-10 hidden h-36 w-36 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-2 border-white/90 bg-white shadow-[0_12px_32px_rgba(20,24,27,0.24)] lg:block"
-                          style={{ left: `${zoomPoint.x}%`, top: `${zoomPoint.y}%` }}
-                        >
+                        {isZoomActive && activeMediaItem?.type === "image" && activeMediaItem.imageUrl ? (
                           <div
-                            className="h-full w-full bg-white"
-                            style={{
-                              backgroundImage: `url(${activeImages[activeImageIndex].imageUrl})`,
-                              backgroundRepeat: "no-repeat",
-                              backgroundSize: "320%",
-                              backgroundPosition: `${zoomPoint.x}% ${zoomPoint.y}%`,
-                              willChange: "background-position",
-                            }}
+                            ref={zoomLensRef}
+                            className="pointer-events-none absolute z-10 hidden rounded-[8px] border border-white/70 bg-[rgba(255,255,255,0.12)] shadow-[0_12px_32px_rgba(20,24,27,0.16)] lg:block"
                           />
-                        </div>
-                      ) : null}
+                        ) : null}
                     </>
                   ) : (
                     <div className="flex h-full w-full items-center justify-center text-[13px] text-[#8b94a3]">
@@ -1785,79 +1947,87 @@ export function SingleProductView({
               </div>
             </div>
           </div>
-
-          <RenderWhenVisible
-            className="hidden lg:block"
-            rootMargin="320px 0px"
-            fallback={<div className="h-0" aria-hidden="true" />}
-            onVisible={() => setRecommendationsActivated(true)}
-          >
-            <ProductPageRecommendations
-              title="Frequently bought together"
-              subtitle={oftenBoughtSubtitle}
-              products={oftenBoughtItems}
-              viewAllHref={`/products?recommendation=${encodeURIComponent("often-bought-together")}&productId=${encodeURIComponent(productId)}`}
-              shopperArea={shopperArea}
-            />
-          </RenderWhenVisible>
         </div>
 
-        <div data-safe-card="padded" className="space-y-4 overflow-hidden rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
-              About this item
-            </p>
-            <h1 data-safe-title className="mt-2 text-[28px] font-semibold leading-[1.05] text-[#202020]">
+        {typeof document !== "undefined" && isZoomActive && activeMediaItem?.type === "image" && activeMediaItem.imageUrl
+          ? createPortal(
+              <div
+                ref={zoomPaneRef}
+                className="pointer-events-none fixed z-[2147483647] hidden aspect-[1/1] w-[440px] overflow-hidden rounded-[8px] border border-black/8 bg-white shadow-[0_18px_42px_rgba(20,24,27,0.18)] lg:block xl:w-[520px]"
+                style={{
+                  backgroundRepeat: "no-repeat",
+                  backgroundSize: "340%",
+                  isolation: "isolate",
+                  willChange: "background-position",
+                }}
+              />,
+              document.body,
+            )
+          : null}
+
+        <div data-safe-card="padded" className="space-y-3 overflow-hidden rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+          <div className="border-b border-[#d5d9d9] pb-3">
+            <h1 data-safe-title className="text-[28px] font-semibold leading-[1.12] tracking-normal text-[#0f1111] sm:text-[34px]">
               {item.data?.product?.title ?? "Untitled product"}
             </h1>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-normal">
-              <Link href={`/products?brand=${encodeURIComponent(getBrandSlug(item) || "piessang")}`} scroll={false} className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2">
+            <div className="mt-2 text-[16px] leading-tight">
+              <span className="text-[#0f1111]">Brand: </span>
+              <Link
+                href={`/products?brand=${encodeURIComponent(getBrandSlug(item) || "piessang")}`}
+                scroll={false}
+                className="text-[#2162a1] hover:text-[#c45500] hover:underline"
+              >
                 {brandLabel}
               </Link>
-              <span className="text-[#d6d6d6]">•</span>
-              <Link
-                href={`/vendors/${encodeURIComponent(getVendorSlug(item) || "piessang")}`}
-                scroll={false}
-                className="text-[#0049ff] underline decoration-[#0049ff] underline-offset-2"
-              >
-                {vendorLabel}
-              </Link>
             </div>
+
+            {ratingAverage != null || ratingCount > 0 ? (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[14px] leading-none text-[#0f1111]">
+                {ratingAverage != null ? <span>{ratingAverage.toFixed(1)}</span> : null}
+                <RatingStars />
+                <svg viewBox="0 0 20 20" aria-hidden="true" className="h-4 w-4 stroke-[#0f1111] stroke-[3]">
+                  <path d="m4 7 6 6 6-6" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                {ratingCount > 0 ? (
+                  <Link href="#reviews" className="ml-1 text-[#2162a1] hover:text-[#c45500] hover:underline">
+                    ({ratingCount.toLocaleString("en-ZA")})
+                  </Link>
+                ) : null}
+              </div>
+            ) : null}
+
+            {boughtPastMonthLabel ? (
+              <p className="mt-3 text-[15px] font-bold leading-tight text-[#0f1111]">{boughtPastMonthLabel}</p>
+            ) : null}
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-3">
             {saleActive && salePercent ? (
-              <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[#d63f52]">
-                Save {salePercent}%
+              <p className="inline-flex rounded-[6px] bg-[#cc0c39] px-3 py-2 text-[14px] font-bold leading-none text-white">
+                Limited time deal
               </p>
             ) : null}
-            <div data-safe-actions className="flex flex-wrap items-end gap-3">
+
+            <div data-safe-actions className="space-y-2">
               {priceInclVat != null ? (
-                <div className="flex items-end gap-2">
-                  <StorefrontPrice value={priceInclVat} tone={saleActive ? "sale" : "default"} size="lg" />
+                <>
+                  <div className="flex flex-wrap items-start gap-2">
+                    {saleActive && salePercent ? (
+                      <span className="pt-1.5 text-[30px] font-normal leading-none text-[#cc0c39]">-{salePercent}%</span>
+                    ) : null}
+                    <ProductMoney value={priceInclVat} size="lg" tone={saleActive ? "sale" : "default"} />
+                  </div>
                   {saleActive && compareAtPriceInclVat ? (
-                    <p className="text-[13px] text-[#8b94a3] line-through">
-                      {formatMoney(compareAtPriceInclVat)}
+                    <p className="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold leading-tight text-[#565959]">
+                      List Price:{" "}
+                      <ProductMoney value={compareAtPriceInclVat} size="xs" tone="muted" strike />
                     </p>
                   ) : null}
-                </div>
+                  <p className="text-[15px] font-bold leading-tight text-[#0f1111]">All prices include VAT.</p>
+                </>
               ) : (
-                <p className="text-[13px] text-[#8b94a3]">Price unavailable</p>
+                <p className="text-[14px] text-[#565959]">Price unavailable</p>
               )}
-
-              <p
-                className={
-                  stock.tone === "success"
-                    ? "text-[12px] font-semibold text-[#1a8553]"
-                    : stock.tone === "danger"
-                      ? "text-[12px] font-semibold text-[#b91c1c]"
-                      : stock.tone === "warning"
-                        ? "text-[12px] font-semibold text-[#b45309]"
-                        : "text-[12px] font-semibold text-[#57636c]"
-                }
-              >
-                {stock.label}
-              </p>
             </div>
           </div>
 
@@ -1885,11 +2055,13 @@ export function SingleProductView({
                         {offer.hasInStockVariants === true ? " • In stock" : " • Check availability"}
                       </p>
                     </div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-[13px] font-semibold text-[#202020]">
-                        {typeof offer.priceIncl === "number" ? formatMoney(offer.priceIncl) : "View option"}
-                      </p>
-                    </div>
+	                    <div className="shrink-0 text-right">
+	                      {typeof offer.priceIncl === "number" ? (
+	                        <ProductMoney value={offer.priceIncl} size="xs" />
+	                      ) : (
+	                        <p className="text-[13px] font-semibold text-[#202020]">View option</p>
+	                      )}
+	                    </div>
                   </Link>
                 ))}
               </div>
@@ -1929,15 +2101,6 @@ export function SingleProductView({
               <span className="inline-flex items-center gap-1 text-[#b45309]">
                 {liveViewerCount <= LIVE_VIEWER_FLAME_THRESHOLD ? <FlameIcon /> : null}
                 {liveViewerCount} shopper{liveViewerCount === 1 ? "" : "s"} viewing now
-              </span>
-            </div>
-          ) : null}
-
-          {soldCountLabel ? (
-            <div className="flex flex-wrap items-center gap-2 text-[12px] font-semibold">
-              <span className={showHotSales ? "inline-flex items-center gap-1 text-[#f97316]" : "text-[#57636c]"}>
-                {showHotSales ? <FlameIcon /> : null}
-                {soldCountLabel}
               </span>
             </div>
           ) : null}
@@ -2024,6 +2187,7 @@ export function SingleProductView({
                               src={variantImage.imageUrl}
                               blurHash={variantImage.blurHashUrl}
                               alt={getVariantLabel(variant)}
+                              sizes="56px"
                               className="h-full w-full"
                               imageClassName="object-cover"
                             />
@@ -2051,11 +2215,9 @@ export function SingleProductView({
                     </div>
                     {typeof variantSalePrice === "number" ? (
                       <div className="mt-2.5 flex flex-wrap items-end gap-2">
-                        <StorefrontPrice value={variantSalePrice} tone={variantOnSale ? "sale" : "default"} size="md" />
+                        <ProductMoney value={variantSalePrice} tone={variantOnSale ? "sale" : "default"} size="sm" />
                         {variantOnSale && typeof variantCompareAtPrice === "number" ? (
-                          <p className="text-[11px] font-medium leading-none text-[#8b94a3] line-through">
-                            {formatMoney(variantCompareAtPrice)}
-                          </p>
+                          <ProductMoney value={variantCompareAtPrice} tone="muted" size="xs" strike />
                         ) : null}
                       </div>
                     ) : null}
@@ -2116,7 +2278,7 @@ export function SingleProductView({
                   disabled={cartSubmittingAction !== null}
                   aria-disabled={!quantityGuard.canAdd}
                   title={blockedCartMessage || undefined}
-                  className={`inline-flex h-12 flex-1 items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  className={`inline-flex h-12 flex-1 items-center justify-center gap-2 rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                     cartAddedFlash
                       ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]"
                       : !quantityGuard.canAdd
@@ -2124,7 +2286,8 @@ export function SingleProductView({
                         : "bg-[#1a8553]"
                   }`}
                 >
-                  {addToCartLabel}
+                  <CartPlusIcon />
+                  <span>{addToCartLabel}</span>
                 </button>
                 <button
                   type="button"
@@ -2226,6 +2389,173 @@ export function SingleProductView({
         </div>
       </section>
 
+      <RenderWhenVisible
+        rootMargin="320px 0px"
+        fallback={
+          <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <div className="h-8 w-72 rounded bg-[#f3f3f0] animate-pulse" />
+            <div className="mt-5 h-44 rounded-[8px] bg-[#f3f3f0] animate-pulse" />
+          </section>
+        }
+        onVisible={() => setRecommendationsActivated(true)}
+      >
+        {bundleRecommendations.length ? (
+          <section className="border-t border-[#d5d9d9] bg-white px-0 py-6">
+            <h2 className="px-0 text-[28px] font-bold leading-tight text-[#0f1111] sm:text-[34px]">Frequently bought together</h2>
+            <div className="mt-5 flex flex-col gap-7 2xl:grid 2xl:grid-cols-[minmax(0,1fr)_500px] 2xl:items-center 2xl:gap-8">
+              <div className="min-w-0 overflow-x-auto pb-2">
+                <div className="grid min-w-[1040px] grid-cols-[384px_40px_384px_40px_384px] items-start gap-3 2xl:min-w-0 2xl:grid-cols-[minmax(0,1fr)_40px_minmax(0,1fr)_40px_minmax(0,1fr)]">
+                  <div className="min-w-0">
+                    <div className="relative flex h-[278px] items-center justify-center rounded-[20px] bg-[#f7f7f7] p-5">
+                      <div className="absolute right-4 top-4">
+                        <BundleCheckbox checked={true} disabled onToggle={() => {}} label="This item is included" />
+                      </div>
+                      <div className="h-full w-full max-w-[250px]">
+                        <BlurhashImage
+                          src={activeImages[0]?.imageUrl}
+                          blurHash={activeImages[0]?.blurHashUrl}
+                          alt={item.data?.product?.title ?? "This item"}
+                          sizes="(max-width: 1536px) 250px, 18vw"
+                          className="h-full w-full"
+                          imageClassName="object-contain"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-5">
+                      <p className="text-[20px] font-semibold leading-[1.35] text-[#0f1111]">
+                        <span className="font-extrabold">This item:</span> {item.data?.product?.title ?? "Product"}
+                      </p>
+                      {priceInclVat != null ? (
+                        <ProductMoney value={priceInclVat} size="md" className="mt-3" />
+                      ) : (
+                        <p className="mt-3 text-[16px] text-[#565959]">Price unavailable</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex h-[278px] items-center justify-center">
+                    <BundlePlus />
+                  </div>
+
+                  {bundleRecommendations[0] ? (
+                    <div className="min-w-0">
+                      <div className="relative flex h-[278px] items-center justify-center rounded-[20px] bg-[#f7f7f7] p-5">
+                        <div className="absolute right-4 top-4">
+                          <BundleCheckbox
+                            checked={selectedBundleIds.includes(String(bundleRecommendations[0].id || "").trim())}
+                            label={`Include ${bundleRecommendations[0].title}`}
+                            onToggle={() => {
+                              const entryId = String(bundleRecommendations[0].id || "").trim();
+                              if (!entryId || bundleRecommendations[0].stock.state === "out_of_stock") return;
+                              setSelectedBundleIds((current) =>
+                                current.includes(entryId) ? current.filter((id) => id !== entryId) : [...current, entryId],
+                              );
+                            }}
+                          />
+                        </div>
+                        <Link
+                          href={`/products/${encodeURIComponent(bundleRecommendations[0].slug)}?unique_id=${encodeURIComponent(bundleRecommendations[0].id)}`}
+                          className="block h-full w-full max-w-[270px]"
+                        >
+                          <BlurhashImage
+                            src={bundleRecommendations[0].image.imageUrl}
+                            blurHash={bundleRecommendations[0].image.blurHashUrl}
+                            alt={bundleRecommendations[0].title}
+                            sizes="(max-width: 1536px) 270px, 18vw"
+                            className="h-full w-full"
+                            imageClassName="object-contain"
+                          />
+                        </Link>
+                      </div>
+                      <div className="mt-5">
+                        <Link
+                          href={`/products/${encodeURIComponent(bundleRecommendations[0].slug)}?unique_id=${encodeURIComponent(bundleRecommendations[0].id)}`}
+                          className="block text-[20px] font-medium leading-[1.35] text-[#2162a1] hover:text-[#c45500] hover:underline"
+                        >
+                          {bundleRecommendations[0].title}
+                        </Link>
+                        {bundleRecommendations[0].price.amountIncl != null ? (
+                          <ProductMoney value={bundleRecommendations[0].price.amountIncl} size="md" className="mt-3" />
+                        ) : (
+                          <p className="mt-3 text-[16px] text-[#565959]">Price unavailable</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="flex h-[278px] items-center justify-center">
+                    <BundlePlus />
+                  </div>
+
+                  {bundleRecommendations[1] ? (
+                    <div className="min-w-0">
+                      <div className="relative flex h-[278px] items-center justify-center rounded-[20px] bg-[#f7f7f7] p-5">
+                        <div className="absolute right-4 top-4">
+                          <BundleCheckbox
+                            checked={selectedBundleIds.includes(String(bundleRecommendations[1].id || "").trim())}
+                            label={`Include ${bundleRecommendations[1].title}`}
+                            onToggle={() => {
+                              const entryId = String(bundleRecommendations[1].id || "").trim();
+                              if (!entryId || bundleRecommendations[1].stock.state === "out_of_stock") return;
+                              setSelectedBundleIds((current) =>
+                                current.includes(entryId) ? current.filter((id) => id !== entryId) : [...current, entryId],
+                              );
+                            }}
+                          />
+                        </div>
+                        <Link
+                          href={`/products/${encodeURIComponent(bundleRecommendations[1].slug)}?unique_id=${encodeURIComponent(bundleRecommendations[1].id)}`}
+                          className="block h-full w-full max-w-[270px]"
+                        >
+                          <BlurhashImage
+                            src={bundleRecommendations[1].image.imageUrl}
+                            blurHash={bundleRecommendations[1].image.blurHashUrl}
+                            alt={bundleRecommendations[1].title}
+                            sizes="(max-width: 1536px) 270px, 18vw"
+                            className="h-full w-full"
+                            imageClassName="object-contain"
+                          />
+                        </Link>
+                      </div>
+                      <div className="mt-5">
+                        <Link
+                          href={`/products/${encodeURIComponent(bundleRecommendations[1].slug)}?unique_id=${encodeURIComponent(bundleRecommendations[1].id)}`}
+                          className="block text-[20px] font-medium leading-[1.35] text-[#2162a1] hover:text-[#c45500] hover:underline"
+                        >
+                          {bundleRecommendations[1].title}
+                        </Link>
+                        {bundleRecommendations[1].price.amountIncl != null ? (
+                          <ProductMoney value={bundleRecommendations[1].price.amountIncl} size="md" className="mt-3" />
+                        ) : (
+                          <p className="mt-3 text-[16px] text-[#565959]">Price unavailable</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="w-full 2xl:pl-3">
+                <div className="mx-auto flex w-full max-w-[500px] flex-col items-stretch justify-center gap-3 2xl:mx-0">
+                  <p className="flex flex-wrap items-center justify-center gap-2 text-center text-[22px] font-bold leading-tight text-[#0f1111]">
+                    <span className="font-semibold">Total price:</span> <ProductMoney value={bundleTotal} size="sm" />
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void addBundleToCart()}
+                    disabled={cartSubmittingAction !== null || !quantityGuard.canAdd}
+                    className="inline-flex h-[56px] w-full items-center justify-center gap-3 rounded-full bg-[#ffd814] px-8 text-[26px] font-normal text-[#0f1111] transition hover:bg-[#f7ca00] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CartPlusIcon />
+                    <span>{cartSubmittingAction === "cart" ? "Adding..." : `Add ${bundleItemCount} to Cart`}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        ) : null}
+      </RenderWhenVisible>
+
       <div className="fixed bottom-0 left-0 right-0 z-40 m-0 border-t border-black/10 bg-white px-4 pt-3 shadow-[0_-10px_30px_rgba(20,24,27,0.12)] lg:hidden">
         <div className="m-0 w-full space-y-3 pb-3">
           <div>
@@ -2255,7 +2585,7 @@ export function SingleProductView({
               disabled={cartSubmittingAction !== null}
               aria-disabled={!quantityGuard.canAdd}
               title={blockedCartMessage || undefined}
-              className={`inline-flex h-12 flex-1 items-center justify-center rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+              className={`inline-flex h-12 flex-1 items-center justify-center gap-2 rounded-[8px] px-5 text-[14px] font-semibold text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                 cartAddedFlash
                   ? "bg-[#146c43] shadow-[0_12px_28px_rgba(20,108,67,0.2)]"
                   : !quantityGuard.canAdd
@@ -2263,7 +2593,8 @@ export function SingleProductView({
                     : "bg-[#1a8553]"
               }`}
             >
-              {addToCartLabel}
+              <CartPlusIcon />
+              <span>{addToCartLabel}</span>
             </button>
             <button
               type="button"
@@ -2288,7 +2619,7 @@ export function SingleProductView({
           <h2 className="text-[20px] font-semibold text-[#202020]">More details</h2>
         </div>
         <div
-          className="mt-4 max-w-[72ch] text-[13px] leading-[1.7] text-[#57636c]"
+          className="mt-4 text-[13px] leading-[1.7] text-[#57636c]"
           dangerouslySetInnerHTML={{ __html: description }}
         />
       </section>
@@ -2306,31 +2637,16 @@ export function SingleProductView({
       </RenderWhenVisible>
 
       <RenderWhenVisible
-        className="lg:hidden"
         rootMargin="320px 0px"
         fallback={<div className="h-0" aria-hidden="true" />}
         onVisible={() => setRecommendationsActivated(true)}
       >
         <ProductPageRecommendations
-          title="Frequently bought together"
-          subtitle={oftenBoughtSubtitle}
-          products={oftenBoughtItems}
-          viewAllHref={`/products?recommendation=${encodeURIComponent("often-bought-together")}&productId=${encodeURIComponent(productId)}`}
+          title={`More in ${categoryLabel}`}
+          products={categoryItems}
+          viewAllHref={categoryProductsHref}
           shopperArea={shopperArea}
-        />
-      </RenderWhenVisible>
-
-      <RenderWhenVisible
-        rootMargin="320px 0px"
-        fallback={<div className="h-0" aria-hidden="true" />}
-        onVisible={() => setRecommendationsActivated(true)}
-      >
-        <ProductPageRecommendations
-          title="You may also like"
-          subtitle="More from this category"
-          products={similarItems}
-          viewAllHref="/products"
-          shopperArea={shopperArea}
+          hideWhenEmpty={false}
         />
       </RenderWhenVisible>
 

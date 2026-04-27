@@ -4,6 +4,8 @@ const sumInventory = (variant) =>
     ? variant.inventory.reduce((sum, row) => sum + Math.max(0, Number(row?.in_stock_qty) || 0), 0)
     : 0;
 
+const hasFiniteStockTotal = (value) => Number.isFinite(Number(value));
+
 /* Cap requested quantity based on available stock signals */
 export function capQuantity(variant, desiredQty, { currentQty = 0, ignoreSale = false, supplierOOS = false } = {}) {
   const requested = Math.max(0, Number(desiredQty) || 0);
@@ -24,9 +26,15 @@ export function capQuantity(variant, desiredQty, { currentQty = 0, ignoreSale = 
     return { quantity: requested, capped: false, available: null, reason: null };
   }
 
-  if (Array.isArray(variant?.inventory) && variant.inventory.length) {
+  if (hasFiniteStockTotal(variant?.total_in_stock_items_available)) {
+    available = Math.max(0, Math.trunc(Number(variant.total_in_stock_items_available)));
+    reason = "inventory";
+  } else if (Array.isArray(variant?.inventory) && variant.inventory.length) {
     available = sumInventory(variant);
     reason = "inventory";
+  } else if (!ignoreSale && hasFiniteStockTotal(variant?.sale?.qty_available)) {
+    available = Math.max(0, Math.trunc(Number(variant.sale.qty_available)));
+    reason = "sale";
   } else if (!continueSellingOOS) {
     available = 0;
     reason = "stock";
@@ -40,13 +48,11 @@ export function capQuantity(variant, desiredQty, { currentQty = 0, ignoreSale = 
     return { quantity: requested, capped: false, available: null, reason: null };
   }
 
-  const increase = Math.min(requestedIncrease, available);
-  const quantity = current + increase;
-  const maxPossible = current + available;
+  const quantity = Math.min(requested, available);
   return {
     quantity,
     capped: quantity !== requested,
-    available: maxPossible,
+    available,
     reason
   };
 }

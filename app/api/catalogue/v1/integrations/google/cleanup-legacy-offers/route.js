@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { db, collection, getDocs } from "@/lib/firebase/admin-firestore";
 import { loadGoogleMerchantSettings } from "@/lib/platform/google-merchant-settings";
 import { resolveGoogleTargetCountries } from "@/lib/integrations/google-marketplace";
-import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { buildShippingSettingsFromLegacySeller } from "@/lib/shipping/settings";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { appendGoogleMerchantLog, deleteGoogleMerchantOffers } from "@/lib/integrations/google-merchant-admin";
 
@@ -39,8 +39,8 @@ function getSellerIdentifier(product = {}) {
 async function hydrateProductSeller(product = {}) {
   const embeddedSeller =
     product?.seller && typeof product.seller === "object" ? product.seller : {};
-  const hasEmbeddedDeliveryProfile =
-    embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object";
+  const hasEmbeddedShippingSettings =
+    embeddedSeller?.shippingSettings && typeof embeddedSeller.shippingSettings === "object";
   const hasEmbeddedSellerIdentity =
     Boolean(
       embeddedSeller?.sellerCode ||
@@ -51,7 +51,7 @@ async function hydrateProductSeller(product = {}) {
         product?.product?.sellerSlug
     );
 
-  if (hasEmbeddedDeliveryProfile && hasEmbeddedSellerIdentity) {
+  if (hasEmbeddedShippingSettings && hasEmbeddedSellerIdentity) {
     return product;
   }
 
@@ -95,12 +95,8 @@ async function hydrateProductSeller(product = {}) {
             sellerNode?.businessDetails?.country ||
             embeddedSeller?.sellerCountry
         ) || null,
-      deliveryProfile: normalizeSellerDeliveryProfile(
-        sellerNode?.deliveryProfile && typeof sellerNode.deliveryProfile === "object"
-          ? sellerNode.deliveryProfile
-          : embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object"
-            ? embeddedSeller.deliveryProfile
-            : {}
+      shippingSettings: buildShippingSettingsFromLegacySeller(
+        sellerNode || embeddedSeller || {},
       ),
     },
   };
@@ -125,7 +121,7 @@ async function collectLegacyOfferIds(limit = null) {
     const targetCountries = await resolveGoogleTargetCountries({
       seller: product?.seller,
       sellerCountry: product?.seller?.sellerCountry,
-      deliveryProfile: product?.seller?.deliveryProfile,
+      shippingSettings: product?.seller?.shippingSettings,
       merchantCountryCodes,
     });
     const countryCodes = targetCountries.length ? targetCountries : [GOOGLE_FEED_TARGET_COUNTRY];

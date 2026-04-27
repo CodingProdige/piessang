@@ -3,12 +3,9 @@ import Image from "next/image";
 import type { ReactNode } from "react";
 import type { LandingSection } from "@/lib/cms/landing-page-schema";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
-import type { ProductItem } from "@/components/products/products-results";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 
-export type SharedLandingProduct = ProductItem & {
-  title?: string;
-  category?: string;
-  categorySlug?: string;
+export type SharedLandingProduct = ShopperVisibleProductCard & {
   hasActiveCampaign?: boolean;
 };
 
@@ -174,11 +171,11 @@ export function renderSharedLandingSectionContent({
       source === "manual"
         ? products.filter((product) => (Array.isArray(section.props?.productIds) ? section.props.productIds : []).includes(product.id))
         : source === "category_match"
-          ? products.filter((product) => {
-              if (!selectedCategorySlugs.length) return true;
-              return selectedCategorySlugs.includes(slugify(product.categorySlug || product.category));
-            })
-          : products.slice().reverse();
+        ? products.filter((product) => {
+            if (!selectedCategorySlugs.length) return true;
+            return selectedCategorySlugs.includes(slugify(product.categorySlug));
+          })
+        : products.slice().reverse();
     const items = sortProductsForRail(selectedProducts, prioritizeCampaigns, randomize).slice(0, resolveRailLimit(section.props, mode));
     return (
       <ProductRailCarousel
@@ -187,6 +184,7 @@ export function renderSharedLandingSectionContent({
         products={items}
         emptyMessage="No products available for this rail yet."
         hideWhenEmpty
+        mode={isPreview ? "admin-preview" : "shopper"}
       />
     );
   }
@@ -202,6 +200,7 @@ export function renderSharedLandingSectionContent({
         products={selected}
         emptyMessage="Select up to two products for this feature."
         hideWhenEmpty
+        mode={isPreview ? "admin-preview" : "shopper"}
       />
     );
   }

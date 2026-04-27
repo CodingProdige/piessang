@@ -3,15 +3,21 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BrowseProductCard, type ProductItem } from "@/components/products/browse-product-card";
+import { ProductCard } from "@/components/products/product-card";
 import { hasShopperFacingProductImage } from "@/components/products/products-results";
-import { isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
+import { resolveRawItemShippingEligibility } from "@/lib/catalogue/shipping-eligibility-adapters";
 import {
   readShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
 
-export type ProductRailItem = ProductItem;
+export type ProductRailItem = ProductItem | ShopperVisibleProductCard;
+
+function isResolvedRailProduct(item: ProductRailItem): item is ShopperVisibleProductCard {
+  return !("data" in item);
+}
 
 export function ProductRailCarousel({
   title,
@@ -22,24 +28,29 @@ export function ProductRailCarousel({
   mobileLeadingSpacer = true,
   viewAllHref = "/products",
   shopperArea: shopperAreaProp = null,
+  mode = "shopper",
 }: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   products: ProductRailItem[];
   emptyMessage: string;
   hideWhenEmpty?: boolean;
   mobileLeadingSpacer?: boolean;
   viewAllHref?: string;
   shopperArea?: ShopperDeliveryArea | null;
+  mode?: "shopper" | "admin-preview";
 }) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [shopperArea, setShopperArea] = useState<ShopperDeliveryArea | null>(null);
   const visibleProducts = useMemo(() => {
     return products.filter((product) => {
       if (!hasShopperFacingProductImage(product)) return false;
-      return isProductEligibleForShopperCountry(product, shopperArea);
+      if (!("data" in product)) return true;
+      if (mode !== "admin-preview") return false;
+      const eligibility = resolveRawItemShippingEligibility(product, shopperArea);
+      return eligibility.isVisible;
     });
-  }, [products, shopperArea]);
+  }, [mode, products, shopperArea]);
 
   useEffect(() => {
     if (shopperAreaProp) {
@@ -70,7 +81,7 @@ export function ProductRailCarousel({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <p className="text-[20px] font-semibold tracking-[-0.04em] text-[#202020] sm:text-[24px]">{title}</p>
-            <p className="mt-2 max-w-[56ch] text-[13px] leading-[1.55] text-[#57636c] sm:text-[14px]">{subtitle}</p>
+            {subtitle ? <p className="mt-2 max-w-[56ch] text-[13px] leading-[1.55] text-[#57636c] sm:text-[14px]">{subtitle}</p> : null}
           </div>
           <div className="flex shrink-0 items-start pt-1">
             <Link
@@ -113,17 +124,33 @@ export function ProductRailCarousel({
             ].join(" ")}
           >
             {visibleProducts.map((product, index) => {
-              const data = product?.data || {};
-              const brandSlug = String(data?.brand?.slug || "").trim();
-              const brandHref = brandSlug ? `/products?brand=${encodeURIComponent(brandSlug)}` : "/products";
-              const sellerIdentifier = String(
-                data?.seller?.sellerCode || data?.product?.sellerCode || data?.seller?.sellerSlug || data?.product?.sellerSlug || "",
-              ).trim();
-              const vendorHref = sellerIdentifier ? `/vendors/${encodeURIComponent(sellerIdentifier)}` : "/products";
-              const brandLabel = String(
-                data?.brand?.title || data?.product?.brandTitle || data?.product?.brand || data?.grouping?.brand || "",
-              ).trim();
-              const vendorLabel = String(data?.seller?.vendorName || data?.product?.vendorName || "").trim();
+              const data = isResolvedRailProduct(product) ? null : product?.data || {};
+              const brandSlug = isResolvedRailProduct(product)
+                ? decodeURIComponent((product.brandHref || "").split("brand=")[1] || "").trim()
+                : String(data?.brand?.slug || "").trim();
+              const brandHref = isResolvedRailProduct(product)
+                ? product.brandHref || "/products"
+                : brandSlug
+                  ? `/products?brand=${encodeURIComponent(brandSlug)}`
+                  : "/products";
+              const sellerIdentifier = isResolvedRailProduct(product)
+                ? String((product.vendorHref || "").split("/vendors/")[1] || "").trim()
+                : String(
+                    data?.seller?.sellerCode || data?.product?.sellerCode || data?.seller?.sellerSlug || data?.product?.sellerSlug || "",
+                  ).trim();
+              const vendorHref = isResolvedRailProduct(product)
+                ? product.vendorHref || "/products"
+                : sellerIdentifier
+                  ? `/vendors/${encodeURIComponent(sellerIdentifier)}`
+                  : "/products";
+              const brandLabel = isResolvedRailProduct(product)
+                ? String(product.brandLabel || "").trim()
+                : String(
+                    data?.brand?.title || data?.product?.brandTitle || data?.product?.brand || data?.grouping?.brand || "",
+                  ).trim();
+              const vendorLabel = isResolvedRailProduct(product)
+                ? String(product.vendorLabel || "").trim()
+                : String(data?.seller?.vendorName || data?.product?.vendorName || "").trim();
 
               return (
                 <div
@@ -131,19 +158,34 @@ export function ProductRailCarousel({
                   data-rail-card="true"
                   className="w-[42vw] max-w-[172px] min-w-[42vw] snap-start sm:w-[190px] sm:min-w-[190px] lg:w-[220px] lg:min-w-[220px]"
                 >
-                  <BrowseProductCard
-                    item={product}
-                    view="grid"
-                    openInNewTab={true}
-                    brandHref={brandHref}
-                    vendorHref={vendorHref}
-                    brandLabel={brandLabel || undefined}
-                    vendorLabel={vendorLabel || undefined}
-                    currentUrl=""
-                    onAddToCartSuccess={() => {}}
-                    cartBurstKey={0}
-                    shopperArea={shopperArea}
-                  />
+                  {isResolvedRailProduct(product) ? (
+                    <ProductCard
+                      item={product}
+                      view="grid"
+                      openInNewTab={true}
+                      brandHref={brandHref}
+                      vendorHref={vendorHref}
+                      brandLabel={brandLabel || undefined}
+                      vendorLabel={vendorLabel || undefined}
+                      currentUrl=""
+                      onAddToCartSuccess={() => {}}
+                      cartBurstKey={0}
+                    />
+                  ) : mode === "admin-preview" ? (
+                    <BrowseProductCard
+                      item={product}
+                      view="grid"
+                      openInNewTab={true}
+                      brandHref={brandHref}
+                      vendorHref={vendorHref}
+                      brandLabel={brandLabel || undefined}
+                      vendorLabel={vendorLabel || undefined}
+                      currentUrl=""
+                      onAddToCartSuccess={() => {}}
+                      cartBurstKey={0}
+                      shopperArea={shopperArea}
+                    />
+                  ) : null}
                 </div>
               );
             })}

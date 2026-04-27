@@ -7,7 +7,7 @@ import { formatMoneyExact } from "@/lib/money";
 import { resolveGoogleTargetCountries, resolveMarketplaceSeller } from "@/lib/integrations/google-marketplace";
 import { loadGoogleMerchantSettings } from "@/lib/platform/google-merchant-settings";
 import { isSellerAccountUnavailable } from "@/lib/seller/account-status";
-import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { buildShippingSettingsFromLegacySeller, validateShippingSettings } from "@/lib/shipping/settings";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
 import { getCanonicalOfferBarcode } from "@/lib/catalogue/offer-group";
 import { googleFeedAvailabilityForVariant, variantIsListable } from "@/lib/catalogue/availability";
@@ -96,11 +96,11 @@ const isEligibleProduct = async (p, merchantCountryCodes) =>
   p?.placement?.supplier_out_of_stock !== true &&
   String(p?.moderation?.status || "").trim().toLowerCase() === "published" &&
   !isSellerAccountUnavailable(p) &&
-  sellerDeliverySettingsReady(p?.seller?.deliveryProfile || {}) &&
+  validateShippingSettings(buildShippingSettingsFromLegacySeller(p?.seller || {})).valid &&
   (await resolveGoogleTargetCountries({
     seller: p?.seller,
     sellerCountry: p?.seller?.sellerCountry,
-    deliveryProfile: p?.seller?.deliveryProfile,
+    shippingSettings: p?.seller?.shippingSettings,
     merchantCountryCodes,
   })).length > 0;
 
@@ -228,8 +228,8 @@ function getSellerIdentifier(product = {}) {
 async function hydrateProductSeller(product = {}) {
   const embeddedSeller =
     product?.seller && typeof product.seller === "object" ? product.seller : {};
-  const hasEmbeddedDeliveryProfile =
-    embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object";
+  const hasEmbeddedShippingSettings =
+    embeddedSeller?.shippingSettings && typeof embeddedSeller.shippingSettings === "object";
   const hasEmbeddedSellerIdentity =
     Boolean(
       embeddedSeller?.sellerCode ||
@@ -240,7 +240,7 @@ async function hydrateProductSeller(product = {}) {
         product?.product?.sellerSlug
     );
 
-  if (hasEmbeddedDeliveryProfile && hasEmbeddedSellerIdentity) {
+  if (hasEmbeddedShippingSettings && hasEmbeddedSellerIdentity) {
     return product;
   }
 
@@ -291,12 +291,8 @@ async function hydrateProductSeller(product = {}) {
       vendorName:
         toStr(sellerNode?.vendorName || sellerNode?.groupVendorName || embeddedSeller?.vendorName || product?.product?.vendorName) ||
         null,
-      deliveryProfile: normalizeSellerDeliveryProfile(
-        sellerNode?.deliveryProfile && typeof sellerNode.deliveryProfile === "object"
-          ? sellerNode.deliveryProfile
-          : embeddedSeller?.deliveryProfile && typeof embeddedSeller.deliveryProfile === "object"
-            ? embeddedSeller.deliveryProfile
-            : {}
+      shippingSettings: buildShippingSettingsFromLegacySeller(
+        sellerNode || embeddedSeller || {},
       ),
     },
   };
@@ -454,7 +450,7 @@ export async function GET(req) {
         const targetCountries = await resolveGoogleTargetCountries({
           seller: p?.seller,
           sellerCountry: p?.seller?.sellerCountry,
-          deliveryProfile: p?.seller?.deliveryProfile,
+          shippingSettings: p?.seller?.shippingSettings,
           merchantCountryCodes,
         });
 

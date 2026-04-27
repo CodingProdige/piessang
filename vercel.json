@@ -3,7 +3,7 @@
   "regions": ["fra1"],
   "crons": [
     {
-      "path": "/api/cron/seller-delivery-settings-reminders",
+      "path": "/api/cron/seller-shipping-settings-reminders",
       "schedule": "0 5 * * *"
     },
     {

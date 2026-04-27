@@ -8,7 +8,6 @@ import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { PlatformPopover, PopoverHintTrigger } from "@/components/ui/platform-popover";
 import { useOutsideDismiss } from "@/components/ui/use-outside-dismiss";
-import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
 import { collectProductWeightRequirementIssues, sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
 
 type ProductItem = {
@@ -239,21 +238,6 @@ function statusTone(status: string) {
   }
 }
 
-function GlobeIndicatorIcon({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
-      <circle cx="12" cy="12" r="8.25" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M3.75 12h16.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <path
-        d="M12 3.75c2.15 2.24 3.5 5.09 3.5 8.25s-1.35 6.01-3.5 8.25c-2.15-2.24-3.5-5.09-3.5-8.25s1.35-6.01 3.5-8.25Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function statusLabel(status: string) {
   switch (status) {
     case "live_hidden":
@@ -275,7 +259,7 @@ function getListingVisibilityMessage(item: ProductItem["data"]) {
 
   const reasonCode = String(item?.listing_block_reason_code || "").trim();
   if (reasonCode === "missing_delivery_settings") {
-    return "Complete your delivery settings to show this self-fulfilled product to shoppers.";
+    return "Complete your shipping settings to show this self-fulfilled product to shoppers.";
   }
   if (reasonCode === "missing_variant_weight_for_shipping") {
     return "Add the required variant weight for your per-kg shipping zones to show this product to shoppers.";
@@ -384,7 +368,6 @@ export function SellerProductsWorkspace({
   onOpenSettings,
 }: SellerProductsWorkspaceProps) {
   const [items, setItems] = useState<ProductItem[]>([]);
-  const [deliverySettingsReady, setDeliverySettingsReady] = useState(true);
   const [weightBasedShippingRequired, setWeightBasedShippingRequired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -404,6 +387,13 @@ export function SellerProductsWorkspace({
   } | null>(null);
   const deleteAbortRef = useRef<AbortController | null>(null);
   const bulkMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const isAbortError = (cause: unknown) =>
+    (cause instanceof DOMException && cause.name === "AbortError") ||
+    (typeof cause === "object" &&
+      cause !== null &&
+      "name" in cause &&
+      cause.name === "AbortError");
 
   const loadProducts = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -428,7 +418,7 @@ export function SellerProductsWorkspace({
         ),
       );
     } catch (cause) {
-      if (!(cause instanceof DOMException && cause.name === "AbortError")) {
+      if (!isAbortError(cause)) {
         console.error("seller products load failed:", cause);
       }
     } finally {
@@ -447,7 +437,7 @@ export function SellerProductsWorkspace({
   useEffect(() => {
     let mounted = true;
     if (!sellerSlug) {
-      setDeliverySettingsReady(true);
+      setWeightBasedShippingRequired(false);
       return;
     }
     fetch(`/api/client/v1/accounts/seller/settings/get?sellerSlug=${encodeURIComponent(sellerSlug)}`, {
@@ -456,13 +446,12 @@ export function SellerProductsWorkspace({
       .then((response) => response.json().catch(() => ({})))
       .then((payload) => {
         if (!mounted) return;
-        const profile = payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {};
-        setDeliverySettingsReady(hasSellerDeliverySettings(profile));
-        setWeightBasedShippingRequired(sellerHasWeightBasedShipping(profile));
+        const settings =
+          payload?.shippingSettings && typeof payload.shippingSettings === "object" ? payload.shippingSettings : {};
+        setWeightBasedShippingRequired(sellerHasWeightBasedShipping(settings));
       })
       .catch(() => {
         if (mounted) {
-          setDeliverySettingsReady(false);
           setWeightBasedShippingRequired(false);
         }
       });
@@ -529,14 +518,6 @@ export function SellerProductsWorkspace({
 
   const selectedCount = selectedIds.length;
   const activeRowCount = rows.length;
-  const hasSelfFulfilledProducts = useMemo(
-    () => items.some((item) => String(item?.data?.fulfillment?.mode ?? "seller").toLowerCase() === "seller"),
-    [items],
-  );
-  const hiddenByDeliverySettingsCount = useMemo(
-    () => items.filter((item) => item?.data?.listing_block_reason_code === "missing_delivery_settings").length,
-    [items],
-  );
   const hiddenByWeightShippingCount = useMemo(
     () => items.filter((item) => item?.data?.listing_block_reason_code === "missing_variant_weight_for_shipping").length,
     [items],
@@ -583,7 +564,6 @@ export function SellerProductsWorkspace({
     }
     if (variants.length === 0) reasons.push("At least one variant");
     if (fulfillmentMode === "seller") {
-      if (!deliverySettingsReady) reasons.push("Delivery settings");
       if (weightBasedShippingRequired && collectProductWeightRequirementIssues(item.data).includes("Variant weight")) reasons.push("Variant weight");
     }
     return reasons;
@@ -801,27 +781,6 @@ export function SellerProductsWorkspace({
         </button>
       </section>
 
-      {hasSelfFulfilledProducts && !deliverySettingsReady ? (
-        <section className="rounded-[8px] border border-[rgba(185,28,28,0.14)] bg-[rgba(185,28,28,0.05)] px-4 py-4 text-[13px] text-[#202020]">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#b91c1c]">Delivery settings required</p>
-              <p className="mt-1 leading-[1.6] text-[#57636c]">
-                You have self-fulfilled products. Add your local delivery, country shipping, or pickup settings before submitting them for review.
-                {hiddenByDeliverySettingsCount > 0 ? ` ${hiddenByDeliverySettingsCount} product${hiddenByDeliverySettingsCount === 1 ? " is" : "s are"} currently hidden from the storefront until this is fixed.` : ""}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => onOpenSettings?.()}
-              className="inline-flex min-h-9 items-center justify-center rounded-[8px] bg-[#202020] px-4 py-2 text-[12px] font-semibold text-white"
-            >
-              Delivery settings
-            </button>
-          </div>
-        </section>
-      ) : null}
-
       {hiddenByWeightShippingCount > 0 ? (
         <section className="rounded-[8px] border border-[rgba(245,158,11,0.18)] bg-[rgba(245,158,11,0.08)] px-4 py-4 text-[13px] text-[#202020]">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -1026,7 +985,6 @@ export function SellerProductsWorkspace({
                     <tr className="text-left text-[11px] uppercase tracking-[0.14em] text-[#7d7d7d]">
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Select</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Product</th>
-                      <th className="border-b border-black/5 px-3 py-2.5 font-semibold text-center">Global</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Status</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Inventory</th>
                       <th className="border-b border-black/5 px-3 py-2.5 font-semibold">Category</th>
@@ -1048,9 +1006,6 @@ export function SellerProductsWorkspace({
                       const expanded = expandedIds.includes(item.id);
                       const sellerOfferCount = Math.max(Number(item.data?.seller_offer_count || 1), 1);
                       const canonicalBarcode = String(item.data?.canonical_offer_barcode || "").trim();
-                      const globalCourierEnabled =
-                        item.data?.fulfillment?.mode === "seller" &&
-                        item.data?.product?.shipping?.courierEnabled === true;
 
                     return (
                       <Fragment key={item.id}>
@@ -1106,7 +1061,7 @@ export function SellerProductsWorkspace({
                                     <div className="mt-1">
                                       <ListingInfoPill
                                         label="Hidden from storefront"
-                                        message={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
+                                        message={item.data?.listing_block_reason_message || "This seller-fulfilled product is hidden until shipping settings are completed."}
                                         toneClassName="bg-[rgba(185,28,28,0.08)] text-[#b91c1c]"
                                       />
                                     </div>
@@ -1134,21 +1089,6 @@ export function SellerProductsWorkspace({
                                     </p>
                                   ) : null}
                                 </div>
-                              </div>
-                            </td>
-                            <td className="border-b border-black/5 px-3 py-2.5 align-middle">
-                              <div className="flex justify-center">
-                                {globalCourierEnabled ? (
-                                  <span
-                                    className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[rgba(21,128,61,0.08)] text-[#15803d]"
-                                    title="Global courier shipping enabled"
-                                    aria-label="Global courier shipping enabled"
-                                  >
-                                    <GlobeIndicatorIcon className="h-4 w-4" />
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex h-7 w-7" aria-hidden="true" />
-                                )}
                               </div>
                             </td>
                             <td className="border-b border-black/5 px-3 py-2.5 align-middle">
@@ -1206,7 +1146,7 @@ export function SellerProductsWorkspace({
                           </tr>
                           {expanded ? (
                             <tr>
-                              <td className="border-b border-black/5 bg-[#fafafa] px-3 py-3" colSpan={8}>
+                              <td className="border-b border-black/5 bg-[#fafafa] px-3 py-3" colSpan={7}>
                                 <div className="rounded-[8px] border border-black/5 bg-white p-3">
                                   <div className="flex items-center justify-between gap-3">
                                     <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Variants</p>
@@ -1334,7 +1274,7 @@ export function SellerProductsWorkspace({
                                 <div className="mt-1">
                                   <ListingInfoPill
                                     label="Hidden from storefront"
-                                    message={item.data?.listing_block_reason_message || "This self-fulfilled product is hidden until delivery settings are completed."}
+                                    message={item.data?.listing_block_reason_message || "This seller-fulfilled product is hidden until shipping settings are completed."}
                                     toneClassName="bg-[rgba(185,28,28,0.08)] text-[#b91c1c]"
                                   />
                                 </div>

@@ -1,3 +1,5 @@
+import { COUNTRY_CATALOG } from "@/lib/marketplace/country-config";
+
 export type ShopperLocationSource =
   | "none"
   | "manual"
@@ -34,7 +36,11 @@ function normalizeText(value: unknown): string | null {
 function normalizeCountryCode(value: unknown): string | null {
   const normalized = normalizeText(value);
   if (!normalized) return null;
-  return normalized.toUpperCase();
+  if (/^[A-Za-z]{2}$/.test(normalized)) return normalized.toUpperCase();
+
+  const normalizedKey = normalized.toLowerCase();
+  const matchedCountry = COUNTRY_CATALOG.find((entry) => entry.label.trim().toLowerCase() === normalizedKey);
+  return matchedCountry?.code || null;
 }
 
 function normalizeCoordinate(value: unknown): number | null {

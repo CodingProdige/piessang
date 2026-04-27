@@ -378,9 +378,12 @@ export function PhoneInput({
   disabled = false,
   hint,
 }: PhoneInputProps) {
+  const inputId = `phone-local-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
   return (
-    <label className="block">
-      <span className="mb-2 block text-[12px] font-semibold text-[#202020]">{label}</span>
+    <div className="block">
+      <label htmlFor={inputId} className="mb-2 block text-[12px] font-semibold text-[#202020]">
+        {label}
+      </label>
       <div className="grid grid-cols-[180px_minmax(0,1fr)] gap-2">
         <select
           value={countryCode}
@@ -399,6 +402,7 @@ export function PhoneInput({
           ))}
         </select>
         <input
+          id={inputId}
           inputMode="tel"
           autoComplete="tel-national"
           value={localNumber}
@@ -409,6 +413,6 @@ export function PhoneInput({
         />
       </div>
       {hint ? <span className="mt-2 block text-[12px] text-[#7a7a7a]">{hint}</span> : null}
-    </label>
+    </div>
   );
 }

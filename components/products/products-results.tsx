@@ -4,22 +4,26 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type TouchEvent, type FocusEvent, type CSSProperties, type ReactNode } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
+import { CartItemCard } from "@/components/cart/cart-item-card";
 import { useDisplayCurrency } from "@/components/currency/display-currency-provider";
 import {
   hasPreciseShopperDeliveryArea,
   readShopperDeliveryArea,
-  saveShopperDeliveryArea,
   subscribeToShopperDeliveryArea,
   type ShopperDeliveryArea,
 } from "@/components/products/delivery-area-gate";
+import { ProductCard } from "@/components/products/product-card";
+import { ProductGrid } from "@/components/products/product-grid";
+import { ShippingPill } from "@/components/products/shipping-pill";
 import { BlurhashImage } from "@/components/shared/blurhash-image";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { trackProductEngagement, useProductImpressionTracker } from "@/lib/analytics/product-engagement-client";
 import { resolveBrandKey, resolveBrandLabel } from "@/lib/catalogue/brand-key";
+import { normalizeCategorySlug } from "@/lib/catalogue/category-normalize";
 import { getCartQuantityGuard, getVariantAvailableQuantity } from "@/lib/cart/interaction-guards";
 import { resolveRawItemShippingEligibility } from "@/lib/catalogue/shipping-eligibility-adapters";
 import { formatCurrency } from "@/lib/seller/delivery-profile";
-import { appendShopperAreaSearchParams, isProductEligibleForShopperCountry } from "@/lib/shipping/shopper-country";
+import { appendShopperAreaSearchParams } from "@/lib/shipping/shopper-country";
 import { getBadgeColorStyle } from "@/lib/analytics/product-engagement-badge-colors";
 import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 
@@ -91,6 +95,14 @@ type ProductVariant = {
       imageUrl?: string | null;
       blurHashUrl?: string | null;
     }>;
+    videos?: Array<{
+      videoUrl?: string | null;
+      previewUrl?: string | null;
+      sourceUrl?: string | null;
+      url?: string | null;
+      position?: number | string | null;
+    }>;
+    video?: string | null;
   };
   sales?: {
     total_units_sold?: number;
@@ -202,6 +214,14 @@ export type ProductItem = {
         imageUrl?: string | null;
         blurHashUrl?: string | null;
       }>;
+      videos?: Array<{
+        videoUrl?: string | null;
+        previewUrl?: string | null;
+        sourceUrl?: string | null;
+        url?: string | null;
+        position?: number | string | null;
+      }>;
+      video?: string | null;
     };
     placement?: {
       isFeatured?: boolean;
@@ -273,9 +293,16 @@ function itemMatchesAttributeFilter(item: ListingProductItem, key: AttributeFilt
 }
 
 type CartPreviewItem = {
+  cart_item_key?: string;
   product_unique_id?: string;
   qty?: number;
   quantity?: number;
+  sale_qty?: number;
+  regular_qty?: number;
+  availability?: {
+    status?: string;
+    message?: string;
+  };
   line_totals?: {
     final_incl?: number;
     final_excl?: number;
@@ -309,7 +336,6 @@ const PAGE_SIZE = 24;
 const LOW_STOCK_THRESHOLD = 13;
 const HOT_SALES_FIRE_THRESHOLD = 100;
 const DEFERRED_CARD_EAGER_COUNT_GRID = 8;
-const DEFERRED_CARD_EAGER_COUNT_LIST = 6;
 
 function formatSoldCount(value?: number | null) {
   const count = Number(value || 0);
@@ -484,21 +510,9 @@ function DeferredProductCard({
   minHeight: number;
   children: React.ReactNode;
 }) {
-  if (eager) {
-    return <div className="w-full">{children}</div>;
-  }
-
-  return (
-    <div
-      className="w-full"
-      style={{
-        contentVisibility: "auto",
-        containIntrinsicSize: `${Math.max(180, Math.round(minHeight))}px`,
-      }}
-    >
-      {children}
-    </div>
-  );
+  void eager;
+  void minHeight;
+  return <div className="mb-2 w-full break-inside-avoid">{children}</div>;
 }
 
 function StorefrontPrice({
@@ -589,6 +603,17 @@ function getDisplayImages(item: ListingProductItem) {
   return (defaultVariant?.media?.images ?? []).filter((image) => Boolean(image?.imageUrl));
 }
 
+function getDisplayVideoUrl(item: ListingProductItem) {
+  if (isResolvedProductCard(item)) return String(item.image.videoUrl || "").trim();
+  const videos = Array.isArray(item.data?.media?.videos)
+    ? [...item.data.media.videos]
+        .filter((entry) => String(entry?.previewUrl || entry?.videoUrl || entry?.url || entry?.sourceUrl || "").trim())
+        .sort((a, b) => (Number(a?.position) || 0) - (Number(b?.position) || 0))
+    : [];
+  if (videos.length) return String(videos[0]?.previewUrl || videos[0]?.videoUrl || videos[0]?.url || videos[0]?.sourceUrl || "").trim();
+  return String(item.data?.media?.video || "").trim();
+}
+
 export function hasShopperFacingProductImage(item: ListingProductItem | null | undefined) {
   if (!item) return false;
   return getDisplayImages(item).length > 0;
@@ -634,6 +659,14 @@ function CameraIcon() {
   );
 }
 
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" aria-hidden="true">
+      <path d="M7.25 5.25 15 10l-7.75 4.75v-9.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
 function CartPlusIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4.5 w-4.5">
@@ -648,24 +681,87 @@ function CartPlusIcon() {
 function CartDrawer({
   open,
   cart,
+  cartOwnerId,
   onClose,
+  onCartChange,
 }: {
   open: boolean;
   cart: CartPreview | null;
+  cartOwnerId: string | null;
   onClose: () => void;
+  onCartChange?: (cart: CartPreview | null) => void;
 }) {
-  const items = Array.isArray(cart?.items) ? cart.items : [];
-  const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
+  const { formatMoney } = useDisplayCurrency();
+  const [localCart, setLocalCart] = useState<CartPreview | null>(cart);
+  const [lineBusyKey, setLineBusyKey] = useState<string | null>(null);
+  const [drawerNotice, setDrawerNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLocalCart(cart);
+  }, [cart]);
+
+  useEffect(() => {
+    if (!drawerNotice) return undefined;
+    const timeout = window.setTimeout(() => setDrawerNotice(null), 2400);
+    return () => window.clearTimeout(timeout);
+  }, [drawerNotice]);
+
+  const activeCart = localCart ?? cart;
+  const items = Array.isArray(activeCart?.items) ? activeCart.items : [];
+  const itemCount = activeCart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const totalIncl =
-    cart?.totals?.final_payable_incl ??
-    cart?.totals?.final_incl ??
-    cart?.totals?.base_final_incl ??
+    activeCart?.totals?.final_payable_incl ??
+    activeCart?.totals?.final_incl ??
+    activeCart?.totals?.base_final_incl ??
     0;
-  const money = (value?: number) =>
-    `R ${new Intl.NumberFormat("en-ZA", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(typeof value === "number" && Number.isFinite(value) ? value : 0)}`;
+
+  const updateLine = async (item: CartPreviewItem, action: "increment" | "decrement" | "remove") => {
+    if (!cartOwnerId) {
+      setDrawerNotice("Sign in again to update your cart.");
+      return;
+    }
+    const productId =
+      String(item?.product_snapshot?.product?.unique_id || "").trim() ||
+      String(item?.product_unique_id || "").trim();
+    const variant = item.selected_variant_snapshot ?? item.selected_variant ?? null;
+    const variantId = String(variant?.variant_id || "").trim();
+    if (!productId || !variantId) {
+      setDrawerNotice("We could not identify that cart item.");
+      return;
+    }
+
+    const busyKey = String(item.cart_item_key || `${productId}::${variantId}`);
+    setLineBusyKey(busyKey);
+    try {
+      const endpoint = action === "remove" ? "/api/client/v1/carts/removeItem" : "/api/client/v1/carts/update";
+      const payload =
+        action === "remove"
+          ? { cartOwnerId, unique_id: productId, variant_id: variantId }
+          : {
+              cartOwnerId,
+              productId,
+              variantId,
+              mode: action,
+              qty: 1,
+              cart_item_key: item.cart_item_key || null,
+            };
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || json?.ok === false) throw new Error(json?.message || "Unable to update cart.");
+      const nextCart = (json?.data?.cart ?? null) as CartPreview | null;
+      setLocalCart(nextCart);
+      onCartChange?.(nextCart);
+      setDrawerNotice(action === "remove" ? "Item removed from your cart." : "Cart quantity updated.");
+    } catch (error) {
+      setDrawerNotice(error instanceof Error ? error.message : "Unable to update your cart.");
+    } finally {
+      setLineBusyKey(null);
+    }
+  };
 
   return (
     <div className={`fixed inset-0 z-[65] ${open ? "" : "pointer-events-none"}`}>
@@ -699,44 +795,30 @@ function CartDrawer({
           <div className="rounded-[8px] bg-[#fafafa] px-4 py-3">
             <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Estimated total</p>
             <p className="mt-1 text-[22px] font-semibold text-[#202020]">
-              {money(totalIncl)}
+              {formatMoney(totalIncl)}
             </p>
           </div>
 
           {items.length ? (
             <div className="space-y-3">
               {items.map((item, index) => {
-                const snapshot = item.product_snapshot;
-                const productTitle = snapshot?.product?.title ?? "Untitled product";
+                const productId =
+                  String(item?.product_snapshot?.product?.unique_id || "").trim() ||
+                  String(item?.product_unique_id || "").trim();
                 const variant = item.selected_variant_snapshot ?? item.selected_variant ?? null;
-                const variantLabel = variant?.label ?? "Selected variant";
-                const qty = item.qty ?? item.quantity ?? 0;
-                const lineIncl =
-                  item.line_totals?.final_incl ??
-                  ((item.line_totals?.final_excl ?? 0) * VAT_MULTIPLIER);
-                const image = snapshot?.media?.images?.find((entry) => Boolean(entry?.imageUrl)) ?? null;
-
+                const variantId = String(variant?.variant_id || "").trim();
+                const busyKey = String(item.cart_item_key || `${productId}::${variantId || index}`);
                 return (
-                  <div key={`${productTitle}-${variant?.variant_id ?? index}`} className="flex gap-3 rounded-[8px] border border-black/5 bg-white p-3 shadow-[0_6px_18px_rgba(20,24,27,0.05)]">
-                    <BlurhashImage
-                      src={image?.imageUrl ?? ""}
-                      blurHash={image?.blurHashUrl ?? ""}
-                      alt={productTitle}
-                      sizes="64px"
-                      className="h-16 w-16 shrink-0 rounded-[8px]"
-                      imageClassName="object-cover"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13px] font-semibold text-[#202020]">{productTitle}</p>
-                      <p className="mt-0.5 truncate text-[11px] text-[#8b94a3]">{variantLabel}</p>
-                      <div className="mt-2 flex items-center justify-between gap-3">
-                        <span className="text-[12px] font-medium text-[#57636c]">Qty {qty}</span>
-                        <span className="text-[13px] font-semibold text-[#202020]">
-                          {money(lineIncl)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                  <CartItemCard
+                    key={busyKey}
+                    item={{ ...item, selected_variant_snapshot: variant ?? undefined }}
+                    compact
+                    busy={lineBusyKey === busyKey}
+                    onIncrement={() => void updateLine(item, "increment")}
+                    onDecrement={() => void updateLine(item, "decrement")}
+                    onRemove={() => void updateLine(item, "remove")}
+                    onIncrementBlocked={(message) => setDrawerNotice(message)}
+                  />
                 );
               })}
             </div>
@@ -746,17 +828,17 @@ function CartDrawer({
             </div>
           )}
 
-          <div className="flex gap-3 pt-2">
+          <div className="grid gap-2 pt-2">
             <Link
               href="/cart"
-              className="inline-flex h-11 flex-1 items-center justify-center rounded-[8px] border border-black bg-white px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020]"
+              className="inline-flex h-11 w-full items-center justify-center rounded-[8px] border border-black bg-white px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#202020]"
               onClick={onClose}
             >
               View cart
             </Link>
             <Link
               href="/checkout"
-              className="inline-flex h-11 flex-1 items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-white"
+              className="inline-flex h-11 w-full items-center justify-center rounded-[8px] bg-[#202020] px-4 text-[12px] font-semibold uppercase tracking-[0.08em] text-white"
               onClick={onClose}
             >
               Proceed to checkout
@@ -764,6 +846,7 @@ function CartDrawer({
           </div>
         </div>
       </aside>
+      <AppSnackbar notice={drawerNotice ? { tone: "info", message: drawerNotice } : null} onClose={() => setDrawerNotice(null)} />
     </div>
   );
 }
@@ -917,8 +1000,7 @@ function getStockState(variant?: ProductVariant, item?: ListingProductItem) {
 
 function isPreLovedProduct(item: ListingProductItem) {
   if (isResolvedProductCard(item)) return item.merchandising.isPreLoved;
-  const category = String(item.data?.grouping?.category || "").trim().toLowerCase();
-  return category === "pre-loved" || category === "preloved";
+  return normalizeCategorySlug(item.data?.grouping?.category) === "pre-loved";
 }
 
 function getReviewState(item: ListingProductItem) {
@@ -1373,7 +1455,7 @@ export function BrowseProductCard({
 }) {
   if (isResolvedProductCard(item)) {
     return (
-      <ResolvedShopperProductCard
+      <ProductCard
         item={item}
         view={view}
         openInNewTab={openInNewTab}
@@ -1388,16 +1470,59 @@ export function BrowseProductCard({
     );
   }
 
-  const resolvedShopperArea = shopperArea ?? null;
-  if (resolvedShopperArea && !isProductEligibleForShopperCountry(item, resolvedShopperArea)) {
-    return null;
-  }
+  return (
+    <RawBrowseProductCard
+      item={item}
+      view={view}
+      openInNewTab={openInNewTab}
+      brandHref={brandHref}
+      vendorHref={vendorHref}
+      brandLabel={brandLabel}
+      vendorLabel={vendorLabel}
+      currentUrl={currentUrl}
+      onAddToCartSuccess={onAddToCartSuccess}
+      cartBurstKey={cartBurstKey}
+      shopperArea={shopperArea}
+    />
+  );
+}
 
+function RawBrowseProductCard({
+  item,
+  view,
+  openInNewTab,
+  brandHref,
+  vendorHref,
+  brandLabel,
+  vendorLabel,
+  currentUrl,
+  onAddToCartSuccess,
+  cartBurstKey,
+  shopperArea,
+}: {
+  item: ProductItem;
+  view: "grid" | "list";
+  openInNewTab: boolean;
+  brandHref?: string;
+  vendorHref?: string;
+  brandLabel?: string;
+  vendorLabel?: string;
+  currentUrl?: string;
+  onAddToCartSuccess?: (cart: CartPreview | null) => void;
+  cartBurstKey?: number;
+  shopperArea?: ShopperDeliveryArea | null;
+}) {
+
+  const resolvedShopperArea = shopperArea ?? null;
   const router = useRouter();
   const { formatMoney } = useDisplayCurrency();
   const displayImages = getDisplayImages(item);
   const [hoveredImageIndex, setHoveredImageIndex] = useState(0);
+  const [mediaHovered, setMediaHovered] = useState(false);
   const image = displayImages[hoveredImageIndex] ?? displayImages[0] ?? null;
+  const videoUrl = getDisplayVideoUrl(item);
+  const hasPlayableVideo = Boolean(videoUrl);
+  const showVideoPreview = Boolean(videoUrl && mediaHovered);
   const titleText = item.data?.product?.title ?? "Untitled product";
   const {
     isAuthenticated,
@@ -1477,35 +1602,28 @@ export function BrowseProductCard({
   const hasDeliveryEstimateLocation = Boolean(
     resolvedShopperArea?.country && hasPreciseShopperDeliveryArea(resolvedShopperArea),
   );
-  const rawShipping = resolvedShopperArea
-    ? resolveRawItemShippingEligibility(
+  const rawShipping = useMemo(
+    () =>
+      resolveRawItemShippingEligibility(
         {
-          ...item,
+          ...(item as any),
           data: {
-            ...(item.data || {}),
-            variants: defaultVariant ? [defaultVariant] : item.data?.variants,
+            ...(((item as any).data || {}) as any),
+            variants: defaultVariant ? [defaultVariant] : (item as any).data?.variants,
           },
         },
         resolvedShopperArea,
-      )
-    : null;
-  const deliveryLabel = rawShipping?.deliveryPromiseLabel ?? rawShipping?.deliveryMessage ?? null;
+      ),
+    [defaultVariant, item, resolvedShopperArea],
+  );
+
+  const isHiddenByShipping = rawShipping?.isVisible === false;
+  const deliveryLabel =
+    rawShipping?.deliveryPromiseLabel ??
+    rawShipping?.deliveryMessage ??
+    (resolvedShopperArea ? "Shipping calculated at checkout" : "Shipping calculated at checkout");
   const deliveryCutoffText = rawShipping?.deliveryCutoffText ?? null;
   const deliveryTone: "success" | "danger" | "warning" | "neutral" = rawShipping?.deliveryTone ?? "neutral";
-  const deliveryToneClass =
-    {
-      success: "inline-flex items-center gap-1 rounded-full bg-[rgba(26,133,83,0.1)] px-2.5 py-1 text-[#1a8553]",
-      danger: "inline-flex items-center gap-1 rounded-full bg-[rgba(185,28,28,0.08)] px-2.5 py-1 text-[#b91c1c]",
-      warning: "inline-flex items-center gap-1 rounded-full bg-[rgba(180,83,9,0.08)] px-2.5 py-1 text-[#b45309]",
-      neutral: "inline-flex items-center gap-1 rounded-full bg-[rgba(87,99,108,0.08)] px-2.5 py-1 text-[#57636c]",
-    }[deliveryTone];
-  const deliveryPillClass =
-    {
-      success: "rounded-full bg-[rgba(26,133,83,0.1)] px-2 py-1 text-[#1a8553]",
-      danger: "rounded-full bg-[rgba(185,28,28,0.08)] px-2 py-1 text-[#b91c1c]",
-      warning: "rounded-full bg-[rgba(180,83,9,0.08)] px-2 py-1 text-[#b45309]",
-      neutral: "rounded-full bg-[rgba(87,99,108,0.08)] px-2 py-1 text-[#57636c]",
-    }[deliveryTone];
   const href = getProductHref(item);
   const resolvedBrandLabel = brandLabel || getBrandLabel(item);
   const resolvedVendorLabel = vendorLabel || getVendorLabel(item);
@@ -1593,6 +1711,10 @@ export function BrowseProductCard({
 
   const handleImagePointerMove = (event: MouseEvent<HTMLElement>) => {
     prefetchProductHref();
+    if (hasPlayableVideo) {
+      if (hoveredImageIndex !== 0) setHoveredImageIndex(0);
+      return;
+    }
     if (displayImages.length <= 1) return;
     trackProductEngagement({
       action: "hover",
@@ -1611,11 +1733,12 @@ export function BrowseProductCard({
     if (!bounds.width) return;
     const position = Math.max(0, Math.min(event.clientX - bounds.left, bounds.width));
     const nextIndex = Math.min(displayImages.length - 1, Math.floor((position / bounds.width) * displayImages.length));
-    setHoveredImageIndex(nextIndex);
+    if (nextIndex !== hoveredImageIndex) setHoveredImageIndex(nextIndex);
   };
 
   const handleImagePointerLeave = () => {
     if (hoveredImageIndex !== 0) setHoveredImageIndex(0);
+    setMediaHovered(false);
   };
 
   const handleCardMouseEnter = () => {
@@ -1771,19 +1894,14 @@ export function BrowseProductCard({
       openProduct();
     }
   };
-  const titleClampStyle = {
-    display: "-webkit-box",
-    WebkitBoxOrient: "vertical",
-    WebkitLineClamp: 2,
-    overflow: "hidden",
-  } as const;
+  const titleClampStyle = undefined;
   const leftTopBadges = [
     salePercent
       ? {
           key: "sale",
           title: null,
           className:
-            "inline-flex h-6 items-center rounded-full bg-[#1a8553] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+            "inline-flex h-4 items-center rounded-full bg-[#1a8553] px-1.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
           content: <>{salePercent}% off</>,
           style: undefined,
         }
@@ -1793,7 +1911,7 @@ export function BrowseProductCard({
           key: "pre-loved",
           title: null,
           className:
-            "inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+            "inline-flex h-4 items-center rounded-full bg-[#202020] px-1.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
           content: <>Pre-Loved</>,
           style: undefined,
         }
@@ -1803,7 +1921,7 @@ export function BrowseProductCard({
           key: "new",
           title: null,
           className:
-            "inline-flex h-6 items-center gap-1 rounded-full bg-[#e3c52f] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+            "inline-flex h-4 items-center gap-1 rounded-full bg-[#e3c52f] px-1.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-[#3d3420] shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
           content: (
             <>
               <SparkIcon />
@@ -1825,7 +1943,7 @@ export function BrowseProductCard({
                   ? "Trending now: sales are accelerating in the recent badge window."
                   : "Rising star: growing shopper engagement in the recent badge window.",
           className:
-            "inline-flex h-6 items-center gap-1 rounded-full px-2 text-[9px] font-semibold uppercase tracking-[0.08em] shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
+            "inline-flex h-4 items-center gap-1 rounded-full px-1.5 text-[8px] font-semibold uppercase tracking-[0.08em] shadow-[0_4px_12px_rgba(20,24,27,0.14)]",
           content: (
             <>
               <ProductBadgeIcon
@@ -1857,13 +1975,18 @@ export function BrowseProductCard({
   const imageBadges = (
     <>
       {imageCount > 0 ? (
-        <span className="absolute bottom-2 left-2 z-10 inline-flex h-6 items-center gap-1 rounded-full bg-white/92 px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-[#4a4545] shadow-[0_4px_12px_rgba(20,24,27,0.12)]">
+        <span className="absolute bottom-2 left-2 z-10 inline-flex h-4 items-center gap-1 rounded-full bg-white/92 px-1 text-[8px] font-semibold uppercase tracking-[0.08em] text-[#4a4545] shadow-[0_4px_12px_rgba(20,24,27,0.12)]">
           <CameraIcon />
           <span>{imageCount}</span>
         </span>
       ) : null}
+      {hasPlayableVideo ? (
+        <span className="absolute bottom-2 right-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/38 text-white shadow-[0_4px_12px_rgba(20,24,27,0.16)] ring-1 ring-white/25">
+          <PlayIcon />
+        </span>
+      ) : null}
       {leftTopBadges.length ? (
-        <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-4rem)] flex-col gap-2">
+        <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-4rem)] flex-col gap-1">
           {leftTopBadges.map((badge) => (
             <span key={badge.key} title={badge.title ?? undefined} className={badge.className} style={badge.style}>
               {badge.content}
@@ -1872,7 +1995,7 @@ export function BrowseProductCard({
         </div>
       ) : null}
       {isSponsored ? (
-        <span className="absolute right-10 top-2 z-10 inline-flex h-6 items-center rounded-full bg-[#202020] px-2 text-[9px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
+        <span className="absolute right-10 top-2 z-10 inline-flex h-4 items-center rounded-full bg-[#202020] px-1.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-white shadow-[0_4px_12px_rgba(20,24,27,0.14)]">
           {item.ad?.label || "Sponsored"}
         </span>
       ) : null}
@@ -1935,6 +2058,10 @@ export function BrowseProductCard({
     { enabled: Boolean(productUniqueId) },
   );
 
+  if (isHiddenByShipping) {
+    return null;
+  }
+
   if (view === "list") {
     return (
       <>
@@ -1948,33 +2075,50 @@ export function BrowseProductCard({
           onFocus={handleCardFocus}
           onKeyDown={onCardKeyDown}
           data-clickable-container="true"
-          className="overflow-hidden rounded-[8px] bg-white shadow-[0_2px_2px_rgba(20,24,27,0.04),0_6px_16px_rgba(20,24,27,0.028)] transition-shadow duration-200 hover:shadow-[0_2px_3px_rgba(20,24,27,0.045),0_8px_18px_rgba(20,24,27,0.034)]"
+	          className="relative isolate rounded-[4px] bg-transparent before:pointer-events-none before:absolute before:-inset-2 before:-z-10 before:rounded-[4px] before:bg-white before:opacity-0 before:shadow-[0_10px_28px_rgba(20,24,27,0.14)] before:transition-opacity before:duration-150 hover:before:opacity-100"
         >
           <div className="flex flex-col gap-3 p-4 sm:flex-row">
           <div
-            className="relative h-[160px] w-full shrink-0 overflow-hidden rounded-[8px] bg-[#fafafa] sm:w-[180px]"
+            className="relative h-[160px] w-full shrink-0 overflow-hidden bg-[#fafafa] sm:w-[180px]"
             onMouseMove={handleImagePointerMove}
+            onMouseEnter={() => setMediaHovered(true)}
             onMouseLeave={handleImagePointerLeave}
           >
-            {imageBadges}
-            <BlurhashImage
-              src={image?.imageUrl ?? ""}
-              blurHash={image?.blurHashUrl ?? ""}
-              alt={titleText}
-              sizes={PRODUCT_CARD_LIST_IMAGE_SIZES}
-              className="h-full w-full"
-              imageClassName="object-cover"
-            />
-          </div>
+	            {imageBadges}
+		            <BlurhashImage
+		              src={image?.imageUrl ?? ""}
+		              blurHash={image?.blurHashUrl ?? ""}
+		              alt={titleText}
+		              sizes={PRODUCT_CARD_LIST_IMAGE_SIZES}
+		              className="absolute inset-0 h-full w-full"
+		              imageClassName="object-cover"
+		            />
+		            {displayImages.slice(1).map((entry, index) =>
+		              entry?.imageUrl ? (
+		                <img
+		                  key={`${entry.imageUrl}-${index}`}
+		                  src={entry.imageUrl}
+		                  alt=""
+		                  aria-hidden="true"
+		                  className="pointer-events-none absolute h-px w-px opacity-0"
+		                  loading="eager"
+		                />
+		              ) : null,
+		            )}
+		            {showVideoPreview ? (
+		              <video src={videoUrl} className="pointer-events-none absolute inset-0 z-[1] h-full w-full object-cover" autoPlay muted loop playsInline preload="auto" />
+		            ) : null}
+	          </div>
 
           <div className="min-w-0 flex-1 space-y-1.5">
-          <h2
-            title={titleText}
-            style={titleClampStyle}
-            className="text-[15px] font-normal leading-[1.2] text-[#202020] sm:text-[16px]"
-          >
-            {titleText}
-          </h2>
+	          <div className="group/title relative min-w-0">
+	            <h2 style={titleClampStyle} className="truncate text-[15px] font-normal leading-[1.2] text-[#202020] sm:text-[16px]">
+	              {titleText}
+	            </h2>
+	            <span className="pointer-events-none absolute bottom-[calc(100%+6px)] left-0 z-50 hidden max-w-[min(360px,80vw)] rounded-[4px] bg-[#202020] px-2.5 py-1.5 text-[12px] font-medium leading-[1.35] text-white shadow-[0_10px_28px_rgba(20,24,27,0.22)] group-hover/title:block">
+	              {titleText}
+	            </span>
+	          </div>
 
           {selectedVariantLabel ? (
             <p className="text-[11px] font-medium leading-none text-[#8b94a3]">
@@ -2056,12 +2200,7 @@ export function BrowseProductCard({
 
           {deliveryLabel ? (
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold normal-case tracking-normal">
-              <span className={deliveryToneClass}>
-                <svg aria-hidden="true" viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-current">
-                  <path d="M6 2a1 1 0 0 1 1 1v1h6V3a1 1 0 1 1 2 0v1h.5A2.5 2.5 0 0 1 18 6.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 15.5v-9A2.5 2.5 0 0 1 4.5 4H5V3a1 1 0 0 1 1-1zm9.5 6h-11a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5z" />
-                </svg>
-                {deliveryLabel}
-              </span>
+              <ShippingPill tone={deliveryTone} label={deliveryLabel} className="inline-flex items-center gap-1 px-2.5 py-1" />
               {deliveryCutoffText ? <span className="text-[#8b94a3]">{deliveryCutoffText}</span> : null}
             </div>
           ) : null}
@@ -2139,7 +2278,7 @@ export function BrowseProductCard({
                           : "Add to cart"}
                 </span>
                 {cartCount > 0 ? (
-                  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
+                  <span className="absolute -right-1.5 -top-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#ff6a00] px-1 text-[11px] font-semibold leading-none text-white shadow-[0_4px_10px_rgba(255,106,0,0.32)]">
                     {cartCount}
                   </span>
                 ) : null}
@@ -2179,31 +2318,52 @@ export function BrowseProductCard({
         onFocus={handleCardFocus}
         onKeyDown={onCardKeyDown}
         data-clickable-container="true"
-        className="flex h-full flex-col overflow-hidden rounded-[8px] bg-white shadow-[0_2px_2px_rgba(20,24,27,0.04),0_6px_16px_rgba(20,24,27,0.028)] transition-shadow duration-200 hover:shadow-[0_2px_3px_rgba(20,24,27,0.045),0_8px_18px_rgba(20,24,27,0.034)]"
+		        className="relative isolate mb-2 inline-block w-full break-inside-avoid rounded-[4px] bg-transparent before:pointer-events-none before:absolute before:-inset-2 before:-z-10 before:rounded-[4px] before:bg-white before:opacity-0 before:shadow-[0_10px_28px_rgba(20,24,27,0.14)] before:transition-opacity before:duration-150 hover:before:opacity-100"
       >
         <div className="flex h-full flex-col">
           <div className="relative aspect-[1/1] overflow-hidden bg-[#fafafa]">
             {imageBadges}
-            <div
-              className="h-full w-full"
-              onMouseMove={handleImagePointerMove}
-              onMouseLeave={handleImagePointerLeave}
-            >
-              <BlurhashImage
-                src={image?.imageUrl ?? ""}
-                blurHash={image?.blurHashUrl ?? ""}
-                alt={titleText}
-                sizes={PRODUCT_CARD_GRID_IMAGE_SIZES}
-                className="h-full w-full"
-                imageClassName="object-cover"
-              />
-            </div>
+	            <div
+	              className="h-full w-full"
+	              onMouseMove={handleImagePointerMove}
+	              onMouseEnter={() => setMediaHovered(true)}
+	              onMouseLeave={handleImagePointerLeave}
+	            >
+		              <BlurhashImage
+		                src={image?.imageUrl ?? ""}
+		                blurHash={image?.blurHashUrl ?? ""}
+		                alt={titleText}
+		                sizes={PRODUCT_CARD_GRID_IMAGE_SIZES}
+		                className="absolute inset-0 h-full w-full"
+		                imageClassName="object-cover"
+		              />
+		              {displayImages.slice(1).map((entry, index) =>
+		                entry?.imageUrl ? (
+		                  <img
+		                    key={`${entry.imageUrl}-${index}`}
+		                    src={entry.imageUrl}
+		                    alt=""
+		                    aria-hidden="true"
+		                    className="pointer-events-none absolute h-px w-px opacity-0"
+		                    loading="eager"
+		                  />
+		                ) : null,
+		              )}
+		              {showVideoPreview ? (
+		                <video src={videoUrl} className="pointer-events-none absolute inset-0 z-[1] h-full w-full object-cover" autoPlay muted loop playsInline preload="auto" />
+		              ) : null}
+	            </div>
           </div>
 
-          <div className="flex flex-1 flex-col space-y-1.5 px-3 py-3 sm:px-4 sm:py-4">
-            <h2 title={titleText} style={titleClampStyle} className="text-[12px] font-normal leading-[1.2] text-[#202020] sm:text-[15px]">
-              {titleText}
-            </h2>
+	          <div className="flex flex-1 flex-col space-y-1.5 px-0.5 py-1.5">
+		            <div className="group/title relative min-w-0">
+		              <h2 style={titleClampStyle} className="truncate text-[12px] font-normal leading-[1.2] text-[#333] sm:text-[13px]">
+	                {titleText}
+	              </h2>
+		              <span className="pointer-events-none absolute bottom-[calc(100%+6px)] left-0 z-50 hidden max-w-[min(320px,80vw)] rounded-[4px] bg-[#202020] px-2.5 py-1.5 text-[12px] font-medium leading-[1.35] text-white shadow-[0_10px_28px_rgba(20,24,27,0.22)] group-hover/title:block">
+		                {titleText}
+		              </span>
+		            </div>
 
             {selectedVariantLabel ? (
               <p className="text-[10px] font-medium leading-none text-[#8b94a3] sm:text-[11px]">{selectedVariantLabel}</p>
@@ -2289,9 +2449,7 @@ export function BrowseProductCard({
 
             {deliveryLabel ? (
               <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold normal-case tracking-normal sm:text-[11px]">
-                <span className={deliveryPillClass}>
-                  {deliveryLabel}
-                </span>
+                <ShippingPill tone={deliveryTone} label={deliveryLabel} />
                 {deliveryCutoffText ? <span className="text-[#8b94a3]">{deliveryCutoffText}</span> : null}
               </div>
             ) : null}
@@ -2363,7 +2521,7 @@ export function BrowseProductCard({
                           : "Add to cart"}
                 </span>
                 {cartCount > 0 ? (
-                  <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full border border-black/20 bg-white px-1 text-[10px] font-semibold leading-none text-[#202020]">
+                  <span className="absolute -right-1.5 -top-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#ff6a00] px-1 text-[11px] font-semibold leading-none text-white shadow-[0_4px_10px_rgba(255,106,0,0.32)]">
                     {cartCount}
                   </span>
                 ) : null}
@@ -2395,7 +2553,6 @@ export function BrowseProductCard({
 export function ProductsResults({
   initialItems,
   currentSort,
-  currentView,
   openInNewTab,
   searchParams,
   totalCount,
@@ -2404,7 +2561,6 @@ export function ProductsResults({
 }: {
   initialItems: ListingProductItem[];
   currentSort: string;
-  currentView: "grid" | "list";
   openInNewTab: boolean;
   searchParams: Record<string, SearchParamValue>;
   totalCount: number;
@@ -2560,9 +2716,12 @@ export function ProductsResults({
     });
     return next;
   }, [filteredItems, sponsoredItems, sponsoredPlacement]);
-  const shopperCountryLabel = String(shopperArea?.country || "").trim();
-  const showingCountryFilter = Boolean(shopperCountryLabel);
   const sortedItems = useMemo(() => sortProducts(displayItems, currentSort), [displayItems, currentSort]);
+  const allSortedItemsResolved = useMemo(() => sortedItems.every(isResolvedProductCard), [sortedItems]);
+  const resolvedSortedItems = useMemo(
+    () => (allSortedItemsResolved ? (sortedItems as ShopperVisibleProductCard[]) : []),
+    [allSortedItemsResolved, sortedItems],
+  );
   const clearCatalogFilters = {
     id: undefined,
     unique_id: undefined,
@@ -2709,23 +2868,6 @@ export function ProductsResults({
     const hasFavorites = favoriteCount > 0;
     return (
       <div className="space-y-4">
-        {showingCountryFilter ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/6 bg-[#fffdfa] px-4 py-3 text-[13px] text-[#57636c] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
-              <p>
-              Showing products deliverable to <span className="font-semibold text-[#202020]">{shopperCountryLabel}</span>.
-              </p>
-            <button
-              type="button"
-              onClick={() => {
-                saveShopperDeliveryArea(null);
-                setShopperArea(null);
-              }}
-              className="text-[12px] font-semibold text-[#145af2]"
-            >
-              Change country in header
-            </button>
-          </div>
-        ) : null}
         <div className="rounded-[8px] bg-white px-5 py-10 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
           {favoritesOnly ? "Favourites" : "No results"}
@@ -2767,74 +2909,42 @@ export function ProductsResults({
 
   return (
       <div className="space-y-4">
-          {showingCountryFilter ? (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/6 bg-[#fffdfa] px-4 py-3 text-[13px] text-[#57636c] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
-              <p>
-                Showing products deliverable to <span className="font-semibold text-[#202020]">{shopperCountryLabel}</span>.
-              </p>
-              <button
-                type="button"
-                onClick={() => {
-                  saveShopperDeliveryArea(null);
-                  setShopperArea(null);
-                }}
-                className="text-[12px] font-semibold text-[#145af2]"
-              >
-                Change country in header
-              </button>
-            </div>
-          ) : null}
-          {currentView === "list" ? (
-        <div className="space-y-4">
-          {sortedItems.map((item, index) => (
-          <DeferredProductCard
-                key={getListingItemId(item)}
-                eager={index < DEFERRED_CARD_EAGER_COUNT_LIST}
-                minHeight={248}
-              >
-          <BrowseProductCard
-                key={getListingItemId(item)}
-                item={item}
-                view="list"
-                openInNewTab={openInNewTab}
-                brandHref={makeBrandHref(item)}
-                vendorHref={makeVendorHref(item)}
-                brandLabel={getBrandLabel(item)}
-                vendorLabel={getVendorLabel(item)}
-                currentUrl={currentUrl}
-                onAddToCartSuccess={handleAddToCartSuccess}
-                cartBurstKey={cartBurstKey}
-                shopperArea={shopperArea}
-              />
-              </DeferredProductCard>
-            ))}
-          </div>
-        ) : (
-        <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-4">
-          {sortedItems.map((item, index) => (
-            <DeferredProductCard
-              key={getListingItemId(item)}
-              eager={index < DEFERRED_CARD_EAGER_COUNT_GRID}
-              minHeight={460}
-            >
-            <BrowseProductCard
-              key={getListingItemId(item)}
-              item={item}
-              view="grid"
+          {allSortedItemsResolved ? (
+            <ProductGrid
+              products={resolvedSortedItems}
               openInNewTab={openInNewTab}
-              brandHref={makeBrandHref(item)}
-              vendorHref={makeVendorHref(item)}
-              brandLabel={getBrandLabel(item)}
-              vendorLabel={getVendorLabel(item)}
               currentUrl={currentUrl}
+              makeBrandHref={makeBrandHref}
+              makeVendorHref={makeVendorHref}
               onAddToCartSuccess={handleAddToCartSuccess}
               cartBurstKey={cartBurstKey}
-              shopperArea={shopperArea}
             />
-            </DeferredProductCard>
-          ))}
-        </div>
-      )}
+          ) : (
+            <div className="columns-2 gap-1.5 sm:gap-2 lg:grid lg:grid-cols-3 xl:grid-cols-5">
+              {sortedItems.map((item, index) => (
+                <DeferredProductCard
+                  key={getListingItemId(item)}
+                  eager={index < DEFERRED_CARD_EAGER_COUNT_GRID}
+                  minHeight={460}
+                >
+                  <BrowseProductCard
+                    key={getListingItemId(item)}
+                    item={item}
+                    view="grid"
+                    openInNewTab={openInNewTab}
+                    brandHref={makeBrandHref(item)}
+                    vendorHref={makeVendorHref(item)}
+                    brandLabel={getBrandLabel(item)}
+                    vendorLabel={getVendorLabel(item)}
+                    currentUrl={currentUrl}
+                    onAddToCartSuccess={handleAddToCartSuccess}
+                    cartBurstKey={cartBurstKey}
+                    shopperArea={shopperArea}
+                  />
+                </DeferredProductCard>
+              ))}
+            </div>
+          )}
 
       <div ref={sentinelRef} className="h-4" />
 
@@ -2860,7 +2970,16 @@ export function ProductsResults({
 
       <AppSnackbar notice={cartToastVisible ? { tone: "success", message: "Added to cart" } : null} />
 
-      <CartDrawer open={cartDrawerOpen} cart={cartPreview} onClose={() => setCartDrawerOpen(false)} />
+      <CartDrawer
+        open={cartDrawerOpen}
+        cart={cartPreview}
+        cartOwnerId={cartOwnerId || uid || null}
+        onClose={() => setCartDrawerOpen(false)}
+        onCartChange={(nextCart) => {
+          setCartPreview(nextCart);
+          void refreshCart();
+        }}
+      />
     </div>
   );
 }

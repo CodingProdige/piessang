@@ -366,10 +366,10 @@ export function SellerHomeWorkspace({
       },
       {
         id: "delivery",
-        title: "Configure delivery rules",
+        title: "Configure shipping rules",
         description: deliveryConfiguredButMissingOrigin
-          ? "Your delivery settings are almost done. Choose your shipping origin so Piessang can route orders correctly."
-          : "Set local delivery, country shipping, or collection so Piessang can route orders correctly.",
+          ? "Your shipping settings are almost done. Choose your shipping origin so Piessang can route orders correctly."
+          : "Set local delivery and country shipping rules so Piessang can route orders correctly.",
         complete: deliveryReady,
         actionLabel: "Get started",
         action: () => onNavigate("settings"),

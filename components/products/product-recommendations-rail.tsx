@@ -2,22 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
+import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
+import { appendShopperAreaSearchParams } from "@/lib/shipping/shopper-country";
 import type { ShopperDeliveryArea } from "@/components/products/delivery-area-gate";
-
-type ProductItem = {
-  id?: string;
-  data?: {
-    product?: {
-      unique_id?: string | number;
-    };
-  };
-};
 
 type RecommendationSource = "co_purchase" | "catalog_pairing" | "none";
 
 type RecommendationPayload = {
   ok?: boolean;
-  items?: ProductItem[];
+  items?: ShopperVisibleProductCard[];
   source?: RecommendationSource;
   message?: string;
 };
@@ -60,7 +53,7 @@ export function ProductRecommendationsRail({
   mobileOnly?: boolean;
   shopperArea?: ShopperDeliveryArea | null;
 }) {
-  const [items, setItems] = useState<ProductItem[]>([]);
+  const [items, setItems] = useState<ShopperVisibleProductCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
   const [source, setSource] = useState<RecommendationSource>("none");
@@ -72,10 +65,10 @@ export function ProductRecommendationsRail({
       if (!productId) return;
       setLoading(true);
       try {
-        const response = await fetch(
-          `/api/client/v1/products/${endpoint}?productId=${encodeURIComponent(productId)}`,
-          { cache: "no-store" },
-        );
+        const url = new URL(`/api/client/v1/products/${endpoint}`, window.location.origin);
+        url.searchParams.set("productId", productId);
+        appendShopperAreaSearchParams(url.searchParams, shopperArea);
+        const response = await fetch(url.toString(), { cache: "no-store" });
         const payload = (await response.json().catch(() => ({}))) as RecommendationPayload;
         if (!cancelled && response.ok && payload?.ok !== false) {
           setItems(Array.isArray(payload?.items) ? payload.items : []);
@@ -123,7 +116,7 @@ export function ProductRecommendationsRail({
         <ProductRailCarousel
           title={title}
           subtitle={subtitle}
-          products={items as any}
+          products={items}
           emptyMessage={emptyTitle}
           mobileLeadingSpacer={false}
           viewAllHref={viewAllHref}

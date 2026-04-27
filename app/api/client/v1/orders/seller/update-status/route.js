@@ -10,6 +10,7 @@ import { buildOrderDeliveryProgress, deriveAggregateOrderStatuses, enrichOrderIt
 import { canTransitionSellerFulfillment, getSellerFulfillmentStatusLabel, normalizeSellerFulfillmentStatus, requiresCancellationReason } from "@/lib/orders/status-lifecycle";
 import { appendOrderTimelineEvent, createOrderTimelineEvent } from "@/lib/orders/timeline";
 import { sendTrackingUpdateNotifications } from "@/lib/orders/tracking-notifications";
+import { getSellerShippingEntry } from "@/lib/orders/shipping-breakdown";
 import { processStripeOrderRefund } from "@/lib/payments/stripe-refunds";
 import { buildShipmentParcelFromVariant } from "@/lib/shipping/contracts";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
@@ -181,22 +182,18 @@ function getCustomerName(order) {
 }
 
 function getSellerDeliveryBreakdownEntry(order, sellerCode, sellerSlug) {
-  const pricingSnapshot = order?.pricing_snapshot && typeof order.pricing_snapshot === "object" ? order.pricing_snapshot : {};
-  const delivery = order?.delivery && typeof order.delivery === "object" ? order.delivery : {};
-  const breakdown = Array.isArray(pricingSnapshot?.sellerDeliveryBreakdown)
-    ? pricingSnapshot.sellerDeliveryBreakdown
-    : Array.isArray(delivery?.fee?.seller_breakdown)
-      ? delivery.fee.seller_breakdown
-      : [];
-  const normalizedCode = toLower(sellerCode);
-  const normalizedSlug = toLower(sellerSlug);
-  return (
-    breakdown.find((entry) => {
-      const entryCode = toLower(entry?.sellerCode || entry?.seller_code || entry?.seller_key || "");
-      const entrySlug = toLower(entry?.sellerSlug || entry?.seller_slug || "");
-      return Boolean((normalizedCode && entryCode === normalizedCode) || (normalizedSlug && entrySlug === normalizedSlug));
-    }) || null
-  );
+  const shippingEntry = getSellerShippingEntry(order, sellerCode, sellerSlug);
+  if (!shippingEntry) return null;
+  return {
+    sellerCode: shippingEntry.sellerCode,
+    sellerSlug: shippingEntry.sellerSlug,
+    delivery_type: "shipping",
+    method: "shipping",
+    matched_rule_label: shippingEntry.matchedRuleName,
+    amount_incl: shippingEntry.finalShippingFee,
+    tracking_owner: "",
+    status: shippingEntry.status,
+  };
 }
 
 function getPrimaryPeachPaymentId(order) {

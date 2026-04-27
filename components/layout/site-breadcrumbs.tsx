@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 import { PageBody } from "@/components/layout/page-body";
 
 type Crumb = {
@@ -86,11 +87,52 @@ function buildVisibleCrumbs(pathname: string, searchParams: URLSearchParams) {
 export function SiteBreadcrumbs() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [resolvedProductLabel, setResolvedProductLabel] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!pathname?.startsWith("/products/")) {
+      setResolvedProductLabel(null);
+      return;
+    }
+    const readResolvedLabel = () => {
+      const heading = document.querySelector<HTMLElement>("[data-safe-title]");
+      const headingText = String(heading?.textContent || "").replace(/\s+/g, " ").trim();
+      if (headingText) {
+        setResolvedProductLabel(headingText);
+        return true;
+      }
+      return false;
+    };
+
+    setResolvedProductLabel(null);
+    if (readResolvedLabel()) return;
+
+    const observer = new MutationObserver(() => {
+      if (readResolvedLabel()) {
+        observer.disconnect();
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+
+    return () => observer.disconnect();
+  }, [pathname]);
 
   if (!pathname || pathname === "/") {
     return null;
   }
-  const visibleCrumbs = buildVisibleCrumbs(pathname, searchParams);
+  const visibleCrumbs = buildVisibleCrumbs(pathname, searchParams).map((crumb, index, list) => {
+    const isLast = index === list.length - 1;
+    if (isLast && pathname.startsWith("/products/") && resolvedProductLabel) {
+      return { ...crumb, label: resolvedProductLabel };
+    }
+    return crumb;
+  });
   const mobileCrumbs =
     visibleCrumbs.length > 3
       ? [visibleCrumbs[0], { label: "…" }, visibleCrumbs[visibleCrumbs.length - 1]].filter(

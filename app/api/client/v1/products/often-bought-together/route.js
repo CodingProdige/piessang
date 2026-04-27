@@ -4,7 +4,9 @@ export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
+import { resolveShopperVisibleProducts } from "@/lib/catalogue/shopper-listing";
+import { normalizeShopperLocation } from "@/lib/shopper/location";
+import { buildShippingSettingsFromLegacySeller } from "@/lib/shipping/settings";
 import { findSellerOwnerByIdentifier, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 
 const ok = (payload = {}, status = 200) => NextResponse.json({ ok: true, ...payload }, { status });
@@ -65,9 +67,7 @@ function applySellerDisplayData(data, sellerOwner) {
   const sellerCode = toStr(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode);
   const vendorName = toStr(seller?.vendorName || seller?.groupVendorName || "");
   const vendorDescription = toStr(seller?.vendorDescription || seller?.description || "");
-  const deliveryProfile = normalizeSellerDeliveryProfile(
-    seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
-  );
+  const shippingSettings = buildShippingSettingsFromLegacySeller(seller);
 
   return {
     ...data,
@@ -80,7 +80,7 @@ function applySellerDisplayData(data, sellerOwner) {
       sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug) || null,
       activeSellerSlug: toStr(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug) || null,
       groupSellerSlug: toStr(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug) || null,
-      deliveryProfile,
+      shippingSettings,
     },
     product: {
       ...(data?.product && typeof data.product === "object" ? data.product : {}),
@@ -90,6 +90,19 @@ function applySellerDisplayData(data, sellerOwner) {
       sellerSlug: toStr(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.product?.sellerSlug) || null,
     },
   };
+}
+
+function buildShopperLocationFromSearchParams(searchParams) {
+  return normalizeShopperLocation({
+    countryCode: searchParams.get("shopperCountry") || searchParams.get("country") || null,
+    province: searchParams.get("shopperProvince") || null,
+    city: searchParams.get("shopperCity") || null,
+    suburb: searchParams.get("shopperSuburb") || null,
+    postalCode: searchParams.get("shopperPostalCode") || null,
+    lat: searchParams.get("shopperLatitude") || null,
+    lng: searchParams.get("shopperLongitude") || null,
+    source: "manual",
+  });
 }
 
 async function hydrateProductSellerData(db, data) {
@@ -213,6 +226,7 @@ export async function GET(req) {
     const db = getAdminDb();
     if (!db) return err(500, "Firebase Not Configured", "Server Firestore access is not configured.");
     const { searchParams } = new URL(req.url);
+    const shopperLocation = buildShopperLocationFromSearchParams(searchParams);
     const productId = toStr(searchParams.get("productId") || searchParams.get("product_unique_id") || searchParams.get("id"));
     if (!productId) return err(400, "Missing Product", "Provide a productId to load recommendations.");
 
@@ -253,7 +267,16 @@ export async function GET(req) {
     }
 
     if (items.length > 0) {
-      return ok({ count: items.length, items, source: "co_purchase" });
+      const finalListing = await resolveShopperVisibleProducts({
+        items: items.map((item) => ({
+          id: item.id,
+          data: item.data,
+        })),
+        shopperLocation,
+        page: 1,
+        pageSize: items.length,
+      });
+      return ok({ count: finalListing.items.length, items: finalListing.items, source: "co_purchase" });
     }
 
     return ok({ count: 0, items: [], source: "none", message: "No current product combinations for this item yet." });

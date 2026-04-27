@@ -7,14 +7,10 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { PageBody } from "@/components/layout/page-body";
 import { ConfirmModal } from "@/components/ui/confirm-modal";
 import { SellerPageIntro } from "@/components/seller/page-intro";
-import { CourierLiabilityNotice } from "@/components/seller/courier-liability-notice";
 import { prepareImageAsset } from "@/lib/client/image-prep";
 import { clientStorage } from "@/lib/firebase";
 import { getSellerBlockReasonFix, getSellerBlockReasonLabel } from "@/lib/seller/account-status";
-import { sellerDeliverySettingsReady as hasSellerDeliverySettings } from "@/lib/seller/delivery-profile";
-import { sellerHasWeightBasedShipping } from "@/lib/seller/shipping-weight-requirements";
-import { normalizeSellerCourierProfile, normalizeProductCourierSettings } from "@/lib/integrations/easyship-profile";
-import { buildEasyshipSellerWarnings, EASYSHIP_CUSTOMS_CATEGORY_FALLBACK_OPTIONS, resolveEasyshipCategoryMapping } from "@/lib/integrations/easyship-taxonomy";
+import { shippingSettingsRequireWeight } from "@/lib/seller/shipping-weight-requirements";
 import { buildVariantOptionMatrix, formatVariantAxisValue, type VariantAxisKey } from "@/lib/catalogue/variant-options";
 import { getRelevantVariantMetadataGroups } from "@/lib/catalogue/variant-context";
 import {
@@ -38,26 +34,15 @@ import {
   inferRecommendedParcelPreset,
   type ParcelPresetKey,
 } from "@/lib/shipping/contracts";
+import { normalizeShippingSettings, validateShippingSettings } from "@/lib/shipping/settings";
 import { SELLER_CATALOGUE_CATEGORIES } from "@/lib/seller/catalogue-categories";
 import { decode } from "blurhash";
-import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
+import { getDownloadURL, ref as storageRef, uploadBytes, uploadBytesResumable } from "firebase/storage";
 
 type BrandSuggestion = {
   id: string;
   slug: string;
   title: string;
-};
-
-type EasyshipBoxOption = {
-  id: string;
-  slug?: string | null;
-  name: string;
-  type?: string | null;
-  courierUmbrellaName?: string | null;
-  lengthCm?: number | null;
-  widthCm?: number | null;
-  heightCm?: number | null;
-  emptyWeightKg?: number | null;
 };
 
 type SelectedBrand = BrandSuggestion & {
@@ -83,6 +68,17 @@ type ProductImage = {
   blurHashUrl: string;
   fileName: string;
   altText: string;
+  position?: number;
+};
+
+type ProductVideo = {
+  videoUrl: string;
+  sourceUrl?: string;
+  previewUrl?: string;
+  posterUrl?: string;
+  fileName: string;
+  position?: number;
+  processingStatus?: "pending" | "processing" | "ready" | "failed";
 };
 
 type ProductVariantItem = {
@@ -668,8 +664,9 @@ function getSwatchLabel(value?: string | null) {
   };
   return labels[normalized] || formatVariantAxisValue("color", value) || String(value ?? "").trim();
 }
-const OVERVIEW_MAX_LENGTH = 160;
-const DESCRIPTION_MAX_LENGTH = 900;
+const OVERVIEW_MAX_LENGTH = 250;
+const DESCRIPTION_MAX_LENGTH = 4000;
+const VIDEO_UPLOAD_MAX_BYTES = 300 * 1024 * 1024;
 
 function normalizeSlug(value: string) {
   return String(value ?? "")
@@ -896,11 +893,9 @@ type ProductEditorBaseline = {
   description: string;
   keywords: string[];
   imageKeys: string[];
+  videoUrl: string;
   fulfillmentMode: "seller" | "bevgo";
   inventoryTracking: boolean;
-  courierEnabled: boolean;
-  customsCategory: string;
-  hsCode: string;
 };
 
 type VariantEditorBaseline = {
@@ -1038,18 +1033,27 @@ function createProductEditorBaseline(input: Partial<ProductEditorBaseline>): Pro
     imageKeys: Array.isArray(input.imageKeys)
       ? input.imageKeys.map((item) => String(item ?? "").trim()).filter(Boolean)
       : [],
+    videoUrl: String(input.videoUrl ?? "").trim(),
     fulfillmentMode: input.fulfillmentMode === "bevgo" ? "bevgo" : "seller",
     inventoryTracking: Boolean(input.inventoryTracking),
-    courierEnabled: Boolean(input.courierEnabled),
-    customsCategory: String(input.customsCategory ?? "").trim(),
-    hsCode: String(input.hsCode ?? "").trim(),
   };
 }
 
 function imageSignatureFromItems(items: ProductImage[]) {
   return items
+    .slice()
+    .sort((a, b) => (Number(a?.position) || 0) - (Number(b?.position) || 0))
     .map((item) => String(item?.imageUrl ?? "").trim())
     .filter(Boolean);
+}
+
+function videoSignatureFromItems(items: ProductVideo[]) {
+  return items
+    .slice()
+    .sort((a, b) => (Number(a?.position) || 0) - (Number(b?.position) || 0))
+    .map((item) => String(item?.videoUrl ?? "").trim())
+    .filter(Boolean)
+    .join("|");
 }
 
 function createVariantEditorBaseline(input: Partial<VariantEditorBaseline>): VariantEditorBaseline {
@@ -1386,21 +1390,12 @@ function getProductChangeImpactSummary({
   if (baseline.description !== current.description) reviewTriggers.push("description");
   if (JSON.stringify(baseline.keywords) !== JSON.stringify(current.keywords)) reviewTriggers.push("keywords");
   if (JSON.stringify(baseline.imageKeys) !== JSON.stringify(current.imageKeys)) reviewTriggers.push("images");
+  if (baseline.videoUrl !== current.videoUrl) reviewTriggers.push("video");
   if (baseline.fulfillmentMode !== current.fulfillmentMode) reviewTriggers.push("fulfilment mode");
 
   if (baseline.inventoryTracking !== current.inventoryTracking) {
     liveChanges.push("inventory tracking");
   }
-  if (baseline.courierEnabled !== current.courierEnabled) {
-    liveChanges.push("courier shipping");
-  }
-  if (baseline.customsCategory !== current.customsCategory) {
-    liveChanges.push("customs category");
-  }
-  if (baseline.hsCode !== current.hsCode) {
-    liveChanges.push("customs code");
-  }
-
   if (reviewTriggers.length) {
     const preview = reviewTriggers.slice(0, 3).join(", ");
     const remaining = reviewTriggers.length > 3 ? ` and ${reviewTriggers.length - 3} more` : "";
@@ -1447,25 +1442,6 @@ function variantEffectiveSellingPriceIncl(variantLike: {
   if (isOnSale && salePriceIncl > 0) return salePriceIncl;
   if (isOnSale) return money2(basePriceIncl * (1 - discountPercent / 100));
   return basePriceIncl;
-}
-
-function hasVariantCourierPackDetails(variant: any) {
-  const unitCount = Number(variant?.pack?.unit_count || 0);
-  const volume = Number(variant?.pack?.volume || 0);
-  const shippingProfile = buildVariantShippingProfile({
-    parcelPreset: variant?.logistics?.parcel_preset || variant?.logistics?.parcelPreset || null,
-    actualWeightKg: Number(variant?.logistics?.weight_kg || variant?.logistics?.weightKg || 0) || null,
-    lengthCm: Number(variant?.logistics?.length_cm || variant?.logistics?.lengthCm || 0) || null,
-    widthCm: Number(variant?.logistics?.width_cm || variant?.logistics?.widthCm || 0) || null,
-    heightCm: Number(variant?.logistics?.height_cm || variant?.logistics?.heightCm || 0) || null,
-    shippingClass: variant?.logistics?.shipping_class || variant?.logistics?.shippingClass || null,
-  });
-  const weightKg = Number(shippingProfile.actualWeightKg || 0);
-  const lengthCm = Number(shippingProfile.lengthCm || 0);
-  const widthCm = Number(shippingProfile.widthCm || 0);
-  const heightCm = Number(shippingProfile.heightCm || 0);
-
-  return unitCount > 0 && (volume > 0 || weightKg > 0) && lengthCm > 0 && widthCm > 0 && heightCm > 0;
 }
 
 function notifyAdminBadgeRefresh() {
@@ -1977,6 +1953,32 @@ function SpinnerIcon({ className = "" }: { className?: string }) {
   );
 }
 
+function PlayIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
+      <path d="M8 5.5v13l10-6.5-10-6.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function uploadVideoWithProgress(fileRef: ReturnType<typeof storageRef>, file: File, onProgress: (percent: number) => void) {
+  return new Promise<void>((resolve, reject) => {
+    const task = uploadBytesResumable(fileRef, file, { contentType: file.type });
+    task.on(
+      "state_changed",
+      (snapshot) => {
+        const totalBytes = snapshot.totalBytes || file.size || 1;
+        onProgress(Math.min(100, Math.max(0, Math.round((snapshot.bytesTransferred / totalBytes) * 100))));
+      },
+      reject,
+      () => {
+        onProgress(100);
+        resolve();
+      },
+    );
+  });
+}
+
 function CheckIcon({ className = "" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={className}>
@@ -2327,6 +2329,130 @@ function ProductImageCard({
   );
 }
 
+function ProductVideoCard({
+  video,
+  index,
+  onMove,
+  onDropMedia,
+  onRemove,
+  canMoveUp,
+  canMoveDown,
+  isDragging,
+  isDropTarget,
+}: {
+  video: ProductVideo;
+  index: number;
+  onMove: (index: number, direction: "up" | "down") => void;
+  onDropMedia: (fromIndex: number, toIndex: number) => void;
+  onRemove: (index: number) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  isDragging: boolean;
+  isDropTarget: boolean;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+
+  function startPreview() {
+    setIsPreviewing(true);
+    const node = videoRef.current;
+    if (!node) return;
+    node.play().catch(() => undefined);
+  }
+
+  function stopPreview() {
+    setIsPreviewing(false);
+    const node = videoRef.current;
+    if (!node) return;
+    node.pause();
+    node.currentTime = 0;
+  }
+
+  return (
+    <div
+      className={[
+        "w-[148px] shrink-0 rounded-[8px] border bg-white p-2.5 shadow-[0_6px_16px_rgba(20,24,27,0.06)] transition-all",
+        isDragging ? "scale-[0.98] border-[#cbb26b] opacity-70" : "border-black/10",
+        isDropTarget ? "ring-2 ring-[#cbb26b] ring-offset-2 ring-offset-white" : "",
+      ].join(" ")}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", String(index));
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const fromIndex = Number(event.dataTransfer.getData("text/plain"));
+        if (Number.isFinite(fromIndex)) onDropMedia(fromIndex, index);
+      }}
+    >
+      <div className="relative aspect-square overflow-hidden rounded-[8px] bg-black" onMouseEnter={startPreview} onMouseLeave={stopPreview}>
+        <video
+          ref={videoRef}
+          src={video.videoUrl}
+          className="absolute inset-0 h-full w-full object-cover"
+          muted
+          loop
+          playsInline
+          preload="metadata"
+        />
+        <span className="absolute right-2 top-2 rounded-[6px] bg-black/75 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white">
+          Video
+        </span>
+        <span
+          className={[
+            "pointer-events-none absolute left-1/2 top-1/2 inline-flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[#202020] shadow-[0_8px_18px_rgba(20,24,27,0.18)] transition-opacity",
+            isPreviewing ? "opacity-0" : "opacity-100",
+          ].join(" ")}
+          aria-hidden="true"
+        >
+          <PlayIcon className="ml-0.5 h-5 w-5" />
+        </span>
+        <div className="absolute left-2 top-2 flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => onMove(index, "up")}
+            disabled={!canMoveUp}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-black/10 bg-white/90 text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.08)] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Move video up"
+          >
+            <ChevronUpIcon className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(index, "down")}
+            disabled={!canMoveDown}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-[8px] border border-black/10 bg-white/90 text-[#202020] shadow-[0_4px_12px_rgba(20,24,27,0.08)] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Move video down"
+          >
+            <ChevronDownIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-[8px] bg-black/72 px-2 py-1 text-[10px] font-semibold text-white">
+          <DragGripIcon className="h-3 w-3" />
+          <span>Drag</span>
+        </div>
+      </div>
+      <div className="mt-2 space-y-2">
+        <p className="truncate text-[11px] font-medium text-[#202020]">{video.fileName || "Product video"}</p>
+        <button
+          type="button"
+          onClick={() => onRemove(index)}
+          className="inline-flex h-8 w-full items-center justify-center gap-1 rounded-[8px] border border-black/10 bg-white text-[12px] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#b91c1c]"
+          aria-label={`Remove ${video.fileName || "video"}`}
+        >
+          <TrashIcon className="h-3.5 w-3.5" />
+          <span>Remove</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SwatchPicker({
   value,
   onChange,
@@ -2480,6 +2606,7 @@ export function SellerCatalogueEditor({
   const searchParams = useSearchParams();
   const reviewContext = String(reviewContextOverride ?? searchParams.get("reviewContext") ?? "").trim().toLowerCase();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const videoUploadInputRef = useRef<HTMLInputElement | null>(null);
   const variantUploadInputRef = useRef<HTMLInputElement | null>(null);
   const uniqueCodeRequestRef = useRef(0);
   const editorProductId = useMemo(
@@ -2623,6 +2750,7 @@ export function SellerCatalogueEditor({
   const [keywordInput, setKeywordInput] = useState("");
   const [keywordTags, setKeywordTags] = useState<string[]>([]);
   const [productImages, setProductImages] = useState<ProductImage[]>([]);
+  const [productVideos, setProductVideos] = useState<ProductVideo[]>([]);
   const [variantImages, setVariantImages] = useState<ProductImage[]>([]);
   const [variantItems, setVariantItems] = useState<ProductVariantItem[]>([]);
   const [variantMetadataSelectOptions, setVariantMetadataSelectOptions] = useState<VariantMetadataSelectOptionsConfig>(
@@ -2773,6 +2901,10 @@ export function SellerCatalogueEditor({
   const [generatingKeywords, setGeneratingKeywords] = useState(false);
   const [generatingSku, setGeneratingSku] = useState(false);
   const [uploadingImages, setUploadingImages] = useState(false);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [videoUploadProgress, setVideoUploadProgress] = useState(0);
+  const [videoProcessingProgress, setVideoProcessingProgress] = useState(0);
+  const [videoProcessingStage, setVideoProcessingStage] = useState("");
   const [uploadingVariantImages, setUploadingVariantImages] = useState(false);
   const [generatingCode, setGeneratingCode] = useState(false);
   const [loadingProduct, setLoadingProduct] = useState(false);
@@ -2834,23 +2966,6 @@ export function SellerCatalogueEditor({
   const [feeConfig, setFeeConfig] = useState(DEFAULT_MARKETPLACE_FEE_CONFIG);
   const [sellerDeliverySettingsReady, setSellerDeliverySettingsReady] = useState(true);
   const [sellerWeightBasedShippingRequired, setSellerWeightBasedShippingRequired] = useState(false);
-  const [sellerCourierProfile, setSellerCourierProfile] = useState(() => normalizeSellerCourierProfile({}));
-  const [sellerOriginCountry, setSellerOriginCountry] = useState("");
-  const [productCourierEnabled, setProductCourierEnabled] = useState(false);
-  const [productCustomsCategory, setProductCustomsCategory] = useState("");
-  const [productHsCode, setProductHsCode] = useState("");
-  const [easyshipCustomsCategoryOptions, setEasyshipCustomsCategoryOptions] = useState<string[]>(() => [...EASYSHIP_CUSTOMS_CATEGORY_FALLBACK_OPTIONS]);
-  const [easyshipBoxOptions, setEasyshipBoxOptions] = useState<EasyshipBoxOption[]>([]);
-  const [easyshipBoxesLoading, setEasyshipBoxesLoading] = useState(false);
-  const [easyshipBoxesError, setEasyshipBoxesError] = useState("");
-  const [productCustomsCategoryTouched, setProductCustomsCategoryTouched] = useState(false);
-  const [productHsCodeTouched, setProductHsCodeTouched] = useState(false);
-  const [easyshipSuggestedHsCode, setEasyshipSuggestedHsCode] = useState("");
-  const [easyshipSuggestedHsDescription, setEasyshipSuggestedHsDescription] = useState("");
-  const [hsSuggestionSource, setHsSuggestionSource] = useState<"easyship" | "reviewed_fallback" | "ai_fallback" | "none">("none");
-  const [hsSuggestionNote, setHsSuggestionNote] = useState("");
-  const [showAdvancedCustomsDetails, setShowAdvancedCustomsDetails] = useState(false);
-  const [hsSuggestionLoading, setHsSuggestionLoading] = useState(false);
   const draftImpactResolverRef = useRef<((value: boolean) => void) | null>(null);
   const marketplaceCategories = useMemo(
     () => (feeConfig?.categories?.length ? feeConfig.categories : SELLER_CATALOGUE_CATEGORIES),
@@ -2875,22 +2990,6 @@ export function SellerCatalogueEditor({
   const isBookMediaProductDraft = useMemo(() => hasVariantCategoryContext && isBookMediaProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
   const isBabyProductDraft = useMemo(() => hasVariantCategoryContext && isBabyProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
   const isFitmentProductDraft = useMemo(() => hasVariantCategoryContext && isFitmentProduct(category, subCategory), [category, hasVariantCategoryContext, subCategory]);
-  const easyshipCategoryMapping = useMemo(
-    () => resolveEasyshipCategoryMapping({ categorySlug: category, subCategorySlug: subCategory }),
-    [category, subCategory],
-  );
-  const easyshipSellerWarnings = useMemo(
-    () =>
-      buildEasyshipSellerWarnings({
-        courierEnabled: fulfillmentMode === "seller" && productCourierEnabled,
-        categorySlug: category,
-        subCategorySlug: subCategory,
-        customsCategory: productCustomsCategory,
-        hsCode: productHsCode,
-        countryOfOrigin: sellerOriginCountry,
-      }),
-    [category, fulfillmentMode, productCourierEnabled, productCustomsCategory, productHsCode, sellerOriginCountry, subCategory],
-  );
   const variantAxisMatrix = useMemo(() => buildVariantOptionMatrix(variantItems), [variantItems]);
   const relevantVariantMetadataGroups = useMemo(
     () => (hasVariantCategoryContext ? getRelevantVariantMetadataGroups(category, subCategory) : new Set<string>()),
@@ -2930,6 +3029,21 @@ export function SellerCatalogueEditor({
   const titleHasValue = title.trim().length > 0;
   const aiHelpersEnabled = titleHasValue;
   const aiHelperPrompt = "Add a product title first to unlock AI help.";
+  const productMediaItems = useMemo(
+    () =>
+      [
+        ...productImages.map((item, imageIndex) => ({ type: "image" as const, item, imageIndex, videoIndex: -1, position: Number(item.position) || imageIndex + 1 })),
+        ...productVideos.map((item, videoIndex) => ({ type: "video" as const, item, imageIndex: -1, videoIndex, position: Number(item.position) || productImages.length + videoIndex + 1 })),
+      ].sort((a, b) => a.position - b.position),
+    [productImages, productVideos],
+  );
+  const firstProductVideoUrl = useMemo(
+    () => {
+      const videoItem = productMediaItems.find((item) => item.type === "video" && Boolean((item.item as ProductVideo).videoUrl));
+      return videoItem ? (videoItem.item as ProductVideo).videoUrl : "";
+    },
+    [productMediaItems],
+  );
   const normalizedBrandInput = sanitizeText(brandName).toLowerCase();
   const matchingBrand = useMemo(
     () =>
@@ -2959,8 +3073,8 @@ export function SellerCatalogueEditor({
   const fulfillmentLocked = Boolean(editorProductId || createdProduct?.uniqueId);
   const activeProcessLabel = useMemo(() => {
     if (submitting) return "Saving product...";
-    if (hsSuggestionLoading) return "Refreshing customs code...";
     if (uploadingImages) return "Uploading images...";
+    if (uploadingVideo) return "Uploading video...";
     if (uploadingVariantImages) return "Uploading variant images...";
     if (generatingCode) return "Refreshing product code...";
     if (generatingSku) return "Generating SKU...";
@@ -2974,9 +3088,9 @@ export function SellerCatalogueEditor({
     generatingKeywords,
     generatingOverview,
     generatingSku,
-    hsSuggestionLoading,
     submitting,
     uploadingImages,
+    uploadingVideo,
     uploadingVariantImages,
   ]);
   const showInitialEditorSkeleton = Boolean(editorProductId) && (loadingProduct || (loadingVariants && !variantItems.length));
@@ -3001,11 +3115,9 @@ export function SellerCatalogueEditor({
           description,
           keywords: keywordTags.slice(0, 10),
           imageKeys: imageSignatureFromItems(productImages),
+          videoUrl: videoSignatureFromItems(productVideos),
           fulfillmentMode,
           inventoryTracking,
-          courierEnabled: fulfillmentMode === "seller" ? productCourierEnabled : false,
-          customsCategory: fulfillmentMode === "seller" && productCourierEnabled ? productCustomsCategory : "",
-          hsCode: fulfillmentMode === "seller" && productCourierEnabled ? productHsCode : "",
         }),
         hasSavedProduct: Boolean(activeProductId),
         moderationStatus: createdProduct?.moderationStatus,
@@ -3020,11 +3132,9 @@ export function SellerCatalogueEditor({
       inventoryTracking,
       keywordTags,
       overview,
-      productCourierEnabled,
       productEditorBaseline,
-      productCustomsCategory,
-      productHsCode,
       productImages,
+      productVideos,
       selectedBrand?.slug,
       selectedBrand?.title,
       subCategory,
@@ -3374,9 +3484,7 @@ export function SellerCatalogueEditor({
   });
   const primarySaveLabel = submitting
     ? "Saving..."
-    : hsSuggestionLoading
-      ? "Refreshing customs code..."
-      : isEditingProduct
+    : isEditingProduct
         ? (hasUnsavedProductChanges ? "Save changes" : "No changes")
         : "Save draft";
   const statusSummaryText = buildEditorStatusSummary({
@@ -3527,10 +3635,6 @@ export function SellerCatalogueEditor({
     variantShippingProfile.widthCm,
   ]);
   const variantFeePreviewReady = Boolean(variantDraft.sellingPriceIncl.trim()) && (fulfillmentMode === "seller" || variantLogisticsReady);
-  const courierPackDetailsReady = useMemo(
-    () => variantItems.length > 0 && variantItems.every((variant) => hasVariantCourierPackDetails(variant)),
-    [variantItems],
-  );
   const sellerVariantWeightReady = useMemo(
     () => variantItems.every((variant) => {
       const logistics = (variant?.logistics || {}) as Record<string, unknown>;
@@ -3550,10 +3654,7 @@ export function SellerCatalogueEditor({
       { label: "Description", ready: descriptionPlainText.trim().length > 10 },
       { label: "Keywords", ready: keywordTags.length > 0 },
       { label: "Images", ready: productImages.length > 0 },
-      ...(fulfillmentMode === "seller" ? [{ label: "Delivery settings", ready: sellerDeliverySettingsReady }] : []),
-      ...(fulfillmentMode === "seller" && productCourierEnabled
-        ? [{ label: "Courier pack details", ready: courierPackDetailsReady }]
-        : []),
+      ...(fulfillmentMode === "seller" ? [{ label: "Shipping settings", ready: sellerDeliverySettingsReady }] : []),
       ...(fulfillmentMode === "seller" && sellerWeightBasedShippingRequired
         ? [{ label: "Variant weight", ready: sellerVariantWeightReady }]
         : []),
@@ -3568,12 +3669,10 @@ export function SellerCatalogueEditor({
       keywordTags.length,
       overview,
       productImages.length,
-      productCourierEnabled,
       productSku,
       subCategory,
       title,
       uniqueId.length,
-      courierPackDetailsReady,
       sellerVariantWeightReady,
       variantItems.length,
       sellerWeightBasedShippingRequired,
@@ -3601,72 +3700,13 @@ export function SellerCatalogueEditor({
   }, [error]);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/client/v1/integrations/easyship/customs-categories", { cache: "no-store" })
-      .then((response) => response.json().catch(() => ({})))
-      .then((payload) => {
-        if (cancelled) return;
-        const categories = Array.isArray(payload?.categories)
-          ? payload.categories.map((item: unknown) => String(item).trim()).filter(Boolean)
-          : [];
-        if (categories.length) {
-          setEasyshipCustomsCategoryOptions(categories);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setEasyshipCustomsCategoryOptions([...EASYSHIP_CUSTOMS_CATEGORY_FALLBACK_OPTIONS]);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
+    return undefined;
   }, []);
-
-  useEffect(() => {
-    if (!sellerOriginCountry) {
-      setEasyshipBoxOptions([]);
-      setEasyshipBoxesError("");
-      setEasyshipBoxesLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setEasyshipBoxesLoading(true);
-    setEasyshipBoxesError("");
-
-    fetch(`/api/client/v1/integrations/easyship/boxes?originCountry=${encodeURIComponent(sellerOriginCountry)}`, {
-      cache: "no-store",
-    })
-      .then((response) => response.json().catch(() => ({})))
-      .then((payload) => {
-        if (cancelled) return;
-        if (payload?.ok === false) {
-          throw new Error(String(payload?.message || "Unable to load Easyship box presets."));
-        }
-        setEasyshipBoxOptions(Array.isArray(payload?.boxes) ? payload.boxes : []);
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setEasyshipBoxOptions([]);
-        setEasyshipBoxesError(error instanceof Error ? error.message : "Unable to load Easyship box presets.");
-      })
-      .finally(() => {
-        if (!cancelled) setEasyshipBoxesLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [sellerOriginCountry]);
 
   useEffect(() => {
     let cancelled = false;
     if (!effectiveSellerSettingsIdentifier) {
       setSellerDeliverySettingsReady(true);
-      setSellerCourierProfile(normalizeSellerCourierProfile({}));
-      setSellerOriginCountry("");
       return;
     }
 
@@ -3676,22 +3716,14 @@ export function SellerCatalogueEditor({
       .then((response) => response.json().catch(() => ({})))
       .then((payload) => {
         if (cancelled) return;
-        const profile = payload?.deliveryProfile && typeof payload.deliveryProfile === "object" ? payload.deliveryProfile : {};
-        const nextCourierProfile = normalizeSellerCourierProfile(
-          payload?.courierProfile && typeof payload.courierProfile === "object" ? payload.courierProfile : {},
-        );
-        const nextOriginCountry = String(profile?.origin?.country || "").trim();
-        setSellerDeliverySettingsReady(hasSellerDeliverySettings(profile));
-        setSellerWeightBasedShippingRequired(sellerHasWeightBasedShipping(profile));
-        setSellerCourierProfile(nextCourierProfile);
-        setSellerOriginCountry(nextOriginCountry);
+        const nextShippingSettings = normalizeShippingSettings(payload?.shippingSettings || {});
+        setSellerDeliverySettingsReady(validateShippingSettings(nextShippingSettings).valid);
+        setSellerWeightBasedShippingRequired(shippingSettingsRequireWeight(nextShippingSettings));
       })
       .catch(() => {
         if (!cancelled) {
           setSellerDeliverySettingsReady(false);
           setSellerWeightBasedShippingRequired(false);
-          setSellerCourierProfile(normalizeSellerCourierProfile({}));
-          setSellerOriginCountry("");
         }
       });
 
@@ -3714,7 +3746,6 @@ export function SellerCatalogueEditor({
     descriptionPlainText.trim().length > 10 &&
     productSku.trim().length > 0 &&
     keywordTags.length > 0 &&
-    !hsSuggestionLoading &&
     !submitting;
   const saveDisabled = !formIsValid || (isEditingProduct && !hasUnsavedProductChanges);
 
@@ -3875,7 +3906,7 @@ export function SellerCatalogueEditor({
               {variantItems.length === 0
                 ? "Add at least one variant before you can submit this listing."
                 : fulfillmentMode === "seller" && !sellerDeliverySettingsReady
-                  ? "Add your delivery and shipping settings in seller settings before submitting a self-fulfilled listing."
+                  ? "Add your shipping settings in seller settings before submitting a self-fulfilled listing."
                   : moderationStatusKey === "rejected"
                     ? "Fix the rejection feedback, then re-submit the product for review."
                     : inventoryTrackingRequired
@@ -4124,6 +4155,11 @@ export function SellerCatalogueEditor({
     await fetchVariantCode();
   }
 
+  function closeVariantForm() {
+    setVariantFormOpen(false);
+    resetVariantDraft({ makeDefault: variantItems.length === 0 });
+  }
+
   useEffect(() => {
     const sku = productSku.trim();
     if (!sku) {
@@ -4290,19 +4326,28 @@ export function SellerCatalogueEditor({
                 blurHashUrl: String(item?.blurHashUrl ?? "").trim(),
                 fileName: String(item?.altText ?? item?.imageUrl ?? `image-${index + 1}`).trim(),
                 altText: String(item?.altText ?? "").trim(),
+                position: Number.isFinite(Number(item?.position)) ? Number(item.position) : index + 1,
             }))
             : [],
         );
+        const loadedVideos = Array.isArray(record?.media?.videos)
+          ? record.media.videos
+              .map((item: any, index: number) => ({
+                videoUrl: String(item?.videoUrl ?? item?.url ?? item?.sourceUrl ?? "").trim(),
+                sourceUrl: String(item?.sourceUrl ?? item?.originalUrl ?? item?.videoUrl ?? item?.url ?? "").trim(),
+                previewUrl: String(item?.previewUrl ?? "").trim(),
+                posterUrl: String(item?.posterUrl ?? "").trim(),
+                fileName: String(item?.fileName ?? item?.altText ?? item?.videoUrl ?? `video-${index + 1}`).trim(),
+                position: Number.isFinite(Number(item?.position)) ? Number(item.position) : index + 1,
+                processingStatus: String(item?.processingStatus ?? item?.status ?? "").trim() || undefined,
+              }))
+              .filter((item: ProductVideo) => Boolean(item.videoUrl))
+          : [];
+        const legacyVideoUrl = String(record?.media?.video ?? "").trim();
+        setProductVideos(loadedVideos.length ? loadedVideos : legacyVideoUrl ? [{ videoUrl: legacyVideoUrl, sourceUrl: legacyVideoUrl, fileName: "Product video", position: 999, processingStatus: "ready" }] : []);
         const nextFulfillmentMode = String(record?.fulfillment?.mode ?? "seller") === "bevgo" ? "bevgo" : "seller";
-        const nextShipping = normalizeProductCourierSettings(record?.product?.shipping || {});
         const nextInventoryTracking = Boolean(record?.placement?.inventory_tracking) || nextFulfillmentMode === "bevgo";
         setFulfillmentMode(nextFulfillmentMode);
-        setProductCourierEnabled(nextShipping.courierEnabled === true);
-        setProductCustomsCategory(String(nextShipping.customsCategory || "").trim());
-        setProductHsCode(String(nextShipping.hsCode || "").trim());
-        setProductCustomsCategoryTouched(Boolean(String(nextShipping.customsCategory || "").trim()));
-        setProductHsCodeTouched(Boolean(String(nextShipping.hsCode || "").trim()));
-        setShowAdvancedCustomsDetails(Boolean(String(nextShipping.hsCode || "").trim()));
         setInventoryTracking(nextInventoryTracking);
         setVariantDraft((current) => ({
           ...current,
@@ -4340,17 +4385,11 @@ export function SellerCatalogueEditor({
           imageKeys: Array.isArray(record?.media?.images)
             ? record.media.images.map((item: any) => String(item?.imageUrl ?? "").trim()).filter(Boolean)
             : [],
+          videoUrl: videoSignatureFromItems(
+            loadedVideos.length ? loadedVideos : legacyVideoUrl ? [{ videoUrl: legacyVideoUrl, sourceUrl: legacyVideoUrl, fileName: "Product video", position: 999, processingStatus: "ready" }] : [],
+          ),
           fulfillmentMode: nextFulfillmentMode,
           inventoryTracking: nextInventoryTracking,
-          courierEnabled: nextFulfillmentMode === "seller" ? record?.product?.shipping?.courierEnabled === true : false,
-          customsCategory:
-            nextFulfillmentMode === "seller" && record?.product?.shipping?.courierEnabled === true
-              ? String(record?.product?.shipping?.customsCategory ?? "").trim()
-              : "",
-          hsCode:
-            nextFulfillmentMode === "seller" && record?.product?.shipping?.courierEnabled === true
-              ? String(record?.product?.shipping?.hsCode ?? "").trim()
-              : "",
         });
       } catch (cause) {
         if (!cancelled) {
@@ -4380,112 +4419,6 @@ export function SellerCatalogueEditor({
       setVariantDraft((current) => ({ ...current, continueSellingOutOfStock: false }));
     }
   }, [continueSellingAvailable, variantDraft.continueSellingOutOfStock]);
-
-  useEffect(() => {
-    if (!productCourierEnabled || fulfillmentMode !== "seller") return;
-    if (productCustomsCategoryTouched || !easyshipCategoryMapping.itemCategory) return;
-    const matchedOption =
-      easyshipCustomsCategoryOptions.find(
-        (option) => option.trim().toLowerCase() === String(easyshipCategoryMapping.itemCategory || "").trim().toLowerCase(),
-      ) || "";
-    const nextSuggestedCategory = matchedOption || easyshipCategoryMapping.itemCategory;
-    if (String(productCustomsCategory || "").trim().toLowerCase() !== nextSuggestedCategory.trim().toLowerCase()) {
-      setProductCustomsCategory(nextSuggestedCategory);
-    }
-  }, [
-    easyshipCategoryMapping.itemCategory,
-    easyshipCustomsCategoryOptions,
-    fulfillmentMode,
-    productCourierEnabled,
-    productCustomsCategory,
-    productCustomsCategoryTouched,
-  ]);
-
-  useEffect(() => {
-    if (easyshipCategoryMapping.supportLevel === "restricted" && productCourierEnabled) {
-      setProductCourierEnabled(false);
-    }
-  }, [easyshipCategoryMapping.supportLevel, productCourierEnabled]);
-
-  useEffect(() => {
-    if (!productCourierEnabled || fulfillmentMode !== "seller") return;
-    if (productHsCodeTouched) return;
-    let cancelled = false;
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => {
-      void suggestHsCode();
-    }, 700);
-
-    async function suggestHsCode() {
-      if (!cancelled) setHsSuggestionLoading(true);
-      try {
-        const response = await fetch("/api/client/v1/integrations/easyship/hs-suggest", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            categorySlug: category,
-            subCategorySlug: subCategory,
-            title,
-            brandTitle: selectedBrand?.title || brandName,
-            overview,
-            description: descriptionPlainText,
-            customsCategory: productCustomsCategory,
-          }),
-          signal: controller.signal,
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (cancelled) return;
-        const suggestion = payload?.suggestion && typeof payload.suggestion === "object" ? payload.suggestion : null;
-        const suggestedCode = String(suggestion?.code || "").trim();
-        const suggestedDescription = String(suggestion?.description || "").trim();
-        const nextSource =
-          String(payload?.source || "").trim() === "easyship"
-            ? "easyship"
-            : String(payload?.source || "").trim() === "reviewed_fallback"
-              ? "reviewed_fallback"
-            : String(payload?.source || "").trim() === "ai_fallback"
-              ? "ai_fallback"
-              : "none";
-        const nextNote = String(payload?.note || "").trim();
-        setEasyshipSuggestedHsCode(suggestedCode);
-        setEasyshipSuggestedHsDescription(suggestedDescription);
-        setHsSuggestionSource(nextSource);
-        setHsSuggestionNote(nextNote);
-        if (suggestedCode && !productHsCodeTouched && String(productHsCode || "").trim() !== suggestedCode) {
-          setProductHsCode(suggestedCode);
-        }
-      } catch {
-        if (!cancelled) {
-          setEasyshipSuggestedHsCode("");
-          setEasyshipSuggestedHsDescription("");
-          setHsSuggestionSource("none");
-          setHsSuggestionNote("");
-        }
-      } finally {
-        if (!cancelled) setHsSuggestionLoading(false);
-      }
-    }
-
-    return () => {
-      cancelled = true;
-      setHsSuggestionLoading(false);
-      window.clearTimeout(timeoutId);
-      controller.abort();
-    };
-  }, [
-    brandName,
-    category,
-    descriptionPlainText,
-    fulfillmentMode,
-    overview,
-    productCourierEnabled,
-    productCustomsCategory,
-    productHsCode,
-    productHsCodeTouched,
-    selectedBrand?.title,
-    subCategory,
-    title,
-  ]);
 
   const loadVariantItems = useMemo(
     () => async (productId: string) => {
@@ -4805,35 +4738,53 @@ export function SellerCatalogueEditor({
     }, 150);
   }
 
+  function commitProductMediaItems(items: typeof productMediaItems) {
+    setProductImages(
+      items
+        .filter((entry) => entry.type === "image")
+        .map((entry, index) => ({
+          ...(entry.item as ProductImage),
+          position: items.findIndex((candidate) => candidate === entry) + 1 || index + 1,
+        })),
+    );
+    setProductVideos(
+      items
+        .filter((entry) => entry.type === "video")
+        .map((entry, index) => ({
+          ...(entry.item as ProductVideo),
+          position: items.findIndex((candidate) => candidate === entry) + 1 || index + 1,
+        })),
+    );
+  }
+
   function removeImageAt(index: number) {
-    setProductImages((current) => current.filter((_, currentIndex) => currentIndex !== index));
+    commitProductMediaItems(productMediaItems.filter((_, currentIndex) => currentIndex !== index));
   }
 
   function reorderImages(fromIndex: number, toIndex: number) {
-    setProductImages((current) => {
-      if (
-        fromIndex === toIndex ||
-        fromIndex < 0 ||
-        toIndex < 0 ||
-        fromIndex >= current.length ||
-        toIndex >= current.length
-      ) {
-        return current;
-      }
-
-      const next = [...current];
-      const [item] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, item);
-      return next;
-    });
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= productMediaItems.length ||
+      toIndex >= productMediaItems.length
+    ) {
+      return;
+    }
+    const next = [...productMediaItems];
+    const [item] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, item);
+    commitProductMediaItems(next);
   }
 
   function updateImageAltText(index: number, altText: string) {
-    setProductImages((current) =>
-      current.map((item, currentIndex) =>
-        currentIndex === index
-          ? { ...item, altText: sanitizeText(altText) }
-          : item,
+    const target = productMediaItems[index];
+    if (!target || target.type !== "image") return;
+    commitProductMediaItems(
+      productMediaItems.map((entry, currentIndex) =>
+        currentIndex === index && entry.type === "image"
+          ? { ...entry, type: "image" as const, item: { ...(entry.item as ProductImage), altText: sanitizeText(altText) } }
+          : entry,
       ),
     );
   }
@@ -4926,21 +4877,12 @@ export function SellerCatalogueEditor({
     setSelectedBrand(null);
     setBrandDropdownOpen(false);
     setProductImages([]);
+    setProductVideos([]);
     setVariantImages([]);
     setVariantItems([]);
     setVariantFormOpen(false);
     setInventoryTracking(false);
     setFulfillmentMode("seller");
-    setProductCourierEnabled(false);
-    setProductCustomsCategory("");
-    setProductHsCode("");
-    setProductCustomsCategoryTouched(false);
-    setProductHsCodeTouched(false);
-    setEasyshipSuggestedHsCode("");
-    setEasyshipSuggestedHsDescription("");
-    setHsSuggestionSource("none");
-    setHsSuggestionNote("");
-    setShowAdvancedCustomsDetails(false);
     setLoadedProductSku("");
     setLoadedProductSellerCode("");
     setLoadedProductSellerSlug("");
@@ -4972,6 +4914,7 @@ export function SellerCatalogueEditor({
     setError(null);
     try {
       const nextImages: ProductImage[] = [];
+      const startPosition = productMediaItems.length;
       for (const file of Array.from(files)) {
         if (!file.type.startsWith("image/")) continue;
         const prepared = await prepareImageAsset(file, {
@@ -4988,6 +4931,7 @@ export function SellerCatalogueEditor({
           blurHashUrl: prepared.blurHashUrl,
           fileName: prepared.file.name,
           altText: prepared.altText,
+          position: startPosition + nextImages.length + 1,
         });
       }
       if (nextImages.length) {
@@ -4999,6 +4943,102 @@ export function SellerCatalogueEditor({
       setUploadingImages(false);
       if (uploadInputRef.current) uploadInputRef.current.value = "";
     }
+  }
+
+  async function uploadVideoFile(files: FileList | File[] | null | undefined) {
+    const selectedFiles = Array.from(files ?? []);
+    if (!selectedFiles.length) return;
+    if (!profile?.uid) {
+      setError("Missing seller profile. Please refresh and try again.");
+      return;
+    }
+    if (selectedFiles.some((file) => !file.type.startsWith("video/"))) {
+      setError("Please choose video files only.");
+      return;
+    }
+    if (selectedFiles.some((file) => file.size > VIDEO_UPLOAD_MAX_BYTES)) {
+      setError("Video uploads are limited to 300MB each.");
+      return;
+    }
+
+    setUploadingVideo(true);
+    setVideoUploadProgress(0);
+    setVideoProcessingProgress(0);
+    setVideoProcessingStage("Preparing upload");
+    setError(null);
+    try {
+      const nextVideos: ProductVideo[] = [];
+      const startPosition = productMediaItems.length;
+      for (const [fileIndex, file] of selectedFiles.entries()) {
+        const fileBaseProgress = (fileIndex / selectedFiles.length) * 100;
+        const fileShare = 100 / selectedFiles.length;
+        const safeName = file.name.replace(/[^a-z0-9.-]+/gi, "-").toLowerCase();
+        const path = `users/${profile.uid}/uploads/videos/${Date.now()}-${safeName}`;
+        const fileRef = storageRef(clientStorage, path);
+        setVideoProcessingStage(`Uploading ${file.name}`);
+        await uploadVideoWithProgress(fileRef, file, (percent) => {
+          setVideoUploadProgress(Math.round(fileBaseProgress + (percent / 100) * fileShare));
+        });
+        const sourceUrl = await getDownloadURL(fileRef);
+        let processedVideo: Pick<ProductVideo, "videoUrl" | "sourceUrl" | "previewUrl" | "posterUrl" | "processingStatus"> = {
+          videoUrl: sourceUrl,
+          sourceUrl,
+          previewUrl: "",
+          posterUrl: "",
+          processingStatus: "pending",
+        };
+        try {
+          setVideoProcessingStage(`Processing ${file.name}`);
+          setVideoProcessingProgress(12);
+          processedVideo = await processUploadedVideo(sourceUrl, file.name);
+          setVideoProcessingProgress(100);
+        } catch (processingCause) {
+          console.warn("Video processing failed; keeping original video pending.", processingCause);
+          setVideoProcessingProgress(100);
+        }
+        nextVideos.push({
+          ...processedVideo,
+          fileName: file.name,
+          position: startPosition + nextVideos.length + 1,
+        });
+      }
+      if (nextVideos.length) {
+        setProductVideos((current) => [...current, ...nextVideos]);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to upload video.");
+    } finally {
+      setUploadingVideo(false);
+      setVideoUploadProgress(0);
+      setVideoProcessingProgress(0);
+      setVideoProcessingStage("");
+      if (videoUploadInputRef.current) videoUploadInputRef.current.value = "";
+    }
+  }
+
+  async function processUploadedVideo(sourceUrl: string, fileName: string) {
+    const progressTimer = window.setInterval(() => {
+      setVideoProcessingProgress((current) => (current >= 92 ? current : current + Math.max(1, Math.round((92 - current) * 0.08))));
+    }, 900);
+    const response = await fetch("/api/catalogue/v1/products/videos/process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceUrl, fileName }),
+    }).finally(() => {
+      window.clearInterval(progressTimer);
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.ok === false) {
+      throw new Error(payload?.message || payload?.title || "Unable to process video media.");
+    }
+    const data = payload?.data || {};
+    return {
+      videoUrl: String(data?.videoUrl || sourceUrl).trim(),
+      sourceUrl: String(data?.sourceUrl || sourceUrl).trim(),
+      previewUrl: String(data?.previewUrl || "").trim(),
+      posterUrl: String(data?.posterUrl || "").trim(),
+      processingStatus: String(data?.processingStatus || "ready").trim() as ProductVideo["processingStatus"],
+    };
   }
 
   async function uploadVariantFiles(files: FileList | File[]) {
@@ -5308,11 +5348,9 @@ export function SellerCatalogueEditor({
         description,
         keywords: keywordTags.slice(0, 10),
         imageKeys: imageSignatureFromItems(productImages),
+        videoUrl: videoSignatureFromItems(productVideos),
         fulfillmentMode,
         inventoryTracking,
-        courierEnabled: fulfillmentMode === "seller" ? productCourierEnabled : false,
-        customsCategory: fulfillmentMode === "seller" && productCourierEnabled ? productCustomsCategory : "",
-        hsCode: fulfillmentMode === "seller" && productCourierEnabled ? productHsCode : "",
       });
       setMessage(
         [
@@ -5372,12 +5410,27 @@ export function SellerCatalogueEditor({
     const normalizedKeywords = keywordTags.slice(0, 10);
     const normalizedBrandTitle = sanitizeText(selectedBrand?.title ?? matchingBrand?.title ?? brandName).slice(0, 60);
     const normalizedBrandSlug = selectedBrand?.slug ?? matchingBrand?.slug ?? normalizeSlug(normalizedBrandTitle);
-    const images = productImages.map((item, position) => ({
+    const images = productImages
+      .slice()
+      .sort((a, b) => (Number(a?.position) || 0) - (Number(b?.position) || 0))
+      .map((item) => ({
       imageUrl: item.imageUrl,
       blurHashUrl: item.blurHashUrl,
       altText: item.altText || item.fileName,
-      position: position + 1,
+      position: Number(item.position) || 1,
     }));
+    const videos = productVideos
+      .slice()
+      .sort((a, b) => (Number(a?.position) || 0) - (Number(b?.position) || 0))
+      .map((item) => ({
+        videoUrl: item.videoUrl,
+        sourceUrl: item.sourceUrl || item.videoUrl,
+        previewUrl: item.previewUrl || null,
+        posterUrl: item.posterUrl || null,
+        fileName: item.fileName,
+        position: Number(item.position) || 1,
+        processingStatus: item.processingStatus || (item.previewUrl && item.videoUrl !== item.sourceUrl ? "ready" : "pending"),
+      }));
     return {
       data: {
         product: {
@@ -5390,13 +5443,6 @@ export function SellerCatalogueEditor({
           keywords: normalizedKeywords,
           brandTitle: normalizedBrandTitle || null,
           brand: normalizedBrandSlug || null,
-          shipping: {
-            courierEnabled: fulfillmentMode === "seller" ? productCourierEnabled : false,
-            allowedInternational: true,
-            customsCategory: fulfillmentMode === "seller" && productCourierEnabled ? productCustomsCategory.trim() || null : null,
-            hsCode: fulfillmentMode === "seller" && productCourierEnabled ? productHsCode.trim() || null : null,
-            countryOfOrigin: fulfillmentMode === "seller" && productCourierEnabled ? sellerOriginCountry.trim() || null : null,
-          },
           sellerCode: activeSellerContext?.sellerCode || profile?.sellerCode || loadedProductSellerCode || null,
           vendorName: (vendorName || loadedProductVendorName).trim(),
         },
@@ -5428,6 +5474,8 @@ export function SellerCatalogueEditor({
         },
         media: {
           images,
+          videos,
+          video: firstProductVideoUrl || null,
         },
         ...(includeVariants ? { variants: variantItems, inventory: [] } : {}),
       },
@@ -6941,7 +6989,13 @@ export function SellerCatalogueEditor({
                 </Link>
                 <button
                   type="button"
-                  onClick={() => setVariantFormOpen((current) => !current)}
+                  onClick={() => {
+                    if (variantFormOpen) {
+                      closeVariantForm();
+                      return;
+                    }
+                    void openVariantForm();
+                  }}
                   className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
                 >
                   {variantFormOpen ? "Close variants" : "Add variant"}
@@ -7278,186 +7332,6 @@ export function SellerCatalogueEditor({
                     </div>
                   )}
                 </div>
-                {fulfillmentMode === "seller" ? (
-                  <div className="mt-3 rounded-[8px] border border-black/10 bg-white px-3 py-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[12px] font-semibold text-[#202020]">Courier shipping</p>
-                        <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                          Turn this on if this product should be eligible for Piessang-managed courier shipping once the seller destination and courier checks pass.
-                        </p>
-                      </div>
-                      <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[10px] font-semibold text-[#907d4c]">
-                        {sellerCourierProfile.enabled ? "Seller courier enabled" : "Seller courier disabled"}
-                      </span>
-                    </div>
-                    <label className="mt-3 inline-flex items-center gap-2 text-[12px] text-[#57636c]">
-                      <input
-                        type="checkbox"
-                        checked={productCourierEnabled}
-                        onChange={(event) => setProductCourierEnabled(event.target.checked)}
-                        disabled={!sellerCourierProfile.enabled || easyshipCategoryMapping.supportLevel === "restricted"}
-                      />
-                      Allow courier shipping for this product
-                    </label>
-                      <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                        {easyshipCategoryMapping.supportLevel === "restricted"
-                        ? "This category is treated as restricted for Piessang-managed courier shipping, so the courier option is disabled for this product."
-                        : sellerCourierProfile.enabled
-                        ? "Variant dimensions and weight still matter for later courier quoting, but this flag controls whether the product is even considered for courier delivery."
-                        : "Enable courier shipping in seller settings first before you can switch this product on."}
-                    </p>
-                    {productCourierEnabled ? (
-                      <div className="mt-3 space-y-3">
-                        <CourierLiabilityNotice />
-                        <div className="grid gap-3 sm:grid-cols-1">
-                        <label className="block">
-                          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Customs category</span>
-                          <select
-                            value={productCustomsCategory}
-                            onChange={(event) => {
-                              setProductCustomsCategoryTouched(true);
-                              setProductCustomsCategory(event.target.value);
-                              if (!productHsCodeTouched) {
-                                setProductHsCode("");
-                              }
-                            }}
-                            className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#cbb26b]"
-                          >
-                            <option value="">Select customs category</option>
-                            {easyshipCustomsCategoryOptions.map((option) => (
-                              <option key={option} value={option}>
-                                {option}
-                              </option>
-                            ))}
-                          </select>
-                          {!productCustomsCategoryTouched && easyshipCategoryMapping.itemCategory ? (
-                            <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                              Suggested from your Piessang category: <span className="font-semibold text-[#202020]">{easyshipCategoryMapping.itemCategory}</span>
-                            </p>
-                          ) : null}
-                          <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                            Piessang preselects the closest supported customs category from your Piessang category. Change it only if this product should be classified differently for customs.
-                          </p>
-                        </label>
-                        </div>
-                        <div className="rounded-[10px] border border-black/8 bg-[#fafafa] px-3 py-3 text-[11px] leading-[1.5] text-[#57636c]">
-                          <span className="font-semibold text-[#202020]">Country of origin:</span>{" "}
-                          {sellerOriginCountry || "Inherited from your seller shipping origin once that origin is set in Settings."}
-                        </div>
-                        <div className="rounded-[10px] border border-black/8 bg-white">
-                          <button
-                            type="button"
-                            onClick={() => setShowAdvancedCustomsDetails((current) => !current)}
-                            className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
-                          >
-                            <div>
-                              <p className="text-[12px] font-semibold text-[#202020]">Advanced customs details</p>
-                              <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                                Piessang fills the customs code automatically when possible, so most sellers will not need to touch this.
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {hsSuggestionLoading ? (
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-[rgba(203,178,107,0.14)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">
-                                  <SpinnerIcon className="h-3.5 w-3.5 animate-spin text-[#907d4c]" />
-                                  Refreshing code
-                                </span>
-                              ) : null}
-                              <span className="text-[11px] font-semibold text-[#907d4c]">
-                                {showAdvancedCustomsDetails ? "Hide" : "Review"}
-                              </span>
-                            </div>
-                          </button>
-                          {!showAdvancedCustomsDetails ? (
-                            <div className="border-t border-black/6 px-3 py-3 text-[11px] leading-[1.5] text-[#57636c]">
-                              {productHsCode ? (
-                                <div className="space-y-2">
-                                  <p>
-                                    Piessang has prepared a customs code for this product.
-                                  </p>
-                                  <div className="inline-flex items-center gap-2 rounded-[10px] border border-[#cbb26b]/35 bg-[#fffaf0] px-3 py-2">
-                                    <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Code</span>
-                                    <span className="text-[18px] font-semibold tracking-[0.08em] text-[#202020]">{productHsCode}</span>
-                                  </div>
-                                  <p>
-                                    {hsSuggestionSource === "ai_fallback"
-                                      ? "This is currently an AI fallback suggestion."
-                                      : hsSuggestionSource === "reviewed_fallback"
-                                        ? "This is currently using Piessang's reviewed fallback classification."
-                                        : "This was auto-filled from the latest classification pass."}
-                                  </p>
-                                </div>
-                              ) : (
-                                <>
-                                  {hsSuggestionLoading
-                                    ? "Piessang is currently classifying this product and refreshing the customs code."
-                                    : "Piessang will keep trying to prepare a customs code automatically from the selected customs category."}
-                                </>
-                              )}
-                              {!productHsCodeTouched ? (
-                                <span className="block mt-2">This code keeps updating automatically as your product title, category, brand, overview, and description become more specific.</span>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <div className="border-t border-black/6 px-3 py-3">
-                              <label className="block">
-                                <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#7d7d7d]">Suggested customs code</span>
-                                <input
-                                  type="text"
-                                  value={productHsCode}
-                                  onChange={(event) => {
-                                    setProductHsCodeTouched(true);
-                                    setProductHsCode(event.target.value);
-                                  }}
-                                  placeholder="Piessang will auto-fill this when possible"
-                                  className="mt-2 h-11 w-full rounded-[10px] border border-black/10 bg-white px-3 text-[14px] text-[#202020] outline-none transition focus:border-[#cbb26b]"
-                                />
-                                <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                                  This customs code helps duties, taxes, and customs clearance. Leave Piessang&apos;s suggestion in place unless you know the exact classification for your product.
-                                </p>
-                                <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                                  {productHsCodeTouched
-                                    ? "Using your manual customs code override."
-                                    : "Piessang keeps this code up to date automatically while you edit the product details."}
-                                </p>
-                                {hsSuggestionLoading ? (
-                                  <div className="mt-2 inline-flex items-center gap-2 rounded-[10px] border border-[#cbb26b]/25 bg-[#fffaf0] px-3 py-2 text-[11px] font-medium text-[#907d4c]">
-                                    <SpinnerIcon className="h-4 w-4 animate-spin text-[#907d4c]" />
-                                    Refreshing the latest customs code suggestion from your current product details...
-                                  </div>
-                                ) : null}
-                                {!productHsCodeTouched && easyshipSuggestedHsCode ? (
-                                  <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                                    Suggested from the selected customs category: <span className="font-semibold text-[#202020]">{easyshipSuggestedHsCode}</span>
-                                    {easyshipSuggestedHsDescription ? ` · ${easyshipSuggestedHsDescription}` : ""}
-                                  </p>
-                                ) : null}
-                                {hsSuggestionNote ? (
-                                  <p className="mt-2 text-[11px] leading-[1.4] text-[#57636c]">
-                                    {hsSuggestionNote}
-                                  </p>
-                                ) : null}
-                              </label>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ) : null}
-                    {easyshipSellerWarnings.length ? (
-                      <div className="mt-3 rounded-[10px] border border-[#f59e0b]/25 bg-[rgba(245,158,11,0.08)] p-3">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#92400e]">Courier review</p>
-                        <div className="mt-2 space-y-2">
-                          {easyshipSellerWarnings.map((warning) => (
-                            <p key={warning} className="text-[12px] leading-[1.5] text-[#7c2d12]">
-                              {warning}
-                            </p>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
               </section>
 
               <section className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
@@ -7555,7 +7429,9 @@ export function SellerCatalogueEditor({
                   </p>
                   <span className="text-[11px] text-[#57636c]">{descriptionPlainText.length}/{DESCRIPTION_MAX_LENGTH}</span>
                 </div>
-                <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">{aiHelperPrompt}</p>
+                {!aiHelpersEnabled ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">{aiHelperPrompt}</p>
+                ) : null}
               </section>
 
               <section className="space-y-3">
@@ -7610,19 +7486,21 @@ export function SellerCatalogueEditor({
                 <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
                   Use commas or Enter to add keywords. Backspace removes the last pill when the field is empty.
                 </p>
-                <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">{aiHelperPrompt}</p>
+                {!aiHelpersEnabled ? (
+                  <p className="mt-1 text-[11px] leading-[1.4] text-[#b91c1c]">{aiHelperPrompt}</p>
+                ) : null}
               </section>
 
               <section className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="text-[12px] font-semibold text-[#202020]">Product images</p>
+                    <p className="text-[12px] font-semibold text-[#202020]">Product media</p>
                     <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                      Upload clear product images for the listing. Drag to reorder them and update alt text once they are in.
+                      Upload images and videos for the listing. Drag to reorder them; the first video in this list powers card hover previews.
                     </p>
                   </div>
                   <div className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-[#907d4c] shadow-[0_4px_10px_rgba(20,24,27,0.06)]">
-                    {productImages.length} image{productImages.length === 1 ? "" : "s"}
+                    {productMediaItems.length} item{productMediaItems.length === 1 ? "" : "s"}
                   </div>
                 </div>
                 <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
@@ -7638,12 +7516,22 @@ export function SellerCatalogueEditor({
                     void uploadFiles(event.target.files ?? []);
                   }}
                 />
-                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                <input
+                  ref={videoUploadInputRef}
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime,video/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    void uploadVideoFile(event.target.files ?? []);
+                  }}
+                />
+                <div className="mt-3 flex flex-wrap items-start gap-3">
                   <button
                     type="button"
                     onClick={() => uploadInputRef.current?.click()}
                     disabled={uploadingImages}
-                    className="flex min-h-[172px] w-full flex-col items-center justify-center gap-2 rounded-[12px] border border-dashed border-[#d7d7d7] bg-white px-4 py-5 text-center text-[#57636c] transition-colors hover:border-[#cbb26b] hover:bg-[#fffaf0] hover:text-[#907d4c] disabled:cursor-wait disabled:border-[#cbb26b] disabled:bg-[rgba(203,178,107,0.12)] disabled:text-[#907d4c] disabled:opacity-100"
+                    className="flex h-[148px] w-[148px] shrink-0 flex-col items-center justify-center gap-2 rounded-[12px] border border-dashed border-[#d7d7d7] bg-white px-3 py-4 text-center text-[#57636c] transition-colors hover:border-[#cbb26b] hover:bg-[#fffaf0] hover:text-[#907d4c] disabled:cursor-wait disabled:border-[#cbb26b] disabled:bg-[rgba(203,178,107,0.12)] disabled:text-[#907d4c] disabled:opacity-100"
                   >
                     {uploadingImages ? (
                       <>
@@ -7657,30 +7545,66 @@ export function SellerCatalogueEditor({
                           +
                         </span>
                         <span className="text-[12px] font-semibold text-[#202020]">Upload images</span>
-                        <span className="max-w-[180px] text-[10px] leading-[1.5]">
-                          Click to add product photos. Use clean front-facing shots first, then supporting angles.
+                        <span className="max-w-[112px] text-[10px] leading-[1.4]">
+                          Add clear product photos
                         </span>
                       </>
                     )}
                   </button>
-                  {productImages.map((image, index) => (
-                    <ProductImageCard
-                      key={`${image.fileName}-${index}`}
-                      image={image}
-                      index={index}
-                      onMove={moveImage}
-                      onDropImage={reorderImages}
-                      onRemove={removeImageAt}
-                      onAltChange={updateImageAltText}
-                      onDragStartImage={beginDragImage}
-                      onDragEndImage={endDragImage}
-                      onDragEnterImage={hoverDragImage}
-                      canMoveUp={index > 0}
-                      canMoveDown={index < productImages.length - 1}
-                      isDragging={draggedImageIndex === index}
-                      isDropTarget={dropTargetIndex === index && draggedImageIndex !== null && draggedImageIndex !== index}
-                    />
-                  ))}
+                  <button
+                    type="button"
+                    onClick={() => videoUploadInputRef.current?.click()}
+                    disabled={uploadingVideo}
+                    className="flex h-[148px] w-[148px] shrink-0 flex-col items-center justify-center gap-2 rounded-[12px] border border-dashed border-[#d7d7d7] bg-white px-3 py-4 text-center text-[#57636c] transition-colors hover:border-[#cbb26b] hover:bg-[#fffaf0] hover:text-[#907d4c] disabled:cursor-wait disabled:border-[#cbb26b] disabled:bg-[rgba(203,178,107,0.12)] disabled:text-[#907d4c] disabled:opacity-100"
+                  >
+                    {uploadingVideo ? (
+                      <>
+                        <SpinnerIcon className="h-5 w-5 animate-spin text-[#907d4c]" />
+                        <span className="text-[12px] font-semibold">Uploading...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex h-11 w-11 items-center justify-center rounded-full bg-[#faf7ef] text-[#907d4c]">
+                          <span className="ml-0.5 h-0 w-0 border-y-[7px] border-l-[11px] border-y-transparent border-l-current" aria-hidden="true" />
+                        </span>
+                        <span className="text-[12px] font-semibold text-[#202020]">Upload videos</span>
+                        <span className="max-w-[112px] text-[10px] leading-[1.4]">Add product videos</span>
+                      </>
+                    )}
+                  </button>
+                  {productMediaItems.map((media, index) =>
+                    media.type === "image" ? (
+                      <ProductImageCard
+                        key={`image-${media.item.imageUrl}-${index}`}
+                        image={media.item}
+                        index={index}
+                        onMove={moveImage}
+                        onDropImage={reorderImages}
+                        onRemove={removeImageAt}
+                        onAltChange={updateImageAltText}
+                        onDragStartImage={beginDragImage}
+                        onDragEndImage={endDragImage}
+                        onDragEnterImage={hoverDragImage}
+                        canMoveUp={index > 0}
+                        canMoveDown={index < productMediaItems.length - 1}
+                        isDragging={draggedImageIndex === index}
+                        isDropTarget={dropTargetIndex === index && draggedImageIndex !== null && draggedImageIndex !== index}
+                      />
+                    ) : (
+                      <ProductVideoCard
+                        key={`video-${media.item.videoUrl}-${index}`}
+                        video={media.item}
+                        index={index}
+                        onMove={moveImage}
+                        onDropMedia={reorderImages}
+                        onRemove={removeImageAt}
+                        canMoveUp={index > 0}
+                        canMoveDown={index < productMediaItems.length - 1}
+                        isDragging={draggedImageIndex === index}
+                        isDropTarget={dropTargetIndex === index && draggedImageIndex !== null && draggedImageIndex !== index}
+                      />
+                    ),
+                  )}
                 </div>
               </section>
 
@@ -7699,7 +7623,7 @@ export function SellerCatalogueEditor({
                     type="button"
                     onClick={() => {
                       if (variantFormOpen) {
-                        setVariantFormOpen(false);
+                        closeVariantForm();
                         return;
                       }
                       void openVariantForm();
@@ -8068,62 +7992,6 @@ export function SellerCatalogueEditor({
                                 <p className="text-[11px] leading-[1.4] text-[#57636c]">
                                   Piessang uses the preset as the packed parcel shape. Weight and dimensions below can still override it.
                                 </p>
-                              </div>
-                              <div className="mt-4 rounded-[8px] border border-dashed border-black/10 bg-[#fcfcfb] p-3">
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <p className="text-[12px] font-semibold text-[#202020]">Easyship carrier boxes</p>
-                                    <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">
-                                      Loaded live from Easyship's boxes API for your seller origin country. Use these to mirror carrier package shapes from Easyship quoting.
-                                    </p>
-                                  </div>
-                                  {easyshipBoxesLoading ? (
-                                    <span className="rounded-full bg-[rgba(59,130,246,0.1)] px-2.5 py-1 text-[11px] font-semibold text-[#2563eb]">
-                                      Loading...
-                                    </span>
-                                  ) : null}
-                                </div>
-                                {easyshipBoxesError ? (
-                                  <p className="mt-3 text-[11px] font-medium text-[#b91c1c]">{easyshipBoxesError}</p>
-                                ) : null}
-                                {easyshipBoxOptions.length ? (
-                                  <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                                    {easyshipBoxOptions.slice(0, 12).map((box) => (
-                                      <button
-                                        key={box.id}
-                                        type="button"
-                                        onClick={() =>
-                                          setVariantDraft((current) => ({
-                                            ...current,
-                                            parcelPreset: "",
-                                            shippingClass: box.slug || current.shippingClass,
-                                            weightKg:
-                                              box.emptyWeightKg != null && box.emptyWeightKg > 0
-                                                ? String(box.emptyWeightKg)
-                                                : current.weightKg,
-                                            lengthCm: box.lengthCm != null ? String(box.lengthCm) : current.lengthCm,
-                                            widthCm: box.widthCm != null ? String(box.widthCm) : current.widthCm,
-                                            heightCm: box.heightCm != null ? String(box.heightCm) : current.heightCm,
-                                          }))
-                                        }
-                                        className="rounded-[10px] border border-black/8 bg-white px-3 py-2 text-left transition hover:border-[#cbb26b]/55 hover:bg-[#fcfbf6]"
-                                      >
-                                        <div className="text-[12px] font-semibold text-[#202020]">{box.name}</div>
-                                        <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-[#6b7280]">
-                                          {[box.courierUmbrellaName, box.type].filter(Boolean).join(" • ") || "Easyship"}
-                                        </p>
-                                        <p className="mt-1 text-[10px] text-[#57636c]">
-                                          {(box.lengthCm || 0).toFixed(2)} x {(box.widthCm || 0).toFixed(2)} x {(box.heightCm || 0).toFixed(2)} cm
-                                          {box.emptyWeightKg ? ` • ${box.emptyWeightKg} kg` : ""}
-                                        </p>
-                                      </button>
-                                    ))}
-                                  </div>
-                                ) : !easyshipBoxesLoading && !easyshipBoxesError ? (
-                                  <p className="mt-3 text-[11px] text-[#57636c]">
-                                    No Easyship carrier boxes were returned for this seller origin yet.
-                                  </p>
-                                ) : null}
                               </div>
                             </div>
                             {activeParcelPresetMeta ? (
@@ -9498,10 +9366,10 @@ export function SellerCatalogueEditor({
                     <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                       <button
                         type="button"
-                        onClick={() => resetVariantDraft()}
+                        onClick={closeVariantForm}
                         className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020]"
                       >
-                        Clear
+                        {editingVariantIndex !== null ? "Cancel edit" : "Clear"}
                       </button>
                       <button
                         type="button"
@@ -9529,53 +9397,55 @@ export function SellerCatalogueEditor({
                     </div>
                   ) : null}
                   {variantItems.length ? (
-                    variantItems.map((variant, index) => (
-                      <div key={`${variant.variant_id ?? index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/5 bg-white px-3 py-2">
-                        <div>
-                          <p className="text-[13px] font-semibold text-[#202020]">{variant.label || "Untitled variant"}</p>
-                          <p className="mt-1 text-[11px] text-[#57636c]">
-                            {variant.variant_id ? `Code ${variant.variant_id}` : "No code"}
-                          </p>
-                          <p className="mt-1 text-[11px] text-[#57636c]">
-                            {buildVariantAxisPreviewText(variant)}
-                            {!String((variant as any)?.size ?? "").trim() && variant.pack?.volume_unit ? ` • ${variant.pack.volume_unit}` : ""}
-                            {Array.isArray(variant.media?.images) && variant.media.images.length > 0
-                              ? ` • ${variant.media.images.length} image${variant.media.images.length === 1 ? "" : "s"}`
-                              : ""}
-                            {variantPriceIncl(variant) > 0 ? ` • R ${variantPriceIncl(variant).toFixed(2)} incl` : ""}
-                            {variant.sale?.is_on_sale && Number(variant.sale?.discount_percent ?? 0) > 0
-                              ? ` • Sale ${Number(variant.sale?.discount_percent ?? 0).toFixed(0)}% to R ${variantSalePriceIncl(variant).toFixed(2)}`
-                              : ""}
-                          </p>
-                          <p className="mt-1 text-[11px] text-[#57636c]">
-                            {Array.isArray((variant as any)?.inventory) && (variant as any).inventory.length > 0
-                              ? `${(variant as any).inventory[0]?.in_stock_qty ?? 0} in stock`
-                              : "Inventory not tracked"}
-                          </p>
+                    variantItems.map((variant, index) =>
+                      editingVariantIndex === index ? null : (
+                        <div key={`${variant.variant_id ?? index}`} className="flex flex-wrap items-center justify-between gap-3 rounded-[8px] border border-black/5 bg-white px-3 py-2">
+                          <div>
+                            <p className="text-[13px] font-semibold text-[#202020]">{variant.label || "Untitled variant"}</p>
+                            <p className="mt-1 text-[11px] text-[#57636c]">
+                              {variant.variant_id ? `Code ${variant.variant_id}` : "No code"}
+                            </p>
+                            <p className="mt-1 text-[11px] text-[#57636c]">
+                              {buildVariantAxisPreviewText(variant)}
+                              {!String((variant as any)?.size ?? "").trim() && variant.pack?.volume_unit ? ` • ${variant.pack.volume_unit}` : ""}
+                              {Array.isArray(variant.media?.images) && variant.media.images.length > 0
+                                ? ` • ${variant.media.images.length} image${variant.media.images.length === 1 ? "" : "s"}`
+                                : ""}
+                              {variantPriceIncl(variant) > 0 ? ` • R ${variantPriceIncl(variant).toFixed(2)} incl` : ""}
+                              {variant.sale?.is_on_sale && Number(variant.sale?.discount_percent ?? 0) > 0
+                                ? ` • Sale ${Number(variant.sale?.discount_percent ?? 0).toFixed(0)}% to R ${variantSalePriceIncl(variant).toFixed(2)}`
+                                : ""}
+                            </p>
+                            <p className="mt-1 text-[11px] text-[#57636c]">
+                              {Array.isArray((variant as any)?.inventory) && (variant as any).inventory.length > 0
+                                ? `${(variant as any).inventory[0]?.in_stock_qty ?? 0} in stock`
+                                : "Inventory not tracked"}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {variant.placement?.is_default ? (
+                              <span className="rounded-full bg-[rgba(57,169,107,0.12)] px-2.5 py-1 text-[11px] font-semibold text-[#166534]">
+                                Default
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => loadVariantIntoForm(variant, index)}
+                              className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#202020]"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void removeVariant(String(variant.variant_id ?? ""))}
+                              className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#b91c1c]"
+                            >
+                              Remove
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          {variant.placement?.is_default ? (
-                            <span className="rounded-full bg-[rgba(57,169,107,0.12)] px-2.5 py-1 text-[11px] font-semibold text-[#166534]">
-                              Default
-                            </span>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={() => loadVariantIntoForm(variant, index)}
-                            className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#202020]"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void removeVariant(String(variant.variant_id ?? ""))}
-                            className="inline-flex h-8 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[11px] font-semibold text-[#b91c1c]"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      </div>
-                    ))
+                      ),
+                    )
                   ) : (
                     <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[12px] text-[#57636c]">
                       No variants added yet.
@@ -9793,7 +9663,44 @@ export function SellerCatalogueEditor({
       </div>
       )}
 
-      {activeProcessLabel ? (
+      {uploadingVideo ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
+          <div className="w-full max-w-[380px] rounded-[12px] border border-black/10 bg-white p-5 text-center shadow-[0_24px_60px_rgba(20,24,27,0.26)]">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[rgba(203,178,107,0.14)] text-[#907d4c]">
+              <SpinnerIcon className="h-5 w-5 animate-spin" />
+            </div>
+            <p className="mt-4 text-[15px] font-semibold text-[#202020]">Uploading video media</p>
+            <p className="mt-2 text-[12px] leading-[1.55] text-[#57636c]">
+              {videoProcessingStage || "Preparing video upload"}
+            </p>
+            <div className="mt-4 space-y-3 text-left">
+              <div>
+                <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-[#57636c]">
+                  <span>Upload</span>
+                  <span>{videoUploadProgress}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-[#ececec]">
+                  <div className="h-full rounded-full bg-[#907d4c] transition-[width] duration-200" style={{ width: `${videoUploadProgress}%` }} />
+                </div>
+              </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-[#57636c]">
+                  <span>Processing</span>
+                  <span>{videoProcessingProgress}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-[#ececec]">
+                  <div className="h-full rounded-full bg-[#202020] transition-[width] duration-300" style={{ width: `${videoProcessingProgress}%` }} />
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 rounded-[8px] bg-[#faf7ef] px-3 py-2 text-[11px] font-medium text-[#6b5a2d]">
+              Max {Math.round(VIDEO_UPLOAD_MAX_BYTES / 1024 / 1024)}MB per video.
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeProcessLabel && !uploadingVideo ? (
         <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
           <div className="inline-flex items-center gap-2 rounded-[8px] border border-black/10 bg-white px-4 py-2 text-[12px] text-[#202020] shadow-[0_12px_30px_rgba(20,24,27,0.14)]">
             <SpinnerIcon className="h-4 w-4 animate-spin text-[#907d4c]" />

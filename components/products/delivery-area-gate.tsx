@@ -278,7 +278,7 @@ export function DeliveryAreaGate({
           <div className="rounded-[10px] border border-[rgba(203,178,107,0.34)] bg-[rgba(203,178,107,0.12)] p-3">
             <p className="text-[12px] font-semibold text-[#202020]">Best accuracy</p>
             <p className="mt-1 text-[12px] leading-[1.55] text-[#57636c]">
-              Search your exact address or tap the map so Piessang can validate shipping eligibility for your area.
+              Search your exact address or tap the map so Piessang can match seller shipping rules for your area.
             </p>
             {area?.addressLine1 || area?.latitude != null ? (
               <div className="mt-2 rounded-[8px] bg-white px-3 py-2 text-[12px] text-[#202020] shadow-[0_4px_14px_rgba(20,24,27,0.05)]">

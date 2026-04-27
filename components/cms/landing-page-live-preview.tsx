@@ -608,6 +608,7 @@ export function LandingPageLivePreview({
                 subtitle={toStr(section.props?.subtitle)}
                 products={items}
                 emptyMessage="No products available for this rail yet."
+                mode="admin-preview"
               />
             </PreviewSelectableShell>
           );
@@ -624,6 +625,7 @@ export function LandingPageLivePreview({
                 subtitle={toStr(section.props?.subtitle)}
                 products={selectedProducts}
                 emptyMessage="Select up to two products for this feature."
+                mode="admin-preview"
               />
             </PreviewSelectableShell>
           );
