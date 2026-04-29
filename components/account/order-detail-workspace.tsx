@@ -302,14 +302,17 @@ function getShipmentProgressSteps(mode: unknown, status: unknown) {
       ? 3
       : normalized === "dispatched"
         ? 2
-        : normalized === "processing" || normalized === "confirmed"
+        : normalized === "processing"
           ? 1
           : 0;
-  const labels = ["Confirmed", "Prepared", "In transit", "Delivered"];
+  const labels = ["Order confirmed", "Order in process", "Package on delivery", "Package delivered"];
+  const shortLabels = ["Confirmed", "Processing", "On delivery", "Delivered"];
+  const icons = ["clock", "process", "truck", "box"];
   return labels.map((label, index) => ({
     key: `${toStr(mode || "delivery")}-${index}`,
     label,
-    icon: String(index + 1),
+    shortLabel: shortLabels[index] || label,
+    icon: icons[index] || String(index + 1),
     done: activeIndex >= index,
     active: activeIndex === index,
   }));
@@ -719,7 +722,7 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
         );
         return {
           lineKey,
-          title: toStr(productSnapshot?.name || productSnapshot?.product?.title || "Product"),
+          title: toStr(productSnapshot?.product?.title || productSnapshot?.title || productSnapshot?.name || "Product"),
           variant: toStr(item?.selected_variant_snapshot?.label || ""),
           quantity: Math.max(0, Number(item?.quantity || 0)),
           status: toStr(item?.fulfillment_tracking?.status || ""),
@@ -967,14 +970,6 @@ export function CustomerOrderDetailWorkspace({ uid, orderId }: { uid: string; or
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2 text-[13px] text-[#57636c]">
-        <Link href="/account" className="font-semibold text-[#0f80c3]">My Account</Link>
-        <span>/</span>
-        <Link href="/account/orders" className="font-semibold text-[#0f80c3]">Orders</Link>
-        <span>/</span>
-        <span className="text-[#202020]">Order detail</span>
-      </div>
-
       {loading ? <div className="rounded-[24px] border border-black/6 bg-white px-6 py-10 text-[14px] text-[#57636c] shadow-[0_12px_30px_rgba(20,24,27,0.06)]">Loading your order…</div> : null}
       {error ? <div className="rounded-[24px] border border-[#f0c7cb] bg-[#fff7f8] px-6 py-4 text-[13px] text-[#b91c1c] shadow-[0_12px_30px_rgba(20,24,27,0.05)]">{error}</div> : null}
 

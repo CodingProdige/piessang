@@ -7,7 +7,7 @@ export function DeferredSection({
   minHeight?: number;
   eager?: boolean;
 }) {
-  if (eager) {
+  if (eager || minHeight <= 0) {
     return <div className="w-full">{children}</div>;
   }
 

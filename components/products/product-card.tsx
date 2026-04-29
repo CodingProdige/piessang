@@ -142,7 +142,9 @@ export function ProductCard({
   const [cartJustAdded, setCartJustAdded] = useState(false);
   const [cartBlockedNotice, setCartBlockedNotice] = useState<string | null>(null);
   const [mediaHovered, setMediaHovered] = useState(false);
+  const [videoPreviewActive, setVideoPreviewActive] = useState(false);
   const [hoveredImageIndex, setHoveredImageIndex] = useState(0);
+  const touchStartRef = useRef<{ x: number; y: number; index: number; moved: boolean } | null>(null);
   const titleText = item.title || "Untitled product";
   const href = getProductHref(item);
   const priceText = typeof item.price.amountIncl === "number" ? formatMoney(item.price.amountIncl) : null;
@@ -151,7 +153,7 @@ export function ProductCard({
   const salePercent = item.price.salePercent;
   const videoUrl = String(item.image.videoUrl || "").trim();
   const hasPlayableVideo = Boolean(videoUrl);
-  const showVideoPreview = Boolean(videoUrl && mediaHovered);
+  const showVideoPreview = Boolean(videoUrl && (mediaHovered || videoPreviewActive));
   const displayImages =
     Array.isArray(item.image.images) && item.image.images.length
       ? item.image.images
@@ -205,6 +207,7 @@ export function ProductCard({
   useEffect(() => {
     hasPrefetchedHrefRef.current = false;
     setHoveredImageIndex(0);
+    setVideoPreviewActive(false);
   }, [href]);
 
   useEffect(() => {
@@ -230,6 +233,10 @@ export function ProductCard({
   }, [href, router]);
 
   const openProduct = () => {
+    if (touchStartRef.current?.moved) {
+      touchStartRef.current = null;
+      return;
+    }
     if (openInNewTab) {
       window.open(href, "_blank", "noreferrer,noopener");
       return;
@@ -264,7 +271,52 @@ export function ProductCard({
 
   const handleMediaPointerLeave = () => {
     setMediaHovered(false);
+    setVideoPreviewActive(false);
     if (hoveredImageIndex !== 0) setHoveredImageIndex(0);
+  };
+
+  const handleMediaTouchStart = (event: TouchEvent<HTMLElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      index: hoveredImageIndex,
+      moved: false,
+    };
+  };
+
+  const handleMediaTouchMove = (event: TouchEvent<HTMLElement>) => {
+    const touch = event.touches[0];
+    const start = touchStartRef.current;
+    if (!touch || !start || displayImages.length <= 1) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (Math.abs(deltaX) < 12 || Math.abs(deltaX) < Math.abs(deltaY)) return;
+    event.preventDefault();
+    start.moved = true;
+    setVideoPreviewActive(false);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const imageStep = bounds.width > 0 ? bounds.width / Math.max(displayImages.length, 1) : 56;
+    const offset = Math.trunc(Math.abs(deltaX) / Math.max(36, imageStep * 0.55));
+    const direction = deltaX < 0 ? 1 : -1;
+    const nextIndex = Math.max(0, Math.min(displayImages.length - 1, start.index + direction * Math.max(1, offset)));
+    if (nextIndex !== hoveredImageIndex) setHoveredImageIndex(nextIndex);
+  };
+
+  const handleMediaTouchEnd = () => {
+    window.setTimeout(() => {
+      touchStartRef.current = null;
+    }, 350);
+  };
+
+  const handlePlayPreview = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!hasPlayableVideo) return;
+    setHoveredImageIndex(0);
+    setMediaHovered(false);
+    setVideoPreviewActive((current) => !current);
   };
 
   const handleFavoriteToggle = async (event: MouseEvent<HTMLButtonElement>) => {
@@ -364,6 +416,9 @@ export function ProductCard({
             onMouseEnter={() => setMediaHovered(true)}
             onMouseMove={handleMediaPointerMove}
             onMouseLeave={handleMediaPointerLeave}
+            onTouchStart={handleMediaTouchStart}
+            onTouchMove={handleMediaTouchMove}
+            onTouchEnd={handleMediaTouchEnd}
           >
             {item.image.imageCount > 0 ? (
               <span className="absolute bottom-2 left-2 z-10 inline-flex h-4 items-center gap-1 rounded-full bg-white/92 px-1 text-[8px] font-semibold text-[#4a4545] shadow-[0_4px_12px_rgba(20,24,27,0.12)]">
@@ -372,9 +427,19 @@ export function ProductCard({
               </span>
             ) : null}
             {hasPlayableVideo ? (
-              <span className="absolute bottom-2 right-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/38 text-white shadow-[0_4px_12px_rgba(20,24,27,0.16)] ring-1 ring-white/25">
+              <button
+                type="button"
+                data-ignore-card-open="true"
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={handlePlayPreview}
+                aria-label={videoPreviewActive ? "Stop product video preview" : "Play product video preview"}
+                className={`absolute bottom-2 right-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full text-white shadow-[0_4px_12px_rgba(20,24,27,0.16)] ring-1 ring-white/25 transition-colors ${
+                  videoPreviewActive ? "bg-[#cbb26b]" : "bg-black/38"
+                }`}
+              >
                 <PlayIcon />
-              </span>
+              </button>
             ) : null}
             <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-4rem)] flex-col gap-1">
               {item.merchandising.isPreLoved ? (

@@ -21,12 +21,21 @@ type SellerCreditNoteEntry = {
 };
 
 type SellerShipmentItem = {
+  title?: string;
+  name?: string;
   quantity?: number;
   product_snapshot?: {
     name?: string;
+    title?: string;
+    product?: {
+      title?: string;
+      name?: string;
+    };
   };
   selected_variant_snapshot?: {
     label?: string;
+    title?: string;
+    productTitle?: string;
   };
   fulfillment_tracking?: {
     status?: string;
@@ -56,10 +65,85 @@ type SellerShipmentGroup = {
 type ShipmentStep = {
   key: string;
   label: string;
+  shortLabel?: string;
   icon: string;
   done: boolean;
   active: boolean;
 };
+
+function toText(value: unknown) {
+  if (value == null) return "";
+  return String(value).trim();
+}
+
+function getShipmentItemTitle(item: SellerShipmentItem) {
+  const productSnapshot = item?.product_snapshot;
+  const product = productSnapshot?.product;
+  const variant = item?.selected_variant_snapshot;
+  const candidates = [
+    product?.title,
+    productSnapshot?.title,
+    product?.name,
+    item?.title,
+    item?.name,
+    variant?.productTitle,
+    productSnapshot?.name,
+    variant?.title,
+    variant?.label,
+  ];
+  const title = candidates.map(toText).find((value) => value && value.toLowerCase() !== "product");
+  return title || "Product";
+}
+
+function ShipmentStepIcon({ icon }: { icon: string }) {
+  const common = {
+    className: "h-5 w-5 sm:h-6 sm:w-6",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 2.2,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+    "aria-hidden": true,
+  };
+
+  if (icon === "process") {
+    return (
+      <svg {...common}>
+        <path d="M20 11a8 8 0 0 0-13.6-5.7" />
+        <path d="M4 5v5h5" />
+        <path d="M4 13a8 8 0 0 0 13.6 5.7" />
+        <path d="M20 19v-5h-5" />
+      </svg>
+    );
+  }
+  if (icon === "truck") {
+    return (
+      <svg {...common}>
+        <path d="M3 7h11v9H3z" />
+        <path d="M14 10h4l3 3v3h-7z" />
+        <circle cx="7" cy="18" r="1.7" />
+        <circle cx="17" cy="18" r="1.7" />
+      </svg>
+    );
+  }
+  if (icon === "box") {
+    return (
+      <svg {...common}>
+        <path d="M21 8.5 12 4 3 8.5l9 4.5 9-4.5Z" />
+        <path d="M3 8.5V16l9 4 9-4V8.5" />
+        <path d="m12 13 9-4.5" />
+        <path d="M8.5 11.25 17.5 6.75" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common}>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
 
 export function CustomerSellerShipmentCard({
   group,
@@ -97,34 +181,14 @@ export function CustomerSellerShipmentCard({
   onViewCreditNote: (creditNoteId: string) => void | Promise<void>;
 }) {
   return (
-    <div className="rounded-[24px] border border-black/6 bg-[#fcfcfc] p-4 shadow-[0_8px_24px_rgba(20,24,27,0.04)]">
+    <div className="min-w-0 overflow-hidden rounded-[24px] border border-black/6 bg-[#fcfcfc] p-4 shadow-[0_8px_24px_rgba(20,24,27,0.04)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-[18px] font-semibold text-[#202020]">{group.vendorName}</p>
           <p className="mt-1 text-[13px] text-[#57636c]">{group.items.length} line{group.items.length === 1 ? "" : "s"} • {group.totalQty} item{group.totalQty === 1 ? "" : "s"}</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold ${fulfillmentTone(group.latestStatus)}`}>{sentenceStatus(group.latestStatus)}</span>
-          {group.latestStatus === "delivered" ? (
-            <button
-              type="button"
-              onClick={onOpenSellerReview}
-              className="text-[13px] font-semibold text-[#0f80c3] underline decoration-[#0f80c3] underline-offset-2"
-            >
-              {sellerReviewExists ? "Edit rating" : "Rate seller"}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={onToggleDetails}
-            className="text-[13px] font-semibold text-[#0f80c3] underline decoration-[#0f80c3] underline-offset-2"
-          >
-            {isOpen ? "Hide details" : "View details"}
-          </button>
-          <span className="text-[14px] font-semibold text-[#202020]">{group.progress}%</span>
-        </div>
       </div>
-      <div className="mt-4 rounded-[20px] border border-black/6 bg-white p-4">
+      <div className="mt-4 min-w-0 overflow-hidden rounded-[20px] border border-black/6 bg-white p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8b94a3]">{summary.eyebrow}</p>
@@ -154,27 +218,43 @@ export function CustomerSellerShipmentCard({
             ) : null}
           </div>
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-4">
-          {steps.map((step, index) => (
-            <div key={`${group.key}-${step.key}`} className="relative rounded-[16px] border border-black/6 bg-[#fcfcfc] px-3 py-3">
-              {index < steps.length - 1 ? (
-                <span className={`absolute left-[calc(100%-8px)] top-5 hidden h-0.5 w-4 sm:block ${step.done ? "bg-[#1f8f55]" : "bg-[#d7dde5]"}`} />
-              ) : null}
-              <div className="flex items-center gap-3">
-                <span
-                  className={`flex h-8 w-8 items-center justify-center rounded-full text-[12px] font-semibold ${
-                    step.done ? "bg-[#1f8f55] text-white" : step.active ? "bg-[#202020] text-white" : "bg-[#eef1f5] text-[#7a8594]"
+        <div className="mt-5 min-w-0 pb-1">
+          <div className="grid w-full min-w-0 grid-cols-4 gap-1 sm:gap-4">
+            {steps.map((step, index) => (
+              <div key={`${group.key}-${step.key}`} className="relative flex min-w-0 flex-col items-center text-center">
+                {index < steps.length - 1 ? (
+                  <span
+                    className={`absolute left-[calc(50%+18px)] right-[calc(-50%+18px)] top-[18px] border-t-2 border-dotted min-[380px]:left-[calc(50%+21px)] min-[380px]:right-[calc(-50%+21px)] min-[380px]:top-[21px] sm:left-[calc(50%+32px)] sm:right-[calc(-50%+32px)] sm:top-8 ${
+                      step.done ? "border-[#37a6e6]" : "border-[#dce7f2]"
+                    }`}
+                  />
+                ) : null}
+                <div
+                  className={`relative z-[1] flex h-9 w-9 items-center justify-center rounded-full border text-[15px] shadow-sm min-[380px]:h-11 min-[380px]:w-11 min-[380px]:text-[17px] sm:h-16 sm:w-16 sm:text-[22px] ${
+                    step.done
+                      ? "border-[#37a6e6] bg-[#e8f6ff] text-[#0f80c3]"
+                      : step.active
+                        ? "border-[#37a6e6] bg-white text-[#0f80c3]"
+                        : "border-[#e5edf5] bg-[#f5f8fb] text-[#8b94a3]"
                   }`}
                 >
-                  {step.done ? "✓" : step.icon}
-                </span>
-                <div>
-                  <p className="text-[13px] font-semibold text-[#202020]">{step.label}</p>
-                  <p className="mt-0.5 text-[11px] text-[#8b94a3]">{step.done ? "Completed" : step.active ? "Current" : "Waiting"}</p>
+                  <ShipmentStepIcon icon={step.icon} />
+                  {step.done ? (
+                    <span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-[#0f80c3] text-[10px] font-semibold text-white min-[380px]:h-5 min-[380px]:w-5 min-[380px]:text-[12px] sm:h-6 sm:w-6 sm:text-[14px]">
+                      ✓
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-2 min-w-0 max-w-full">
+                  <p className={`truncate px-0.5 text-[9px] font-semibold leading-tight min-[380px]:text-[10px] sm:text-[13px] ${step.done || step.active ? "text-[#0f80c3]" : "text-[#8b94a3]"}`}>
+                    <span className="sm:hidden">{step.shortLabel || step.label}</span>
+                    <span className="hidden sm:inline">{step.label}</span>
+                  </p>
+                  <p className="mt-0.5 whitespace-nowrap text-[10px] text-[#8b94a3] sm:text-[11px]">{step.done ? "Completed" : step.active ? "Current" : "Waiting"}</p>
                 </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
       <div className="mt-4 rounded-[20px] border border-black/6 bg-white p-4">
@@ -215,13 +295,14 @@ export function CustomerSellerShipmentCard({
         <div className="mt-4 space-y-3">
           {group.items.map((item, index) => {
             const image = getLineImage(item);
+            const title = getShipmentItemTitle(item);
             return (
-              <div key={`${group.key}-${item?.product_snapshot?.name || "item"}-${index}`} className="flex flex-col gap-4 rounded-[18px] bg-[#fcfcfc] px-4 py-4 sm:flex-row sm:items-center">
+              <div key={`${group.key}-${title}-${index}`} className="flex flex-col gap-4 rounded-[18px] bg-[#fcfcfc] px-4 py-4 sm:flex-row sm:items-center">
                 <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-[16px] border border-black/6 bg-[#f8f8f8]">
-                  {image ? <Image src={image} alt={item?.product_snapshot?.name || "Product"} fill className="object-cover" sizes="64px" /> : <div className="flex h-full w-full items-center justify-center text-[11px] font-semibold text-[#907d4c]">Item</div>}
+                  {image ? <Image src={image} alt={title} fill className="object-cover" sizes="64px" /> : <div className="flex h-full w-full items-center justify-center text-[11px] font-semibold text-[#907d4c]">Item</div>}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-[18px] font-semibold leading-tight text-[#202020]">{item?.product_snapshot?.name || "Product"}</p>
+                  <p className="text-[18px] font-semibold leading-tight text-[#202020]">{title}</p>
                   {item?.selected_variant_snapshot?.label ? <p className="mt-1 text-[14px] text-[#57636c]">{item.selected_variant_snapshot.label}</p> : null}
                   <p className="mt-1 text-[13px] text-[#57636c]">{sentenceStatus(item?.fulfillment_tracking?.label || item?.fulfillment_tracking?.status || "not_started")}</p>
                   {item?.fulfillment_tracking?.courierName || item?.fulfillment_tracking?.trackingNumber ? (

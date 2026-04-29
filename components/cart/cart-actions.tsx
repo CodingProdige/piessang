@@ -8,6 +8,7 @@ export function CartActionStack({
   checkoutHint = "",
   viewCartHref = "/cart",
   checkoutHref = "/checkout",
+  flushTop = false,
 }: {
   onNavigate?: () => void;
   compact?: boolean;
@@ -16,6 +17,7 @@ export function CartActionStack({
   checkoutHint?: string;
   viewCartHref?: string;
   checkoutHref?: string;
+  flushTop?: boolean;
 }) {
   const handleNavigate = (href: string) => (event: React.MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -27,12 +29,12 @@ export function CartActionStack({
   };
 
   return (
-    <div className={`grid gap-2 ${compact ? "pt-1.5" : "pt-2"}`}>
+    <div className={`grid gap-2 ${flushTop ? "" : compact ? "pt-1.5" : "pt-2"}`}>
       {showViewCart ? (
         <a
           href={viewCartHref}
           onClick={handleNavigate(viewCartHref)}
-          className={`inline-flex w-full items-center justify-center rounded-[8px] border border-black bg-white px-3 font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] ${compact ? "h-8 text-[10px]" : "h-9 text-[11px]"}`}
+          className={`inline-flex h-11 w-full items-center justify-center rounded-[8px] border border-black bg-white px-4 font-semibold uppercase tracking-[0.08em] text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b] ${compact ? "text-[10px]" : "text-[11px]"}`}
         >
           View cart
         </a>
@@ -41,7 +43,7 @@ export function CartActionStack({
         <button
           type="button"
           disabled
-          className={`inline-flex w-full items-center justify-center rounded-[8px] bg-[#d1d5db] px-3 font-semibold uppercase tracking-[0.08em] text-white ${compact ? "h-8 text-[10px]" : "h-9 text-[11px]"}`}
+          className={`inline-flex h-11 w-full items-center justify-center rounded-[8px] bg-[#d1d5db] px-4 font-semibold uppercase tracking-[0.08em] text-white ${compact ? "text-[10px]" : "text-[11px]"}`}
         >
           Proceed to checkout
         </button>
@@ -49,7 +51,7 @@ export function CartActionStack({
         <a
           href={checkoutHref}
           onClick={handleNavigate(checkoutHref)}
-          className={`inline-flex w-full items-center justify-center rounded-[8px] bg-[#202020] px-3 font-semibold uppercase tracking-[0.08em] text-white transition-colors hover:bg-[#cbb26b] ${compact ? "h-8 text-[10px]" : "h-9 text-[11px]"}`}
+          className={`inline-flex h-11 w-full items-center justify-center rounded-[8px] bg-[#202020] px-4 font-semibold uppercase tracking-[0.08em] text-white transition-colors hover:bg-[#cbb26b] ${compact ? "text-[10px]" : "text-[11px]"}`}
         >
           Proceed to checkout
         </a>

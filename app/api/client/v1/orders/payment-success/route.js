@@ -592,6 +592,7 @@ export async function POST(req) {
       await db.collection("idempotency_order_create_v2").doc(createIntentKey).delete().catch(() => null);
     }
 
+    const originBase = new URL(req.url).origin;
     const items = Array.isArray(order?.items) ? order.items : [];
     const productSales = new Map();
 
@@ -789,7 +790,6 @@ export async function POST(req) {
       }
     }
 
-    const originBase = new URL(req.url).origin;
     const sellerGroups = new Map();
 
     for (const item of items) {

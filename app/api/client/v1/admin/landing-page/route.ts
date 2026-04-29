@@ -108,7 +108,7 @@ export async function GET() {
       getLandingPageState(),
       listLandingPageVersions(),
       db.collection("products_v2").where("placement.isActive", "==", true).limit(80).get(),
-      db.collection("categories").where("placement.isActive", "==", true).get(),
+      db.collection("categories").get(),
     ]);
 
     const products = productsSnap.docs.map((docSnap) => {

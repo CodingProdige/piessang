@@ -1,4 +1,5 @@
 import { normalizeMoneyAmount } from "@/lib/money";
+import { normalizeCountryCode as normalizeMarketplaceCountryCode } from "@/lib/marketplace/country-config";
 
 export type ShippingFulfillmentMode = "seller_fulfilled" | "piessang_fulfilled";
 export type CoverageMatchType = "postal_code" | "province" | "country";
@@ -123,6 +124,10 @@ function toUpper(value: unknown, fallback = ""): string {
   return toStr(value, fallback).toUpperCase();
 }
 
+function normalizeCountryCodeValue(value: unknown, fallback = ""): string {
+  return normalizeMarketplaceCountryCode(value) || toUpper(value, fallback);
+}
+
 function toNum(value: unknown, fallback = 0): number {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
@@ -142,12 +147,12 @@ function toNullablePositiveInt(value: unknown): number | null {
 }
 
 function normalizePostalCode(value: unknown): string {
-  return toStr(value).replace(/\s+/g, "").toUpperCase();
+  return toStr(value).replace(/[^0-9A-Za-z]/g, "").toUpperCase();
 }
 
 function normalizePostalCodeList(value: unknown): string[] {
   const source = Array.isArray(value) ? value : [];
-  return source.map((entry) => normalizePostalCode(entry)).filter(Boolean);
+  return source.flatMap((entry) => toStr(entry).split(/[,;\n]+/)).map((entry) => normalizePostalCode(entry)).filter(Boolean);
 }
 
 function normalizeRateOverride(input: any): ShippingRateOverride {
@@ -277,7 +282,7 @@ function normalizeZone(input: any, index: number): ShippingZone {
     id: toStr(source.id || `zone_${index + 1}`),
     name: toStr(source.name || source.label || source.countryCode || `Zone ${index + 1}`),
     enabled: source.enabled !== false,
-    countryCode: toUpper(source.countryCode || source.country || "ZA"),
+    countryCode: normalizeCountryCodeValue(source.countryCode || source.country || "ZA", "ZA"),
     coverageType: (() => {
       const candidate = toStr(source.coverageType || "country").toLowerCase();
       if (candidate === "province" || candidate === "postal_code_group") return candidate;
@@ -297,13 +302,13 @@ function normalizeZone(input: any, index: number): ShippingZone {
 
 function zoneLooksLikeLocalDelivery(zone: any, shipsFromCountryCode = "ZA"): boolean {
   const name = toStr(zone?.name).toLowerCase();
-  const zoneCountry = toUpper(zone?.countryCode || zone?.country || "");
-  return name === "local delivery" || (zoneCountry === toUpper(shipsFromCountryCode) && (zone?.coverageType === "province" || zone?.coverageType === "postal_code_group") && !toStr(zone?.name));
+  const zoneCountry = normalizeCountryCodeValue(zone?.countryCode || zone?.country || "");
+  return name === "local delivery" || (zoneCountry === normalizeCountryCodeValue(shipsFromCountryCode) && (zone?.coverageType === "province" || zone?.coverageType === "postal_code_group") && !toStr(zone?.name));
 }
 
 function deriveLocalDeliveryFromLegacyProfile(deliveryProfile: any): ShippingLocalDeliverySettings {
   const local = deliveryProfile?.localDelivery && typeof deliveryProfile.localDelivery === "object" ? deliveryProfile.localDelivery : {};
-  const originCountry = toUpper(deliveryProfile?.origin?.country || "ZA");
+  const originCountry = normalizeCountryCodeValue(deliveryProfile?.origin?.country || "ZA", "ZA");
   return normalizeLocalDelivery({
     enabled: local?.enabled === true,
     countryCode: originCountry,
@@ -357,7 +362,7 @@ export function defaultShippingSettings(): ShippingSettings {
 export function normalizeShippingDestination(input: any): ShippingDestination {
   const source = input && typeof input === "object" ? input : {};
   return {
-    countryCode: toUpper(source.countryCode || source.country || source.country_code || ""),
+    countryCode: normalizeCountryCodeValue(source.countryCode || source.country || source.country_code || ""),
     province: toStr(source.province || source.stateProvinceRegion || source.region || ""),
     city: toStr(source.city || source.suburb || ""),
     postalCode: normalizePostalCode(source.postalCode),
@@ -370,7 +375,7 @@ export function normalizeShippingSettings(input: any): ShippingSettings {
   const defaults = defaultShippingSettings();
   const source = input && typeof input === "object" ? input : {};
   const shipsFrom = {
-    countryCode: toUpper(
+    countryCode: normalizeCountryCodeValue(
       source.shipsFrom?.countryCode ||
         source.shipsFrom?.country ||
         source.origin?.countryCode ||

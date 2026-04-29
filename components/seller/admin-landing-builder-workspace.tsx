@@ -47,6 +47,7 @@ const SECTION_TYPES: LandingSectionType[] = [
   "category_mosaic",
   "editorial_collection",
   "product_rail",
+  "discovery_product_feed",
   "recommended_for_you",
   "recently_viewed_rail",
   "search_history_rail",
@@ -68,7 +69,7 @@ const SECTION_GROUPS: Array<{
   },
   {
     title: "Product discovery",
-    types: ["product_rail", "featured_duo", "recommended_for_you", "recently_viewed_rail", "search_history_rail", "trending_products_rail"],
+    types: ["discovery_product_feed", "product_rail", "featured_duo", "recommended_for_you", "recently_viewed_rail", "search_history_rail", "trending_products_rail"],
   },
   {
     title: "Navigation & promos",
@@ -108,6 +109,8 @@ function iconForSectionType(type: LandingSectionType) {
       return "≡";
     case "product_rail":
       return "⇄";
+    case "discovery_product_feed":
+      return "D";
     case "recommended_for_you":
       return "★";
     case "recently_viewed_rail":
@@ -341,6 +344,22 @@ function createSection(type: LandingSectionType): LandingSection {
       },
     };
   }
+  if (type === "discovery_product_feed") {
+    return {
+      id: nextId("discovery"),
+      type,
+      props: {
+        title: "Discover more",
+        subtitle: "",
+        showHeading: false,
+        initialLimit: 24,
+        batchSize: 24,
+        maxItems: 160,
+        personalize: true,
+        explorationRatio: 70,
+      },
+    };
+  }
   if (type === "recommended_for_you") {
     return {
       id: nextId("recommended"),
@@ -415,6 +434,22 @@ function SectionTypeSkeletonPreview({ type }: { type: LandingSectionType }) {
           <div className="h-10 w-32 rounded-[12px] bg-[#202020]" />
         </div>
         <div className="rounded-[16px] border border-white/60 bg-white/80" />
+      </div>
+    );
+  }
+
+  if (type === "discovery_product_feed") {
+    return (
+      <div className="rounded-[18px] border border-black/6 bg-white p-4">
+        <div className="grid grid-cols-3 gap-2">
+          {Array.from({ length: 9 }).map((_, index) => (
+            <div key={`discovery-feed-${index}`} className="space-y-2">
+              <div className="aspect-square bg-[#eef2f7]" />
+              <div className="h-3 w-11/12 rounded-full bg-[#e4e8ee]" />
+              <div className="h-4 w-1/2 rounded-full bg-[#dce2e9]" />
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -1690,6 +1725,131 @@ export function SellerAdminLandingBuilderWorkspace() {
                       </select>
                     </label>
                   ) : null}
+                </>
+              ) : null}
+
+              {selectedSection.type === "discovery_product_feed" ? (
+                <>
+                  <label className="flex items-center gap-3 rounded-[12px] border border-black/10 bg-[#fafafa] px-3 py-3 text-[13px] text-[#202020]">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedSection.props?.showHeading)}
+                      onChange={(event) =>
+                        updateSection({
+                          ...selectedSection,
+                          props: { ...selectedSection.props, showHeading: event.target.checked },
+                        })
+                      }
+                    />
+                    <span>
+                      <span className="block font-semibold">Show section heading</span>
+                      <span className="mt-0.5 block text-[12px] text-[#7a8594]">Keep this off for a Temu-style product river with no extra framing.</span>
+                    </span>
+                  </label>
+                  {selectedSection.props?.showHeading ? (
+                    <>
+                      <label className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Title</span>
+                        <input
+                          value={toStr(selectedSection.props?.title)}
+                          onChange={(event) => updateSection({ ...selectedSection, props: { ...selectedSection.props, title: event.target.value } })}
+                          className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Subtitle</span>
+                        <textarea
+                          value={toStr(selectedSection.props?.subtitle)}
+                          onChange={(event) => updateSection({ ...selectedSection, props: { ...selectedSection.props, subtitle: event.target.value } })}
+                          className="min-h-[80px] w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Initial products</span>
+                      <input
+                        type="number"
+                        min={4}
+                        max={80}
+                        value={String(Number(selectedSection.props?.initialLimit || 24))}
+                        onChange={(event) =>
+                          updateSection({
+                            ...selectedSection,
+                            props: { ...selectedSection.props, initialLimit: Math.max(4, Math.min(80, Number(event.target.value || 24))) },
+                          })
+                        }
+                        className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Load-more batch</span>
+                      <input
+                        type="number"
+                        min={4}
+                        max={80}
+                        value={String(Number(selectedSection.props?.batchSize || 24))}
+                        onChange={(event) =>
+                          updateSection({
+                            ...selectedSection,
+                            props: { ...selectedSection.props, batchSize: Math.max(4, Math.min(80, Number(event.target.value || 24))) },
+                          })
+                        }
+                        className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Max products</span>
+                      <input
+                        type="number"
+                        min={8}
+                        max={500}
+                        value={String(Number(selectedSection.props?.maxItems || 160))}
+                        onChange={(event) =>
+                          updateSection({
+                            ...selectedSection,
+                            props: { ...selectedSection.props, maxItems: Math.max(8, Math.min(500, Number(event.target.value || 160))) },
+                          })
+                        }
+                        className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Exploration ratio</span>
+                      <input
+                        type="number"
+                        min={10}
+                        max={95}
+                        value={String(Number(selectedSection.props?.explorationRatio || 70))}
+                        onChange={(event) =>
+                          updateSection({
+                            ...selectedSection,
+                            props: { ...selectedSection.props, explorationRatio: Math.max(10, Math.min(95, Number(event.target.value || 70))) },
+                          })
+                        }
+                        className="w-full rounded-[12px] border border-black/10 bg-white px-3 py-2.5 text-[13px] outline-none"
+                      />
+                    </label>
+                  </div>
+                  <label className="flex items-center gap-3 rounded-[12px] border border-black/10 bg-[#fafafa] px-3 py-3 text-[13px] text-[#202020]">
+                    <input
+                      type="checkbox"
+                      checked={selectedSection.props?.personalize !== false}
+                      onChange={(event) =>
+                        updateSection({
+                          ...selectedSection,
+                          props: { ...selectedSection.props, personalize: event.target.checked },
+                        })
+                      }
+                    />
+                    <span>
+                      <span className="block font-semibold">Use local browsing signals</span>
+                      <span className="mt-0.5 block text-[12px] text-[#7a8594]">Bias the feed from this browser while still keeping product discovery random.</span>
+                    </span>
+                  </label>
                 </>
               ) : null}
 

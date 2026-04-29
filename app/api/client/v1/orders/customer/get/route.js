@@ -17,6 +17,10 @@ const err = (s, title, message) =>
 
 const PAGE_SIZE = 50;
 
+function toStr(value, fallback = "") {
+  return value == null ? fallback : String(value).trim();
+}
+
 function isEmpty(value) {
   if (value === null || value === undefined) return true;
   if (typeof value === "string" && value.trim() === "") return true;

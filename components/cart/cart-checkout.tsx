@@ -18,6 +18,18 @@ import { normalizeMoneyAmount } from "@/lib/money";
 import { getCardBrandFamily, resolveCardTheme } from "@/lib/payments/card-presentation";
 import { normalizeShopperLocation } from "@/lib/shopper/location";
 
+const SELLER_BANNER_PLACEHOLDER = "/backgrounds/piessang-repeat-background.png";
+const SELLER_LOGO_PLACEHOLDER = "/avatars/Piessang monkey avatars for profiles.jpg";
+
+type SellerBranding = {
+  bannerImageUrl?: string | null;
+  bannerAltText?: string | null;
+  bannerObjectPosition?: string | null;
+  logoImageUrl?: string | null;
+  logoAltText?: string | null;
+  logoObjectPosition?: string | null;
+};
+
 type CartItem = {
   product_unique_id?: string | null;
   variant_id?: string | null;
@@ -35,6 +47,7 @@ type CartItem = {
       baseLocation?: string | null;
       sellerCode?: string | null;
       sellerSlug?: string | null;
+      branding?: SellerBranding | null;
       deliveryProfile?: {
         origin?: { city?: string | null; region?: string | null; country?: string | null; latitude?: number | null; longitude?: number | null };
         directDelivery?: { enabled?: boolean; radiusKm?: number; leadTimeDays?: number; pricingRules?: Array<unknown> };
@@ -123,6 +136,8 @@ type CartPayload = {
   cart?: {
     cart_id?: string;
     item_count?: number;
+    checkout_reservation_status?: string;
+    checkout_reservation_expires_at?: string;
   };
 };
 
@@ -310,15 +325,60 @@ function getSellerGroupKey(item: CartItem) {
   ).trim();
 }
 
-function getSellerFulfillmentSummary(items: CartItem[]) {
-  const modes = new Set(
-    items
-      .map((item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase())
-      .filter(Boolean),
+function getSellerBranding(items: CartItem[]) {
+  const brandedItem = items.find((item) => {
+    const branding = item?.product_snapshot?.seller?.branding;
+    return Boolean(branding?.bannerImageUrl || branding?.logoImageUrl);
+  });
+  return brandedItem?.product_snapshot?.seller?.branding || items[0]?.product_snapshot?.seller?.branding || null;
+}
+
+function SellerCheckoutHeader({ seller, items }: { seller: string; items: CartItem[] }) {
+  const branding = getSellerBranding(items);
+  const bannerUrl = String(branding?.bannerImageUrl || "").trim();
+  const logoUrl = String(branding?.logoImageUrl || "").trim() || SELLER_LOGO_PLACEHOLDER;
+  const bannerPosition = String(branding?.bannerObjectPosition || "").trim() || "center center";
+  const logoPosition = String(branding?.logoObjectPosition || "").trim() || "center center";
+
+  return (
+    <div className="relative overflow-hidden rounded-[8px] border border-black/5 bg-white">
+      {bannerUrl ? (
+        <img
+          src={bannerUrl}
+          alt={branding?.bannerAltText || `${seller} banner`}
+          className="absolute inset-y-0 left-0 h-full w-[76%] object-cover opacity-80"
+          style={{
+            objectPosition: bannerPosition,
+            maskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.72) 48%, rgba(0,0,0,0.24) 68%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.72) 48%, rgba(0,0,0,0.24) 68%, transparent 100%)",
+          }}
+        />
+      ) : (
+        <div
+          className="absolute inset-y-0 left-0 w-[76%] bg-[#faf6ea] bg-center bg-repeat opacity-55"
+          style={{
+            backgroundImage: `url('${SELLER_BANNER_PLACEHOLDER}')`,
+            maskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.68) 48%, rgba(0,0,0,0.22) 68%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.68) 48%, rgba(0,0,0,0.22) 68%, transparent 100%)",
+          }}
+          aria-hidden="true"
+        />
+      )}
+      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.12)_0%,rgba(255,255,255,0.5)_42%,rgba(255,255,255,0.92)_76%,#fff_100%)]" />
+      <div className="relative flex items-center gap-3 px-4 py-3">
+        <img
+          src={logoUrl}
+          alt={branding?.logoAltText || `${seller} profile`}
+          className="h-11 w-11 shrink-0 rounded-full border border-white bg-white object-cover shadow-[0_4px_14px_rgba(20,24,27,0.12)]"
+          style={{ objectPosition: logoPosition }}
+        />
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Seller</p>
+          <p className="mt-0.5 truncate text-[16px] font-semibold text-[#202020]">{seller}</p>
+        </div>
+      </div>
+    </div>
   );
-  if (modes.has("bevgo") && modes.has("seller")) return "Some items ship from Piessang and some ship from the seller.";
-  if (modes.has("bevgo")) return "Piessang handles shipping for these items.";
-  return "The seller handles shipping for these items.";
 }
 
 function formatFulfillmentDate(date: Date | null) {
@@ -399,6 +459,11 @@ function getLineIds(item: CartItem) {
       "",
   ).trim();
   return { productId, variantId };
+}
+
+function getLineKey(item: CartItem) {
+  const { productId, variantId } = getLineIds(item);
+  return `${productId}::${variantId}`;
 }
 
 function formatAddress(location: DeliveryLocation) {
@@ -486,6 +551,13 @@ function rotateCardId(cards: SavedCard[], selectedCardId: string, direction: 1 |
   return String(cards[nextIndex]?.id || "");
 }
 
+function formatReservationCountdown(seconds: number) {
+  const safeSeconds = Math.max(0, Math.ceil(seconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = safeSeconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
 function PremiumCardFace({
   brand,
   cardholder,
@@ -506,7 +578,7 @@ function PremiumCardFace({
   const theme = resolveCardTheme(themeKey);
   const brandFamily = getCardBrandFamily(brand);
   return (
-    <div className="absolute inset-0 overflow-hidden rounded-[18px] text-white shadow-[0_22px_50px_rgba(20,24,27,0.18)]">
+    <div className="absolute inset-0 overflow-hidden rounded-[18px] text-white sm:rounded-[22px]">
       <div
         className="absolute inset-0"
         style={{ background: theme.cardBackground }}
@@ -804,6 +876,12 @@ export function CartCheckout() {
   const [deliveryBlockError, setDeliveryBlockError] = useState<CheckoutDeliveryBlockState | null>(null);
   const [checkoutSessionLoading, setCheckoutSessionLoading] = useState(false);
   const [successState, setSuccessState] = useState<{ orderNumber: string; orderId: string; guestOrderAccessToken?: string } | null>(null);
+  const [checkoutReservationExpiresAt, setCheckoutReservationExpiresAt] = useState<string>("");
+  const [checkoutReservationStatus, setCheckoutReservationStatus] = useState<"active" | "expired" | "idle">("idle");
+  const [reservationNowMs, setReservationNowMs] = useState(() => Date.now());
+  const [reservationNoticeVisible, setReservationNoticeVisible] = useState(true);
+  const [unavailableLineKeys, setUnavailableLineKeys] = useState<Set<string>>(() => new Set());
+  const reservationNoticeRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -898,9 +976,30 @@ export function CartCheckout() {
       .then((response) => response.json().catch(() => ({})))
       .then(async (reservePayload) => {
         if (!mounted) return;
-        if (reservePayload?.message) {
-          setErrorMessage(reservePayload.message);
-          setSnackbarMessage(reservePayload.message);
+        const reserveData = reservePayload?.data || {};
+        const reservationExpiresAt = String(
+          reserveData?.reservationExpiresAt ||
+            reserveData?.cart?.cart?.checkout_reservation_expires_at ||
+            "",
+        ).trim();
+        const reservationStatus = String(
+          reserveData?.reservationStatus ||
+            reserveData?.cart?.cart?.checkout_reservation_status ||
+            "",
+        ).trim().toLowerCase();
+        if (reservationExpiresAt) {
+          setCheckoutReservationExpiresAt(reservationExpiresAt);
+          setReservationNowMs(Date.now());
+        }
+        if (reservationStatus === "expired") {
+          setCheckoutReservationStatus("expired");
+        } else if (reservationStatus === "active") {
+          setCheckoutReservationStatus("active");
+        }
+        if (reservePayload?.ok === false) {
+          const message = reservePayload?.message || "Checkout reservation expired.";
+          setErrorMessage(message);
+          setSnackbarMessage(message);
         }
         const refreshedCartResponse = await fetch("/api/client/v1/carts/get", {
           method: "POST",
@@ -915,7 +1014,13 @@ export function CartCheckout() {
           : null;
         if (!mounted) return;
         if (refreshedCartResponse?.ok && refreshedCartPayload?.ok !== false) {
-          setCart((refreshedCartPayload?.data?.cart ?? null) as CartPayload | null);
+          const nextCart = (refreshedCartPayload?.data?.cart ?? null) as CartPayload | null;
+          const nextReservationExpiresAt = String(nextCart?.cart?.checkout_reservation_expires_at || "").trim();
+          const nextReservationStatus = String(nextCart?.cart?.checkout_reservation_status || "").trim().toLowerCase();
+          if (nextReservationExpiresAt) setCheckoutReservationExpiresAt(nextReservationExpiresAt);
+          if (nextReservationStatus === "expired") setCheckoutReservationStatus("expired");
+          else if (nextReservationStatus === "active") setCheckoutReservationStatus("active");
+          setCart(nextCart);
         }
       })
       .catch(() => {
@@ -951,6 +1056,35 @@ export function CartCheckout() {
   }, [snackbarMessage]);
 
   useEffect(() => {
+    if (!checkoutReservationExpiresAt || checkoutReservationStatus !== "active") return undefined;
+    setReservationNowMs(Date.now());
+    const timer = window.setInterval(() => setReservationNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [checkoutReservationExpiresAt, checkoutReservationStatus]);
+
+  useEffect(() => {
+    const node = reservationNoticeRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") {
+      setReservationNoticeVisible(true);
+      return undefined;
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => setReservationNoticeVisible(Boolean(entry?.isIntersecting)),
+      { threshold: 0.1 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (checkoutReservationStatus !== "active" || !checkoutReservationExpiresAt) return;
+    const expiresAtMs = new Date(checkoutReservationExpiresAt).getTime();
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= reservationNowMs) {
+      setCheckoutReservationStatus("expired");
+    }
+  }, [checkoutReservationExpiresAt, checkoutReservationStatus, reservationNowMs]);
+
+  useEffect(() => {
     const activeCartOwnerId = cartOwnerId || uid || null;
     const currentCartId = String(cart?.cart?.cart_id || "").trim();
     if (!activeCartOwnerId || !currentCartId || loading || deliveryFeeLoading || checkoutReserveLoading || !cartItems.length) {
@@ -979,6 +1113,16 @@ export function CartCheckout() {
         const resolvedSessionId = String(payload?.data?.session?.sessionId || "").trim();
         if (!resolvedSessionId) {
           throw new Error("We could not resolve a checkout session.");
+        }
+        const sessionStatus = String(payload?.data?.session?.status || "").trim().toLowerCase();
+        const sessionReservationExpiresAt = String(payload?.data?.session?.reservationExpiresAt || "").trim();
+        if (sessionReservationExpiresAt) {
+          setCheckoutReservationExpiresAt(sessionReservationExpiresAt);
+          setReservationNowMs(Date.now());
+        }
+        if (sessionStatus === "expired") {
+          setCheckoutReservationStatus("expired");
+          return;
         }
         if (resolvedSessionId !== requestedCheckoutSessionId) {
           const nextParams = new URLSearchParams(searchParams?.toString() || "");
@@ -1104,15 +1248,22 @@ export function CartCheckout() {
     };
   }, [paymentMode, stripePublishableKey]);
 
-  const productsTotalIncl = Number(
-    (
-      Number((cart as any)?.totals?.subtotal_excl || 0) +
-      Number((cart as any)?.totals?.vat_total || 0)
-    ),
-  );
   const cartItems = Array.isArray(cart?.items) ? cart.items : [];
-  const buyerDestination = buildBuyerDestinationFromLocation(selectedLocation);
-  const canonicalShippingBaseTotal = Number(shippingPreview?.shippingBaseTotal || 0);
+  const productsTotalIncl = cartItems.reduce(
+    (sum, item) => sum + Math.max(0, Number(item?.line_totals?.final_incl || 0) || 0),
+    0,
+  );
+  const buyerDestination = useMemo(
+    () => buildBuyerDestinationFromLocation(selectedLocation),
+    [
+      selectedLocation?.city,
+      selectedLocation?.country,
+      selectedLocation?.postalCode,
+      selectedLocation?.province,
+      selectedLocation?.stateProvinceRegion,
+      selectedLocation?.suburb,
+    ],
+  );
   const canonicalShippingFinalTotal = Number(shippingPreview?.shippingFinalTotal || 0);
   const payableIncl = useMemo(
     () => normalizeMoneyAmount(productsTotalIncl + canonicalShippingFinalTotal),
@@ -1275,7 +1426,7 @@ export function CartCheckout() {
       (isAuthenticated || contactDraft.email.trim()) &&
       combinePhoneNumber(contactDraft.phoneCountryCode, contactDraft.phoneNumber).trim(),
   );
-  const cartIsResolving = loading || deliveryFeeLoading || checkoutReserveLoading || checkoutSessionLoading || shippingPreviewLoading;
+  const cartIsResolving = loading || deliveryFeeLoading || checkoutReserveLoading;
   const cartIsEmpty = !cartIsResolving && cartItems.length === 0;
   const countryOptions = useMemo(
     () =>
@@ -1350,7 +1501,7 @@ export function CartCheckout() {
       shell.style.transform = "translateX(0px) scale(0.74) rotateY(0deg)";
       shell.style.filter = "blur(1px) saturate(0.82)";
       shell.style.zIndex = "0";
-      shell.style.boxShadow = "0 18px 34px rgba(72,32,122,0.10)";
+      shell.style.boxShadow = "none";
     });
 
     snaps.forEach((snapPoint, snapIndex) => {
@@ -1386,7 +1537,7 @@ export function CartCheckout() {
         shell.style.transform = `translateX(${translateX}px) scale(${scale}) rotateY(${rotateY}deg)`;
         shell.style.filter = `blur(${blur}px) saturate(${saturation})`;
         shell.style.zIndex = String(Math.round(closeness * 20));
-        shell.style.boxShadow = `0 ${18 + closeness * 12}px ${34 + closeness * 18}px rgba(72,32,122,${(0.10 + closeness * 0.12).toFixed(3)})`;
+        shell.style.boxShadow = "none";
       });
     });
   }, [emblaApi]);
@@ -1954,9 +2105,61 @@ export function CartCheckout() {
       const refreshedPayload = await refreshed.json().catch(() => ({}));
       const nextCart = (refreshedPayload?.data?.cart ?? null) as CartPayload | null;
       setCart(nextCart);
+      setUnavailableLineKeys((current) => {
+        if (!current.size) return current;
+        const next = new Set(current);
+        groupItems.forEach((groupItem) => next.delete(getLineKey(groupItem)));
+        return next;
+      });
       syncCartState(nextCart);
       await refreshCart();
       setSnackbarMessage(`${sellerName} removed from your cart.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "We could not update your cart right now.";
+      setErrorMessage(message);
+      setSnackbarMessage(message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function removeCheckoutItem(item: CartItem) {
+    const activeCartOwnerId = cartOwnerId || uid || null;
+    const { productId, variantId } = getLineIds(item);
+    if (!activeCartOwnerId || !productId || !variantId) return;
+    setSubmitting(true);
+    setErrorMessage(null);
+    try {
+      const response = await fetch("/api/client/v1/carts/removeItem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cartOwnerId: activeCartOwnerId, unique_id: productId, variant_id: variantId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "We could not remove that item from your cart right now.");
+      }
+
+      const refreshed = await fetch("/api/client/v1/carts/get", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cartOwnerId: activeCartOwnerId,
+          lightweight: true,
+        }),
+      });
+      const refreshedPayload = await refreshed.json().catch(() => ({}));
+      const nextCart = (refreshedPayload?.data?.cart ?? null) as CartPayload | null;
+      setCart(nextCart);
+      setUnavailableLineKeys((current) => {
+        if (!current.size) return current;
+        const next = new Set(current);
+        next.delete(getLineKey(item));
+        return next;
+      });
+      syncCartState(nextCart);
+      await refreshCart();
+      setSnackbarMessage("Item removed from your cart.");
     } catch (error) {
       const message = error instanceof Error ? error.message : "We could not update your cart right now.";
       setErrorMessage(message);
@@ -2184,9 +2387,13 @@ export function CartCheckout() {
     setPaymentOverlay({
       open: true,
       tone: "processing",
-      title: "Preparing secure payment",
-      message: "We’re setting up your Piessang payment now.",
-      detail: "Please keep this page open while we create your secure payment session.",
+      title: checkoutReservationExpired ? "Checking product availability" : "Preparing secure payment",
+      message: checkoutReservationExpired
+        ? "Your stock hold has ended, so we’re checking that every product is still available before payment."
+        : "We’re setting up your Piessang payment now.",
+      detail: checkoutReservationExpired
+        ? "If anything is no longer available, we’ll highlight the affected item and ask you to remove it before continuing."
+        : "Please keep this page open while we create your secure payment session.",
     });
     let createdOrderId = "";
     let createdOrderNumber = "";
@@ -2212,6 +2419,20 @@ export function CartCheckout() {
       });
       const createPayload = await createResponse.json().catch(() => ({}));
       if (!createResponse.ok || createPayload?.ok === false) {
+        if (String(createPayload?.reasonCode || "").trim().toUpperCase() === "CHECKOUT_ITEMS_UNAVAILABLE") {
+          const nextUnavailableKeys = new Set<string>();
+          for (const entry of Array.isArray(createPayload?.items) ? createPayload.items : []) {
+            const productId = String(entry?.productId || entry?.productUniqueId || "").trim();
+            const variantId = String(entry?.variantId || "").trim();
+            if (productId && variantId) nextUnavailableKeys.add(`${productId}::${variantId}`);
+          }
+          setUnavailableLineKeys(nextUnavailableKeys);
+          setDeliveryBlockError(null);
+          const message = createPayload?.message || "One or more items in your checkout are no longer available. Remove the highlighted item before completing checkout.";
+          setErrorMessage(message);
+          setSnackbarMessage(message);
+          throw new Error(message);
+        }
         const sellerList = Array.isArray(createPayload?.sellers)
           ? createPayload.sellers.map((value: any) => String(value || "").trim()).filter(Boolean)
           : [];
@@ -2239,6 +2460,16 @@ export function CartCheckout() {
       createdOrderId = orderId;
       createdOrderNumber = orderNumber;
       createdMerchantTransactionId = merchantTransactionId;
+
+      if (checkoutReservationExpired) {
+        setPaymentOverlay({
+          open: true,
+          tone: "processing",
+          title: "Preparing secure payment",
+          message: "Everything is still available. We’re setting up your secure Piessang payment now.",
+          detail: "Please keep this page open while we create your secure payment session.",
+        });
+      }
 
       const chargeResponse = await fetch("/api/client/v1/payments/stripe/create-payment-intent", {
         method: "POST",
@@ -2358,9 +2589,20 @@ export function CartCheckout() {
     );
   }
 
+  const reservationExpiresAtMs = checkoutReservationExpiresAt ? new Date(checkoutReservationExpiresAt).getTime() : 0;
+  const reservationSecondsRemaining =
+    checkoutReservationStatus === "active" && Number.isFinite(reservationExpiresAtMs)
+      ? Math.max(0, Math.ceil((reservationExpiresAtMs - reservationNowMs) / 1000))
+      : 0;
+  const checkoutReservationExpired =
+    checkoutReservationStatus === "expired" ||
+    (checkoutReservationStatus === "active" && reservationSecondsRemaining <= 0);
+  const checkoutReservationWarning = checkoutReservationStatus === "active" && reservationSecondsRemaining > 0 && reservationSecondsRemaining <= 10;
   const checkoutCtaDisabled = submitting || stripeLoading || !cart?.items?.length;
   const checkoutIsProcessing = submitting || stripeLoading;
-  const checkoutCtaLabel = submitting ? "Processing secure payment..." : `Place order • ${formatMoney(payableIncl)}`;
+  const checkoutCtaLabel = submitting
+      ? "Processing secure payment..."
+      : `Place order • ${formatMoney(payableIncl)}`;
   const hasSavedAddresses = locations.length > 0;
   const addressMode = showAddAddress || !hasSavedAddresses ? "new" : "saved";
   const addressFieldCopy = getAddressFieldCopy(addressDraft.country);
@@ -2446,11 +2688,24 @@ export function CartCheckout() {
         </p>
       </div>
 
-      <div className="rounded-[8px] border border-[#b7e4c7] bg-[#effaf3] px-5 py-4 text-[14px] text-[#1f6b43] shadow-[0_8px_24px_rgba(20,24,27,0.05)]">
+      <div
+        ref={reservationNoticeRef}
+        className={[
+          "rounded-[8px] border px-5 py-4 text-[14px] shadow-[0_8px_24px_rgba(20,24,27,0.05)]",
+          checkoutReservationExpired
+            ? "border-[#fecaca] bg-[#fff1f2] text-[#991b1b]"
+            : checkoutReservationWarning
+              ? "border-[#fed7aa] bg-[#fff7ed] text-[#9a3412]"
+              : "border-[#b7e4c7] bg-[#effaf3] text-[#1f6b43]",
+        ].join(" ")}
+      >
         <div className="flex items-center gap-3">
           <span
             aria-hidden="true"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#d9f3e3] text-[#198754]"
+            className={[
+              "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
+              checkoutReservationExpired ? "bg-[#fee2e2] text-[#b91c1c]" : checkoutReservationWarning ? "bg-[#ffedd5] text-[#c2410c]" : "bg-[#d9f3e3] text-[#198754]",
+            ].join(" ")}
           >
             <svg viewBox="0 0 24 24" className="h-4.5 w-4.5 fill-none stroke-current" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M8 10V7a4 4 0 1 1 8 0v3" />
@@ -2458,10 +2713,21 @@ export function CartCheckout() {
               <path d="m9.5 15 1.7 1.7L15 13" />
             </svg>
           </span>
-          <div>
-            <p className="font-semibold text-[#165c39]">Stock reserved for checkout</p>
-            <p className="mt-0.5 leading-[1.5] text-[#2f7a54]">
-              Your items are being held for a short time while you complete payment.
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className={["font-semibold", checkoutReservationExpired ? "text-[#991b1b]" : checkoutReservationWarning ? "text-[#9a3412]" : "text-[#165c39]"].join(" ")}>
+                {checkoutReservationExpired ? "Checkout stock hold expired" : "Stock reserved for checkout"}
+              </p>
+              {checkoutReservationStatus === "active" && reservationSecondsRemaining > 0 ? (
+                <span className={["inline-flex h-8 shrink-0 items-center justify-center rounded-full px-3 text-[13px] font-semibold tabular-nums", checkoutReservationWarning ? "bg-[#ffedd5] text-[#c2410c]" : "bg-[#d9f3e3] text-[#198754]"].join(" ")}>
+                  {formatReservationCountdown(reservationSecondsRemaining)}
+                </span>
+              ) : null}
+            </div>
+            <p className={["mt-0.5 leading-[1.5]", checkoutReservationExpired ? "text-[#991b1b]" : checkoutReservationWarning ? "text-[#9a3412]" : "text-[#2f7a54]"].join(" ")}>
+              {checkoutReservationExpired
+                ? "These items are no longer held for this checkout session. You can still place the order, and we’ll confirm availability before payment."
+                : "Your items are being held for this checkout session while you complete payment."}
             </p>
           </div>
         </div>
@@ -2802,7 +3068,6 @@ export function CartCheckout() {
                   <div className="select-none">
                     <div className="relative mx-auto w-full max-w-[760px]">
                       <div className="relative mx-auto aspect-[1.42/1] w-full max-w-[680px] overflow-hidden rounded-[22px] sm:aspect-[1.92/1] sm:rounded-[30px]">
-                        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(151,114,255,0.14),rgba(255,255,255,0)_62%)]" />
                         <div className="absolute inset-0 flex items-center justify-center">
                           <div className="w-full overflow-hidden px-2 sm:px-0" ref={emblaRef}>
                             <div className="flex items-center">
@@ -2823,7 +3088,7 @@ export function CartCheckout() {
                                     >
                                       <div
                                         data-card-shell
-                                        className="h-full w-full will-change-transform transition-[transform,opacity,filter,box-shadow] duration-200 ease-out"
+                                        className="h-full w-full overflow-hidden rounded-[18px] will-change-transform transition-[transform,opacity,filter] duration-200 ease-out sm:rounded-[22px]"
                                       >
                                         <PremiumCardFace
                                           brand={String(card?.brand || "Piessang").toUpperCase()}
@@ -2966,11 +3231,11 @@ export function CartCheckout() {
               )}
             </section>
 
-            <section className="rounded-[8px] bg-white p-6 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+            <section className="overflow-hidden rounded-[8px] border border-black/5 bg-white p-6">
               <h2 className="text-[18px] font-semibold text-[#202020]">Items in your order</h2>
               <div className="mt-4 space-y-3">
                 {sellerGroups.map((group) => (
-                  <div key={group.seller} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
+                  <div key={group.seller} className="overflow-hidden rounded-[8px] border border-black/5 bg-[#fafafa] p-3 sm:p-4">
                     {(() => {
                       const summary = sellerDeliverySummaries.find((entry) => entry.sellerKey === group.sellerKey)?.summary;
                       const sellerBlockedByDelivery = hasSelectedDeliveryAddress && summary?.isUnavailable === true;
@@ -3008,28 +3273,18 @@ export function CartCheckout() {
                         </div>
                       ) : null;
                     })()}
-                    <div className="border-b border-black/5 pb-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Sold by</p>
-                      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-[16px] font-semibold text-[#202020]">{group.seller}</p>
-                        <div className="text-right">
-                          <p className="text-[12px] text-[#57636c]">{getSellerFulfillmentSummary(group.items)}</p>
-                          {(() => {
-                            const summaryLabel = String(
-                              sellerDeliverySummaries.find((entry) => entry.sellerKey === group.sellerKey)?.summary?.label || "",
-                            ).trim();
-                            return summaryLabel ? (
-                            <p className="mt-1 text-[12px] font-semibold text-[#202020]">
-                              {summaryLabel}
-                            </p>
-                            ) : null;
-                          })()}
-                        </div>
-                      </div>
-                    </div>
+                    <SellerCheckoutHeader seller={group.seller} items={group.items} />
                     <div className="mt-3 space-y-3">
-                      {group.items.map((item, index) => (
-                        <div key={`${item?.product_snapshot?.product?.title || "item"}-${index}`} className="rounded-[10px] border border-black/5 bg-white p-3 sm:p-4">
+                      {group.items.map((item, index) => {
+                        const lineUnavailable = unavailableLineKeys.has(getLineKey(item));
+                        return (
+                        <div
+                          key={`${item?.product_snapshot?.product?.title || "item"}-${index}`}
+                          className={[
+                            "overflow-hidden rounded-[8px] border bg-white p-3 sm:p-4",
+                            lineUnavailable ? "border-[#ef4444] bg-[#fff7f7]" : "border-black/5",
+                          ].join(" ")}
+                        >
                           <div className="space-y-3 sm:flex sm:items-start sm:justify-between sm:gap-3 sm:space-y-0">
                             <div className="flex items-start gap-3">
                               <div className="relative h-[72px] w-[72px] shrink-0 overflow-hidden rounded-[10px] border border-black/5 bg-[#fafafa] sm:h-16 sm:w-16 sm:rounded-[8px]">
@@ -3065,12 +3320,32 @@ export function CartCheckout() {
                                 <p className="text-[12px] leading-[1.5] text-[#57636c]">
                                   {item?.selected_variant_snapshot?.label || "Selected variant"}
                                 </p>
+                                {lineUnavailable ? (
+                                  <p className="rounded-[6px] bg-[#fee2e2] px-2 py-1 text-[11px] font-semibold leading-[1.4] text-[#b91c1c]">
+                                    No longer available. Remove this item to continue.
+                                  </p>
+                                ) : null}
                                 <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[#7b8690] sm:hidden">
                                   Qty {Math.max(0, Number(item?.qty ?? item?.quantity ?? 0))}
                                 </p>
                                 <p className="text-[18px] font-semibold leading-none text-[#202020] sm:hidden">
                                   {formatMoney(item?.line_totals?.final_incl || 0)}
                                 </p>
+                                <button
+                                  type="button"
+                                  onClick={() => void removeCheckoutItem(item)}
+                                  disabled={submitting}
+                                  className="inline-flex h-9 items-center gap-1.5 rounded-[8px] px-0 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#b91c1c] transition hover:text-[#991b1b] disabled:cursor-not-allowed disabled:opacity-50 sm:hidden"
+                                >
+                                  <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-none stroke-current stroke-[2]" aria-hidden="true">
+                                    <path d="M7.5 4.5h5" strokeLinecap="round" />
+                                    <path d="M4.5 6.5h11" strokeLinecap="round" />
+                                    <path d="m8 8.5.3 6" strokeLinecap="round" />
+                                    <path d="m12 8.5-.3 6" strokeLinecap="round" />
+                                    <path d="M6.2 6.5 6.8 16h6.4l.6-9.5" strokeLinecap="round" strokeLinejoin="round" />
+                                  </svg>
+                                  {submitting ? "Removing..." : "Remove"}
+                                </button>
                               </div>
                             </div>
                             <div className="hidden min-w-[68px] flex-col items-end justify-start gap-1 text-right sm:flex">
@@ -3080,10 +3355,26 @@ export function CartCheckout() {
                               <p className="mt-1 text-[14px] font-semibold text-[#202020]">
                                 {formatMoney(item?.line_totals?.final_incl || 0)}
                               </p>
+                              <button
+                                type="button"
+                                onClick={() => void removeCheckoutItem(item)}
+                                disabled={submitting}
+                                className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-[8px] px-0 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#b91c1c] transition hover:text-[#991b1b] disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                <svg viewBox="0 0 20 20" className="h-3.5 w-3.5 fill-none stroke-current stroke-[2]" aria-hidden="true">
+                                  <path d="M7.5 4.5h5" strokeLinecap="round" />
+                                  <path d="M4.5 6.5h11" strokeLinecap="round" />
+                                  <path d="m8 8.5.3 6" strokeLinecap="round" />
+                                  <path d="m12 8.5-.3 6" strokeLinecap="round" />
+                                  <path d="M6.2 6.5 6.8 16h6.4l.6-9.5" strokeLinecap="round" strokeLinejoin="round" />
+                                </svg>
+                                {submitting ? "Removing..." : "Remove"}
+                              </button>
                             </div>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -3157,52 +3448,11 @@ export function CartCheckout() {
                 <span className="font-semibold text-[#202020]">{formatMoney(productsTotalIncl)}</span>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span>Shipping base total</span>
-                <span className="font-semibold text-[#202020]">
-                  {shippingPreviewLoading ? "Calculating..." : formatMoney(canonicalShippingBaseTotal)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
                 <span>Shipping total</span>
                 <span className="font-semibold text-[#202020]">
                   {shippingPreviewLoading ? "Calculating..." : formatMoney(canonicalShippingFinalTotal)}
                 </span>
               </div>
-              {sellerDeliverySummaries.length ? (
-                <div className="rounded-[8px] border border-black/5 bg-[#fafafa] p-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Seller shipping</p>
-                  <div className="mt-2 space-y-2">
-                    {sellerDeliverySummaries.map((entry) => (
-                      <div key={entry.sellerKey || entry.seller} className="rounded-[8px] border border-black/5 bg-white px-3 py-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <span>{entry.seller}</span>
-                          <span className={`text-right font-semibold ${entry.summary?.isUnavailable ? "text-[#991b1b]" : "text-[#202020]"}`}>
-                            {entry.summary?.label}
-                          </span>
-                        </div>
-                        {entry.summary?.isUnavailable ? (
-                          <div className="mt-2 flex items-center justify-between gap-3">
-                            <p className="text-[12px] leading-[1.5] text-[#991b1b]">
-                              {entry.summary?.reasons?.[0] || "Change your address or remove this seller's items to continue."}
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const group = sellerGroups.find((candidate) => candidate.sellerKey === entry.sellerKey);
-                                if (group) void removeSellerGroupItems(group.items, group.seller);
-                              }}
-                              disabled={submitting}
-                              className="shrink-0 text-[12px] font-semibold text-[#b91c1c] disabled:opacity-50"
-                            >
-                              Remove items
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
             </div>
 
             <div className="mt-4 border-t border-black/5 pt-4">
@@ -3322,7 +3572,11 @@ export function CartCheckout() {
                       <path d="m3.5 8.3 2.4 2.4 6-6" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </span>
-                  <span>Your reserved stock stays held while you finish checkout.</span>
+                  <span>
+                    {checkoutReservationExpired
+                      ? "We’ll confirm stock availability before payment."
+                      : `Your reserved stock hold ends in ${formatReservationCountdown(reservationSecondsRemaining)}.`}
+                  </span>
                 </div>
               </div>
             </div>
@@ -3379,7 +3633,7 @@ export function CartCheckout() {
               }}
             />
           ) : null}
-          <span className="relative z-[1]">{submitting ? "Processing..." : `Place order • ${formatMoney(payableIncl)}`}</span>
+          <span className="relative z-[1]">{checkoutCtaLabel}</span>
         </button>
       </div>
     </div>
@@ -3472,6 +3726,35 @@ export function CartCheckout() {
             )}
           </div>
         </div>
+      </div>
+    ) : null}
+    {(checkoutReservationStatus === "active" || checkoutReservationExpired) && !reservationNoticeVisible ? (
+      <div
+        className={[
+          "fixed right-4 z-[120] max-w-[320px] rounded-[12px] border px-4 py-3 shadow-[0_16px_40px_rgba(20,24,27,0.18)] lg:bottom-5",
+          "bottom-[calc(88px+env(safe-area-inset-bottom))]",
+          checkoutReservationExpired
+            ? "border-[#fecaca] bg-[#fff1f2] text-[#991b1b]"
+            : checkoutReservationWarning
+              ? "animate-pulse border-[#fed7aa] bg-[#fff7ed] text-[#9a3412]"
+              : "border-[#b7e4c7] bg-[#effaf3] text-[#165c39]",
+        ].join(" ")}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <p className="text-[12px] font-semibold">
+            {checkoutReservationExpired ? "Hold expired" : "Stock reserved"}
+          </p>
+          {!checkoutReservationExpired ? (
+            <span className="text-[16px] font-semibold tabular-nums">
+              {formatReservationCountdown(reservationSecondsRemaining)}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-[11px] leading-[1.45]">
+          {checkoutReservationExpired
+            ? "We’ll re-check item availability before payment."
+            : "Complete payment before the checkout hold ends."}
+        </p>
       </div>
     ) : null}
     <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />

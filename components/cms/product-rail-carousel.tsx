@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BrowseProductCard, type ProductItem } from "@/components/products/browse-product-card";
+import type { ProductItem } from "@/components/products/browse-product-card";
 import { ProductCard } from "@/components/products/product-card";
 import { hasShopperFacingProductImage } from "@/components/products/products-results";
 import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
@@ -19,12 +19,191 @@ function isResolvedRailProduct(item: ProductRailItem): item is ShopperVisiblePro
   return !("data" in item);
 }
 
+function toStr(value: unknown, fallback = "") {
+  return value == null ? fallback : String(value).trim();
+}
+
+function toNum(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toBool(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  const normalized = toStr(value).toLowerCase();
+  return normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on";
+}
+
+function slugify(value: unknown) {
+  return toStr(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function pickDisplayVariant(variants: any[] = []) {
+  return (
+    variants.find((variant) => variant?.placement?.is_default === true) ||
+    variants.find((variant) => toStr(variant?.variant_id)) ||
+    variants[0] ||
+    null
+  );
+}
+
+function getRawImages(item: ProductItem) {
+  const data = item?.data || {};
+  const productImages = Array.isArray(data?.media?.images) ? data.media.images.filter((image: any) => toStr(image?.imageUrl)) : [];
+  if (productImages.length) return productImages;
+  const defaultVariant = pickDisplayVariant(Array.isArray(data?.variants) ? data.variants : []);
+  return Array.isArray(defaultVariant?.media?.images) ? defaultVariant.media.images.filter((image: any) => toStr(image?.imageUrl)) : [];
+}
+
+function getRawImageCount(item: ProductItem) {
+  const data = item?.data || {};
+  const productImages = Array.isArray(data?.media?.images) ? data.media.images.filter((image: any) => toStr(image?.imageUrl)) : [];
+  const variantImages = Array.isArray(data?.variants)
+    ? data.variants.flatMap((variant: any) => (Array.isArray(variant?.media?.images) ? variant.media.images : [])).filter((image: any) => toStr(image?.imageUrl))
+    : [];
+  return productImages.length + variantImages.length;
+}
+
+function getRawVideoUrl(item: ProductItem) {
+  const data = item?.data || {};
+  const videos = Array.isArray(data?.media?.videos)
+    ? [...data.media.videos]
+        .filter((entry: any) => toStr(entry?.previewUrl || entry?.videoUrl || entry?.url || entry?.sourceUrl))
+        .sort((a: any, b: any) => (Number(a?.position) || 0) - (Number(b?.position) || 0))
+    : [];
+  if (videos.length) return toStr(videos[0]?.previewUrl || videos[0]?.videoUrl || videos[0]?.url || videos[0]?.sourceUrl);
+  return toStr(data?.media?.video);
+}
+
+function getRawPriceIncl(variant: any) {
+  if (!variant) return null;
+  const saleActive = toBool(variant?.sale?.is_on_sale);
+  if (saleActive && toNum(variant?.sale?.sale_price_incl) != null) return toNum(variant.sale.sale_price_incl);
+  if (saleActive && toNum(variant?.sale?.sale_price_excl) != null) return Number(variant.sale.sale_price_excl) * 1.15;
+  if (toNum(variant?.pricing?.selling_price_incl) != null) return toNum(variant.pricing.selling_price_incl);
+  if (toNum(variant?.pricing?.selling_price_excl) != null) return Number(variant.pricing.selling_price_excl) * 1.15;
+  return null;
+}
+
+function getRawCompareAtIncl(variant: any) {
+  const values = [
+    toNum(variant?.pricing?.selling_price_incl),
+    toNum(variant?.pricing?.selling_price_excl) != null ? Number(variant.pricing.selling_price_excl) * 1.15 : null,
+  ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return values.length ? Math.max(...values) : null;
+}
+
+function getRawAvailableQty(variant: any) {
+  if (!variant) return null;
+  const directQty = toNum(variant?.total_in_stock_items_available);
+  if (directQty != null) return Math.max(0, Math.trunc(directQty));
+  const firstInventory = Array.isArray(variant?.inventory) ? variant.inventory[0] : null;
+  const inventoryQty = toNum(firstInventory?.in_stock_qty);
+  return inventoryQty == null ? null : Math.max(0, Math.trunc(inventoryQty));
+}
+
+export function rawProductToShopperCard(item: ProductItem, shopperArea: ShopperDeliveryArea | null): ShopperVisibleProductCard | null {
+  const data = item?.data || {};
+  const variants = Array.isArray(data?.variants) ? data.variants : [];
+  const defaultVariant = pickDisplayVariant(variants);
+  const images = getRawImages(item);
+  const primaryImage = images[0] || null;
+  const title = toStr(data?.product?.title, "Product");
+  const slug = toStr((data?.product as any)?.titleSlug || (data?.shopify as any)?.handle || slugify(title));
+  const amountIncl = getRawPriceIncl(defaultVariant);
+  const compareAtIncl = getRawCompareAtIncl(defaultVariant);
+  const saleActive = toBool(defaultVariant?.sale?.is_on_sale);
+  const onSale = saleActive && amountIncl != null && compareAtIncl != null && compareAtIncl > amountIncl;
+  const availableQty = getRawAvailableQty(defaultVariant);
+  const continueSelling =
+    defaultVariant?.placement?.continue_selling_out_of_stock === true ||
+    defaultVariant?.inventory?.continue_selling_out_of_stock === true ||
+    defaultVariant?.continue_selling_out_of_stock === true;
+  const stockState =
+    continueSelling || defaultVariant?.placement?.track_inventory !== true
+      ? "in_stock"
+      : availableQty == null
+        ? "unknown"
+        : availableQty <= 0
+          ? "out_of_stock"
+          : availableQty <= 2
+            ? "low_stock"
+            : "in_stock";
+  const shopperAvailableQty = continueSelling || defaultVariant?.placement?.track_inventory !== true ? null : availableQty;
+  const stockLabel =
+    stockState === "out_of_stock"
+      ? "Out of stock"
+      : stockState === "low_stock"
+        ? `Only ${shopperAvailableQty} left`
+        : stockState === "in_stock"
+          ? "In stock"
+          : "Stock unknown";
+  const eligibility = resolveRawItemShippingEligibility(item, shopperArea);
+
+  return {
+    id: toStr(item?.id || data?.docId || data?.product?.unique_id),
+    slug,
+    title,
+    subtitle: toStr(defaultVariant?.label) || null,
+    brandLabel: toStr(data?.brand?.title || data?.product?.brandTitle || data?.product?.brand) || null,
+    brandHref: data?.brand?.slug ? `/products?brand=${encodeURIComponent(toStr(data.brand.slug))}` : null,
+    vendorLabel: toStr(data?.seller?.vendorName || data?.product?.vendorName || data?.shopify?.vendorName) || null,
+    vendorHref: toStr(data?.seller?.sellerCode || data?.seller?.sellerSlug || data?.product?.sellerCode || data?.product?.sellerSlug)
+      ? `/vendors/${encodeURIComponent(toStr(data?.seller?.sellerCode || data?.seller?.sellerSlug || data?.product?.sellerCode || data?.product?.sellerSlug))}`
+      : null,
+    categorySlug: toStr(data?.grouping?.category) || null,
+    subCategorySlug: toStr(data?.grouping?.subCategory) || null,
+    image: {
+      imageUrl: toStr(primaryImage?.imageUrl) || null,
+      blurHashUrl: toStr(primaryImage?.blurHashUrl) || null,
+      imageCount: getRawImageCount(item),
+      videoUrl: getRawVideoUrl(item) || null,
+      images: images.map((image: any) => ({
+        imageUrl: toStr(image?.imageUrl) || null,
+        blurHashUrl: toStr(image?.blurHashUrl) || null,
+      })),
+    },
+    price: {
+      amountIncl,
+      compareAtIncl,
+      onSale,
+      salePercent: onSale && amountIncl != null && compareAtIncl ? Math.max(1, Math.round(((compareAtIncl - amountIncl) / compareAtIncl) * 100)) : null,
+      currencyCode: "ZAR",
+    },
+    purchase: {
+      defaultVariantId: toStr(defaultVariant?.variant_id) || null,
+    },
+    stock: {
+      state: stockState,
+      label: stockLabel,
+      availableQty: shopperAvailableQty,
+    },
+    review: {
+      average: toNum(data?.ratings?.average),
+      count: Math.max(0, Number(data?.ratings?.count || 0) || 0),
+      label: null,
+    },
+    merchandising: {
+      isPreLoved: slugify(data?.grouping?.category) === "pre-loved",
+      isNewArrival: data?.is_new_arrival === true,
+      isSponsored: Boolean((item as any)?.ad?.sponsored),
+    },
+    badge: null,
+    shipping: eligibility,
+  };
+}
+
 export function ProductRailCarousel({
   title,
   subtitle,
   products,
   emptyMessage,
   hideWhenEmpty = false,
+  skeletonWhenEmpty = false,
   mobileLeadingSpacer = true,
   viewAllHref = "/products",
   shopperArea: shopperAreaProp = null,
@@ -35,6 +214,7 @@ export function ProductRailCarousel({
   products: ProductRailItem[];
   emptyMessage: string;
   hideWhenEmpty?: boolean;
+  skeletonWhenEmpty?: boolean;
   mobileLeadingSpacer?: boolean;
   viewAllHref?: string;
   shopperArea?: ShopperDeliveryArea | null;
@@ -63,7 +243,7 @@ export function ProductRailCarousel({
 
   const showControls = useMemo(() => visibleProducts.length > 1, [visibleProducts.length]);
 
-  if (hideWhenEmpty && visibleProducts.length === 0) {
+  if (hideWhenEmpty && !skeletonWhenEmpty && visibleProducts.length === 0) {
     return null;
   }
 
@@ -124,6 +304,8 @@ export function ProductRailCarousel({
             ].join(" ")}
           >
             {visibleProducts.map((product, index) => {
+              const normalizedProduct = isResolvedRailProduct(product) ? product : rawProductToShopperCard(product, shopperArea);
+              if (!normalizedProduct) return null;
               const data = isResolvedRailProduct(product) ? null : product?.data || {};
               const brandSlug = isResolvedRailProduct(product)
                 ? decodeURIComponent((product.brandHref || "").split("brand=")[1] || "").trim()
@@ -158,38 +340,39 @@ export function ProductRailCarousel({
                   data-rail-card="true"
                   className="w-[42vw] max-w-[172px] min-w-[42vw] snap-start sm:w-[190px] sm:min-w-[190px] lg:w-[220px] lg:min-w-[220px]"
                 >
-                  {isResolvedRailProduct(product) ? (
-                    <ProductCard
-                      item={product}
-                      view="grid"
-                      openInNewTab={true}
-                      brandHref={brandHref}
-                      vendorHref={vendorHref}
-                      brandLabel={brandLabel || undefined}
-                      vendorLabel={vendorLabel || undefined}
-                      currentUrl=""
-                      onAddToCartSuccess={() => {}}
-                      cartBurstKey={0}
-                    />
-                  ) : mode === "admin-preview" ? (
-                    <BrowseProductCard
-                      item={product}
-                      view="grid"
-                      openInNewTab={true}
-                      brandHref={brandHref}
-                      vendorHref={vendorHref}
-                      brandLabel={brandLabel || undefined}
-                      vendorLabel={vendorLabel || undefined}
-                      currentUrl=""
-                      onAddToCartSuccess={() => {}}
-                      cartBurstKey={0}
-                      shopperArea={shopperArea}
-                    />
-                  ) : null}
+                  <ProductCard
+                    item={normalizedProduct}
+                    view="grid"
+                    openInNewTab={true}
+                    brandHref={brandHref}
+                    vendorHref={vendorHref}
+                    brandLabel={brandLabel || undefined}
+                    vendorLabel={vendorLabel || undefined}
+                    currentUrl=""
+                    onAddToCartSuccess={() => {}}
+                    cartBurstKey={0}
+                  />
                 </div>
               );
             })}
           </div>
+        </div>
+      ) : skeletonWhenEmpty ? (
+        <div className="mt-4 flex snap-x snap-mandatory gap-3 overflow-hidden pb-4 sm:mt-5">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <div
+              key={`rail-skeleton-${index}`}
+              data-rail-card="true"
+              className="w-[42vw] max-w-[172px] min-w-[42vw] snap-start sm:w-[190px] sm:min-w-[190px] lg:w-[220px] lg:min-w-[220px]"
+            >
+              <div className="animate-pulse">
+                <div className="aspect-square w-full bg-[#eef1f4]" />
+                <div className="mt-2 h-3 w-[88%] rounded-full bg-[#e4e8ee]" />
+                <div className="mt-2 h-4 w-[44%] rounded-full bg-[#dce2e9]" />
+                <div className="mt-2 h-3 w-[34%] rounded-full bg-[#edf0f4]" />
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="mt-5 rounded-[8px] border border-dashed border-black/10 px-4 py-10 text-[14px] text-[#7a8594]">

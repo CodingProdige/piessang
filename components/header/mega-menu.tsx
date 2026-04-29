@@ -683,55 +683,6 @@ function PiessangLogo() {
   );
 }
 
-function LogoMeaningLink({ onClick, compact = false }: { onClick: () => void; compact?: boolean }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "inline-flex items-center justify-center text-center font-semibold text-[#6a7280] transition-colors hover:text-[#202020]",
-        compact ? "text-[10px]" : "text-[11px]",
-      ].join(" ")}
-      aria-label="What does Piessang mean?"
-    >
-      What is Piessang?
-    </button>
-  );
-}
-
-function LogoMeaningModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(20,24,27,0.62)] px-4" onClick={onClose}>
-      <div
-        className="relative w-auto max-w-[min(92vw,840px)] overflow-hidden rounded-[16px] bg-white shadow-[0_20px_60px_rgba(20,24,27,0.28)]"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-3 top-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/92 text-[28px] leading-none text-[#4b5563] shadow-[0_8px_18px_rgba(20,24,27,0.14)]"
-          aria-label="Close meaning modal"
-        >
-          ×
-        </button>
-        <div className="relative max-h-[86vh] w-[min(92vw,840px)] bg-[#f8f5ee]">
-          <Image
-            src="/misc/piessang-meaning.png"
-            alt="What Piessang means"
-            width={1200}
-            height={1600}
-            sizes="(max-width: 768px) 100vw, 720px"
-            className="h-auto max-h-[86vh] w-full object-contain"
-            priority
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function HeaderTextPlaceholder({ widthClass }: { widthClass: string }) {
   return <span className={`inline-block h-3.5 animate-pulse rounded-full bg-[#ece6d9] ${widthClass}`} aria-hidden="true" />;
 }
@@ -1423,14 +1374,12 @@ function MobileDrawer({
   departments,
   authState,
   onOpenCartPreview,
-  onOpenLogoMeaning,
 }: {
   open: boolean;
   onClose: () => void;
   departments: Department[];
   authState: HeaderAuthControlsState;
   onOpenCartPreview: () => void;
-  onOpenLogoMeaning: () => void;
 }) {
   const {
     authSettled: authReady,
@@ -1497,10 +1446,7 @@ function MobileDrawer({
       >
         <div className="border-b border-black/5 bg-white/95 px-4 py-4 backdrop-blur">
           <div className="mb-3 flex items-center justify-between">
-            <div className="flex flex-col items-start gap-1">
-              <PiessangLogo />
-              <LogoMeaningLink onClick={onOpenLogoMeaning} compact />
-            </div>
+            <PiessangLogo />
             <button
               type="button"
               onClick={onClose}
@@ -1763,7 +1709,6 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [cartPreviewOpen, setCartPreviewOpen] = useState(false);
-  const [logoMeaningOpen, setLogoMeaningOpen] = useState(false);
   const [fixedHeroConfig, setFixedHeroConfig] = useState<FixedHeroConfig | null>(null);
   const authState = useHeaderAuthControlsState();
   const catalogueMenuEnabled = showMegaMenu || mobileOpen;
@@ -1824,10 +1769,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         <div className="flex w-full items-center justify-between gap-4">
           <div className="flex items-center gap-4 lg:gap-8">
             <div className="hidden lg:flex">
-              <div className="flex flex-col items-center gap-1">
-                <PiessangLogo />
-                <LogoMeaningLink onClick={() => setLogoMeaningOpen(true)} />
-              </div>
+              <PiessangLogo />
             </div>
             <DesktopHeaderSupportLinks isSeller={authState.isSeller} />
           </div>
@@ -1858,7 +1800,6 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
                   className="h-8 w-auto max-w-full"
                 />
               </Link>
-              <LogoMeaningLink onClick={() => setLogoMeaningOpen(true)} compact />
             </div>
 
             <div className="flex items-center justify-end gap-2">
@@ -2015,10 +1956,7 @@ export function PiessangHeader({ showMegaMenu = true }: { showMegaMenu?: boolean
         departments={departments}
         authState={authState}
         onOpenCartPreview={() => setCartPreviewOpen(true)}
-        onOpenLogoMeaning={() => setLogoMeaningOpen(true)}
       />
-
-      <LogoMeaningModal open={logoMeaningOpen} onClose={() => setLogoMeaningOpen(false)} />
     </header>
   );
 }

@@ -26,6 +26,16 @@ function toLower(value) {
   return toStr(value).toLowerCase();
 }
 
+function stripUndefined(value) {
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .map(([key, entryValue]) => [key, stripUndefined(entryValue)]),
+  );
+}
+
 function getLineSellerIdentity(item) {
   const product = item?.product_snapshot || item?.product || {};
   return {
@@ -231,6 +241,7 @@ export async function POST(req) {
     const sellerSlug = toStr(body?.sellerSlug);
     const status = normalizeSellerFulfillmentStatus(body?.status);
     const trackingNumber = toStr(body?.trackingNumber);
+    const trackingUrl = toStr(body?.trackingUrl);
     const courierName = toStr(body?.courierName);
     const notes = toStr(body?.notes);
     const cancellationReason = toStr(body?.cancellationReason || body?.reason);
@@ -319,8 +330,11 @@ export async function POST(req) {
     ) {
       return err(409, "Invalid Status Change", `You cannot move this order from ${getSellerFulfillmentStatusLabel(currentSellerStatus)} to ${getSellerFulfillmentStatusLabel(status)}.`);
     }
-    if ((trackingOwner === "piessang" || trackingOwner === "platform") && (trackingNumber || courierName)) {
+    if ((trackingOwner === "piessang" || trackingOwner === "platform") && (trackingNumber || trackingUrl || courierName)) {
       return err(409, "Tracking Managed By Piessang", "This shipping method is tracked by Piessang, so sellers cannot add courier details manually.");
+    }
+    if (trackingUrl && !/^https?:\/\//i.test(trackingUrl)) {
+      return err(400, "Invalid Tracking URL", "Tracking URL must start with http:// or https://.");
     }
 
     const platformShipment = null;
@@ -352,7 +366,7 @@ export async function POST(req) {
             trackingUrl:
               (trackingOwner === "platform" || trackingOwner === "piessang")
                 ? platformShipment?.trackingUrl || item?.fulfillment_tracking?.trackingUrl || null
-                : item?.fulfillment_tracking?.trackingUrl || null,
+                : trackingUrl || item?.fulfillment_tracking?.trackingUrl || null,
             labelUrl:
               (trackingOwner === "platform" || trackingOwner === "piessang")
                 ? platformShipment?.labelUrl || item?.fulfillment_tracking?.labelUrl || null
@@ -389,23 +403,48 @@ export async function POST(req) {
       failure: platformShipmentFailure,
       now,
     });
+    const manualTrackingBreakdownPatch =
+      trackingOwner === "platform" || trackingOwner === "piessang"
+        ? {}
+        : {
+            status: effectiveStatus,
+            tracking: {
+              ...(sellerDeliveryEntry?.tracking && typeof sellerDeliveryEntry.tracking === "object" ? sellerDeliveryEntry.tracking : {}),
+              courierName: courierName || null,
+              trackingNumber: trackingNumber || null,
+              trackingUrl: trackingUrl || null,
+              notes: notes || "",
+              updatedAt: now,
+              updatedBy: sessionUser.uid,
+            },
+          };
+    const sellerBreakdownPatch = {
+      ...platformShipmentBreakdownPatch,
+      ...manualTrackingBreakdownPatch,
+    };
+    const nextShippingBreakdown = updateSellerBreakdownEntries(
+      order?.shippingBreakdown || [],
+      sellerCode,
+      sellerSlug,
+      sellerBreakdownPatch,
+    );
     const nextPricingBreakdown = updateSellerBreakdownEntries(
       order?.pricing_snapshot?.sellerDeliveryBreakdown || [],
       sellerCode,
       sellerSlug,
-      platformShipmentBreakdownPatch,
+      sellerBreakdownPatch,
     );
     const nextDeliveryBreakdown = updateSellerBreakdownEntries(
       order?.delivery?.fee?.seller_breakdown || [],
       sellerCode,
       sellerSlug,
-      platformShipmentBreakdownPatch,
+      sellerBreakdownPatch,
     );
     const nextDeliverySnapshotBreakdown = updateSellerBreakdownEntries(
       order?.delivery_snapshot?.sellerDeliveryBreakdown || [],
       sellerCode,
       sellerSlug,
-      platformShipmentBreakdownPatch,
+      sellerBreakdownPatch,
     );
 
     const wholeOrderCancelled = aggregate.orderStatus === "cancelled";
@@ -479,6 +518,10 @@ export async function POST(req) {
       (trackingOwner === "platform" || trackingOwner === "piessang")
         ? toStr(platformShipment?.trackingNumber || "")
         : trackingNumber;
+    const effectiveTrackingUrl =
+      (trackingOwner === "platform" || trackingOwner === "piessang")
+        ? toStr(platformShipment?.trackingUrl || "")
+        : trackingUrl;
     const sellerVendorName = touchedItems[0]?.product_snapshot?.product?.vendorName || touchedItems[0]?.product_snapshot?.seller?.vendorName || "";
     const timelineEvent = createOrderTimelineEvent({
       type: platformShipmentFailure ? "seller_dispatch_attempt_failed" : `seller_${effectiveStatus}`,
@@ -502,6 +545,7 @@ export async function POST(req) {
                 "The seller marked this order as on the way.",
                 effectiveCourierName ? `Courier: ${effectiveCourierName}.` : "",
                 effectiveTrackingNumber ? `Tracking number: ${effectiveTrackingNumber}.` : "",
+                effectiveTrackingUrl ? `Tracking link: ${effectiveTrackingUrl}.` : "",
                 notes ? `Note: ${notes}` : "",
               ].filter(Boolean).join(" ")
             : effectiveStatus === "delivered"
@@ -524,6 +568,7 @@ export async function POST(req) {
       metadata: {
         courierName: effectiveCourierName || null,
         trackingNumber: effectiveTrackingNumber || null,
+        trackingUrl: effectiveTrackingUrl || null,
         note: notes || null,
         itemCount: touchedItems.length,
         cancellationReason: cancellationReason || null,
@@ -546,10 +591,25 @@ export async function POST(req) {
         }),
       );
     }
+    const nextPaymentPatch = {
+      ...(order?.payment || {}),
+    };
+    if (refundStarted) {
+      nextPaymentPatch.status = refundResult?.status === "partial_refund" ? "partial_refund" : "refunded";
+      nextPaymentPatch.refunded_at = refundResult?.refundedAt || now;
+      nextPaymentPatch.refunded_amount_incl = refundResult?.refundedAmountIncl ?? order?.payment?.refunded_amount_incl ?? 0;
+      nextPaymentPatch.paid_amount_incl = refundResult?.remainingPaid ?? 0;
+    } else {
+      if (order?.payment?.status != null) nextPaymentPatch.status = order.payment.status;
+      if (order?.payment?.refunded_at != null) nextPaymentPatch.refunded_at = order.payment.refunded_at;
+      if (order?.payment?.refunded_amount_incl != null) nextPaymentPatch.refunded_amount_incl = order.payment.refunded_amount_incl;
+      if (order?.payment?.paid_amount_incl != null) nextPaymentPatch.paid_amount_incl = order.payment.paid_amount_incl;
+    }
 
     await orderRef.set(
-      {
+      stripUndefined({
         items: enrichedItems,
+        shippingBreakdown: nextShippingBreakdown,
         pricing_snapshot: {
           ...(order?.pricing_snapshot || {}),
           sellerDeliveryBreakdown: nextPricingBreakdown,
@@ -606,21 +666,7 @@ export async function POST(req) {
               }
             : {}),
         },
-        payment: {
-          ...(order?.payment || {}),
-          status: refundStarted
-            ? (refundResult?.status === "partial_refund" ? "partial_refund" : "refunded")
-            : order?.payment?.status,
-          refunded_at: refundStarted ? (refundResult?.refundedAt || now) : order?.payment?.refunded_at,
-          refunded_amount_incl:
-            refundStarted
-              ? (refundResult?.refundedAmountIncl ?? order?.payment?.refunded_amount_incl ?? 0)
-              : order?.payment?.refunded_amount_incl,
-          paid_amount_incl:
-            refundStarted
-              ? (refundResult?.remainingPaid ?? 0)
-              : order?.payment?.paid_amount_incl,
-        },
+        payment: nextPaymentPatch,
         cancellation: wholeOrderCancelled
           ? {
               ...(order?.cancellation || {}),
@@ -643,7 +689,7 @@ export async function POST(req) {
           events: nextTimelineEvents,
           updatedAt: now,
         },
-      },
+      }),
       { merge: true },
     );
 
@@ -762,7 +808,9 @@ export async function POST(req) {
         shipmentLastAttemptAt: platformShipment ? now : toStr(sellerDeliveryEntry?.shipment_last_attempt_at || ""),
         shipmentRetryable: platformShipment ? false : Boolean(sellerDeliveryEntry?.shipment_retryable),
         shipmentStatus: toStr(platformShipment?.status || sellerDeliveryEntry?.shipment_status || ""),
-        trackingUrl: toStr(platformShipment?.trackingUrl || sellerDeliveryEntry?.tracking_url || ""),
+        trackingUrl: toStr(platformShipment?.trackingUrl || effectiveTrackingUrl || sellerDeliveryEntry?.tracking_url || ""),
+        trackingNumber: toStr(platformShipment?.trackingNumber || effectiveTrackingNumber || ""),
+        courierName: toStr(platformShipment?.metadata?.courierName || effectiveCourierName || ""),
         labelUrl: toStr(platformShipment?.labelUrl || sellerDeliveryEntry?.label_url || ""),
       },
       paymentStatus: refundStarted

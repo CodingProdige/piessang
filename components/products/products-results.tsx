@@ -330,6 +330,44 @@ type CartPreview = {
 
 export type SearchParamValue = string | string[] | undefined;
 
+function readSearchParam(searchParams: Record<string, SearchParamValue>, key: string) {
+  const value = searchParams[key];
+  return typeof value === "string" ? value : Array.isArray(value) ? value[0] : undefined;
+}
+
+function getPersonalizedEmptyState(searchParams: Record<string, SearchParamValue>) {
+  const personalized = readSearchParam(searchParams, "personalized");
+  if (personalized === "recently-viewed") {
+    return {
+      eyebrow: "Continue browsing",
+      title: "No recently viewed products yet.",
+      message: "This collection only shows products you have opened recently. Browse a few product pages and it will start filling in.",
+    };
+  }
+  if (personalized === "recommended") {
+    return {
+      eyebrow: "Recommended for you",
+      title: "No recommendations yet.",
+      message: "Recommendations need browsing or search activity first, so we are not showing unrelated products here.",
+    };
+  }
+  if (personalized === "search-history") {
+    return {
+      eyebrow: "Inspired by your searches",
+      title: "No search-inspired products yet.",
+      message: "This collection only shows products related to recent searches. Search for something first and it will become useful.",
+    };
+  }
+  if (["blended", "clicked", "viewed", "searched"].includes(String(personalized || ""))) {
+    return {
+      eyebrow: "Most viewed",
+      title: "No trending products for this rail yet.",
+      message: "This collection only shows products with real shopper engagement signals. It will appear once enough activity is recorded.",
+    };
+  }
+  return null;
+}
+
 const VAT_MULTIPLIER = 1.15;
 const VAT_DIVISOR = 1.15;
 const PAGE_SIZE = 24;
@@ -1519,10 +1557,12 @@ function RawBrowseProductCard({
   const displayImages = getDisplayImages(item);
   const [hoveredImageIndex, setHoveredImageIndex] = useState(0);
   const [mediaHovered, setMediaHovered] = useState(false);
+  const [videoPreviewActive, setVideoPreviewActive] = useState(false);
+  const touchStartRef = useRef<{ x: number; y: number; index: number; moved: boolean } | null>(null);
   const image = displayImages[hoveredImageIndex] ?? displayImages[0] ?? null;
   const videoUrl = getDisplayVideoUrl(item);
   const hasPlayableVideo = Boolean(videoUrl);
-  const showVideoPreview = Boolean(videoUrl && mediaHovered);
+  const showVideoPreview = Boolean(videoUrl && (mediaHovered || videoPreviewActive));
   const titleText = item.data?.product?.title ?? "Untitled product";
   const {
     isAuthenticated,
@@ -1696,6 +1736,7 @@ function RawBrowseProductCard({
 
   useEffect(() => {
     setHoveredImageIndex(0);
+    setVideoPreviewActive(false);
   }, [productUniqueId]);
   useEffect(() => {
     if (!cartJustAdded) return undefined;
@@ -1739,6 +1780,42 @@ function RawBrowseProductCard({
   const handleImagePointerLeave = () => {
     if (hoveredImageIndex !== 0) setHoveredImageIndex(0);
     setMediaHovered(false);
+    setVideoPreviewActive(false);
+  };
+
+  const handleImageTouchStart = (event: TouchEvent<HTMLElement>) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchStartRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      index: hoveredImageIndex,
+      moved: false,
+    };
+  };
+
+  const handleImageTouchMove = (event: TouchEvent<HTMLElement>) => {
+    const touch = event.touches[0];
+    const start = touchStartRef.current;
+    if (!touch || !start || displayImages.length <= 1) return;
+    const deltaX = touch.clientX - start.x;
+    const deltaY = touch.clientY - start.y;
+    if (Math.abs(deltaX) < 12 || Math.abs(deltaX) < Math.abs(deltaY)) return;
+    event.preventDefault();
+    start.moved = true;
+    setVideoPreviewActive(false);
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const imageStep = bounds.width > 0 ? bounds.width / Math.max(displayImages.length, 1) : 56;
+    const offset = Math.trunc(Math.abs(deltaX) / Math.max(36, imageStep * 0.55));
+    const direction = deltaX < 0 ? 1 : -1;
+    const nextIndex = Math.max(0, Math.min(displayImages.length - 1, start.index + direction * Math.max(1, offset)));
+    if (nextIndex !== hoveredImageIndex) setHoveredImageIndex(nextIndex);
+  };
+
+  const handleImageTouchEnd = () => {
+    window.setTimeout(() => {
+      touchStartRef.current = null;
+    }, 350);
   };
 
   const handleCardMouseEnter = () => {
@@ -1841,6 +1918,10 @@ function RawBrowseProductCard({
     }
   };
   const openProduct = () => {
+    if (touchStartRef.current?.moved) {
+      touchStartRef.current = null;
+      return;
+    }
     trackProductEngagement({
       action: "click",
       productId: productUniqueId,
@@ -1886,6 +1967,15 @@ function RawBrowseProductCard({
   const openCardIfAllowed = (event: MouseEvent<HTMLElement>) => {
     if (shouldIgnoreCardOpen(event.target)) return;
     openProduct();
+  };
+
+  const handlePlayPreview = (event: MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!hasPlayableVideo) return;
+    setHoveredImageIndex(0);
+    setMediaHovered(false);
+    setVideoPreviewActive((current) => !current);
   };
 
   const onCardKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -1981,9 +2071,19 @@ function RawBrowseProductCard({
         </span>
       ) : null}
       {hasPlayableVideo ? (
-        <span className="absolute bottom-2 right-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/38 text-white shadow-[0_4px_12px_rgba(20,24,27,0.16)] ring-1 ring-white/25">
+        <button
+          type="button"
+          data-ignore-card-open="true"
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={handlePlayPreview}
+          aria-label={videoPreviewActive ? "Stop product video preview" : "Play product video preview"}
+          className={`absolute bottom-2 right-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full text-white shadow-[0_4px_12px_rgba(20,24,27,0.16)] ring-1 ring-white/25 transition-colors ${
+            videoPreviewActive ? "bg-[#cbb26b]" : "bg-black/38"
+          }`}
+        >
           <PlayIcon />
-        </span>
+        </button>
       ) : null}
       {leftTopBadges.length ? (
         <div className="absolute left-2 top-2 z-10 flex max-w-[calc(100%-4rem)] flex-col gap-1">
@@ -2083,6 +2183,9 @@ function RawBrowseProductCard({
             onMouseMove={handleImagePointerMove}
             onMouseEnter={() => setMediaHovered(true)}
             onMouseLeave={handleImagePointerLeave}
+            onTouchStart={handleImageTouchStart}
+            onTouchMove={handleImageTouchMove}
+            onTouchEnd={handleImageTouchEnd}
           >
 	            {imageBadges}
 		            <BlurhashImage
@@ -2328,6 +2431,9 @@ function RawBrowseProductCard({
 	              onMouseMove={handleImagePointerMove}
 	              onMouseEnter={() => setMediaHovered(true)}
 	              onMouseLeave={handleImagePointerLeave}
+	              onTouchStart={handleImageTouchStart}
+	              onTouchMove={handleImageTouchMove}
+	              onTouchEnd={handleImageTouchEnd}
 	            >
 		              <BlurhashImage
 		                src={image?.imageUrl ?? ""}
@@ -2866,33 +2972,37 @@ export function ProductsResults({
 
   if (sortedItems.length === 0) {
     const hasFavorites = favoriteCount > 0;
+    const personalizedEmptyState = getPersonalizedEmptyState(searchParams);
     return (
       <div className="space-y-4">
         <div className="rounded-[8px] bg-white px-5 py-10 text-center shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">
-          {favoritesOnly ? "Favourites" : "No results"}
+          {personalizedEmptyState?.eyebrow ?? (favoritesOnly ? "Favourites" : "No results")}
         </p>
         <h2 className="mt-2 text-[22px] font-semibold text-[#202020]">
-          {favoritesOnly
+          {personalizedEmptyState?.title ??
+            (favoritesOnly
             ? hasFavorites
               ? "No favourites match your current filter."
               : "You have no favourites saved yet."
-            : "No products match these filters."}
+            : "No products match these filters.")}
         </h2>
         <p className="mx-auto mt-2 max-w-[44ch] text-[13px] leading-[1.6] text-[#57636c]">
-          {favoritesOnly
+          {personalizedEmptyState?.message ??
+            (favoritesOnly
             ? "Use the favourites menu to view everything you’ve saved, or clear the list and start again."
-            : "Try resetting the filters or broadening your search to see more products."}
+            : "Try resetting the filters or broadening your search to see more products.")}
         </p>
-        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <Link
-            href="/products"
-            scroll={false}
-            className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b]"
-          >
-            View all products
-          </Link>
-          {favoritesOnly && hasFavorites ? (
+        {personalizedEmptyState ? null : (
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <Link
+              href="/products"
+              scroll={false}
+              className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#cbb26b]"
+            >
+              View all products
+            </Link>
+            {favoritesOnly && hasFavorites ? (
             <button
               type="button"
               onClick={() => void handleClearFavorites()}
@@ -2900,8 +3010,9 @@ export function ProductsResults({
             >
               Clear favourites
             </button>
-          ) : null}
-        </div>
+            ) : null}
+          </div>
+        )}
         </div>
       </div>
     );

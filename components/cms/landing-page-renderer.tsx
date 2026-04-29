@@ -4,6 +4,7 @@ import { cookies, headers } from "next/headers";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { LandingSection } from "@/lib/cms/landing-page-schema";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
+import { DiscoveryProductFeed } from "@/components/cms/discovery-product-feed";
 import { DeferredSection } from "@/components/cms/deferred-section";
 import type { ShopperVisibleProductCard } from "@/lib/catalogue/shopper-card";
 import { campaignsCollection, normalizeCampaignRecord } from "@/lib/campaigns";
@@ -304,7 +305,6 @@ async function loadCatalogData(origin: string, shopperArea: any) {
   appendShopperAreaSearchParams(productsUrl.searchParams, shopperArea);
 
   const categoriesUrl = new URL("/api/catalogue/v1/categories/list", origin);
-  categoriesUrl.searchParams.set("isActive", "true");
   appendShopperAreaSearchParams(categoriesUrl.searchParams, shopperArea);
 
   const [productsResponse, categoriesResponse, campaignsSnap] = await Promise.all([
@@ -359,6 +359,11 @@ function SectionShell({ children }: { children: React.ReactNode }) {
 
 function getDeferredSectionMinHeight(section: LandingSection) {
   switch (section.type) {
+    case "recently_viewed_rail":
+    case "search_history_rail":
+    case "trending_products_rail":
+    case "recommended_for_you":
+      return 0;
     case "hero_banner":
       return 420;
     case "split_banner":
@@ -366,11 +371,8 @@ function getDeferredSectionMinHeight(section: LandingSection) {
     case "countdown_promo":
       return 360;
     case "product_rail":
+    case "discovery_product_feed":
     case "featured_duo":
-    case "recently_viewed_rail":
-    case "search_history_rail":
-    case "trending_products_rail":
-    case "recommended_for_you":
       return 480;
     case "category_rail":
     case "category_mosaic":
@@ -570,6 +572,23 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       block = sharedContent;
     }
 
+    if (!block && section.type === "discovery_product_feed") {
+      block = (
+        <DiscoveryProductFeed
+          key={section.id}
+          products={products}
+          title={toStr(section.props?.title, "Discover more")}
+          subtitle={toStr(section.props?.subtitle)}
+          showHeading={toBool(section.props?.showHeading)}
+          initialLimit={Math.max(4, Math.min(80, toNum(section.props?.initialLimit) || 24))}
+          batchSize={Math.max(4, Math.min(80, toNum(section.props?.batchSize) || 24))}
+          maxItems={Math.max(8, Math.min(500, toNum(section.props?.maxItems) || 160))}
+          personalize={section.props?.personalize !== false}
+          explorationRatio={Math.max(10, Math.min(95, toNum(section.props?.explorationRatio) || 70))}
+        />
+      );
+    }
+
     if (!block && section.type === "product_rail") {
       const source = toStr(section.props?.source, "new_arrivals");
       const selectedCategorySlugs = (Array.isArray(section.props?.categorySlugs) ? section.props.categorySlugs : [])
@@ -621,10 +640,9 @@ export async function LandingPageRenderer({ sections }: { sections: LandingSecti
       const selectedCategorySlugs = Array.isArray(section.props?.categorySlugs)
         ? section.props.categorySlugs.map((slug: unknown) => toStr(slug)).filter(Boolean)
         : [];
-      const selected = (selectedCategorySlugs.length
+      const selected = selectedCategorySlugs.length
         ? categories.filter((category: CategoryOption) => selectedCategorySlugs.includes(category.slug))
-        : categories
-      ).filter((category: CategoryOption) => category.productCount > 0);
+        : categories;
       block = (
         <SectionShell key={section.id}>
           <div>

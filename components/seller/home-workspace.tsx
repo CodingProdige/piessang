@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/auth-provider";
 import { formatMoneyExact } from "@/lib/money";
-import { normalizeSellerDeliveryProfile, sellerDeliverySettingsReady } from "@/lib/seller/delivery-profile";
+import { buildShippingSettingsFromLegacySeller } from "@/lib/shipping/settings";
+import { normalizeSellerDeliveryProfile } from "@/lib/seller/delivery-profile";
 
 type SellerHomeWorkspaceProps = {
   sellerSlug: string;
@@ -74,6 +75,49 @@ function isFinanciallyCountableOrder(item: SellerOrderSlice) {
   const paymentStatus = toStr(item?.paymentStatus).toLowerCase();
   const fulfillmentStatus = toStr(item?.fulfillmentStatus).toLowerCase();
   return fulfillmentStatus !== "cancelled" && !["refunded", "partial_refund"].includes(paymentStatus);
+}
+
+function getShippingReadiness(settingsData: any) {
+  const shippingSettings = buildShippingSettingsFromLegacySeller(settingsData || {});
+  const hasOrigin = Boolean(
+    shippingSettings.shipsFrom.countryCode &&
+      shippingSettings.shipsFrom.city &&
+      shippingSettings.shipsFrom.postalCode,
+  );
+  const hasLocalProvinceRules =
+    shippingSettings.localDelivery.enabled &&
+    shippingSettings.localDelivery.mode === "province" &&
+    shippingSettings.localDelivery.provinces.some((item) => item.enabled !== false && item.province.trim());
+  const hasLocalPostalGroups =
+    shippingSettings.localDelivery.enabled &&
+    shippingSettings.localDelivery.mode === "postal_code_group" &&
+    shippingSettings.localDelivery.postalCodeGroups.some(
+      (item) => item.name.trim() && (item.postalCodes.length > 0 || item.postalCodeRanges.length > 0),
+    );
+  const hasShippingZones = shippingSettings.zones.some((zone) => zone.enabled !== false && zone.countryCode.trim());
+  const hasRules = hasLocalProvinceRules || hasLocalPostalGroups || hasShippingZones;
+
+  return {
+    ready: hasOrigin && hasRules,
+    hasOrigin,
+    hasRules,
+  };
+}
+
+function productIsLiveForSetup(item: any) {
+  const data = item?.data && typeof item.data === "object" ? item.data : item || {};
+  const placementActive = data?.placement?.isActive !== false && data?.isActive !== false;
+  if (!placementActive) return false;
+
+  const current = toStr(data?.status?.current).toLowerCase();
+  if (current === "published" || current === "live") return true;
+  if (["archived", "awaiting_stock", "blocked", "deleted", "draft", "rejected"].includes(current)) return false;
+
+  const moderation = toStr(data?.moderation?.status).toLowerCase();
+  if (["published", "approved", "live"].includes(moderation)) return true;
+  if (["archived", "awaiting_stock", "blocked", "deleted", "draft", "rejected"].includes(moderation)) return false;
+
+  return Boolean(data?.live_snapshot);
 }
 
 function buildSeries(items: SellerOrderSlice[], days: number, mode: "sales" | "orders") {
@@ -311,6 +355,7 @@ export function SellerHomeWorkspace({
 
   const deliveryProfile = settingsData?.deliveryProfile || {};
   const normalizedDeliveryProfile = normalizeSellerDeliveryProfile(deliveryProfile);
+  const shippingReadiness = getShippingReadiness(settingsData);
   const branding = settingsData?.branding || {};
   const businessDetails = settingsData?.businessDetails || {};
   const settingsPayoutProfile = settingsData?.payoutProfile || {};
@@ -328,9 +373,10 @@ export function SellerHomeWorkspace({
       (toStr(businessDetails?.email) || toStr(businessDetails?.phoneNumber)),
   );
   const brandingReady = Boolean(toStr(branding?.bannerImageUrl) && toStr(branding?.logoImageUrl));
-  const deliveryReady = sellerDeliverySettingsReady(deliveryProfile);
+  const deliveryReady = shippingReadiness.ready;
   const deliveryOriginSelected = Boolean(
-    toStr(normalizedDeliveryProfile?.origin?.city) ||
+    shippingReadiness.hasOrigin ||
+      toStr(normalizedDeliveryProfile?.origin?.city) ||
       toStr(normalizedDeliveryProfile?.origin?.country) ||
       toStr(normalizedDeliveryProfile?.origin?.postalCode),
   );
@@ -338,12 +384,13 @@ export function SellerHomeWorkspace({
     !deliveryReady &&
       !deliveryOriginSelected &&
       (
+        shippingReadiness.hasRules ||
         normalizedDeliveryProfile?.directDelivery?.enabled === true ||
         (normalizedDeliveryProfile?.shippingZones || []).length > 0 ||
         normalizedDeliveryProfile?.pickup?.enabled === true
       ),
   );
-  const publishedProducts = products.filter((item) => item?.data?.placement?.isActive).length;
+  const publishedProducts = products.filter(productIsLiveForSetup).length;
   const firstProductReady = publishedProducts > 0;
 
   const setupTasks = useMemo<SetupTask[]>(

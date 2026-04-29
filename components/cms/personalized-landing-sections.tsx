@@ -76,6 +76,7 @@ function PersonalizedRailShell({
   subtitle,
   products,
   emptyMessage,
+  preview = false,
   mobileLeadingSpacer = false,
   viewAllHref,
 }: {
@@ -83,6 +84,7 @@ function PersonalizedRailShell({
   subtitle: string;
   products: ShopperVisibleProductCard[];
   emptyMessage: string;
+  preview?: boolean;
   mobileLeadingSpacer?: boolean;
   viewAllHref?: string;
 }) {
@@ -93,6 +95,7 @@ function PersonalizedRailShell({
       products={products}
       emptyMessage={emptyMessage}
       hideWhenEmpty
+      skeletonWhenEmpty={preview}
       mobileLeadingSpacer={mobileLeadingSpacer}
       viewAllHref={viewAllHref}
     />
@@ -103,10 +106,12 @@ export function RecentlyViewedRail({
   title,
   subtitle,
   limit = 8,
+  preview = false,
 }: {
   title: string;
   subtitle: string;
   limit?: number;
+  preview?: boolean;
 }) {
   const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
@@ -135,7 +140,7 @@ export function RecentlyViewedRail({
     };
   }, [limit]);
 
-  if (ready && !products.length) return null;
+  if (ready && !preview && !products.length) return null;
 
   return (
     <PersonalizedRailShell
@@ -143,10 +148,11 @@ export function RecentlyViewedRail({
       subtitle={subtitle}
       products={products}
       emptyMessage="This rail will populate after shoppers browse products."
+      preview={preview}
       viewAllHref={
         products.length
           ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=recently-viewed`
-          : "/products"
+          : "/products?personalized=recently-viewed"
       }
     />
   );
@@ -156,10 +162,12 @@ export function SearchHistoryRail({
   title,
   subtitle,
   limit = 8,
+  preview = false,
 }: {
   title: string;
   subtitle: string;
   limit?: number;
+  preview?: boolean;
 }) {
   const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
@@ -176,7 +184,7 @@ export function SearchHistoryRail({
           return;
         }
         const items = await loadProductsBySearchTerms(searchTerms, limit);
-        if (!cancelled) setProducts(items);
+        if (!cancelled) setProducts(items.slice(0, limit));
       } catch {
       } finally {
         if (!cancelled) setReady(true);
@@ -188,7 +196,7 @@ export function SearchHistoryRail({
     };
   }, [limit]);
 
-  if (ready && !products.length) return null;
+  if (ready && !preview && !products.length) return null;
 
   return (
     <PersonalizedRailShell
@@ -196,10 +204,11 @@ export function SearchHistoryRail({
       subtitle={subtitle}
       products={products}
       emptyMessage="This rail will populate after shoppers start searching."
+      preview={preview}
       viewAllHref={
         products.length
           ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=search-history`
-          : "/products"
+          : "/products?personalized=search-history"
       }
     />
   );
@@ -211,12 +220,14 @@ export function TrendingProductsRail({
   limit = 8,
   days = 30,
   mode = "blended",
+  preview = false,
 }: {
   title: string;
   subtitle: string;
   limit?: number;
   days?: number;
   mode?: "blended" | "clicked" | "viewed" | "searched";
+  preview?: boolean;
 }) {
   const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
@@ -310,7 +321,7 @@ export function TrendingProductsRail({
     };
   }, [days, limit, mode]);
 
-  if (ready && !products.length) return null;
+  if (ready && !preview && !products.length) return null;
 
   return (
     <PersonalizedRailShell
@@ -318,10 +329,11 @@ export function TrendingProductsRail({
       subtitle={subtitle}
       products={products}
       emptyMessage="This rail will populate as shoppers search, click, and view products."
+      preview={preview}
       viewAllHref={
         products.length
           ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=${encodeURIComponent(mode)}`
-          : "/products"
+          : `/products?personalized=${encodeURIComponent(mode)}`
       }
     />
   );
@@ -331,10 +343,12 @@ export function RecommendedForYouRail({
   title,
   subtitle,
   limit = 8,
+  preview = false,
 }: {
   title: string;
   subtitle: string;
   limit?: number;
+  preview?: boolean;
 }) {
   const [products, setProducts] = useState<ShopperVisibleProductCard[]>([]);
   const [ready, setReady] = useState(false);
@@ -375,7 +389,7 @@ export function RecommendedForYouRail({
     };
   }, [limit]);
 
-  if (ready && !products.length) return null;
+  if (ready && !preview && !products.length) return null;
 
   return (
     <PersonalizedRailShell
@@ -383,11 +397,12 @@ export function RecommendedForYouRail({
       subtitle={subtitle}
       products={products}
       emptyMessage="This rail will learn from shopper browsing and search history."
+      preview={preview}
       mobileLeadingSpacer={false}
       viewAllHref={
         products.length
           ? `/products?ids=${encodeURIComponent(products.map((item) => item.id).filter(Boolean).join(","))}&personalized=recommended`
-          : "/products"
+          : "/products?personalized=recommended"
       }
     />
   );

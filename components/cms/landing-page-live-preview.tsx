@@ -5,6 +5,7 @@ import Image from "next/image";
 import type { ReactNode } from "react";
 import type { LandingFixedHero, LandingSection } from "@/lib/cms/landing-page-schema";
 import { ProductRailCarousel } from "@/components/cms/product-rail-carousel";
+import { DiscoveryProductFeed } from "@/components/cms/discovery-product-feed";
 import type { ProductItem } from "@/components/products/products-results";
 import { PiessangHeader } from "@/components/header/mega-menu";
 import { PiessangFooter } from "@/components/footer/site-footer";
@@ -577,6 +578,32 @@ export function LandingPageLivePreview({
           );
         }
 
+        if (section.type === "discovery_product_feed") {
+          return (
+            <PreviewSelectableShell
+              key={section.id}
+              blockId={section.id}
+              label={label}
+              selected={isSelected}
+              onSelect={onSelectBlock}
+              controls={controls}
+            >
+              <DiscoveryProductFeed
+                products={products}
+                title={toStr(section.props?.title, "Discover more")}
+                subtitle={toStr(section.props?.subtitle)}
+                showHeading={Boolean(section.props?.showHeading)}
+                initialLimit={Math.max(4, Math.min(80, toNum(section.props?.initialLimit) || 18))}
+                batchSize={Math.max(4, Math.min(80, toNum(section.props?.batchSize) || 18))}
+                maxItems={Math.max(8, Math.min(500, toNum(section.props?.maxItems) || 80))}
+                personalize={section.props?.personalize !== false}
+                explorationRatio={Math.max(10, Math.min(95, toNum(section.props?.explorationRatio) || 70))}
+                preview
+              />
+            </PreviewSelectableShell>
+          );
+        }
+
         if (section.type === "product_rail") {
           const source = toStr(section.props?.source, "new_arrivals");
           const selectedCategorySlugs = (Array.isArray(section.props?.categorySlugs) ? section.props.categorySlugs : [])
@@ -635,10 +662,9 @@ export function LandingPageLivePreview({
           const selectedCategorySlugs = Array.isArray(section.props?.categorySlugs)
             ? section.props.categorySlugs.map((slug: unknown) => toStr(slug)).filter(Boolean)
             : [];
-          const selectedCategories = (selectedCategorySlugs.length
+          const selectedCategories = selectedCategorySlugs.length
             ? categories.filter((category: any) => selectedCategorySlugs.includes(category.slug))
-            : categories
-          ).filter((category: any) => Number(category?.productCount || 0) > 0);
+            : categories;
           return (
             <PreviewSelectableShell key={section.id} blockId={section.id} label={label} selected={isSelected} onSelect={onSelectBlock} controls={controls}>
               <SectionShell>
@@ -913,6 +939,7 @@ export function LandingPageLivePreview({
                 title={toStr(section.props?.title, "Continue browsing")}
                 subtitle={toStr(section.props?.subtitle, "Recently viewed products for returning shoppers.")}
                 limit={Math.max(1, toNum(section.props?.limit) || 8)}
+                preview
               />
             </PreviewSelectableShell>
           );
@@ -932,6 +959,7 @@ export function LandingPageLivePreview({
                 title={toStr(section.props?.title, "Inspired by your searches")}
                 subtitle={toStr(section.props?.subtitle, "Products related to recent shopper searches.")}
                 limit={Math.max(1, toNum(section.props?.limit) || 8)}
+                preview
               />
             </PreviewSelectableShell>
           );
@@ -953,6 +981,7 @@ export function LandingPageLivePreview({
                 limit={Math.max(1, toNum(section.props?.limit) || 8)}
                 days={Math.max(1, Math.min(90, toNum(section.props?.days) || 30))}
                 mode={toStr(section.props?.mode, "blended") as "blended" | "clicked" | "viewed" | "searched"}
+                preview
               />
             </PreviewSelectableShell>
           );
@@ -972,6 +1001,7 @@ export function LandingPageLivePreview({
                 title={toStr(section.props?.title, "Recommended for you")}
                 subtitle={toStr(section.props?.subtitle, "A personalized mix based on browsing and search history.")}
                 limit={Math.max(1, toNum(section.props?.limit) || 8)}
+                preview
               />
             </PreviewSelectableShell>
           );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CartActionStack } from "@/components/cart/cart-actions";
 import { CartItemCard } from "@/components/cart/cart-item-card";
 import { DisplayCurrencySelector, useDisplayCurrency } from "@/components/currency/display-currency-provider";
@@ -9,6 +9,24 @@ import { readShopperDeliveryArea } from "@/components/products/delivery-area-gat
 import { PHONE_REGION_OPTIONS } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { fetchCheckoutShippingPreview, type CheckoutShippingPreview } from "@/lib/shipping/client-preview";
+
+const SELLER_BANNER_PLACEHOLDER = "/backgrounds/piessang-repeat-background.png";
+const SELLER_LOGO_PLACEHOLDER = "/avatars/Piessang monkey avatars for profiles.jpg";
+
+type SellerBranding = {
+  bannerImageUrl?: string | null;
+  bannerAltText?: string | null;
+  bannerObjectPosition?: string | null;
+  logoImageUrl?: string | null;
+  logoAltText?: string | null;
+  logoObjectPosition?: string | null;
+};
+
+type SellerFollowState = {
+  following: boolean;
+  loading: boolean;
+  loaded: boolean;
+};
 
 type CartPreviewItem = {
   cart_item_key?: string;
@@ -28,7 +46,10 @@ type CartPreviewItem = {
       vendorName?: string | null;
     };
     seller?: {
+      sellerCode?: string | null;
+      sellerSlug?: string | null;
       vendorName?: string | null;
+      branding?: SellerBranding | null;
     };
     fulfillment?: {
       mode?: string | null;
@@ -54,6 +75,15 @@ type CartPreviewItem = {
     };
   };
 };
+
+function getSellerIdentity(items: CartPreviewItem[]) {
+  const seller = items.find((item) => item?.product_snapshot?.seller?.sellerCode || item?.product_snapshot?.seller?.sellerSlug)
+    ?.product_snapshot?.seller;
+  return {
+    sellerCode: String(seller?.sellerCode || "").trim(),
+    sellerSlug: String(seller?.sellerSlug || "").trim(),
+  };
+}
 
 function applyCartPreviewAction(
   currentCart: {
@@ -120,6 +150,153 @@ function applyCartPreviewAction(
   };
 }
 
+function getSellerBranding(items: CartPreviewItem[]) {
+  const brandedItem = items.find((item) => {
+    const branding = item?.product_snapshot?.seller?.branding;
+    return Boolean(branding?.bannerImageUrl || branding?.logoImageUrl);
+  });
+  return brandedItem?.product_snapshot?.seller?.branding || items[0]?.product_snapshot?.seller?.branding || null;
+}
+
+function SellerDrawerHeader({
+  seller,
+  items,
+  errorMessage,
+  isAuthenticated,
+  authReady,
+  openAuthModal,
+  onNotice,
+}: {
+  seller: string;
+  items: CartPreviewItem[];
+  errorMessage?: string | null;
+  isAuthenticated: boolean;
+  authReady: boolean;
+  openAuthModal: (message?: string) => void;
+  onNotice: (message: string) => void;
+}) {
+  const branding = getSellerBranding(items);
+  const sellerIdentity = getSellerIdentity(items);
+  const canFollowSeller = Boolean(sellerIdentity.sellerCode || sellerIdentity.sellerSlug);
+  const [followState, setFollowState] = useState<SellerFollowState>({
+    following: false,
+    loading: false,
+    loaded: false,
+  });
+  const bannerUrl = String(branding?.bannerImageUrl || "").trim();
+  const logoUrl = String(branding?.logoImageUrl || "").trim() || SELLER_LOGO_PLACEHOLDER;
+  const bannerPosition = String(branding?.bannerObjectPosition || "").trim() || "center center";
+  const logoPosition = String(branding?.logoObjectPosition || "").trim() || "center center";
+
+  useEffect(() => {
+    if (!authReady || !canFollowSeller) return;
+    let cancelled = false;
+    const params = new URLSearchParams();
+    if (sellerIdentity.sellerCode) params.set("sellerCode", sellerIdentity.sellerCode);
+    if (sellerIdentity.sellerSlug) params.set("sellerSlug", sellerIdentity.sellerSlug);
+    fetch(`/api/client/v1/accounts/seller/follow?${params.toString()}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload) => {
+        if (cancelled || payload?.ok === false) return;
+        setFollowState({ following: payload?.following === true, loading: false, loaded: true });
+      })
+      .catch(() => {
+        if (!cancelled) setFollowState((current) => ({ ...current, loading: false, loaded: true }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, canFollowSeller, sellerIdentity.sellerCode, sellerIdentity.sellerSlug]);
+
+  async function handleFollowToggle() {
+    if (!canFollowSeller) return;
+    if (!isAuthenticated) {
+      openAuthModal(`Sign in to follow ${seller} and get notified about new releases.`);
+      return;
+    }
+    setFollowState((current) => ({ ...current, loading: true }));
+    try {
+      const response = await fetch("/api/client/v1/accounts/seller/follow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sellerCode: sellerIdentity.sellerCode,
+          sellerSlug: sellerIdentity.sellerSlug,
+          action: followState.following ? "unfollow" : "follow",
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to update follow state.");
+      }
+      const nextFollowing = payload?.following === true;
+      setFollowState({ following: nextFollowing, loading: false, loaded: true });
+      onNotice(nextFollowing ? `You are now following ${seller}.` : `You stopped following ${seller}.`);
+    } catch (error) {
+      setFollowState((current) => ({ ...current, loading: false }));
+      onNotice(error instanceof Error ? error.message : "Unable to update follow state right now.");
+    }
+  }
+
+  return (
+    <div className="relative overflow-hidden rounded-[8px] border border-black/5 bg-white">
+      {bannerUrl ? (
+        <img
+          src={bannerUrl}
+          alt={branding?.bannerAltText || `${seller} banner`}
+          className="absolute inset-y-0 left-0 h-full w-[80%] object-cover opacity-78"
+          style={{
+            objectPosition: bannerPosition,
+            maskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.72) 48%, rgba(0,0,0,0.24) 68%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.72) 48%, rgba(0,0,0,0.24) 68%, transparent 100%)",
+          }}
+        />
+      ) : (
+        <div
+          className="absolute inset-y-0 left-0 w-[80%] bg-[#faf6ea] bg-center bg-repeat opacity-55"
+          style={{
+            backgroundImage: `url('${SELLER_BANNER_PLACEHOLDER}')`,
+            maskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.68) 48%, rgba(0,0,0,0.22) 68%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.68) 48%, rgba(0,0,0,0.22) 68%, transparent 100%)",
+          }}
+          aria-hidden="true"
+        />
+      )}
+      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.12)_0%,rgba(255,255,255,0.5)_42%,rgba(255,255,255,0.92)_76%,#fff_100%)]" />
+      <div className="relative flex items-center justify-between gap-3 px-3 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <img
+            src={logoUrl}
+            alt={branding?.logoAltText || `${seller} profile`}
+            className="h-11 w-11 shrink-0 rounded-full border border-white bg-white object-cover shadow-[0_4px_14px_rgba(20,24,27,0.12)]"
+            style={{ objectPosition: logoPosition }}
+          />
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Seller</p>
+            <p className="mt-0.5 truncate text-[15px] font-semibold text-[#202020]">{seller}</p>
+          </div>
+        </div>
+        {errorMessage ? (
+          <p className="max-w-[16ch] text-right text-[10px] font-semibold text-[#b91c1c]">{errorMessage}</p>
+        ) : canFollowSeller ? (
+          <button
+            type="button"
+            onClick={() => void handleFollowToggle()}
+            disabled={followState.loading}
+            className={`inline-flex h-9 shrink-0 items-center justify-center rounded-[8px] px-3 text-[12px] font-semibold transition-colors disabled:cursor-wait disabled:opacity-70 ${
+              followState.following
+                ? "border border-black/10 bg-white/90 text-[#202020] hover:border-[#cbb26b] hover:text-[#907d4c]"
+                : "bg-[#202020] text-white shadow-[0_8px_18px_rgba(20,24,27,0.12)] hover:bg-[#2b2b2b]"
+            }`}
+          >
+            {followState.loading ? "Saving..." : followState.following ? "Following" : "Follow"}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function CartPreviewDrawer({
   open,
   onClose,
@@ -131,7 +308,7 @@ export function CartPreviewDrawer({
   cartOwnerId: string | null;
   onCartChange?: (cart: unknown) => void;
 }) {
-  const { authReady } = useAuth();
+  const { authReady, isAuthenticated, openAuthModal } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const [loading, setLoading] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -189,25 +366,33 @@ export function CartPreviewDrawer({
 
   const items = Array.isArray(cart?.items) ? cart.items : [];
   const shopperArea = readShopperDeliveryArea() as any;
-  const countryName = String(shopperArea?.country || "").trim().toLowerCase();
+  const shopperCountry = String(shopperArea?.country || "").trim();
+  const shopperProvince = String(shopperArea?.province || shopperArea?.stateProvinceRegion || "").trim();
+  const shopperCity = String(shopperArea?.city || shopperArea?.suburb || "").trim();
+  const shopperPostalCode = String(shopperArea?.postalCode || "").trim();
+  const countryName = shopperCountry.toLowerCase();
   const countryCode =
     PHONE_REGION_OPTIONS.find((option) => option.label.replace(/\s*\(\+\d+\)$/, "").trim().toLowerCase() === countryName)?.iso ||
-    String(shopperArea?.country || "").trim().toUpperCase();
-  const buyerDestination =
-    countryCode || shopperArea?.province || shopperArea?.postalCode || shopperArea?.city
-      ? {
-          countryCode,
-          province: String(shopperArea?.province || shopperArea?.stateProvinceRegion || "").trim(),
-          city: String(shopperArea?.city || shopperArea?.suburb || "").trim(),
-          postalCode: String(shopperArea?.postalCode || "").trim(),
-        }
-      : null;
+    shopperCountry.toUpperCase();
+  const buyerDestination = useMemo(
+    () => {
+      if (!countryCode && !shopperProvince && !shopperPostalCode && !shopperCity) return null;
+      return {
+        countryCode,
+        province: shopperProvince,
+        city: shopperCity,
+        postalCode: shopperPostalCode,
+      };
+    },
+    [countryCode, shopperCity, shopperPostalCode, shopperProvince],
+  );
   const destinationKnown = Boolean(buyerDestination);
   const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const productsTotalIncl = items.reduce((sum, item) => sum + Math.max(0, Number(item?.line_totals?.final_incl || 0) || 0), 0);
-  const totalIncl = destinationKnown ? productsTotalIncl + Number(shippingPreview?.shippingFinalTotal || 0) : productsTotalIncl;
+  const totalIncl = productsTotalIncl;
   const cartId = String(cart?.cart?.cart_id || "").trim();
   const viewCartHref = cartId ? `/cart?cart=${encodeURIComponent(cartId)}` : "/cart";
+  const checkoutHref = cartId ? `/checkout?cart=${encodeURIComponent(cartId)}` : "/checkout";
   const showDrawerLoading = !authReady || (loading && !hasLoaded);
   const sellerGroups = items.reduce<Array<{ seller: string; sellerKey: string; items: CartPreviewItem[] }>>((groups, item) => {
                 const seller =
@@ -408,7 +593,10 @@ export function CartPreviewDrawer({
             {showDrawerLoading ? (
               <div className="mt-2 h-8 w-32 animate-pulse rounded bg-[#ece8df]" />
             ) : (
-              <p className="mt-1 text-[22px] font-semibold text-[#202020]">{formatMoney(totalIncl)}</p>
+              <>
+                <p className="mt-1 text-[22px] font-semibold text-[#202020]">{formatMoney(totalIncl)}</p>
+                <p className="mt-1 text-[12px] font-medium text-[#7a8594]">Shipping calculated at checkout.</p>
+              </>
             )}
           </div>
 
@@ -434,30 +622,20 @@ export function CartPreviewDrawer({
             <div className="space-y-3">
               {sellerGroups.map((group) => (
                 <section key={group.seller} className="space-y-2">
-                  <div className="flex items-center justify-between px-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">{group.seller}</p>
-                    <p className={`text-[10px] ${shippingBlockedSellerKeys.has(group.sellerKey) ? "font-semibold text-[#b91c1c]" : "text-[#8b94a3]"}`}>
-                      {!destinationKnown
-                        ? "Shipping calculated at checkout"
-                        : shippingPreviewLoading
-                          ? "Resolving shipping"
-                          : shippingBlockedSellerKeys.has(group.sellerKey)
-                            ? shippingPreview?.errors.find((entry) => String(entry?.sellerId || "").trim() === group.sellerKey)?.message || "Shipping unavailable"
-                            : (() => {
-                                const option = shippingPreview?.options.find((entry) => String(entry?.sellerId || "").trim() === group.sellerKey);
-                                if (!option) return "Shipping unavailable";
-                                const eta = option?.estimatedDeliveryDays;
-                                const min = Number(eta?.min);
-                                const max = Number(eta?.max);
-                                const etaLabel = Number.isFinite(min) && Number.isFinite(max)
-                                  ? min === max
-                                    ? `${min} day${min === 1 ? "" : "s"}`
-                                    : `${min}-${max} days`
-                                  : "";
-                                return etaLabel ? `${formatMoney(option.finalShippingFee)} · ${etaLabel}` : formatMoney(option.finalShippingFee);
-                              })()}
-                    </p>
-                  </div>
+                  <SellerDrawerHeader
+                    seller={group.seller}
+                    items={group.items}
+                    errorMessage={
+                      shippingBlockedSellerKeys.has(group.sellerKey)
+                        ? shippingPreview?.errors.find((entry) => String(entry?.sellerId || "").trim() === group.sellerKey)?.message ||
+                          "Shipping unavailable"
+                        : null
+                    }
+                    isAuthenticated={isAuthenticated}
+                    authReady={authReady}
+                    openAuthModal={openAuthModal}
+                    onNotice={setSnackbarMessage}
+                  />
                   {group.items.map((item, index) => {
                     const productId =
                       String(item?.product_snapshot?.product?.unique_id || "") ||
@@ -489,6 +667,7 @@ export function CartPreviewDrawer({
           <CartActionStack
             compact
             viewCartHref={viewCartHref}
+            checkoutHref={checkoutHref}
             disableCheckout={checkoutBlocked}
             checkoutHint={checkoutBlockMessage}
           />

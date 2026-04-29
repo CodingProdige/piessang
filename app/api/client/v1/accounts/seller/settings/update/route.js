@@ -357,7 +357,7 @@ export async function POST(req) {
       });
     }
     const shippingSettings = normalizeShippingSettings(shippingValidation.settings);
-    shippingSettings.shipsFrom = await enrichLocationWithGeocode({
+    const enrichedShipsFrom = await enrichLocationWithGeocode({
       streetAddress: shippingSettings.shipsFrom?.streetAddress,
       addressLine2: shippingSettings.shipsFrom?.addressLine2,
       country: shippingSettings.shipsFrom?.countryCode,
@@ -368,6 +368,12 @@ export async function POST(req) {
       latitude: shippingSettings.shipsFrom?.latitude,
       longitude: shippingSettings.shipsFrom?.longitude,
     });
+    shippingSettings.shipsFrom = normalizeShippingSettings({
+      shipsFrom: {
+        ...enrichedShipsFrom,
+        countryCode: enrichedShipsFrom?.countryCode || enrichedShipsFrom?.country || shippingSettings.shipsFrom?.countryCode,
+      },
+    }).shipsFrom;
     const googleRegionIssues = await validateShippingSettingsGoogleRegions(shippingSettings);
     if (googleRegionIssues.length) {
       return err(400, "Invalid Shipping Settings", "Seller shipping settings are invalid.", {

@@ -103,8 +103,6 @@ export function CartItemCard({
   const productHref = buildProductHref(title, productUniqueId);
   const variantLabel = variant?.label ?? "Selected variant";
   const qty = item.qty ?? item.quantity ?? 0;
-  const saleQty = Math.max(0, item.sale_qty ?? 0);
-  const regularQty = Math.max(0, item.regular_qty ?? Math.max(qty - saleQty, 0));
   const imageUrl = variant?.media?.images?.[0]?.imageUrl ?? snapshot?.media?.images?.[0]?.imageUrl ?? "";
   const imageBlurHash = variant?.media?.images?.[0]?.blurHashUrl ?? snapshot?.media?.images?.[0]?.blurHashUrl ?? "";
   const baseIncl =
@@ -129,11 +127,6 @@ export function CartItemCard({
     item.product_snapshot?.seller?.vendorName?.trim() ||
     item.product_snapshot?.product?.vendorName?.trim() ||
     "Piessang seller";
-  const fulfillmentMode = String(item.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase();
-  const fulfillmentLabel =
-    fulfillmentMode === "bevgo"
-      ? "Piessang handles delivery"
-      : "Seller handles delivery";
   const canDecrease = qty > 1;
   const availabilityStatus = String(item?.availability?.status || "").trim().toLowerCase();
   const isUnavailable = availabilityStatus === "out_of_stock" || availabilityStatus === "unavailable";
@@ -187,13 +180,6 @@ export function CartItemCard({
               Sale
             </span>
           ) : null}
-        </div>
-
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#57636c]">
-          <span>{qty} item{qty === 1 ? "" : "s"}</span>
-          <span>{fulfillmentLabel}</span>
-          {saleActiveLine ? <span className="text-[#d63f52]">{saleQty > 0 ? `Sale qty ${saleQty}` : "On sale"}</span> : null}
-          {regularQty > 0 ? <span>Regular qty {regularQty}</span> : null}
         </div>
 
         {isUnavailable ? (

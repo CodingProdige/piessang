@@ -827,40 +827,6 @@ function buildEditorStatusSummary({
   }
 }
 
-function buildListingSummaryCopy({
-  moderationStatus,
-  isSystemAdmin,
-}: {
-  moderationStatus: string;
-  isSystemAdmin: boolean;
-}) {
-  if (isSystemAdmin) {
-    switch (moderationStatus) {
-      case "published":
-        return "You are viewing this published listing in system admin mode. Seller-only submission shortcuts are hidden here.";
-      case "in_review":
-        return "You are viewing this in-review listing in system admin mode. Seller-only submission shortcuts are hidden here.";
-      default:
-        return "You are viewing this listing in system admin mode. Seller-only submission shortcuts are hidden here.";
-    }
-  }
-
-  switch (moderationStatus) {
-    case "published":
-      return "Your listing is live. You can keep updating operational details here while shopper-facing content changes may still require review.";
-    case "in_review":
-      return "Your listing is currently in review. Keep its saved details accurate here while Piessang reviews the submission.";
-    case "awaiting_stock":
-      return "Your listing is approved and waiting for stock before it can go live.";
-    case "rejected":
-      return "Your listing needs fixes before it can be approved again. Update it here, then re-submit it for review.";
-    case "blocked":
-      return "This listing is blocked from sale right now. Review the reason below before trying to move it forward again.";
-    default:
-      return "Your listing is saved as a draft. Add variants, then submit it for review when you are ready. If Piessang fulfils this listing, it will move to an awaiting stock state after approval.";
-  }
-}
-
 function ChangeImpactHint({
   mode,
   hasSavedProduct = true,
@@ -2912,7 +2878,6 @@ export function SellerCatalogueEditor({
   const [variantFormOpen, setVariantFormOpen] = useState(false);
   const [editingVariantIndex, setEditingVariantIndex] = useState<number | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [showFulfillmentChangeModal, setShowFulfillmentChangeModal] = useState(false);
   const [showDraftImpactModal, setShowDraftImpactModal] = useState(false);
   const [draftImpactModalTitle, setDraftImpactModalTitle] = useState("Confirm changes");
   const [draftImpactModalMessage, setDraftImpactModalMessage] = useState("");
@@ -2920,9 +2885,8 @@ export function SellerCatalogueEditor({
   const [showPublishDrawer, setShowPublishDrawer] = useState(false);
   const [showMobileToolsDrawer, setShowMobileToolsDrawer] = useState(false);
   const [publishChecklistPulse, setPublishChecklistPulse] = useState(false);
-  const [fulfillmentChangeNote, setFulfillmentChangeNote] = useState("");
   const [skuStatus, setSkuStatus] = useState<"idle" | "checking" | "unique" | "taken" | "error">("idle");
-  const [variantSkuStatus, setVariantSkuStatus] = useState<"idle" | "checking" | "unique" | "taken" | "error">("idle");
+  const [, setVariantSkuStatus] = useState<"idle" | "checking" | "unique" | "taken" | "error">("idle");
   const [variantBarcodeStatus, setVariantBarcodeStatus] = useState<"idle" | "checking" | "unique" | "taken" | "error">("idle");
   const [generatingVariantBarcode, setGeneratingVariantBarcode] = useState(false);
   const [inboundBookings, setInboundBookings] = useState<any[]>([]);
@@ -3100,6 +3064,26 @@ export function SellerCatalogueEditor({
     reviewContext === "product-reviews" &&
     Boolean(activeProductId) &&
     String(createdProduct?.moderationStatus ?? "").trim().toLowerCase() === "in_review";
+  const currentBrandSlug = useMemo(() => {
+    const selectedSlug = String(selectedBrand?.slug || matchingBrand?.slug || "").trim();
+    if (selectedSlug) return selectedSlug;
+    const currentBrandTitleSlug = normalizeSlug(brandName);
+    const baselineBrandTitleSlug = normalizeSlug(productEditorBaseline?.brandTitle || "");
+    if (currentBrandTitleSlug && currentBrandTitleSlug === baselineBrandTitleSlug) {
+      return productEditorBaseline?.brandSlug || "";
+    }
+    return currentBrandTitleSlug;
+  }, [brandName, matchingBrand?.slug, productEditorBaseline?.brandSlug, productEditorBaseline?.brandTitle, selectedBrand?.slug]);
+  const currentBrandTitle = useMemo(() => {
+    const selectedTitle = String(selectedBrand?.title || matchingBrand?.title || "").trim();
+    if (selectedTitle) return selectedTitle;
+    const currentTitle = String(brandName || "").trim();
+    const baselineTitle = String(productEditorBaseline?.brandTitle || "").trim();
+    if (normalizeSlug(currentTitle) && normalizeSlug(currentTitle) === normalizeSlug(baselineTitle)) {
+      return baselineTitle;
+    }
+    return currentTitle;
+  }, [brandName, matchingBrand?.title, productEditorBaseline?.brandTitle, selectedBrand?.title]);
   const productChangeImpact = useMemo(
     () =>
       getProductChangeImpactSummary({
@@ -3109,8 +3093,8 @@ export function SellerCatalogueEditor({
           category,
           subCategory,
           condition,
-          brandSlug: selectedBrand?.slug || "",
-          brandTitle: selectedBrand?.title || brandName,
+          brandSlug: currentBrandSlug,
+          brandTitle: currentBrandTitle,
           overview,
           description,
           keywords: keywordTags.slice(0, 10),
@@ -3127,6 +3111,8 @@ export function SellerCatalogueEditor({
       brandName,
       category,
       condition,
+      currentBrandSlug,
+      currentBrandTitle,
       description,
       fulfillmentMode,
       inventoryTracking,
@@ -3135,8 +3121,6 @@ export function SellerCatalogueEditor({
       productEditorBaseline,
       productImages,
       productVideos,
-      selectedBrand?.slug,
-      selectedBrand?.title,
       subCategory,
       title,
     ],
@@ -3491,6 +3475,14 @@ export function SellerCatalogueEditor({
     hasProduct: Boolean(createdProduct),
     moderationStatus: moderationStatusKey,
   });
+  const statusSummaryClass =
+    moderationStatusKey === "published"
+      ? "text-[12px] font-semibold text-[#1a8553]"
+      : "text-[12px] text-[#57636c]";
+  const showReviewRequiredStatusNotice =
+    (moderationStatusKey === "published" || moderationStatusKey === "awaiting_stock") &&
+    hasUnsavedProductChanges &&
+    productChangeImpact.tone === "review";
   const productStatusLabel = useMemo(() => {
     if (!isEditingProduct) return "Draft";
     if (createdProduct?.moderationStatus) return formatModerationStatus(createdProduct.moderationStatus);
@@ -3514,10 +3506,6 @@ export function SellerCatalogueEditor({
     }
     return "Add at least one variant before you submit this listing for review.";
   }, [activeProductId, moderationStatusKey]);
-  const listingSummaryCopy = buildListingSummaryCopy({
-    moderationStatus: moderationStatusKey,
-    isSystemAdmin,
-  });
   const selectedFeeRule = useMemo(
     () => resolveMarketplaceSuccessFeeRule(category, subCategory, marketplaceCategories),
     [category, marketplaceCategories, subCategory],
@@ -3645,7 +3633,6 @@ export function SellerCatalogueEditor({
   const publishRequirements = useMemo(
     () => [
       { label: "Title", ready: title.trim().length > 2 },
-      { label: "Product code", ready: uniqueId.length === 8 },
       { label: "SKU", ready: productSku.trim().length > 0 },
       { label: "Category", ready: category.trim().length > 0 },
       { label: "Sub category", ready: subCategory.trim().length > 0 },
@@ -3682,6 +3669,92 @@ export function SellerCatalogueEditor({
   );
   const missingRequirements = publishRequirements.filter((item) => !item.ready);
   const readyRequirementCount = publishRequirements.length - missingRequirements.length;
+  const listingStrength = useMemo(() => {
+    let score = 0;
+    const strengths: string[] = [];
+    const pointers: string[] = [];
+    const add = (points: number, ready: boolean, strength: string, pointer: string) => {
+      if (ready) {
+        score += points;
+        strengths.push(strength);
+      } else {
+        pointers.push(pointer);
+      }
+    };
+
+    const cleanTitleLength = title.trim().length;
+    const cleanOverviewLength = overview.trim().length;
+    const cleanDescriptionLength = descriptionPlainText.trim().length;
+    const imageCount = productImages.length;
+    const videoCount = productVideos.length;
+    const keywordCount = keywordTags.length;
+    const hasPricedVariant = variantItems.some((variant) => variantPriceIncl(variant) > 0);
+    const hasAvailableVariant = variantItems.some((variant) => {
+      const variantAny = variant as any;
+      const inventory = Number(
+        variantAny?.inventory?.qty ??
+          variantAny?.inventory?.quantity ??
+          variantAny?.inventory?.stock ??
+          variantAny?.stock?.qty ??
+          0,
+      );
+      const continueSelling = Boolean(
+        variantAny?.inventory?.continue_selling_out_of_stock ??
+          variantAny?.placement?.continue_selling_out_of_stock ??
+          variantAny?.continue_selling_out_of_stock,
+      );
+      return inventory > 0 || continueSelling;
+    });
+
+    add(8, cleanTitleLength >= 20, "Title has useful detail", "Use a clear title with brand, product type, model, size, or key attribute.");
+    add(6, Boolean(productSku.trim()), "SKU is set", "Add or generate a unique SKU.");
+    add(7, Boolean(category && subCategory), "Category placement is complete", "Choose the most precise category and sub category.");
+    add(6, brandFieldHasValue, "Brand is set", "Add the correct brand so shoppers can filter and trust the listing.");
+    add(6, cleanOverviewLength >= 80, "Overview is helpful", "Write a punchy overview of at least 80 characters.");
+    add(10, cleanDescriptionLength >= 300, "Description has enough substance", "Add a fuller description with materials, use cases, sizing, compatibility, or care details.");
+    add(7, keywordCount >= 5, "Good keyword coverage", "Add at least 5 search keywords shoppers may use.");
+    add(10, imageCount >= 4, "Strong image coverage", "Upload at least 4 clear images from different angles.");
+    add(5, imageCount >= 6, "Image set is rich", "Add 6 or more images for stronger shopper confidence.");
+    add(8, videoCount > 0, "Video media is available", "Add a short product video to improve engagement on cards and PDP.");
+    add(8, variantItems.length > 0, "At least one variant is ready", "Add at least one variant shoppers can buy.");
+    add(6, hasPricedVariant, "Variant pricing is set", "Make sure every selling variant has a valid price.");
+    add(5, hasAvailableVariant, "Availability looks ready", "Add stock or enable continue-selling where appropriate.");
+    add(4, selectedFeeRuleLabel.length > 0, "Fee preview is available", "Complete category details so success-fee guidance can be calculated.");
+    add(4, fulfillmentMode === "bevgo" ? variantLogisticsReady : sellerDeliverySettingsReady, "Fulfilment setup supports publishing", "Complete fulfilment, shipping, or logistics settings.");
+
+    const normalizedScore = Math.min(100, Math.max(0, Math.round(score)));
+    const label =
+      normalizedScore >= 85
+        ? "Excellent"
+        : normalizedScore >= 70
+          ? "Strong"
+          : normalizedScore >= 50
+            ? "Getting there"
+            : "Needs work";
+
+    return {
+      score: normalizedScore,
+      label,
+      strengths: strengths.slice(0, 3),
+      pointers: pointers.slice(0, 5),
+    };
+  }, [
+    brandFieldHasValue,
+    category,
+    descriptionPlainText,
+    fulfillmentMode,
+    keywordTags.length,
+    overview,
+    productImages.length,
+    productSku,
+    productVideos.length,
+    selectedFeeRuleLabel.length,
+    sellerDeliverySettingsReady,
+    subCategory,
+    title,
+    variantItems,
+    variantLogisticsReady,
+  ]);
 
   useEffect(() => {
     const previousCount = previousReadyRequirementCountRef.current;
@@ -3737,14 +3810,13 @@ export function SellerCatalogueEditor({
     Boolean(isAuthenticated) &&
     Boolean(canUseSellerEditor) &&
     Boolean(vendorName || loadedProductVendorName || isSystemAdmin) &&
-    uniqueId.length === 8 &&
     title.trim().length > 2 &&
+    productSku.trim().length > 0 &&
     category.trim().length > 0 &&
     subCategory.trim().length > 0 &&
     brandFieldHasValue &&
     overview.trim().length > 2 &&
     descriptionPlainText.trim().length > 10 &&
-    productSku.trim().length > 0 &&
     keywordTags.length > 0 &&
     !submitting;
   const saveDisabled = !formIsValid || (isEditingProduct && !hasUnsavedProductChanges);
@@ -3787,6 +3859,69 @@ export function SellerCatalogueEditor({
     }
   }
 
+  const renderListingStrength = () => (
+    <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Listing strength</p>
+          <p className="mt-1 text-[12px] leading-[1.5] text-[#57636c]">
+            Improve discoverability, shopper confidence, and review readiness.
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-[28px] font-semibold leading-none text-[#202020]">{listingStrength.score}%</p>
+          <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#907d4c]">{listingStrength.label}</p>
+        </div>
+      </div>
+      <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#ececec]">
+        <div
+          className={[
+            "h-full rounded-full transition-[width] duration-500",
+            listingStrength.score >= 85
+              ? "bg-[#1a8553]"
+              : listingStrength.score >= 70
+                ? "bg-[#cbb26b]"
+                : listingStrength.score >= 50
+                  ? "bg-[#f59e0b]"
+                  : "bg-[#dc2626]",
+          ].join(" ")}
+          style={{ width: `${listingStrength.score}%` }}
+        />
+      </div>
+      {listingStrength.pointers.length ? (
+        <div className="mt-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Improve next</p>
+          <div className="mt-2 space-y-2">
+            {listingStrength.pointers.map((item) => (
+              <div key={item} className="rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[12px] leading-[1.45] text-[#57636c]">
+                {item}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-4 rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] px-3 py-2 text-[12px] leading-[1.45] text-[#166534]">
+          This listing has strong content, media, and selling readiness signals.
+        </div>
+      )}
+      <div className="mt-4 rounded-[8px] border border-[rgba(203,178,107,0.35)] bg-[#faf7ef] px-3 py-2 text-[12px] leading-[1.45] text-[#6b5a2d]">
+        Product listings with video tend to sell significantly better because shoppers can understand the item faster.
+      </div>
+      {listingStrength.strengths.length ? (
+        <div className="mt-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Already helping</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {listingStrength.strengths.map((item) => (
+              <span key={item} className="rounded-full bg-[rgba(26,133,83,0.10)] px-2.5 py-1 text-[11px] font-semibold text-[#166534]">
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+
   const renderPublishingChecklist = () => (
     <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Publishing</p>
@@ -3825,15 +3960,15 @@ export function SellerCatalogueEditor({
     </section>
   );
 
-  const renderSidebarSummary = () => (
-    <div className={["space-y-5", embeddedMode ? "pt-5" : "pt-4"].join(" ")}>
+  const renderSidebarSummary = ({ showListingStrength = false }: { showListingStrength?: boolean } = {}) => (
+    <div className="space-y-4">
       <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Status</p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="rounded-[8px] bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#907d4c]">
             {productStatusLabel}
           </span>
-          <span className="text-[12px] text-[#57636c]">
+          <span className={statusSummaryClass}>
             {statusSummaryText}
           </span>
         </div>
@@ -3888,11 +4023,12 @@ export function SellerCatalogueEditor({
               {productDisputeSubmitting ? "Sending dispute..." : "Submit dispute"}
             </button>
           </div>
-        ) : moderationStatusKey === "published" || moderationStatusKey === "awaiting_stock" ? (
-          <p className="mt-4 rounded-[8px] border border-black/5 bg-[#fafafa] px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
-            This product has already been approved. Submit for review will only return after a rejection or meaningful content changes.
-          </p>
-        ) : (
+        ) : showReviewRequiredStatusNotice ? (
+          <div className="mt-4 rounded-[8px] border border-[#f0c7cb] bg-[#fff7f8] px-3 py-3 text-[11px] leading-[1.5] text-[#7f1d1d]">
+            <p className="font-semibold uppercase tracking-[0.08em] text-[#b91c1c]">Review required after save</p>
+            <p className="mt-1">{productChangeImpact.message}</p>
+          </div>
+        ) : moderationStatusKey === "published" || moderationStatusKey === "awaiting_stock" ? null : (
           <>
             <button
               type="button"
@@ -3918,6 +4054,8 @@ export function SellerCatalogueEditor({
           </>
         )}
       </section>
+
+      {showListingStrength ? renderListingStrength() : null}
 
       <section className="rounded-[8px] bg-white p-4 shadow-[0_8px_24px_rgba(20,24,27,0.07)]">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Product organization</p>
@@ -4037,11 +4175,13 @@ export function SellerCatalogueEditor({
         throw new Error("Invalid product code returned.");
       }
       if (uniqueCodeRequestRef.current !== requestId || hasEditorTargetRef.current) {
-        return;
+        return "";
       }
       setUniqueId(code);
+      return code;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to generate a unique product code.");
+      return "";
     } finally {
       if (uniqueCodeRequestRef.current === requestId) {
         setGeneratingCode(false);
@@ -4052,7 +4192,7 @@ export function SellerCatalogueEditor({
   async function fetchProductSku() {
     if (!titleHasValue) {
       setError("Add a product title first, then we can generate an SKU.");
-      return;
+      return "";
     }
 
     setGeneratingSku(true);
@@ -4080,8 +4220,10 @@ export function SellerCatalogueEditor({
       }
 
       setProductSku(sku);
+      return sku;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to generate a unique SKU.");
+      return "";
     } finally {
       setGeneratingSku(false);
     }
@@ -4570,11 +4712,15 @@ export function SellerCatalogueEditor({
         setSelectedBrand((current) => {
           if (!current) return current;
           const stillExists = nextSuggestions.some((item) => item.slug === current.slug);
-          return stillExists ? current : null;
+          return stillExists
+            ? {
+                ...current,
+                ...(nextSuggestions.find((item) => item.slug === current.slug) || {}),
+              }
+            : current;
         });
       } catch {
         setBrandSuggestions([]);
-        setSelectedBrand(null);
       } finally {
         setLoadingBrands(false);
       }
@@ -5081,10 +5227,13 @@ export function SellerCatalogueEditor({
     }
   }
 
-  function validateProductDraft() {
+  function validateProductDraft({
+    productCode = uniqueId.trim(),
+    sku = productSku.trim(),
+  }: { productCode?: string; sku?: string } = {}) {
     if (!title.trim()) return "Product title is required.";
-    if (!uniqueId.trim() || !/^\d{8}$/.test(uniqueId.trim())) return "Product code is required.";
-    if (!productSku.trim()) return "SKU is required.";
+    if (!productCode.trim() || !/^\d{8}$/.test(productCode.trim())) return "Product code is required.";
+    if (!sku.trim()) return "SKU is required.";
     if (!category.trim()) return "Primary category is required.";
     if (!subCategory.trim()) return "Sub category is required.";
     if (isPreLovedProductDraft && !condition.trim()) return "Select the pre-loved condition for this item.";
@@ -5232,7 +5381,20 @@ export function SellerCatalogueEditor({
   }
 
   async function saveProductDraft() {
-    const validationError = validateProductDraft();
+    let productIdentifier = uniqueId.trim();
+    if (!/^\d{8}$/.test(productIdentifier)) {
+      productIdentifier = await fetchUniqueCode();
+    }
+
+    let normalizedProductSku = productSku.trim();
+    if (!normalizedProductSku) {
+      normalizedProductSku = await fetchProductSku();
+    }
+
+    const validationError = validateProductDraft({
+      productCode: productIdentifier,
+      sku: normalizedProductSku,
+    });
     if (validationError) {
       throw new Error(validationError);
     }
@@ -5256,7 +5418,10 @@ export function SellerCatalogueEditor({
       ) {
         return { savedId: activeProductId, isUpdate };
       }
-      const payload = buildProductPayload(targetModerationStatus, !isUpdate);
+      const payload = buildProductPayload(targetModerationStatus, !isUpdate, {
+        productCode: productIdentifier,
+        sku: normalizedProductSku,
+      });
       const { normalizedUniqueId, normalizedSku, normalizedTitle, normalizedBrandSlug, normalizedBrandTitle } = payload;
 
       const response = await fetch(isUpdate ? PRODUCT_UPDATE_ENDPOINT : "/api/catalogue/v1/products/product/create", {
@@ -5398,9 +5563,13 @@ export function SellerCatalogueEditor({
     }
   }
 
-  function buildProductPayload(moderationStatus: "draft" | "in_review" | null = "draft", includeVariants = true) {
-    const normalizedUniqueId = String(uniqueId).trim();
-    const normalizedSku = String(productSku).trim();
+  function buildProductPayload(
+    moderationStatus: "draft" | "in_review" | null = "draft",
+    includeVariants = true,
+    identifiers: { productCode?: string; sku?: string } = {},
+  ) {
+    const normalizedUniqueId = String(identifiers.productCode ?? uniqueId).trim();
+    const normalizedSku = String(identifiers.sku ?? productSku).trim();
     const normalizedTitle = sanitizeText(title);
     const normalizedCategory = sanitizeText(category);
     const normalizedSubCategory = sanitizeText(subCategory);
@@ -5845,7 +6014,20 @@ export function SellerCatalogueEditor({
   }
 
   async function addVariant() {
-    const productValidationError = validateProductDraft();
+    let normalizedUniqueId = uniqueId.trim();
+    if (!/^\d{8}$/.test(normalizedUniqueId)) {
+      normalizedUniqueId = await fetchUniqueCode();
+    }
+
+    let normalizedProductSku = productSku.trim();
+    if (!normalizedProductSku) {
+      normalizedProductSku = await fetchProductSku();
+    }
+
+    const productValidationError = validateProductDraft({
+      productCode: normalizedUniqueId,
+      sku: normalizedProductSku,
+    });
     if (productValidationError) {
       setError(productValidationError);
       return;
@@ -6691,49 +6873,6 @@ export function SellerCatalogueEditor({
     setProductEditorBaseline(createProductEditorBaseline(next));
   }
 
-  async function requestFulfillmentChange() {
-    if (!activeProductId) return;
-
-    setSubmitting(true);
-    setMessage(null);
-    setError(null);
-    try {
-      const requestedMode = fulfillmentMode === "seller" ? "bevgo" : "seller";
-      const response = await fetch(PRODUCT_UPDATE_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          unique_id: activeProductId,
-          data: {
-            fulfillment: {
-              change_request: {
-                requested: true,
-                status: "requested",
-                desired_mode: requestedMode,
-                reason: fulfillmentChangeNote.trim(),
-                requestedAt: new Date().toISOString(),
-                requestedBy: profile?.uid ?? null,
-              },
-            },
-          },
-        }),
-      });
-
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "Unable to request a fulfilment change.");
-      }
-
-      setShowFulfillmentChangeModal(false);
-      setFulfillmentChangeNote("");
-      setMessage("Fulfilment change requested.");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to request a fulfilment change.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   async function confirmDeleteProduct() {
     if (!activeProductId) return;
 
@@ -6952,91 +7091,23 @@ export function SellerCatalogueEditor({
         <p className="mt-1 text-[13px] leading-[1.6] text-[#57636c]">{productChangeImpact.message}</p>
       </section>
 
-      <SellerPageIntro
-        title={pageIntroTitle}
-        description={
-          isEditingProduct
-            ? "Update the saved product record here. Variants, pricing, and stock can be managed once the core listing is saved."
-            : "Start with the product record here. Variants, pricing, and stock are added once the core listing is saved."
-        }
-      />
+      <div className="mt-4">
+        <SellerPageIntro
+          title={pageIntroTitle}
+          description={
+            isEditingProduct
+              ? "Update the saved product record here. Variants, pricing, and stock can be managed once the core listing is saved."
+              : "Start with the product record here. Variants, pricing, and stock are added once the core listing is saved."
+          }
+        />
+      </div>
 
       {showInitialEditorSkeleton ? renderEditorLoadingSkeleton() : (
       <div className="mt-4 grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-4">
           <section className="rounded-[8px] bg-white p-5 shadow-[0_8px_24px_rgba(20,24,27,0.06)]">
-          {createdProduct ? (
-            <div className="rounded-[8px] border border-[#cfe8d8] bg-[rgba(57,169,107,0.07)] p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#39a96b]">
-                  {isEditingProduct ? "Product saved" : "Product created"}
-                </p>
-                <span className="rounded-full bg-[rgba(203,178,107,0.14)] px-2.5 py-1 text-[11px] font-semibold text-[#907d4c]">
-                  {formatModerationStatus(createdProduct.moderationStatus || "draft")}
-                </span>
-              </div>
-              <h2 className="mt-2 text-[18px] font-semibold text-[#202020]">{createdProduct.title}</h2>
-              <p className="mt-2 text-[13px] leading-[1.6] text-[#57636c]">
-                {listingSummaryCopy}
-              </p>
-              <p className="mt-2 text-[12px] uppercase tracking-[0.12em] text-[#907d4c]">SKU: {createdProduct.sku}</p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link
-                  href={`/products/${createdProduct.titleSlug}?unique_id=${createdProduct.uniqueId}&preview=1`}
-                  className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
-                >
-                  Preview
-                </Link>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (variantFormOpen) {
-                      closeVariantForm();
-                      return;
-                    }
-                    void openVariantForm();
-                  }}
-                  className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-                >
-                  {variantFormOpen ? "Close variants" : "Add variant"}
-                </button>
-                {!isSystemAdmin ? (
-                  <button
-                    type="button"
-                    onClick={resetProductForm}
-                    className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-                  >
-                    Create another
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
           <div className="mt-0">
             <div className="space-y-4">
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Product code <span className="text-[#d11c1c]">*</span></span>
-                <div className="flex gap-2">
-                  <input
-                    value={uniqueId}
-                    readOnly
-                    className="w-full rounded-[8px] border border-black/10 bg-[#fafafa] px-4 py-3 text-[13px] outline-none"
-                    placeholder="Generating..."
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!activeProductId) void fetchUniqueCode();
-                    }}
-                    disabled={generatingCode || Boolean(activeProductId)}
-                    className="inline-flex h-[46px] items-center rounded-[8px] border border-black/10 bg-white px-3 text-[13px] font-semibold text-[#202020]"
-                  >
-                    {activeProductId ? "Locked" : generatingCode ? "Refreshing..." : "Refresh"}
-                  </button>
-                </div>
-              </label>
-
               <label className="block">
                 <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Product title <span className="text-[#d11c1c]">*</span></span>
                 <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1.5" />
@@ -7270,7 +7341,7 @@ export function SellerCatalogueEditor({
                 </div>
                 <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] leading-[1.5] text-[#57636c]">
                   {fulfillmentLocked
-                    ? "Fulfilment is locked after the first save. If you need to change it, request a fulfilment change from Piessang."
+                    ? "Fulfilment is locked after the first save. Create a new product if this listing needs a different fulfilment model."
                     : "Choose fulfilment now. Once the product is saved, this setting is locked to protect order routing and fee rules."}
                 </div>
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -7318,19 +7389,11 @@ export function SellerCatalogueEditor({
                       Delivery timing for seller-fulfilled products now comes from your shipping preferences. Update your local delivery settings or country shipping rates in Settings to control the delivery promise shown to shoppers.
                     </div>
                   ) : null}
-                  {fulfillmentLocked ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowFulfillmentChangeModal(true)}
-                      className="inline-flex h-11 w-full items-center justify-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] sm:col-span-2"
-                    >
-                      Request fulfilment change
-                    </button>
-                  ) : (
+                  {!fulfillmentLocked ? (
                     <div className="rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-3 text-[11px] text-[#57636c] sm:col-span-2">
                       You can update fulfilment before the first save.
                     </div>
-                  )}
+                  ) : null}
                 </div>
               </section>
 
@@ -7506,6 +7569,9 @@ export function SellerCatalogueEditor({
                 <div className="mt-3 rounded-[8px] border border-dashed border-black/10 bg-white px-3 py-2 text-[11px] text-[#57636c]">
                   <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} />
                 </div>
+                <div className="mt-3 rounded-[8px] border border-[rgba(203,178,107,0.35)] bg-[#faf7ef] px-3 py-2 text-[11px] leading-[1.45] text-[#6b5a2d]">
+                  Product listings with video tend to sell significantly better because shoppers can understand the item faster.
+                </div>
                 <input
                   ref={uploadInputRef}
                   type="file"
@@ -7637,31 +7703,6 @@ export function SellerCatalogueEditor({
                 {variantFormOpen ? (
                   <div className="mt-4 space-y-3 rounded-[8px] border border-black/5 bg-white p-4">
                     <div className="grid gap-3">
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant ID <span className="text-[#d11c1c]">*</span></span>
-                        <div className="flex gap-2">
-                          <input
-                            value={variantDraft.variantId}
-                            onChange={(event) =>
-                              setVariantDraft((current) => ({
-                                ...current,
-                                variantId: event.target.value.replace(/\D/g, "").slice(0, 8),
-                              }))
-                            }
-                            className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#cbb26b]"
-                            placeholder="Generate or enter 8 digits"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => void fetchVariantCode()}
-                            disabled={submitting}
-                            className="inline-flex h-[42px] min-w-[108px] items-center justify-center rounded-[8px] border border-black/10 bg-[#202020] px-3 text-[12px] font-semibold text-white transition-colors hover:bg-[#2b2b2b] disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            Generate
-                          </button>
-                        </div>
-                        <p className="mt-1 text-[11px] leading-[1.4] text-[#57636c]">Every variant needs its own unique 8-digit code.</p>
-                      </label>
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Variant label <span className="text-[#d11c1c]">*</span></span>
                         <ChangeImpactHint mode="review" hasSavedProduct={Boolean(activeProductId)} className="mb-1" />
@@ -9403,9 +9444,6 @@ export function SellerCatalogueEditor({
                           <div>
                             <p className="text-[13px] font-semibold text-[#202020]">{variant.label || "Untitled variant"}</p>
                             <p className="mt-1 text-[11px] text-[#57636c]">
-                              {variant.variant_id ? `Code ${variant.variant_id}` : "No code"}
-                            </p>
-                            <p className="mt-1 text-[11px] text-[#57636c]">
                               {buildVariantAxisPreviewText(variant)}
                               {!String((variant as any)?.size ?? "").trim() && variant.pack?.volume_unit ? ` • ${variant.pack.volume_unit}` : ""}
                               {Array.isArray(variant.media?.images) && variant.media.images.length > 0
@@ -9473,7 +9511,7 @@ export function SellerCatalogueEditor({
 
         <aside className={["space-y-4 xl:sticky", embeddedMode ? "xl:top-6" : "xl:top-4"].join(" ")}>
           <div className="hidden xl:block">
-            {renderSidebarSummary()}
+            {renderSidebarSummary({ showListingStrength: true })}
           </div>
 
           {fulfillmentMode === "bevgo" && activeProductId ? (
@@ -9790,7 +9828,7 @@ export function SellerCatalogueEditor({
               </button>
             </div>
             <div className="space-y-4">
-              {renderSidebarSummary()}
+              {renderSidebarSummary({ showListingStrength: true })}
               {renderPublishingChecklist()}
             </div>
           </aside>
@@ -9820,7 +9858,7 @@ export function SellerCatalogueEditor({
               </button>
             </div>
             <div className="space-y-4">
-              {renderSidebarSummary()}
+              {renderSidebarSummary({ showListingStrength: true })}
             </div>
           </aside>
         </div>
@@ -9848,7 +9886,10 @@ export function SellerCatalogueEditor({
                 Close
               </button>
             </div>
-            {renderPublishingChecklist()}
+            <div className="space-y-4">
+              {renderListingStrength()}
+              {renderPublishingChecklist()}
+            </div>
           </aside>
         </div>
       ) : null}
@@ -9896,56 +9937,6 @@ export function SellerCatalogueEditor({
                 className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white"
               >
                 Continue
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {showFulfillmentChangeModal ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setShowFulfillmentChangeModal(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-[8px] bg-white p-5 shadow-[0_18px_50px_rgba(20,24,27,0.22)]"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#907d4c]">Request fulfilment change</p>
-            <h3 className="mt-2 text-[18px] font-semibold text-[#202020]">Update fulfilment after review</h3>
-            <p className="mt-2 text-[13px] leading-[1.55] text-[#57636c]">
-              Tell Piessang why the fulfilment should change from {fulfillmentMode === "seller" ? "self fulfilment to Piessang fulfilment" : "Piessang fulfilment to self fulfilment"}.
-            </p>
-            <label className="mt-4 block">
-              <span className="mb-1 block text-[11px] font-semibold text-[#202020]">Reason</span>
-              <textarea
-                value={fulfillmentChangeNote}
-                onChange={(event) => setFulfillmentChangeNote(event.target.value)}
-                rows={4}
-                className="w-full rounded-[8px] border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#cbb26b]"
-                placeholder="Optional note for the Piessang review team"
-              />
-            </label>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowFulfillmentChangeModal(false);
-                  setFulfillmentChangeNote("");
-                }}
-                className="inline-flex h-10 items-center rounded-[8px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020]"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void requestFulfillmentChange()}
-                disabled={submitting}
-                className="inline-flex h-10 items-center rounded-[8px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {submitting ? "Requesting..." : "Request change"}
               </button>
             </div>
           </div>

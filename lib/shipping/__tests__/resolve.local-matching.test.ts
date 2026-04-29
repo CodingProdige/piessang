@@ -177,6 +177,161 @@ test("local postal range match succeeds", () => {
   assert.equal(result.matchType, "postal_range");
 });
 
+test("local postal exact match tolerates leading zero differences", () => {
+  const seller = {
+    ...baseSeller,
+    shippingSettings: {
+      ...baseSeller.shippingSettings,
+      localDelivery: {
+        ...baseSeller.shippingSettings.localDelivery,
+        mode: "postal_code_group",
+        provinces: [],
+        postalCodeGroups: [
+          {
+            name: "Pretoria exact",
+            postalCodes: ["0200"],
+            postalCodeRanges: [],
+            rateOverride: baseSeller.shippingSettings.localDelivery.provinces[0].rateOverride,
+            batching: baseSeller.shippingSettings.localDelivery.provinces[0].batching,
+            estimatedDeliveryDays: { min: 1, max: 2 },
+          },
+        ],
+      },
+    },
+  };
+
+  const result = resolveShippingForSellerGroup({
+    seller,
+    items: baseItems,
+    buyerDestination: { countryCode: "ZA", province: "Gauteng", city: "Pretoria", postalCode: "200" },
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.matchedSource, "local_delivery");
+  assert.equal(result.matchType, "postal_exact");
+});
+
+test("local postal range match tolerates leading zero differences", () => {
+  const seller = {
+    ...baseSeller,
+    shippingSettings: {
+      ...baseSeller.shippingSettings,
+      localDelivery: {
+        ...baseSeller.shippingSettings.localDelivery,
+        mode: "postal_code_group",
+        provinces: [],
+        postalCodeGroups: [
+          {
+            name: "Pretoria range",
+            postalCodes: [],
+            postalCodeRanges: [{ from: "0001", to: "0299" }],
+            rateOverride: baseSeller.shippingSettings.localDelivery.provinces[0].rateOverride,
+            batching: baseSeller.shippingSettings.localDelivery.provinces[0].batching,
+            estimatedDeliveryDays: { min: 1, max: 2 },
+          },
+        ],
+      },
+    },
+  };
+
+  const result = resolveShippingForSellerGroup({
+    seller,
+    items: baseItems,
+    buyerDestination: { countryCode: "ZA", province: "Gauteng", city: "Pretoria", postalCode: "200" },
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.matchedSource, "local_delivery");
+  assert.equal(result.matchType, "postal_range");
+});
+
+test("local delivery mode controls whether postal groups are used", () => {
+  const seller = {
+    ...baseSeller,
+    shippingSettings: {
+      ...baseSeller.shippingSettings,
+      localDelivery: {
+        ...baseSeller.shippingSettings.localDelivery,
+        mode: "province",
+        provinces: [
+          {
+            ...baseSeller.shippingSettings.localDelivery.provinces[0],
+            province: "Gauteng",
+            enabled: true,
+          },
+        ],
+        postalCodeGroups: [
+          {
+            name: "Paarl exact",
+            postalCodes: ["7646"],
+            postalCodeRanges: [],
+            rateOverride: {
+              ...baseSeller.shippingSettings.localDelivery.provinces[0].rateOverride,
+              flatRate: 65,
+            },
+            batching: baseSeller.shippingSettings.localDelivery.provinces[0].batching,
+            estimatedDeliveryDays: { min: 1, max: 2 },
+          },
+        ],
+      },
+      zones: [],
+    },
+  };
+
+  const result = resolveShippingForSellerGroup({
+    seller,
+    items: baseItems,
+    buyerDestination: { countryCode: "ZA", province: "Western Cape", city: "Paarl", postalCode: "7646" },
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.code, "SELLER_DOES_NOT_SHIP_TO_LOCATION");
+});
+
+test("local postal exact match succeeds when seller country is saved as a label", () => {
+  const seller = {
+    ...baseSeller,
+    shippingSettings: {
+      ...baseSeller.shippingSettings,
+      shipsFrom: {
+        ...baseSeller.shippingSettings.shipsFrom,
+        countryCode: "South Africa",
+      },
+      localDelivery: {
+        ...baseSeller.shippingSettings.localDelivery,
+        mode: "postal_code_group",
+        provinces: [],
+        postalCodeGroups: [
+          {
+            name: "Paarl exact",
+            postalCodes: ["7646"],
+            postalCodeRanges: [],
+            rateOverride: baseSeller.shippingSettings.localDelivery.provinces[0].rateOverride,
+            batching: baseSeller.shippingSettings.localDelivery.provinces[0].batching,
+            estimatedDeliveryDays: { min: 1, max: 2 },
+          },
+        ],
+      },
+      zones: [],
+    },
+  };
+
+  const result = resolveShippingForSellerGroup({
+    seller,
+    items: baseItems,
+    buyerDestination: { countryCode: "ZA", province: "Western Cape", city: "Paarl", postalCode: "7646" },
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.matchedSource, "local_delivery");
+  assert.equal(result.matchType, "postal_exact");
+  assert.equal(result.matchedRuleName, "Paarl exact");
+});
+
 test("shipping zone country match succeeds", () => {
   const seller = {
     ...baseSeller,

@@ -1069,6 +1069,7 @@ export function SingleProductView({
   const [favoriteSubmitting, setFavoriteSubmitting] = useState(false);
   const [favoriteMessage, setFavoriteMessage] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
+  const mobileActionBarRef = useRef<HTMLDivElement | null>(null);
   const selectedBundleItems = useMemo(
     () => bundleRecommendations.filter((entry) => selectedBundleIds.includes(String(entry.id || "").trim())),
     [bundleRecommendations, selectedBundleIds],
@@ -1138,6 +1139,54 @@ export function SingleProductView({
 
   useEffect(() => {
     setLiteExperience(prefersLiteProductExperience());
+  }, []);
+
+  useEffect(() => {
+    const bar = mobileActionBarRef.current;
+    if (!bar || typeof window === "undefined") return undefined;
+
+    let frame = 0;
+    const reset = () => {
+      bar.style.top = "";
+      bar.style.bottom = "";
+    };
+    const update = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const isDesktop = window.matchMedia("(min-width: 1024px)").matches;
+        if (isDesktop) {
+          reset();
+          return;
+        }
+
+        const viewport = window.visualViewport;
+        const viewportTop = viewport?.offsetTop ?? 0;
+        const viewportHeight = viewport?.height ?? window.innerHeight;
+        const barHeight = bar.offsetHeight;
+        const top = Math.max(0, viewportTop + viewportHeight - barHeight);
+        bar.style.top = `${Math.round(top)}px`;
+        bar.style.bottom = "auto";
+      });
+    };
+
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    resizeObserver?.observe(bar);
+    update();
+
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+      reset();
+    };
   }, []);
 
   useEffect(() => {
@@ -2556,8 +2605,8 @@ export function SingleProductView({
         ) : null}
       </RenderWhenVisible>
 
-      <div className="fixed bottom-0 left-0 right-0 z-40 m-0 border-t border-black/10 bg-white px-4 pt-3 shadow-[0_-10px_30px_rgba(20,24,27,0.12)] lg:hidden">
-        <div className="m-0 w-full space-y-3 pb-3">
+      <div ref={mobileActionBarRef} className="fixed bottom-0 left-0 right-0 z-40 m-0 border-t border-black/10 bg-white px-4 pt-3 shadow-[0_-10px_30px_rgba(20,24,27,0.12)] lg:hidden">
+        <div className="m-0 w-full space-y-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div>
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#907d4c]">Quantity</p>
             <div className="inline-flex h-12 items-center overflow-hidden rounded-[8px] border border-black/10 bg-white">

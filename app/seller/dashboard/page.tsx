@@ -96,7 +96,6 @@ type SidebarSection =
   | "settings"
   | "settings-profile"
   | "settings-shipping"
-  | "settings-estimator"
   | "settings-branding"
   | "settings-business"
   | "settings-payouts";
@@ -310,7 +309,6 @@ const SECTION_ACCESS: Record<SidebarSection, SellerAccessRole[]> = {
   settings: ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-profile": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-shipping": ["admin", "manager", "catalogue", "orders", "analytics"],
-  "settings-estimator": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-branding": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-business": ["admin", "manager", "catalogue", "orders", "analytics"],
   "settings-payouts": ["admin", "manager", "catalogue", "orders", "analytics"],
@@ -1025,14 +1023,40 @@ function SidebarMenu({
               collapsed={compactDesktop}
               onClick={() => handleNavigate("admin")}
             />
-            <SidebarButton
-              label="Brand requests"
-              icon="box"
-              active={activeSection === "brand-requests"}
-              badgeCount={adminBadges?.brandRequestCount || 0}
+            <SidebarGroup
+              title="Review queues"
+              description="Brands, listings, and shopper reports"
+              icon="check"
               collapsed={compactDesktop}
-              onClick={() => handleNavigate("brand-requests")}
-            />
+            >
+              <SidebarButton
+                label="Brand requests"
+                icon="box"
+                active={activeSection === "brand-requests"}
+                badgeCount={adminBadges?.brandRequestCount || 0}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("brand-requests")}
+                nested
+              />
+              <SidebarButton
+                label="Product reviews"
+                icon="check"
+                active={activeSection === "product-reviews"}
+                badgeCount={adminBadges?.productReviewCount || 0}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("product-reviews")}
+                nested
+              />
+              <SidebarButton
+                label="Product reports"
+                icon="flag"
+                active={activeSection === "product-reports"}
+                badgeCount={adminBadges?.productReportCount || 0}
+                collapsed={compactDesktop}
+                onClick={() => handleNavigate("product-reports")}
+                nested
+              />
+            </SidebarGroup>
             <SidebarGroup
               title="Analytics"
               description="Global and live marketplace activity"
@@ -1166,22 +1190,6 @@ function SidebarMenu({
               onClick={() => handleNavigate("admin-campaign-reviews")}
             />
             <SidebarButton
-              label="Product reviews"
-              icon="check"
-              active={activeSection === "product-reviews"}
-              badgeCount={adminBadges?.productReviewCount || 0}
-              collapsed={compactDesktop}
-              onClick={() => handleNavigate("product-reviews")}
-            />
-            <SidebarButton
-              label="Product reports"
-              icon="flag"
-              active={activeSection === "product-reports"}
-              badgeCount={adminBadges?.productReportCount || 0}
-              collapsed={compactDesktop}
-              onClick={() => handleNavigate("product-reports")}
-            />
-            <SidebarButton
               label="Returns"
               icon="returns"
               active={activeSection === "admin-returns"}
@@ -1239,15 +1247,6 @@ function SidebarMenu({
               complete={settingsReady?.shipping === true}
               locked={!canAccessSellerSection(sellerRole, "settings-shipping")}
               onClick={() => handleNavigate("settings-shipping")}
-              nested
-            />
-            <SidebarButton
-              label="Estimator"
-              icon="analytics"
-              active={activeSection === "settings-estimator"}
-              collapsed={compactDesktop}
-              locked={!canAccessSellerSection(sellerRole, "settings-estimator")}
-              onClick={() => handleNavigate("settings-estimator")}
               nested
             />
             <SidebarButton
@@ -1413,8 +1412,6 @@ function SellerDashboardContent() {
         return "settings-profile";
       case "settings-shipping":
         return "settings-shipping";
-      case "settings-estimator":
-        return "settings-estimator";
       case "settings-branding":
         return "settings-branding";
       case "settings-business":
@@ -2158,8 +2155,6 @@ function SellerDashboardContent() {
         return "Profile settings";
       case "settings-shipping":
         return "Shipping settings";
-      case "settings-estimator":
-        return "Shipping estimator";
       case "settings-branding":
         return "Branding settings";
       case "settings-business":
@@ -2265,8 +2260,6 @@ function SellerDashboardContent() {
         return "Manage your seller identity, public vendor name, description, and seller code.";
       case "settings-shipping":
         return "Set seller shipping origin, local delivery rules, and broader shipping zones.";
-      case "settings-estimator":
-        return "Test your shipping rules and compare them with advisory courier estimates before going live.";
       case "settings-branding":
         return "Manage your store banner, logo, and seller-facing brand presentation.";
       case "settings-business":
@@ -2623,16 +2616,6 @@ function SellerDashboardContent() {
                 sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
                 isSystemAdmin={isSystemAdmin}
                 visibleSections={["shipping"]}
-                showDangerZone={false}
-                onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
-              />
-            ) : activeSection === "settings-estimator" ? (
-              <SellerSettingsWorkspace
-                sellerSlug={resolvedSellerSlug}
-                vendorName={activeVendorName}
-                sellerRole={activeSellerContext?.role || profile?.sellerTeamRole || ""}
-                isSystemAdmin={isSystemAdmin}
-                visibleSections={["estimator"]}
                 showDangerZone={false}
                 onSettingsSaved={() => setSettingsRefreshKey((current) => current + 1)}
               />

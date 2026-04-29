@@ -300,7 +300,6 @@ function hasReviewSensitiveProductChanges(current, patch, { changeRequestOnly = 
       "success_fee_label",
       "lead_time_days",
       "cutoff_time",
-      "change_request",
       "locked",
       "mode",
     ]);
@@ -712,6 +711,13 @@ export async function POST(req){
 
     /* -- Build sanitized patch + merged object -- */
     const patch = sanitizePatch(data);
+    if (patch?.fulfillment && Object.prototype.hasOwnProperty.call(patch.fulfillment, "change_request")) {
+      return err(
+        400,
+        "Fulfillment Change Requests Disabled",
+        "Fulfilment is locked after product creation. Create a new product if this listing needs a different fulfilment model."
+      );
+    }
     const currentFulfillmentMode = toStr(current?.fulfillment?.mode, "seller");
     const requestedFulfillmentMode = toStr(patch?.fulfillment?.mode, "");
     const fulfillmentPatchKeys = Object.keys(patch?.fulfillment || {});
@@ -726,7 +732,7 @@ export async function POST(req){
       return err(
         409,
         "Fulfillment Locked",
-        "Fulfilment is locked after product creation. Request a fulfilment change to update it."
+        "Fulfilment is locked after product creation. Create a new product if this listing needs a different fulfilment model."
       );
     }
     const next  = deepMerge(current, patch);

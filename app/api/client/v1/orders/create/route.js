@@ -10,6 +10,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { markCheckoutSessionPaymentPending } from "@/lib/checkout/sessions";
 import { releaseVariantCheckoutReservationsForItems } from "@/lib/cart/checkout-reservations";
 import { consumeReservedStockLots, consumeStockLotsFifo } from "@/lib/warehouse/stock-lots";
+import { variantCanContinueSellingOutOfStock, variantTotalInStockItemsAvailable } from "@/lib/catalogue/availability";
 import { findSellerOwnerByCode, findSellerOwnerBySlug } from "@/lib/seller/team-admin";
 import { normalizeSellerTeamRole } from "@/lib/seller/team";
 import { normalizeMoneyAmount } from "@/lib/money";
@@ -200,6 +201,54 @@ async function consumeMarketplaceProductStock(adminDb, items = []) {
       );
     });
   }
+}
+
+async function validateMarketplaceProductStock(adminDb, items = []) {
+  if (!adminDb || !Array.isArray(items) || !items.length) return [];
+
+  const grouped = new Map();
+  for (const item of items) {
+    const product = item?.product_snapshot || item?.product || {};
+    const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+    const productId = String(product?.product?.unique_id || product?.docId || product?.product?.product_id || item?.product_unique_id || "").trim();
+    const variantId = String(variant?.variant_id || item?.selected_variant_id || item?.variant_id || "").trim();
+    const quantity = Math.max(0, Number(item?.quantity || item?.qty || 0));
+    if (!productId || !variantId || quantity <= 0) continue;
+    const key = `${productId}::${variantId}`;
+    const existing = grouped.get(key) || {
+      productId,
+      variantId,
+      requestedQty: 0,
+      title: getLineTitle(item),
+      variantLabel: getLineVariantLabel(item),
+    };
+    existing.requestedQty += quantity;
+    grouped.set(key, existing);
+  }
+
+  const unavailable = [];
+  for (const entry of grouped.values()) {
+    const productSnap = await adminDb.collection("products_v2").doc(entry.productId).get();
+    if (!productSnap.exists) {
+      unavailable.push({ ...entry, availableQty: 0, reason: "product_missing" });
+      continue;
+    }
+    const productData = productSnap.data() || {};
+    const variant = (Array.isArray(productData?.variants) ? productData.variants : []).find(
+      (candidate) => String(candidate?.variant_id || "") === entry.variantId,
+    );
+    if (!variant) {
+      unavailable.push({ ...entry, availableQty: 0, reason: "variant_missing" });
+      continue;
+    }
+    if (variantCanContinueSellingOutOfStock(variant)) continue;
+    const availableQty = Math.max(0, Math.trunc(Number(variantTotalInStockItemsAvailable(variant)) || 0));
+    if (entry.requestedQty > availableQty) {
+      unavailable.push({ ...entry, availableQty, reason: "insufficient_stock" });
+    }
+  }
+
+  return unavailable;
 }
 
 async function restoreMarketplaceProductStock(adminDb, items = []) {
@@ -689,6 +738,19 @@ export async function POST(req) {
 
     if (!Array.isArray(cart.items) || cart.items.length === 0) {
       return err(400, "Empty Cart", "Cannot create order from empty cart.");
+    }
+
+    const unavailableStockItems = await validateMarketplaceProductStock(adminDb, cart.items);
+    if (unavailableStockItems.length) {
+      return err(
+        409,
+        "Item Unavailable",
+        "One or more items in your checkout are no longer available. Remove the highlighted item before completing checkout.",
+        {
+          reasonCode: "CHECKOUT_ITEMS_UNAVAILABLE",
+          items: unavailableStockItems,
+        },
+      );
     }
 
     const liveSellerDelivery = await resolveShippingBreakdown({

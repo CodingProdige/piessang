@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/auth-provider";
 import { CartActionStack } from "@/components/cart/cart-actions";
@@ -11,6 +11,24 @@ import { readShopperDeliveryArea } from "@/components/products/delivery-area-gat
 import { PHONE_REGION_OPTIONS } from "@/components/shared/phone-input";
 import { AppSnackbar } from "@/components/ui/app-snackbar";
 import { fetchCheckoutShippingPreview, type CheckoutShippingPreview } from "@/lib/shipping/client-preview";
+
+const SELLER_BANNER_PLACEHOLDER = "/backgrounds/piessang-repeat-background.png";
+const SELLER_LOGO_PLACEHOLDER = "/avatars/Piessang monkey avatars for profiles.jpg";
+
+type SellerBranding = {
+  bannerImageUrl?: string | null;
+  bannerAltText?: string | null;
+  bannerObjectPosition?: string | null;
+  logoImageUrl?: string | null;
+  logoAltText?: string | null;
+  logoObjectPosition?: string | null;
+};
+
+type SellerFollowState = {
+  following: boolean;
+  loading: boolean;
+  loaded: boolean;
+};
 
 type CartItem = {
   cart_item_key?: string;
@@ -34,8 +52,11 @@ type CartItem = {
       vendorName?: string | null;
     };
     seller?: {
+      sellerCode?: string | null;
+      sellerSlug?: string | null;
       vendorName?: string | null;
       baseLocation?: string | null;
+      branding?: SellerBranding | null;
       deliveryProfile?: {
         localDeliveryRules?: Array<{ id?: string | null; label?: string | null; city?: string | null; suburb?: string | null; fee?: number; leadTimeDays?: number }>;
         courierZones?: Array<{ id?: string | null; label?: string | null; country?: string | null; province?: string | null; city?: string | null; postalCodes?: string[]; fee?: number; leadTimeDays?: number; isFallback?: boolean }>;
@@ -153,21 +174,6 @@ function getSellerGroupLabel(item: CartItem) {
   );
 }
 
-function getSellerFulfillmentSummary(items: CartItem[]) {
-  const modes = new Set(
-    items
-      .map((item) => String(item?.product_snapshot?.fulfillment?.mode || "").trim().toLowerCase())
-      .filter(Boolean),
-  );
-  if (modes.has("bevgo") && modes.has("seller")) {
-    return "Some items ship from Piessang and some ship directly from the seller.";
-  }
-  if (modes.has("bevgo")) {
-    return "Piessang handles shipping for these items.";
-  }
-  return "The seller handles shipping for these items.";
-}
-
 function getSellerGroupKey(item: CartItem) {
   const productSnapshot = item?.product_snapshot as any;
   return String(
@@ -176,6 +182,162 @@ function getSellerGroupKey(item: CartItem) {
       productSnapshot?.seller?.sellerSlug ||
       "",
   ).trim();
+}
+
+function getSellerIdentity(items: CartItem[]) {
+  const seller = items.find((item) => item?.product_snapshot?.seller?.sellerCode || item?.product_snapshot?.seller?.sellerSlug)
+    ?.product_snapshot?.seller;
+  return {
+    sellerCode: String(seller?.sellerCode || "").trim(),
+    sellerSlug: String(seller?.sellerSlug || "").trim(),
+  };
+}
+
+function getSellerBranding(items: CartItem[]) {
+  const brandedItem = items.find((item) => {
+    const branding = item?.product_snapshot?.seller?.branding;
+    return Boolean(branding?.bannerImageUrl || branding?.logoImageUrl);
+  });
+  return brandedItem?.product_snapshot?.seller?.branding || items[0]?.product_snapshot?.seller?.branding || null;
+}
+
+function SellerCardHeader({
+  seller,
+  items,
+  errorMessage,
+  isAuthenticated,
+  authReady,
+  openAuthModal,
+  onNotice,
+}: {
+  seller: string;
+  items: CartItem[];
+  errorMessage?: string | null;
+  isAuthenticated: boolean;
+  authReady: boolean;
+  openAuthModal: (message?: string) => void;
+  onNotice: (message: string) => void;
+}) {
+  const branding = getSellerBranding(items);
+  const sellerIdentity = getSellerIdentity(items);
+  const canFollowSeller = Boolean(sellerIdentity.sellerCode || sellerIdentity.sellerSlug);
+  const [followState, setFollowState] = useState<SellerFollowState>({
+    following: false,
+    loading: false,
+    loaded: false,
+  });
+  const bannerUrl = String(branding?.bannerImageUrl || "").trim();
+  const logoUrl = String(branding?.logoImageUrl || "").trim() || SELLER_LOGO_PLACEHOLDER;
+  const bannerPosition = String(branding?.bannerObjectPosition || "").trim() || "center center";
+  const logoPosition = String(branding?.logoObjectPosition || "").trim() || "center center";
+
+  useEffect(() => {
+    if (!authReady || !canFollowSeller) return;
+    let cancelled = false;
+    const params = new URLSearchParams();
+    if (sellerIdentity.sellerCode) params.set("sellerCode", sellerIdentity.sellerCode);
+    if (sellerIdentity.sellerSlug) params.set("sellerSlug", sellerIdentity.sellerSlug);
+    fetch(`/api/client/v1/accounts/seller/follow?${params.toString()}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload) => {
+        if (cancelled || payload?.ok === false) return;
+        setFollowState({ following: payload?.following === true, loading: false, loaded: true });
+      })
+      .catch(() => {
+        if (!cancelled) setFollowState((current) => ({ ...current, loading: false, loaded: true }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, canFollowSeller, sellerIdentity.sellerCode, sellerIdentity.sellerSlug]);
+
+  async function handleFollowToggle() {
+    if (!canFollowSeller) return;
+    if (!isAuthenticated) {
+      openAuthModal(`Sign in to follow ${seller} and get notified about new releases.`);
+      return;
+    }
+    setFollowState((current) => ({ ...current, loading: true }));
+    try {
+      const response = await fetch("/api/client/v1/accounts/seller/follow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sellerCode: sellerIdentity.sellerCode,
+          sellerSlug: sellerIdentity.sellerSlug,
+          action: followState.following ? "unfollow" : "follow",
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(payload?.message || "Unable to update follow state.");
+      }
+      const nextFollowing = payload?.following === true;
+      setFollowState({ following: nextFollowing, loading: false, loaded: true });
+      onNotice(nextFollowing ? `You are now following ${seller}.` : `You stopped following ${seller}.`);
+    } catch (error) {
+      setFollowState((current) => ({ ...current, loading: false }));
+      onNotice(error instanceof Error ? error.message : "Unable to update follow state right now.");
+    }
+  }
+
+  return (
+    <div className="relative mb-3 overflow-hidden rounded-[8px] border border-black/5 bg-white">
+      {bannerUrl ? (
+        <img
+          src={bannerUrl}
+          alt={branding?.bannerAltText || `${seller} banner`}
+          className="absolute inset-y-0 left-0 h-full w-[76%] object-cover opacity-80"
+          style={{
+            objectPosition: bannerPosition,
+            maskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.72) 48%, rgba(0,0,0,0.24) 68%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.72) 48%, rgba(0,0,0,0.24) 68%, transparent 100%)",
+          }}
+        />
+      ) : (
+        <div
+          className="absolute inset-y-0 left-0 w-[76%] bg-[#faf6ea] bg-center bg-repeat opacity-55"
+          style={{
+            backgroundImage: `url('${SELLER_BANNER_PLACEHOLDER}')`,
+            maskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.68) 48%, rgba(0,0,0,0.22) 68%, transparent 100%)",
+            WebkitMaskImage: "linear-gradient(90deg, #000 0%, #000 30%, rgba(0,0,0,0.68) 48%, rgba(0,0,0,0.22) 68%, transparent 100%)",
+          }}
+          aria-hidden="true"
+        />
+      )}
+      <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(255,255,255,0.12)_0%,rgba(255,255,255,0.5)_42%,rgba(255,255,255,0.92)_76%,#fff_100%)]" />
+      <div className="relative flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <img
+            src={logoUrl}
+            alt={branding?.logoAltText || `${seller} profile`}
+            className="h-11 w-11 shrink-0 rounded-full border border-white bg-white object-cover shadow-[0_4px_14px_rgba(20,24,27,0.12)]"
+            style={{ objectPosition: logoPosition }}
+          />
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Seller</p>
+            <h2 className="mt-0.5 truncate text-[16px] font-semibold text-[#202020]">{seller}</h2>
+          </div>
+        </div>
+        {errorMessage ? (
+          <p className="max-w-[34ch] text-right text-[12px] font-semibold text-[#b91c1c]">{errorMessage}</p>
+        ) : canFollowSeller ? (
+          <button
+            type="button"
+            onClick={() => void handleFollowToggle()}
+            disabled={followState.loading}
+            className={`inline-flex h-9 shrink-0 items-center justify-center rounded-[8px] px-3 text-[12px] font-semibold transition-colors disabled:cursor-wait disabled:opacity-70 ${
+              followState.following
+                ? "border border-black/10 bg-white/90 text-[#202020] hover:border-[#cbb26b] hover:text-[#907d4c]"
+                : "bg-[#202020] text-white shadow-[0_8px_18px_rgba(20,24,27,0.12)] hover:bg-[#2b2b2b]"
+            }`}
+          >
+            {followState.loading ? "Saving..." : followState.following ? "Following" : "Follow"}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function toCountryCode(countryValue?: string | null) {
@@ -202,37 +364,11 @@ function buildBuyerDestinationFromShopperArea() {
   };
 }
 
-function formatEta(estimatedDeliveryDays?: { min?: number | null; max?: number | null } | null) {
-  const min = Number(estimatedDeliveryDays?.min);
-  const max = Number(estimatedDeliveryDays?.max);
-  if (Number.isFinite(min) && Number.isFinite(max)) {
-    return min === max ? `${min} day${min === 1 ? "" : "s"}` : `${min}-${max} days`;
-  }
-  if (Number.isFinite(min)) return `${min}+ days`;
-  if (Number.isFinite(max)) return `Up to ${max} days`;
-  return "";
-}
-
-function formatGroupShippingLabel(
-  sellerKey: string,
-  preview: CheckoutShippingPreview | null,
-  destinationKnown: boolean,
-  formatMoney: (amount: number) => string,
-) {
-  if (!destinationKnown) return "Shipping calculated at checkout";
-  const error = preview?.errors.find((entry) => String(entry?.sellerId || "").trim() === sellerKey);
-  if (error) return error.message || "This seller does not ship to the selected destination.";
-  const option = preview?.options.find((entry) => String(entry?.sellerId || "").trim() === sellerKey);
-  if (!option) return "Shipping unavailable";
-  const eta = formatEta(option.estimatedDeliveryDays);
-  return eta ? `${formatMoney(option.finalShippingFee)} · ${eta}` : formatMoney(option.finalShippingFee);
-}
-
 export function LiveCart({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { uid, cartOwnerId, authReady, syncCartState } = useAuth();
+  const { uid, cartOwnerId, authReady, isAuthenticated, openAuthModal, syncCartState } = useAuth();
   const { formatMoney } = useDisplayCurrency();
   const [cart, setCart] = useState<CartPayload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -355,18 +491,19 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
   }, [authReady, cartOwnerId, syncCartState, uid]);
 
   const items = Array.isArray(cart?.items) ? cart.items : [];
-  const buyerDestination = buildBuyerDestinationFromShopperArea();
+  const buyerDestination = useMemo(() => buildBuyerDestinationFromShopperArea(), []);
   const destinationKnown = Boolean(buyerDestination);
   const itemCount = cart?.cart?.item_count ?? items.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
   const productsTotalIncl = items.reduce((sum, item) => sum + Math.max(0, Number(item?.line_totals?.final_incl || 0) || 0), 0);
-  const totalIncl = destinationKnown
-    ? productsTotalIncl + Number(shippingPreview?.shippingFinalTotal || 0)
-    : productsTotalIncl;
+  const totalIncl = productsTotalIncl;
   const showSharedCartView = Boolean(sharedCart && !sharedCart.isOwner);
   const displayedCart = showSharedCartView ? sharedCart?.cart ?? null : cart;
   const displayedItems = Array.isArray(displayedCart?.items) ? displayedCart.items : [];
   const displayedItemCount = displayedCart?.cart?.item_count ?? displayedItems.reduce((sum, item) => sum + (item.qty ?? item.quantity ?? 0), 0);
-  const displayedTotalIncl = displayedCart?.totals?.final_payable_incl ?? displayedCart?.totals?.final_incl ?? 0;
+  const displayedTotalIncl = displayedItems.reduce(
+    (sum, item) => sum + Math.max(0, Number(item?.line_totals?.final_incl || 0) || 0),
+    0,
+  );
   const showCartLoading = !authReady || !hasLoaded || sharedCartLoading;
   const sellerGroups = items.reduce<Array<{ seller: string; sellerKey: string; items: CartItem[] }>>((groups, item) => {
     const seller = getSellerGroupLabel(item);
@@ -393,6 +530,8 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
       .filter(Boolean),
   );
   const checkoutBlocked = unavailableItems.length > 0 || shippingBlockedSellerKeys.size > 0;
+  const cartId = String(cart?.cart?.cart_id || "").trim();
+  const checkoutHref = cartId ? `/checkout?cart=${encodeURIComponent(cartId)}` : "/checkout";
   const unavailableStateSummary = unavailableItems.reduce(
     (summary, item) => {
       const status = String(item?.availability?.status || "").trim().toLowerCase();
@@ -610,11 +749,14 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
           )}
         </div>
         <div className="text-right">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Total</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8b94a3]">Estimated total</p>
           {showCartLoading ? (
             <div className="mt-2 ml-auto h-7 w-32 animate-pulse rounded bg-[#ece8df]" />
           ) : (
-            <p className="mt-1 text-[22px] font-semibold text-[#202020]">{formatMoney(displayedTotalIncl)}</p>
+            <>
+              <p className="mt-1 text-[22px] font-semibold text-[#202020]">{formatMoney(displayedTotalIncl)}</p>
+              <p className="mt-1 text-[12px] font-medium text-[#7a8594]">Shipping calculated at checkout.</p>
+            </>
           )}
         </div>
       </div>
@@ -684,21 +826,17 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
           displayedSellerGroups.map((group) => (
             <section key={group.seller} className="rounded-[8px] border border-black/5 bg-[#fafafa] p-4">
               {(() => {
-                const sellerDeliveryLabel = formatGroupShippingLabel(group.sellerKey, shippingPreview, destinationKnown, formatMoney);
                 const sellerShippingError = shippingPreview?.errors.find((entry) => String(entry?.sellerId || "").trim() === group.sellerKey);
                 return (
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-black/5 pb-3">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#907d4c]">Seller</p>
-                  <h2 className="mt-1 text-[16px] font-semibold text-[#202020]">{group.seller}</h2>
-                </div>
-                <div className="max-w-[34ch] text-right">
-                  <p className="text-[12px] text-[#57636c]">{getSellerFulfillmentSummary(group.items)}</p>
-                  {sellerDeliveryLabel ? (
-                    <p className={`mt-1 text-[12px] font-semibold ${sellerShippingError ? "text-[#b91c1c]" : "text-[#202020]"}`}>{sellerDeliveryLabel}</p>
-                  ) : null}
-                </div>
-              </div>
+                  <SellerCardHeader
+                    seller={group.seller}
+                    items={group.items}
+                    errorMessage={sellerShippingError?.message || (sellerShippingError ? "This seller does not ship to the selected destination." : null)}
+                    isAuthenticated={isAuthenticated}
+                    authReady={authReady}
+                    openAuthModal={openAuthModal}
+                    onNotice={setSnackbarMessage}
+                  />
                 );
               })()}
 
@@ -729,23 +867,38 @@ export function LiveCart({ compact = false }: { compact?: boolean }) {
       </div>
 
       {!showSharedCartView ? (
-        <>
-          <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex items-start gap-2">
+          <div className="flex-1">
+            <CartActionStack
+              showViewCart={false}
+              checkoutHref={checkoutHref}
+              disableCheckout={checkoutBlocked}
+              checkoutHint={checkoutBlockMessage}
+              flushTop
+            />
+          </div>
+          <div className="shrink-0">
             <button
               type="button"
               onClick={() => void handleShareCart()}
               disabled={sharing || !cart?.cart?.cart_id}
-              className="inline-flex h-10 items-center justify-center rounded-[8px] border border-black/10 bg-white px-4 text-[12px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-[8px] border border-black/10 bg-white text-[#202020] transition-colors hover:border-[#cbb26b] hover:text-[#907d4c] disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label="Share cart"
+              title={sharing ? "Creating share link..." : "Share cart"}
             >
-              {sharing ? "Creating share link..." : "Share cart"}
+              <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+                <path
+                  d="M8.8 12.9 15.2 16.6M15.2 7.4 8.8 11.1M7 14.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm10 5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Z"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.8"
+                />
+              </svg>
             </button>
           </div>
-          <CartActionStack
-            showViewCart={false}
-            disableCheckout={checkoutBlocked}
-            checkoutHint={checkoutBlockMessage}
-          />
-        </>
+        </div>
       ) : null}
 
       <AppSnackbar notice={snackbarMessage ? { tone: "info", message: snackbarMessage } : null} />

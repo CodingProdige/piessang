@@ -22,6 +22,26 @@ const REBATE_TIER_MAX_CAP = 5;
 const CREDIT_NOTE_OPEN_STATUSES = new Set(["open", "partially_used"]);
 const sellerOwnerCache = new Map();
 
+function normalizeSellerBranding(seller = {}) {
+  const branding =
+    seller?.branding && typeof seller.branding === "object"
+      ? seller.branding
+      : seller?.media && typeof seller.media === "object"
+        ? seller.media
+        : {};
+
+  return {
+    bannerImageUrl: String(branding?.bannerImageUrl || "").trim() || null,
+    bannerBlurHashUrl: String(branding?.bannerBlurHashUrl || "").trim() || null,
+    bannerAltText: String(branding?.bannerAltText || "").trim() || null,
+    bannerObjectPosition: String(branding?.bannerObjectPosition || "").trim() || null,
+    logoImageUrl: String(branding?.logoImageUrl || "").trim() || null,
+    logoBlurHashUrl: String(branding?.logoBlurHashUrl || "").trim() || null,
+    logoAltText: String(branding?.logoAltText || "").trim() || null,
+    logoObjectPosition: String(branding?.logoObjectPosition || "").trim() || null,
+  };
+}
+
 function buildDeliveryOwnershipMeta(resolved = null) {
   const kind = String(resolved?.kind || "").trim().toLowerCase();
   if (kind === "courier_live_rate") {
@@ -142,6 +162,7 @@ function applySellerDisplayData(data, sellerOwner) {
   const sellerCode = String(seller?.sellerCode || seller?.activeSellerCode || seller?.groupSellerCode || "").trim();
   const vendorName = String(seller?.vendorName || seller?.groupVendorName || "").trim();
   const vendorDescription = String(seller?.vendorDescription || seller?.description || "").trim();
+  const branding = normalizeSellerBranding(seller);
   const deliveryProfile = normalizeSellerDeliveryProfile(
     seller?.deliveryProfile && typeof seller.deliveryProfile === "object" ? seller.deliveryProfile : {},
   );
@@ -159,6 +180,7 @@ function applySellerDisplayData(data, sellerOwner) {
       sellerSlug: String(seller?.sellerSlug || seller?.activeSellerSlug || seller?.groupSellerSlug || data?.seller?.sellerSlug || "").trim() || null,
       activeSellerSlug: String(seller?.activeSellerSlug || seller?.sellerSlug || data?.seller?.activeSellerSlug || "").trim() || null,
       groupSellerSlug: String(seller?.groupSellerSlug || seller?.sellerSlug || data?.seller?.groupSellerSlug || "").trim() || null,
+      branding,
       deliveryProfile,
       courierProfile,
     },

@@ -327,6 +327,26 @@ function currentNumberParam(searchParams: Record<string, SearchParamValue>, key:
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function isPersonalizedProductsView(searchParams: Record<string, SearchParamValue>) {
+  const personalized = currentParam(searchParams, "personalized");
+  return [
+    "recently-viewed",
+    "recommended",
+    "search-history",
+    "blended",
+    "clicked",
+    "viewed",
+    "searched",
+  ].includes(String(personalized || ""));
+}
+
+function hasConcreteProductIds(searchParams: Record<string, SearchParamValue>) {
+  return String(currentParam(searchParams, "ids") || "")
+    .split(",")
+    .map((id) => id.trim())
+    .some(Boolean);
+}
+
 function readServerShopperArea(cookieStore: Awaited<ReturnType<typeof cookies>>) {
   const raw = cookieStore.get("piessang_shopper_delivery_area")?.value || "";
   if (raw) {
@@ -390,6 +410,20 @@ function buildProductsUrl(searchParams: Record<string, SearchParamValue>, shoppe
 }
 
 export async function fetchProducts(searchParams: Record<string, SearchParamValue>, origin: string) {
+  if (isPersonalizedProductsView(searchParams) && !hasConcreteProductIds(searchParams)) {
+    return {
+      ok: true,
+      total: 0,
+      count: 0,
+      items: [],
+      filters: {
+        categories: [],
+        subCategories: [],
+        brands: [],
+      },
+    } satisfies ProductsPayload;
+  }
+
   const cookieStore = await cookies();
   const response = await fetch(new URL(buildProductsUrl(searchParams, readServerShopperArea(cookieStore)), origin), {
     next: { revalidate },
@@ -672,6 +706,7 @@ function getPageTitle(searchParams: Record<string, SearchParamValue>) {
   if (personalized === "recently-viewed") return "Continue browsing";
   if (personalized === "recommended") return "Recommended for you";
   if (personalized === "search-history") return "Inspired by your searches";
+  if (["blended", "clicked", "viewed", "searched"].includes(String(personalized || ""))) return "Most viewed";
   if (vendor) return humanizeSlug(vendor);
   if (brand) return humanizeSlug(brand);
   if (subCategory) return humanizeSlug(subCategory);

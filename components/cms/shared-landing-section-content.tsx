@@ -184,6 +184,7 @@ export function renderSharedLandingSectionContent({
         products={items}
         emptyMessage="No products available for this rail yet."
         hideWhenEmpty
+        skeletonWhenEmpty={isPreview}
         mode={isPreview ? "admin-preview" : "shopper"}
       />
     );
@@ -200,6 +201,7 @@ export function renderSharedLandingSectionContent({
         products={selected}
         emptyMessage="Select up to two products for this feature."
         hideWhenEmpty
+        skeletonWhenEmpty={isPreview}
         mode={isPreview ? "admin-preview" : "shopper"}
       />
     );
@@ -209,10 +211,9 @@ export function renderSharedLandingSectionContent({
     const selectedCategorySlugs = Array.isArray(section.props?.categorySlugs)
       ? section.props.categorySlugs.map((slug: unknown) => toStr(slug)).filter(Boolean)
       : [];
-    const selected = (selectedCategorySlugs.length
+    const selected = selectedCategorySlugs.length
       ? categories.filter((category) => selectedCategorySlugs.includes(category.slug))
-      : categories
-    ).filter((category) => Number(category.productCount || 0) > 0);
+      : categories;
     return (
       <SharedSectionShell>
         <div>

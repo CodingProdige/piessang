@@ -9,6 +9,7 @@ import { recordLiveCommerceEvent } from "@/lib/analytics/live-commerce";
 
 const ok = (data = {}, status = 200) => NextResponse.json({ ok: true, data }, { status });
 const err = (status, title, message) => NextResponse.json({ ok: false, title, message }, { status });
+const CHECKOUT_RESERVATION_TTL_MS = 60 * 1000;
 
 function normalizeActiveCartLotReservations(entries) {
   const now = Date.now();
@@ -37,6 +38,59 @@ export async function POST(request) {
 
     const cart = cartSnap.data() || {};
     const items = Array.isArray(cart?.items) ? cart.items : [];
+    const existingReservationExpiresAt = String(cart?.cart?.checkout_reservation_expires_at || "").trim();
+    const existingReservationExpiresAtMs = existingReservationExpiresAt ? new Date(existingReservationExpiresAt).getTime() : 0;
+    const nowMs = Date.now();
+    const reservationExpiresAt =
+      Number.isFinite(existingReservationExpiresAtMs) && existingReservationExpiresAtMs > nowMs
+        ? existingReservationExpiresAt
+        : !existingReservationExpiresAt
+          ? new Date(nowMs + CHECKOUT_RESERVATION_TTL_MS).toISOString()
+          : existingReservationExpiresAt;
+
+    if (existingReservationExpiresAt && (!Number.isFinite(existingReservationExpiresAtMs) || existingReservationExpiresAtMs <= nowMs)) {
+      await Promise.all([
+        releaseVariantCheckoutReservationsForItems(items, customerId),
+        ...items.map((item) => {
+          const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+          const existingReservations = normalizeActiveCartLotReservations(variant?.warehouse_lot_reservations);
+          return existingReservations.length ? releaseStockLotReservations({ reservations: existingReservations }) : Promise.resolve(null);
+        }),
+      ]);
+      const expiredItems = items.map((item) => {
+        const variant = item?.selected_variant_snapshot || item?.selected_variant || item?.variant || {};
+        return {
+          ...item,
+          selected_variant_snapshot: {
+            ...variant,
+            warehouse_lot_reservations: [],
+          },
+        };
+      });
+      const expiredCart = {
+        ...cart,
+        cart: {
+          ...(cart?.cart || {}),
+          status: "checkout",
+          checkout_reservation_status: "expired",
+          checkout_reservation_expires_at: existingReservationExpiresAt,
+        },
+        items: expiredItems,
+        timestamps: {
+          ...(cart?.timestamps || {}),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+      await cartRef.set(expiredCart, { merge: true });
+      return ok({
+        cart: expiredCart,
+        reservedItemCount: 0,
+        reservationStatus: "expired",
+        reservationExpiresAt: existingReservationExpiresAt,
+        message: "Checkout reservation expired.",
+      });
+    }
+
     const nextItems = [];
     let reservedItemCount = 0;
 
@@ -55,6 +109,7 @@ export async function POST(request) {
           variantId,
           quantity: desiredQty,
           cartId: customerId,
+          expiresAtIso: reservationExpiresAt,
         });
         if (genericReserve?.ok === false) {
           await releaseVariantCheckoutReservationsForItems(nextItems, customerId);
@@ -81,6 +136,7 @@ export async function POST(request) {
           variantId,
           quantity: desiredQty - reservedQty,
           cartId: customerId,
+          expiresAtIso: reservationExpiresAt,
         });
         if (reserve?.ok === false) {
           await releaseVariantCheckoutReservationsForItems([...nextItems, item], customerId);
@@ -116,6 +172,8 @@ export async function POST(request) {
         ...(cart?.cart || {}),
         status: "checkout",
         checkout_started_at: new Date().toISOString(),
+        checkout_reservation_status: "active",
+        checkout_reservation_expires_at: reservationExpiresAt,
       },
       items: nextItems,
       timestamps: {
@@ -135,6 +193,8 @@ export async function POST(request) {
     return ok({
       cart: nextCart,
       reservedItemCount,
+      reservationStatus: "active",
+      reservationExpiresAt,
       message: reservedItemCount
         ? "Checkout stock hold created for Piessang-fulfilled items."
         : "Checkout stock hold created.",

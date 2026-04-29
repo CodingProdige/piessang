@@ -375,12 +375,14 @@ export async function reserveStockLotsFifo({
   variantId,
   quantity,
   cartId,
+  expiresAtIso,
 }: {
   sellerSlug?: string | null;
   sellerCode?: string | null;
   variantId: string;
   quantity: number;
   cartId?: string | null;
+  expiresAtIso?: string | null;
 }) {
   const db = getAdminDb();
   if (!db) throw new Error("FIREBASE_ADMIN_NOT_CONFIGURED");
@@ -390,7 +392,11 @@ export async function reserveStockLotsFifo({
   }
   const batch = db.batch();
   const reservedAt = new Date().toISOString();
-  const expiresAt = getReservationExpiryIso(new Date());
+  const requestedExpiresAtMs = expiresAtIso ? new Date(expiresAtIso).getTime() : 0;
+  const expiresAt =
+    Number.isFinite(requestedExpiresAtMs) && requestedExpiresAtMs > Date.now()
+      ? new Date(requestedExpiresAtMs).toISOString()
+      : getReservationExpiryIso(new Date());
   for (const allocation of preview.allocations) {
     const ref = db.collection(STOCK_LOTS_COLLECTION).doc(allocation.lotId);
     const snap = await ref.get();

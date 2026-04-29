@@ -54,6 +54,8 @@ type SellerOrderSlice = {
     shipmentLastAttemptAt?: string;
     shipmentRetryable?: boolean;
     cutoffTime?: string;
+    shopperAmountIncl?: number;
+    platformShippingMarkup?: number;
   };
   fulfilmentDeadline?: {
     dueAt?: string;
@@ -528,6 +530,79 @@ function getSellerLifecycleDisplay(item: SellerOrderSlice, deadlineState: { labe
     secondaryTone: "",
     message: item.cancellation?.blocked ? item.cancellation.blockMessage || "Fulfilment locked." : null,
   };
+}
+
+const SELLER_SHIPMENT_STEPS = [
+  {
+    key: "confirmed",
+    label: "Order confirmed",
+    helper: "Payment received",
+    icon: "○",
+  },
+  {
+    key: "processing",
+    label: "Order in process",
+    helper: "Being prepared",
+    icon: "↻",
+  },
+  {
+    key: "dispatched",
+    label: "Package on delivery",
+    helper: "With courier or driver",
+    icon: "▣",
+  },
+  {
+    key: "delivered",
+    label: "Package delivered",
+    helper: "Completed",
+    icon: "□",
+  },
+];
+
+function getShipmentStepIndex(status?: string | null) {
+  const normalized = toStr(status || "confirmed").toLowerCase();
+  if (["completed", "delivered"].includes(normalized)) return 3;
+  if (["dispatched", "shipped", "in_transit", "out_for_delivery"].includes(normalized)) return 2;
+  if (["processing", "packed", "picked", "ready_for_dispatch"].includes(normalized)) return 1;
+  return 0;
+}
+
+function SellerShipmentProgress({ status }: { status?: string | null }) {
+  const activeIndex = getShipmentStepIndex(status);
+  return (
+    <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
+      <p className="text-[12px] font-semibold uppercase tracking-[0.18em] text-[#8b94a3]">Shipment progress</p>
+      <p className="mt-2 text-[24px] font-semibold tracking-[-0.03em] text-[#202020]">{SELLER_SHIPMENT_STEPS[activeIndex]?.label || "Order confirmed"}</p>
+      <p className="mt-1 text-[14px] text-[#57636c]">Manual seller updates shown to the shopper for this shipment.</p>
+      <div className="mt-5 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="grid min-w-[520px] grid-cols-4 gap-2 sm:min-w-0 sm:gap-4">
+          {SELLER_SHIPMENT_STEPS.map((step, index) => {
+            const completed = index <= activeIndex;
+            const current = index === activeIndex;
+            return (
+              <div key={step.key} className="relative text-center">
+                {index > 0 ? (
+                  <span className={`absolute left-[-50%] top-8 h-px w-full ${completed ? "bg-[#1188d2]" : "bg-black/10"}`} aria-hidden="true" />
+                ) : null}
+                <div
+                  className={`relative z-10 mx-auto flex h-16 w-16 items-center justify-center rounded-full border text-[24px] shadow-[0_4px_12px_rgba(20,24,27,0.08)] ${
+                    completed
+                      ? "border-[#1188d2] bg-[#eff8ff] text-[#1188d2]"
+                      : "border-black/8 bg-[#f8fafc] text-[#9aa3af]"
+                  }`}
+                >
+                  {completed ? "✓" : step.icon}
+                  {current ? <span className="absolute -bottom-1 -right-1 h-6 w-6 rounded-full bg-[#1188d2] text-[15px] leading-6 text-white">✓</span> : null}
+                </div>
+                <p className={`mt-3 text-[14px] font-semibold ${completed ? "text-[#1188d2]" : "text-[#8b94a3]"}`}>{step.label}</p>
+                <p className="mt-1 text-[12px] text-[#8b94a3]">{completed ? "Completed" : "Waiting"}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function Sparkline({ values }: { values: number[] }) {
@@ -1008,6 +1083,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               deliveryOption: {
                 ...(entry.deliveryOption || {}),
                 trackingUrl: toStr(payload?.tracking?.trackingUrl || draft.trackingUrl || entry.deliveryOption?.trackingUrl || ""),
+                trackingNumber: toStr(payload?.tracking?.trackingNumber || draft.trackingNumber || entry.deliveryOption?.trackingNumber || ""),
                 courierCarrier: toStr(payload?.tracking?.courierName || draft.courierName || entry.deliveryOption?.courierCarrier || ""),
               },
             },
@@ -1032,6 +1108,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
           sellerSlug: sellerSlug || item.sellerSlug,
           status: nextStatus,
           trackingNumber: trackingMode === "courier" ? draft.trackingNumber : "",
+          trackingUrl: trackingMode === "courier" ? draft.trackingUrl : "",
           courierName: trackingMode === "courier" ? draft.courierName : "",
           notes: draft.notes,
           cancellationReason: nextStatus === "cancelled" ? draft.cancellationReason : "",
@@ -1082,6 +1159,8 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                   shipmentRetryable: Boolean(deliveryUpdate?.shipmentRetryable),
                   shipmentStatus: toStr(deliveryUpdate?.shipmentStatus || entry.deliveryOption?.shipmentStatus || ""),
                   trackingUrl: toStr(deliveryUpdate?.trackingUrl || entry.deliveryOption?.trackingUrl || ""),
+                  trackingNumber: toStr(deliveryUpdate?.trackingNumber || entry.deliveryOption?.trackingNumber || draft.trackingNumber || ""),
+                  courierCarrier: toStr(deliveryUpdate?.courierName || entry.deliveryOption?.courierCarrier || draft.courierName || ""),
                   labelUrl: toStr(deliveryUpdate?.labelUrl || entry.deliveryOption?.labelUrl || ""),
                 },
                 lines: {
@@ -1094,6 +1173,7 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                       delivered: nextStatus === "delivered",
                       courierName: trackingMode === "courier" ? draft.courierName : line?.fulfillment_tracking?.courierName,
                       trackingNumber: trackingMode === "courier" ? draft.trackingNumber : line?.fulfillment_tracking?.trackingNumber,
+                      trackingUrl: trackingMode === "courier" ? draft.trackingUrl : line?.fulfillment_tracking?.trackingUrl,
                       cancellationReason: nextStatus === "cancelled" ? draft.cancellationReason : line?.fulfillment_tracking?.cancellationReason,
                     },
                   })),
@@ -1305,6 +1385,22 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
       notes: getDraft(dispatchModalItem.orderId).notes,
     });
   }, [dispatchModalItem]);
+  useEffect(() => {
+    if (!activeItem) return;
+    setActionDrafts((current) => {
+      if (current[activeItem.orderId]) return current;
+      return {
+        ...current,
+        [activeItem.orderId]: {
+          courierName: toStr(activeItem.deliveryOption?.courierCarrier || ""),
+          trackingNumber: toStr(activeItem.deliveryOption?.trackingNumber || ""),
+          trackingUrl: toStr(activeItem.deliveryOption?.trackingUrl || ""),
+          notes: "",
+          cancellationReason: "",
+        },
+      };
+    });
+  }, [activeItem]);
   const dispatchModalHandoffDetails = dispatchModalItem ? handoffDetailsByOrder[dispatchModalItem.orderId] || null : null;
   const allVisibleSelected = filteredItems.length > 0 && filteredItems.every((item) => selectedOrderIds.includes(item.orderId));
   const selectedItems = useMemo(() => items.filter((item) => selectedOrderIds.includes(item.orderId)), [items, selectedOrderIds]);
@@ -1525,13 +1621,13 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
             {moreActionsOpen ? (
               <div className="absolute right-0 top-[52px] z-30 w-[220px] rounded-[16px] border border-black/10 bg-white p-2 shadow-[0_24px_60px_rgba(20,24,27,0.18)]">
                 <button type="button" onClick={() => { void handleGenerateDocument(activeItem, "picking_slip"); setMoreActionsOpen(false); }} className="block w-full rounded-[10px] px-3 py-2 text-left text-[13px] text-[#202020] hover:bg-[#f6f6f6]">
-                  {documentLoadingOrderId === activeItem.orderId && documentLoadingType === "picking_slip" ? "Generating packing slip..." : "Print packing slip"}
+                  {documentLoadingOrderId === activeItem.orderId && documentLoadingType === "picking_slip" ? "Generating packing slip..." : "Generate packing slip"}
                 </button>
                 <button type="button" onClick={() => { void handleGenerateDocument(activeItem, "delivery_note"); setMoreActionsOpen(false); }} className="block w-full rounded-[10px] px-3 py-2 text-left text-[13px] text-[#202020] hover:bg-[#f6f6f6]">
-                  {documentLoadingOrderId === activeItem.orderId && documentLoadingType === "delivery_note" ? "Generating delivery note..." : "Print delivery note"}
+                  {documentLoadingOrderId === activeItem.orderId && documentLoadingType === "delivery_note" ? "Generating delivery note..." : "Generate delivery note"}
                 </button>
                 <button type="button" onClick={() => { void handleGenerateDocument(activeItem, "invoice"); setMoreActionsOpen(false); }} className="block w-full rounded-[10px] px-3 py-2 text-left text-[13px] text-[#202020] hover:bg-[#f6f6f6]">
-                  {documentLoadingOrderId === activeItem.orderId && documentLoadingType === "invoice" ? "Generating invoice..." : "Print invoice"}
+                  {documentLoadingOrderId === activeItem.orderId && documentLoadingType === "invoice" ? "Generating invoice..." : "Generate invoice"}
                 </button>
                 {canSellerCancelOrder(activeItem) ? (
                   <button
@@ -1552,6 +1648,8 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
 
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
           <div className="space-y-5">
+            <SellerShipmentProgress status={activeItem.fulfillmentStatus} />
+
             <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
               <div className="flex items-center justify-between gap-3">
                 <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.08em] ${fulfillmentTone(activeItem.fulfillmentStatus, deadlineState.overdue)}`}>
@@ -1611,6 +1709,87 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
               </div>
             </section>
 
+            {isCourierTracked(activeItem) ? (
+              <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-[16px] font-semibold text-[#202020]">Courier tracking</p>
+                    <p className="mt-1 text-[13px] text-[#57636c]">Add the courier details the shopper should use to follow this seller shipment.</p>
+                  </div>
+                  {toStr(activeItem.deliveryOption?.trackingUrl) ? (
+                    <a
+                      href={activeItem.deliveryOption?.trackingUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex h-10 items-center justify-center rounded-[12px] border border-black/10 px-3 text-[13px] font-semibold text-[#202020]"
+                    >
+                      Open tracking
+                    </a>
+                  ) : null}
+                </div>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <label className="block">
+                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Courier name</span>
+                    <input
+                      value={getDraft(activeItem.orderId).courierName}
+                      onChange={(event) => updateDraft(activeItem.orderId, { courierName: event.target.value })}
+                      className="h-11 w-full rounded-[12px] border border-black/10 bg-white px-3 text-[14px] outline-none"
+                      placeholder="Courier name"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Tracking number</span>
+                    <input
+                      value={getDraft(activeItem.orderId).trackingNumber}
+                      onChange={(event) => updateDraft(activeItem.orderId, { trackingNumber: event.target.value })}
+                      className="h-11 w-full rounded-[12px] border border-black/10 bg-white px-3 text-[14px] outline-none"
+                      placeholder="Tracking reference"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Tracking URL</span>
+                    <input
+                      value={getDraft(activeItem.orderId).trackingUrl}
+                      onChange={(event) => updateDraft(activeItem.orderId, { trackingUrl: event.target.value })}
+                      className="h-11 w-full rounded-[12px] border border-black/10 bg-white px-3 text-[14px] outline-none"
+                      placeholder="https://..."
+                    />
+                  </label>
+                </div>
+                <div className="mt-4 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await saveShippingTracking(activeItem);
+                        setDocumentSnackbar({ tone: "success", message: `Tracking saved for ${activeItem.orderNumber || activeItem.orderId}.` });
+                      } catch (cause) {
+                        setDocumentSnackbar({ tone: "error", message: cause instanceof Error ? cause.message : "Unable to save tracking." });
+                      }
+                    }}
+                    disabled={!toStr(getDraft(activeItem.orderId).trackingNumber) && !toStr(getDraft(activeItem.orderId).trackingUrl)}
+                    className="inline-flex h-11 items-center rounded-[12px] border border-black/10 bg-white px-4 text-[13px] font-semibold text-[#202020] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Save tracking
+                  </button>
+                  {getNextSellerActions(activeItem).includes("dispatched") ? (
+                    <button
+                      type="button"
+                      onClick={() => setDispatchModalOrderId(activeItem.orderId)}
+                      disabled={
+                        updatingOrderId === activeItem.orderId ||
+                        !toStr(getDraft(activeItem.orderId).courierName) ||
+                        !toStr(getDraft(activeItem.orderId).trackingNumber)
+                      }
+                      className="inline-flex h-11 items-center rounded-[12px] bg-[#202020] px-4 text-[13px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      With courier
+                    </button>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+
             <section className="rounded-[22px] border border-black/6 bg-white p-5 shadow-[0_12px_32px_rgba(20,24,27,0.06)]">
               <span className={`inline-flex rounded-full border px-3 py-1 text-[12px] font-semibold uppercase tracking-[0.08em] ${paymentStatusTone(activeItem.paymentStatus)}`}>{sentenceStatus(activeItem.paymentStatus)}</span>
               <div className="mt-4 divide-y divide-black/6 rounded-[16px] border border-black/6">
@@ -1619,9 +1798,16 @@ export function SellerOrdersWorkspace({ sellerSlug = "", sellerCode = "", mode }
                   <span className="font-semibold text-[#202020]">{formatMoney(activeItem.totals.subtotalIncl)}</span>
                 </div>
                 <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[14px]">
-                  <span className="text-[#57636c]">Delivery fee</span>
+                  <span className="text-[#57636c]">Seller shipping fee</span>
                   <span className="font-semibold text-[#202020]">{formatMoney(activeItem.totals.deliveryIncl || Number(activeItem.deliveryOption?.amountIncl || 0))}</span>
                 </div>
+                {Number(activeItem.deliveryOption?.shopperAmountIncl || 0) > 0 &&
+                Number(activeItem.deliveryOption?.shopperAmountIncl || 0) !== Number(activeItem.totals.deliveryIncl || activeItem.deliveryOption?.amountIncl || 0) ? (
+                  <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[13px]">
+                    <span className="text-[#8b94a3]">Shopper shipping paid</span>
+                    <span className="font-semibold text-[#57636c]">{formatMoney(Number(activeItem.deliveryOption?.shopperAmountIncl || 0))}</span>
+                  </div>
+                ) : null}
                 <div className="grid grid-cols-[1fr_auto] gap-4 px-4 py-3 text-[14px]">
                   <span className="text-[#57636c]">Items</span>
                   <span className="font-semibold text-[#202020]">{pluralize(activeItem.counts.quantity, "item")}</span>

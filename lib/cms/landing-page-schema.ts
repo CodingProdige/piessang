@@ -12,6 +12,7 @@ export type LandingSectionType =
   | "category_mosaic"
   | "editorial_collection"
   | "product_rail"
+  | "discovery_product_feed"
   | "category_rail"
   | "promo_tiles"
   | "text_block"
@@ -124,6 +125,20 @@ export function makeDefaultLandingSections(): LandingSection[] {
         desktopLimit: 8,
         mobileLimit: 4,
         limit: 8,
+      },
+    },
+    {
+      id: nextId("discovery"),
+      type: "discovery_product_feed",
+      props: {
+        title: "Discover more",
+        subtitle: "",
+        showHeading: false,
+        initialLimit: 24,
+        batchSize: 24,
+        maxItems: 160,
+        personalize: true,
+        explorationRatio: 70,
       },
     },
     {

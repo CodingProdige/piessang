@@ -49,18 +49,52 @@ function normalizeProvinceLabel(value: unknown): string {
 }
 
 function normalizePostalCode(value: unknown): string {
-  return toStr(value).replace(/\s+/g, "").toUpperCase();
+  return toStr(value).replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+}
+
+function numericPostalCode(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) ? numeric : null;
+}
+
+function postalCodeCandidates(value: unknown): string[] {
+  const normalized = normalizePostalCode(value);
+  if (!normalized) return [];
+  const candidates = new Set([normalized]);
+  const numeric = numericPostalCode(normalized);
+  if (numeric != null) {
+    candidates.add(String(numeric));
+    candidates.add(String(numeric).padStart(4, "0"));
+  }
+  return [...candidates];
+}
+
+function postalCodesMatch(left: string, right: string): boolean {
+  const leftCandidates = postalCodeCandidates(left);
+  const rightCandidates = new Set(postalCodeCandidates(right));
+  return leftCandidates.some((candidate) => rightCandidates.has(candidate));
 }
 
 function postalCodeInRange(postalCode: string, from: string, to: string): boolean {
   if (!postalCode || !from || !to) return false;
+  const postalNumeric = numericPostalCode(postalCode);
+  const fromNumeric = numericPostalCode(from);
+  const toNumeric = numericPostalCode(to);
+  if (postalNumeric != null && fromNumeric != null && toNumeric != null) {
+    const min = Math.min(fromNumeric, toNumeric);
+    const max = Math.max(fromNumeric, toNumeric);
+    return postalNumeric >= min && postalNumeric <= max;
+  }
   return postalCode >= from && postalCode <= to;
 }
 
 function groupMatchesPostalCode(group: ShippingPostalCodeGroup, postalCode: string): boolean {
   if (!postalCode) return false;
-  if (group.postalCodes.includes(postalCode)) return true;
-  return group.postalCodeRanges.some((range) => postalCodeInRange(postalCode, range.from, range.to));
+  if (group.postalCodes.some((entry) => postalCodesMatch(entry, postalCode))) return true;
+  return group.postalCodeRanges.some((range) =>
+    postalCodeCandidates(postalCode).some((candidate) => postalCodeInRange(candidate, normalizePostalCode(range.from), normalizePostalCode(range.to))),
+  );
 }
 
 function provinceMatches(zone: ShippingZone, province: string): ShippingProvinceRule | null {

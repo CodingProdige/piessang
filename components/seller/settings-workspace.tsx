@@ -19,7 +19,6 @@ import { clientStorage } from "@/lib/firebase";
 import { prepareImageAsset } from "@/lib/client/image-prep";
 import { COUNTRY_CATALOG, normalizeCountryCode } from "@/lib/marketplace/country-config";
 import { SUPPORTED_PAYOUT_COUNTRIES, getDefaultPayoutCurrency } from "@/lib/seller/payout-config";
-import { getDirectCourierCatalogue } from "@/lib/shipping/courier-estimates/courier-catalogue";
 import { normalizeShippingSettings } from "@/lib/shipping/settings";
 
 type SellerBranding = {
@@ -297,7 +296,7 @@ type SellerSettingsWorkspaceProps = {
   onSettingsSaved?: () => void;
 };
 
-export type SellerSettingsSectionKey = "profile" | "branding" | "shipping" | "estimator" | "business" | "payouts";
+export type SellerSettingsSectionKey = "profile" | "branding" | "shipping" | "business" | "payouts";
 
 const EMPTY_BRANDING: SellerBranding = {
   bannerImageUrl: "",
@@ -1364,22 +1363,6 @@ export function SellerSettingsWorkspace({
   const [shippingSettings, setShippingSettings] = useState<SellerShippingSettings>(EMPTY_SHIPPING_SETTINGS);
   const [payoutProfile, setPayoutProfile] = useState<SellerPayoutProfile>(EMPTY_PAYOUT_PROFILE);
   const [businessDetails, setBusinessDetails] = useState<SellerBusinessDetails>(EMPTY_BUSINESS_DETAILS);
-  const [shippingEstimateInputs, setShippingEstimateInputs] = useState({
-    countryCode: "ZA",
-    province: "",
-    postalCode: "",
-    orderValue: "0",
-    totalWeight: "0",
-    itemCount: "1",
-    courierCode: "",
-    lengthCm: "",
-    widthCm: "",
-    heightCm: "",
-  });
-  const [shippingEstimateLoading, setShippingEstimateLoading] = useState(false);
-  const [shippingEstimateResult, setShippingEstimateResult] = useState<any | null>(null);
-  const [courierEstimateResult, setCourierEstimateResult] = useState<any | null>(null);
-  const [shippingEstimateError, setShippingEstimateError] = useState<string | null>(null);
   const [vendorNameValue, setVendorNameValue] = useState(vendorName);
   const [vendorDescriptionValue, setVendorDescriptionValue] = useState("");
   const [sellerCodeValue, setSellerCodeValue] = useState("");
@@ -1402,7 +1385,6 @@ export function SellerSettingsWorkspace({
   const [sectionOpen, setSectionOpen] = useState({
     branding: true,
     shipping: true,
-    estimator: true,
     business: true,
     payouts: true,
   });
@@ -1426,13 +1408,12 @@ export function SellerSettingsWorkspace({
   const canEditSettings = Boolean(isSystemAdmin || ["owner", "admin"].includes(String(sellerRole ?? "").trim().toLowerCase()));
   const canDeleteSeller = Boolean(isSystemAdmin || String(sellerRole ?? "").trim().toLowerCase() === "owner");
   const visibleSectionSet = useMemo(
-    () => new Set<SellerSettingsSectionKey>(Array.isArray(visibleSections) && visibleSections.length ? visibleSections : ["profile", "branding", "shipping", "estimator", "business", "payouts"]),
+    () => new Set<SellerSettingsSectionKey>(Array.isArray(visibleSections) && visibleSections.length ? visibleSections : ["profile", "branding", "shipping", "business", "payouts"]),
     [visibleSections],
   );
   const standaloneSection = Array.isArray(visibleSections) && visibleSections.length === 1 ? visibleSections[0] : null;
   const publicVendorIdentifier = sellerCodeValue || profile?.sellerCode || sellerSlug;
   const publicVendorHref = publicVendorIdentifier ? `/vendors/${encodeURIComponent(publicVendorIdentifier)}` : "/products";
-  const courierEstimateOptions = useMemo(() => getDirectCourierCatalogue(), []);
 
   const renderLoadingSkeleton = () => (
     <section className="space-y-4">
@@ -1509,172 +1490,6 @@ export function SellerSettingsWorkspace({
     setSnackbar({ message, tone });
     if (snackbarTimeoutRef.current) window.clearTimeout(snackbarTimeoutRef.current);
     snackbarTimeoutRef.current = window.setTimeout(() => setSnackbar(null), 1800);
-  }
-
-  function formatEstimateMoney(value: unknown) {
-    const numeric = Number(value || 0);
-    return new Intl.NumberFormat("en-ZA", {
-      style: "currency",
-      currency: "ZAR",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(Number.isFinite(numeric) ? numeric : 0);
-  }
-
-  function formatEstimateEta(days: any) {
-    const min = Number(days?.min);
-    const max = Number(days?.max);
-    if (Number.isFinite(min) && Number.isFinite(max)) return `${min}-${max} days`;
-    if (Number.isFinite(min)) return `${min}+ days`;
-    if (Number.isFinite(max)) return `Up to ${max} days`;
-    return "No ETA available";
-  }
-
-  function formatEstimateLabel(value: unknown) {
-    return String(value || "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-      .join(" ");
-  }
-
-  async function runShippingEstimate() {
-    if (!sellerSlug) return;
-    setShippingEstimateLoading(true);
-    setShippingEstimateError(null);
-    setShippingEstimateResult(null);
-    setCourierEstimateResult(null);
-    try {
-      const response = await fetch(`/api/sellers/${encodeURIComponent(sellerSlug)}/shipping-estimate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          buyerDestination: {
-            countryCode: shippingEstimateInputs.countryCode,
-            province: shippingEstimateInputs.province,
-            postalCode: shippingEstimateInputs.postalCode,
-          },
-          orderValue: Number(shippingEstimateInputs.orderValue || 0),
-          totalWeight: Number(shippingEstimateInputs.totalWeight || 0),
-          itemCount: Number(shippingEstimateInputs.itemCount || 1),
-          courierCode: shippingEstimateInputs.courierCode || undefined,
-          parcel: {
-            lengthCm: Number(shippingEstimateInputs.lengthCm || 0),
-            widthCm: Number(shippingEstimateInputs.widthCm || 0),
-            heightCm: Number(shippingEstimateInputs.heightCm || 0),
-          },
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload?.ok === false) {
-        throw new Error(payload?.message || "Unable to estimate shipping.");
-      }
-      setShippingEstimateResult(payload?.estimate || null);
-      setCourierEstimateResult(payload?.courierEstimate || null);
-    } catch (cause) {
-      setShippingEstimateError(cause instanceof Error ? cause.message : "Unable to estimate shipping.");
-    } finally {
-      setShippingEstimateLoading(false);
-    }
-  }
-
-  function applyEstimateToRateDraft(rateDraft: SellerShippingRateDraft, amount: string): SellerShippingRateDraft {
-    if (rateDraft.pricingMode === "flat") return { ...rateDraft, flatRate: amount };
-    if (rateDraft.pricingMode === "weight_based") {
-      return { ...rateDraft, weightBased: { ...rateDraft.weightBased, baseRate: amount } };
-    }
-    if (rateDraft.pricingMode === "tiered") {
-      const tiered = rateDraft.tiered.length
-        ? rateDraft.tiered.map((entry, index) => (index === 0 ? { ...entry, rate: amount } : entry))
-        : [{ minWeightKg: "", maxWeightKg: "", rate: amount }];
-      return { ...rateDraft, tiered };
-    }
-    if (rateDraft.pricingMode === "order_value_based") {
-      const orderValueBased = rateDraft.orderValueBased.length
-        ? rateDraft.orderValueBased.map((entry, index) => (index === 0 ? { ...entry, rate: amount } : entry))
-        : [{ minOrderValue: "", maxOrderValue: "", rate: amount }];
-      return { ...rateDraft, orderValueBased };
-    }
-    return {
-      ...rateDraft,
-      freeOverThreshold: {
-        ...rateDraft.freeOverThreshold,
-        fallbackRate: amount,
-      },
-    };
-  }
-
-  function applyCourierEstimateToMatchedRule() {
-    if (!courierEstimateResult?.ok || !shippingEstimateResult?.matchedRuleId) return;
-    const amount = String(courierEstimateResult.estimatedFee ?? "");
-    if (!amount) return;
-
-    setShippingSettings((current) => {
-      if (shippingEstimateResult.matchedSource === "local_delivery") {
-        if (shippingEstimateResult.matchType === "province") {
-          return {
-            ...current,
-            localDelivery: {
-              ...current.localDelivery,
-              provinces: current.localDelivery.provinces.map((entry) =>
-                String(entry.placeId || entry.province) === String(shippingEstimateResult.matchedRuleId)
-                  ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
-                  : entry,
-              ),
-            },
-          };
-        }
-        if (shippingEstimateResult.matchType === "postal_exact" || shippingEstimateResult.matchType === "postal_range") {
-          return {
-            ...current,
-            localDelivery: {
-              ...current.localDelivery,
-              postalCodeGroups: current.localDelivery.postalCodeGroups.map((entry) =>
-                String(entry.name) === String(shippingEstimateResult.matchedRuleId)
-                  ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
-                  : entry,
-              ),
-            },
-          };
-        }
-      }
-
-      if (shippingEstimateResult.matchedSource === "shipping_zone") {
-        return {
-          ...current,
-          zones: current.zones.map((zone) => {
-            if (shippingEstimateResult.matchType === "country" && String(zone.id) === String(shippingEstimateResult.matchedRuleId)) {
-              return { ...zone, defaultRate: applyEstimateToRateDraft(zone.defaultRate, amount) };
-            }
-            if (shippingEstimateResult.matchType === "province") {
-              return {
-                ...zone,
-                provinces: zone.provinces.map((entry) =>
-                  String(entry.placeId || entry.province) === String(shippingEstimateResult.matchedRuleId)
-                    ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
-                    : entry,
-                ),
-              };
-            }
-            if (shippingEstimateResult.matchType === "postal_exact" || shippingEstimateResult.matchType === "postal_range") {
-              return {
-                ...zone,
-                postalCodeGroups: zone.postalCodeGroups.map((entry) =>
-                  String(entry.name) === String(shippingEstimateResult.matchedRuleId)
-                    ? { ...entry, rateOverrideEnabled: true, rateOverride: applyEstimateToRateDraft(entry.rateOverride, amount) }
-                    : entry,
-                ),
-              };
-            }
-            return zone;
-          }),
-        };
-      }
-
-      return current;
-    });
-    showSnackbar("Courier estimate copied into the matched rule editor.");
   }
 
   useEffect(() => {
@@ -4024,306 +3839,6 @@ export function SellerSettingsWorkspace({
               ))}
             </div>
           </div>
-        </div>
-      </SettingsSection>
-      ) : null}
-
-      {visibleSectionSet.has("estimator") ? (
-      <SettingsSection
-        eyebrow="Shipping estimator"
-        title="Test your shipping rules"
-        description="Run advisory shipping estimates against a buyer destination before your rules go live."
-        expanded={standaloneSection === "estimator" ? true : sectionOpen.estimator}
-        onToggle={() => standaloneSection === "estimator" ? undefined : setSectionOpen((current) => ({ ...current, estimator: !current.estimator }))}
-      >
-        <div className="mt-4 rounded-[8px] border border-black/10 bg-[#fafafa] p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[13px] font-semibold text-[#202020]">Shipping estimator</p>
-              <p className="mt-1 text-[12px] text-[#57636c]">
-                Test your shipping rules against a buyer destination before they go live. This shows the final customer shipping charge only.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => void runShippingEstimate()}
-              disabled={!canEditSettings || shippingEstimateLoading || !sellerSlug}
-              className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
-            >
-              {shippingEstimateLoading ? "Estimating..." : "Run estimate"}
-            </button>
-          </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Destination country</span>
-              <select
-                value={shippingEstimateInputs.countryCode}
-                onChange={(event) =>
-                  setShippingEstimateInputs((current) => ({
-                    ...current,
-                    countryCode: event.target.value,
-                  }))
-                }
-                disabled={!canEditSettings}
-                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-              >
-                {SELLER_SHIPPING_COUNTRY_OPTIONS.map((option) => (
-                  <option key={option.code} value={option.code}>
-                    {option.displayLabel}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Destination province / region</span>
-              <input
-                value={shippingEstimateInputs.province}
-                onChange={(event) =>
-                  setShippingEstimateInputs((current) => ({
-                    ...current,
-                    province: event.target.value.slice(0, 80),
-                  }))
-                }
-                disabled={!canEditSettings}
-                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                placeholder="Western Cape"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Destination postal code</span>
-              <input
-                value={shippingEstimateInputs.postalCode}
-                onChange={(event) =>
-                  setShippingEstimateInputs((current) => ({
-                    ...current,
-                    postalCode: event.target.value.slice(0, 20),
-                  }))
-                }
-                disabled={!canEditSettings}
-                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                placeholder="8001"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Order value</span>
-              <input
-                value={shippingEstimateInputs.orderValue}
-                onChange={(event) =>
-                  setShippingEstimateInputs((current) => ({
-                    ...current,
-                    orderValue: event.target.value.replace(/[^\d.]/g, "").slice(0, 8),
-                  }))
-                }
-                disabled={!canEditSettings}
-                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                placeholder="1200"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Total weight (kg)</span>
-              <input
-                value={shippingEstimateInputs.totalWeight}
-                onChange={(event) =>
-                  setShippingEstimateInputs((current) => ({
-                    ...current,
-                    totalWeight: event.target.value.replace(/[^\d.]/g, "").slice(0, 8),
-                  }))
-                }
-                disabled={!canEditSettings}
-                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                placeholder="5"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Item count</span>
-              <input
-                value={shippingEstimateInputs.itemCount}
-                onChange={(event) =>
-                  setShippingEstimateInputs((current) => ({
-                    ...current,
-                    itemCount: event.target.value.replace(/[^\d]/g, "").slice(0, 3) || "1",
-                  }))
-                }
-                disabled={!canEditSettings}
-                className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                placeholder="1"
-              />
-            </label>
-          </div>
-
-          <div className="mt-4 rounded-[8px] border border-black/10 bg-white p-4">
-            <div>
-              <p className="text-[13px] font-semibold text-[#202020]">Compare with courier estimate</p>
-              <p className="mt-1 text-[12px] text-[#57636c]">
-                Advisory only. Compare your current rule against a direct courier brand without changing checkout behavior.
-              </p>
-            </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-              <label className="block xl:col-span-2">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Courier to estimate with</span>
-                <select
-                  value={shippingEstimateInputs.courierCode}
-                  onChange={(event) =>
-                    setShippingEstimateInputs((current) => ({
-                      ...current,
-                      courierCode: event.target.value,
-                    }))
-                  }
-                  disabled={!canEditSettings}
-                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                >
-                  <option value="">Select a courier</option>
-                  {courierEstimateOptions.map((option) => (
-                    <option key={option.courierCode} value={option.courierCode}>
-                      {option.courierName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Length (cm)</span>
-                <input
-                  value={shippingEstimateInputs.lengthCm}
-                  onChange={(event) =>
-                    setShippingEstimateInputs((current) => ({
-                      ...current,
-                      lengthCm: event.target.value.replace(/[^\d.]/g, "").slice(0, 6),
-                    }))
-                  }
-                  disabled={!canEditSettings}
-                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                  placeholder="30"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Width (cm)</span>
-                <input
-                  value={shippingEstimateInputs.widthCm}
-                  onChange={(event) =>
-                    setShippingEstimateInputs((current) => ({
-                      ...current,
-                      widthCm: event.target.value.replace(/[^\d.]/g, "").slice(0, 6),
-                    }))
-                  }
-                  disabled={!canEditSettings}
-                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                  placeholder="20"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block text-[12px] font-semibold text-[#202020]">Height (cm)</span>
-                <input
-                  value={shippingEstimateInputs.heightCm}
-                  onChange={(event) =>
-                    setShippingEstimateInputs((current) => ({
-                      ...current,
-                      heightCm: event.target.value.replace(/[^\d.]/g, "").slice(0, 6),
-                    }))
-                  }
-                  disabled={!canEditSettings}
-                  className="w-full rounded-[8px] border border-black/10 bg-white h-12 px-3 text-[13px] outline-none"
-                  placeholder="15"
-                />
-              </label>
-            </div>
-          </div>
-
-          {shippingEstimateError ? (
-            <div className="mt-4 rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
-              {shippingEstimateError}
-            </div>
-          ) : null}
-
-          {shippingEstimateResult ? (
-            <div className="mt-4 rounded-[8px] border border-black/10 bg-white p-4">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Matched source</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateLabel(String(shippingEstimateResult.matchedSource || "").replace(/_/g, " ")) || "Unknown"}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Matched rule</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{shippingEstimateResult.matchedRuleName || "Matched shipping rule"}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Match type</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateLabel(String(shippingEstimateResult.matchType || "").replace(/_/g, " ")) || "Unknown"}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Customer shipping charge</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateMoney(shippingEstimateResult.customerShippingCharge)}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Pricing method</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateLabel(String(shippingEstimateResult.pricingMode || "").replace(/_/g, " "))}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Batching</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{getBatchingOptionLabel(shippingEstimateResult.batchingMode || "single_shipping_fee")}</p>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">ETA</p>
-                  <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateEta(shippingEstimateResult.estimatedDeliveryDays)}</p>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {courierEstimateResult ? (
-            <div className="mt-4 rounded-[8px] border border-black/10 bg-white p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[13px] font-semibold text-[#202020]">Courier estimate</p>
-                  <p className="mt-1 text-[12px] text-[#57636c]">
-                    Seller view shows the customer-facing courier charge only. Internal platform markup is never shown here.
-                  </p>
-                </div>
-                {courierEstimateResult.ok ? (
-                  <button
-                    type="button"
-                    onClick={applyCourierEstimateToMatchedRule}
-                    disabled={!canEditSettings || !shippingEstimateResult?.matchedRuleId}
-                    className="inline-flex h-9 items-center rounded-[8px] border border-black/10 bg-white px-3 text-[12px] font-semibold text-[#202020] disabled:opacity-60"
-                  >
-                    Use this estimate as rule price
-                  </button>
-                ) : null}
-              </div>
-              {courierEstimateResult.ok ? (
-                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Courier</p>
-                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{courierEstimateResult.courierName}</p>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Customer shipping charge</p>
-                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateMoney(courierEstimateResult.estimatedFee)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">ETA</p>
-                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{formatEstimateEta({ min: courierEstimateResult.minDays, max: courierEstimateResult.maxDays })}</p>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Service</p>
-                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">{courierEstimateResult.serviceName || "Estimate"}</p>
-                  </div>
-                  <div className="md:col-span-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#8b7355]">Warnings</p>
-                    <p className="mt-1 text-[13px] font-semibold text-[#202020]">
-                      {Array.isArray(courierEstimateResult.warnings) && courierEstimateResult.warnings.length
-                        ? courierEstimateResult.warnings.join(" ")
-                        : "No warnings"}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-4 rounded-[8px] border border-[#f2c7cb] bg-[#fff7f8] px-4 py-3 text-[12px] text-[#b91c1c]">
-                  {courierEstimateResult.message || "Unable to estimate with that courier."}
-                </div>
-              )}
-            </div>
-          ) : null}
         </div>
       </SettingsSection>
       ) : null}
