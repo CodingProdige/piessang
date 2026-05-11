@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { ownsSellerAccount } from "@/lib/seller/access";
 import { findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { upsertSellerLookupForUser } from "@/lib/seller/lookup";
 import { NextResponse } from "next/server";
 
 const ok = (p = {}, s = 200) => NextResponse.json({ ok: true, ...p }, { status: s });
@@ -105,9 +106,13 @@ export async function POST(req) {
       }
 
       if (isOwnerDoc) {
+          const closedSeller = closeSellerAccount(userSeller, sellerSlugKey, vendorName, uid);
           await db.collection("users").doc(userSnap.id).update({
-            seller: closeSellerAccount(userSeller, sellerSlugKey, vendorName, uid),
+            seller: closedSeller,
             "timestamps.updatedAt": new Date(),
+          });
+          await upsertSellerLookupForUser(userSnap.id, { ...userData, seller: closedSeller }, db).catch((error) => {
+            console.error("seller lookup close failed:", error);
           });
       } else {
         const nextSeller = trimManagedSellerAccess(userSeller, sellerSlugKey);

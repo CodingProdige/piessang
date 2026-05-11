@@ -301,7 +301,8 @@ async function loadCatalogData(origin: string, shopperArea: any) {
 
   const productsUrl = new URL("/api/catalogue/v1/products/product/get", origin);
   productsUrl.searchParams.set("isActive", "true");
-  productsUrl.searchParams.set("limit", "9999");
+  productsUrl.searchParams.set("limit", "80");
+  productsUrl.searchParams.set("homepageRail", "true");
   appendShopperAreaSearchParams(productsUrl.searchParams, shopperArea);
 
   const categoriesUrl = new URL("/api/catalogue/v1/categories/list", origin);

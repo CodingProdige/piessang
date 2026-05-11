@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { CartCheckout } from "@/components/cart/cart-checkout";
 import { PageBody } from "@/components/layout/page-body";
 
@@ -14,7 +15,9 @@ export const metadata: Metadata = {
 export default function CheckoutPage() {
   return (
     <PageBody className="px-4 py-10">
-      <CartCheckout />
+      <Suspense fallback={<p className="text-[14px] text-[#57636c]">Loading checkout...</p>}>
+        <CartCheckout />
+      </Suspense>
     </PageBody>
   );
 }

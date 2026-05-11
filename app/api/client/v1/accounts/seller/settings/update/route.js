@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { SUPPORTED_PAYOUT_COUNTRIES, SUPPORTED_PAYOUT_CURRENCIES } from "@/lib/seller/payout-config";
 import { collectProductWeightRequirementIssues } from "@/lib/seller/shipping-weight-requirements";
 import { canManageSellerTeam, findSellerOwnerByIdentifier } from "@/lib/seller/team-admin";
+import { upsertSellerLookupForUser } from "@/lib/seller/lookup";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
 import { titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { normalizeMoneyAmount } from "@/lib/money";
@@ -388,7 +389,7 @@ export async function POST(req) {
     const sellerCode = ensureSellerCode(currentSeller.sellerCode, owner.id);
     const shippingWeightRequirements = await enforceSellerShippingWeightRequirements(db, sellerSlug, shippingSettings);
 
-    await db.collection("users").doc(owner.id).update({
+    const sellerPatch = {
       "account.accountName": nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
       "account.vatNumber": businessDetails.vatNumber,
       "account.registrationNumber": businessDetails.registrationNumber,
@@ -407,6 +408,39 @@ export async function POST(req) {
       "seller.businessDetails": businessDetails,
       "seller.media": branding,
       "timestamps.updatedAt": new Date(),
+    };
+    await db.collection("users").doc(owner.id).update(sellerPatch);
+    await upsertSellerLookupForUser(
+      owner.id,
+      {
+        ...owner.data,
+        account: {
+          ...(owner.data?.account && typeof owner.data.account === "object" ? owner.data.account : {}),
+          accountName: nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
+          vatNumber: businessDetails.vatNumber,
+          registrationNumber: businessDetails.registrationNumber,
+          phoneNumber: businessDetails.phoneNumber || requester?.account?.phoneNumber || "",
+        },
+        seller: {
+          ...currentSeller,
+          vendorName: nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
+          groupVendorName: nextVendorName || currentSeller.vendorName || currentSeller.groupVendorName || "",
+          vendorDescription: nextVendorDescription,
+          description: nextVendorDescription,
+          sellerCode,
+          activeSellerCode: sellerCode,
+          groupSellerCode: sellerCode,
+          branding,
+          shippingSettings,
+          payoutProfile: encryptedPayoutProfile,
+          payoutProvider,
+          businessDetails,
+          media: branding,
+        },
+      },
+      db,
+    ).catch((error) => {
+      console.error("seller lookup upsert failed:", error);
     });
     const propagatedProducts = await propagateSellerDisplayFieldsToProducts(db, {
       sellerCode,

@@ -12,6 +12,7 @@ import {
 } from "@/lib/seller/payout-config";
 import { getDefaultPayoutCurrency } from "@/lib/marketplace/country-config";
 import { ensureSellerCode, normalizeSellerDescription } from "@/lib/seller/seller-code";
+import { upsertSellerLookupForUser } from "@/lib/seller/lookup";
 import { cleanVendorName, generateVendorNameSuggestions, normalizeVendorName, toSellerSlug, trimVendorNameToLength, titleCaseVendorName } from "@/lib/seller/vendor-name";
 import { jsonError, rateLimit, requireSessionUser } from "@/lib/api/security";
 
@@ -243,6 +244,9 @@ export async function POST(req) {
         updatedAt: now,
       },
     }, { merge: true });
+    await upsertSellerLookupForUser(uid, { ...current, account: nextAccount, seller: nextSeller }, db).catch((error) => {
+      console.error("seller lookup upsert failed:", error);
+    });
 
     const emailOrigin = new URL(req.url).origin;
     const sellerEmailPayload = {

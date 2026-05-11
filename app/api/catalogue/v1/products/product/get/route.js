@@ -29,6 +29,8 @@ import { resolveShopperVisibleProducts } from "@/lib/catalogue/shopper-listing";
 const ok  =(p={},s=200)=>NextResponse.json({ ok:true, ...p },{ status:s });
 const err =(s,t,m,e={})=>NextResponse.json({ ok:false, title:t, message:m, ...e },{ status:s });
 const is8 =(s)=>/^\d{8}$/.test(String(s||"").trim());
+const PRODUCT_LIST_CACHE_TTL_MS = 60 * 1000;
+const productListCache = new Map();
 const toNumOrNull = (v)=>{
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -76,6 +78,21 @@ function normalizeTimestamps(doc){
     ...doc,
     ...(ts ? { timestamps: { createdAt: tsToIso(ts.createdAt), updatedAt: tsToIso(ts.updatedAt) } } : {})
   };
+}
+
+async function loadCachedProductRows(cacheKey, queryRef) {
+  const cached = productListCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < PRODUCT_LIST_CACHE_TTL_MS) {
+    return cached.rows;
+  }
+
+  const snap = await queryRef.get();
+  const rows = snap.docs.map((docSnap) => ({
+    id: docSnap.id,
+    data: docSnap.data() || {},
+  }));
+  productListCache.set(cacheKey, { createdAt: Date.now(), rows });
+  return rows;
 }
 
 function getPublicMarketplaceSource(doc) {
@@ -798,6 +815,7 @@ export async function GET(req){
     const keywordsRaw  = normStr(searchParams.get("keywords"));
     const searchRaw    = normStr(searchParams.get("search"));
     const userId       = normStr(searchParams.get("userId"));
+    const homepageRail = toBool(searchParams.get("homepageRail")) === true;
     const newArrivals  = toBool(searchParams.get("newArrivals"));
     const isActive     = toBool(searchParams.get("isActive"));
     const isFeatured   = toBool(searchParams.get("isFeatured"));
@@ -852,6 +870,7 @@ export async function GET(req){
     const noTopLimit = rawLimit === "all";
     let lim = noTopLimit ? null : Number.parseInt(rawLimit,10);
     if (!noTopLimit && (!Number.isFinite(lim) || lim<=0)) lim = 24;
+    if (homepageRail) lim = Math.max(24, Math.min(lim || 80, 120));
 
     // 1) Load collection with optional query constraints to reduce scan
     const constraints = [];
@@ -866,51 +885,61 @@ export async function GET(req){
     if (category) groupWheres.push(["grouping.category","==",category]);
 
     let queryRef = db.collection("products_v2");
-    if (kind) queryRef = queryRef.where("grouping.kind","==",kind);
+    const productQueryKeyParts = ["products_v2"];
+    if (kind) {
+      queryRef = queryRef.where("grouping.kind","==",kind);
+      productQueryKeyParts.push(`kind:${kind}`);
+    }
     if (groupWheres.length === 1) {
       const [field, op, value] = groupWheres[0];
       queryRef = queryRef.where(field, op, value);
+      productQueryKeyParts.push(`${field}:${op}:${value}`);
     }
     if (groupWheres.length > 1) {
       // Firestore admin SDK does not support OR natively here, so fall back to full scan below.
     }
 
-    let rs = await queryRef.get();
+    let productRows = await loadCachedProductRows(productQueryKeyParts.join("|"), queryRef);
     // Fallback: if constrained query returns nothing but grouping filters were provided,
     // re-scan full collection to preserve legacy behavior.
-    if (rs.empty && (brand || subCategory || category)) {
-      rs = await db.collection("products_v2").get();
+    if (!productRows.length && (brand || subCategory || category)) {
+      productRows = await loadCachedProductRows("products_v2", db.collection("products_v2"));
     }
 
     // 2) Map + timestamp normalize
-    let items = rs.docs.map(d=>({
-      id:d.id,
-      rawData: attachProductStatus(normalizeTimestamps(d.data()||{})),
+    let items = productRows.map((row)=>({
+      id:row.id,
+      rawData: attachProductStatus(normalizeTimestamps(row.data||{})),
       data: attachProductStatus(
         includeUnavailable
-          ? normalizeTimestamps(d.data()||{})
-          : getPublicMarketplaceSource(normalizeTimestamps(d.data()||{})),
+          ? normalizeTimestamps(row.data||{})
+          : getPublicMarketplaceSource(normalizeTimestamps(row.data||{})),
       ),
     }));
     const sellerBlockMap = new Map();
     const sellerIdentifierSet = new Set();
-    for (const item of items) {
-      const sellerIdentifier = getSellerIdentifier(item?.data);
-      if (sellerIdentifier) sellerIdentifierSet.add(sellerIdentifier);
+    const shouldResolveSellerOwnersForList = includeUnavailable === true || Boolean(sellerCode || sellerSlug);
+    if (shouldResolveSellerOwnersForList) {
+      for (const item of items) {
+        const sellerIdentifier = getSellerIdentifier(item?.data);
+        if (sellerIdentifier) sellerIdentifierSet.add(sellerIdentifier);
+      }
     }
     const sellerMetaMap = new Map();
-    await Promise.all(
-      Array.from(sellerIdentifierSet).map(async (sellerIdentifier) => {
-        try {
-          const sellerOwner = await findSellerOwnerByIdentifier(sellerIdentifier);
-          sellerMetaMap.set(sellerIdentifier, sellerOwner);
-          sellerBlockMap.set(sellerIdentifier, Boolean(sellerOwner && isSellerAccountUnavailable(sellerOwner.data)));
-        } catch {
-          sellerMetaMap.set(sellerIdentifier, null);
-          sellerBlockMap.set(sellerIdentifier, false);
-        }
-      }),
-    );
+    if (shouldResolveSellerOwnersForList) {
+      await Promise.all(
+        Array.from(sellerIdentifierSet).map(async (sellerIdentifier) => {
+          try {
+            const sellerOwner = await findSellerOwnerByIdentifier(sellerIdentifier);
+            sellerMetaMap.set(sellerIdentifier, sellerOwner);
+            sellerBlockMap.set(sellerIdentifier, Boolean(sellerOwner && isSellerAccountUnavailable(sellerOwner.data)));
+          } catch {
+            sellerMetaMap.set(sellerIdentifier, null);
+            sellerBlockMap.set(sellerIdentifier, false);
+          }
+        }),
+      );
+    }
     // 3) In-memory filters (inclusive grouping logic + others)
     const countBeforeCategoryFilter = items.length;
     items = items.filter(({ data })=>{
@@ -919,6 +948,7 @@ export async function GET(req){
       if (
         productSellerIdentifier &&
         !includeUnavailable &&
+        sellerMetaMap.get(productSellerIdentifier) &&
         productMissingSellerDeliverySettings(data, sellerMetaMap.get(productSellerIdentifier))
       ) return false;
       if (!includeUnavailable && !productHasListableAvailability(data)) return false;
@@ -1003,6 +1033,19 @@ export async function GET(req){
     });
     const countAfterCategoryFilter = items.length;
 
+    if (homepageRail && lim) {
+      items = items
+        .sort((a,b)=>{
+          const fa = a.data?.placement?.isFeatured ? 1 : 0;
+          const fb = b.data?.placement?.isFeatured ? 1 : 0;
+          if (fb !== fa) return fb - fa;
+          const pa = +a.data?.placement?.position || 0;
+          const pb = +b.data?.placement?.position || 0;
+          return pa - pb;
+        })
+        .slice(0, lim);
+    }
+
     items = await Promise.all(items.map(async ({ id, data })=>{
       const reservationMap = await buildVariantCheckoutReservationMap(data);
       const enrichedVariants = enrichVariantsWithAvailability(data?.variants, reservationMap);
@@ -1018,7 +1061,7 @@ export async function GET(req){
       const uid = String(dataWithSellerDisplay?.product?.unique_id ?? "");
       const isFavorite = userId ? (favorites.length > 0 && uid ? favorites.includes(uid) : false) : false;
       const isEligibleByVariantAvailability = productHasListableAvailability(dataWithSellerDisplay);
-      const hiddenByDeliverySettings = productMissingSellerDeliverySettings(dataWithSellerDisplay, sellerOwner);
+      const hiddenByDeliverySettings = Boolean(sellerOwner && productMissingSellerDeliverySettings(dataWithSellerDisplay, sellerOwner));
       const firstPublishedAt = getFirstPublishedAt(dataWithSellerDisplay);
       return {
         id,

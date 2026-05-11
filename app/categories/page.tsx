@@ -60,6 +60,11 @@ async function loadCategoryData() {
     db.collection("categories").where("placement.isActive", "==", true).get(),
     db.collection("products_v2").where("placement.isActive", "==", true).get(),
   ]);
+  const subSnapshot = await db
+    .collection("sub_categories")
+    .where("placement.isActive", "==", true)
+    .get()
+    .catch(() => null);
 
   const categories = categorySnapshot.docs
     .map((doc) => {
@@ -114,12 +119,6 @@ async function loadCategoryData() {
 
   const cards = await Promise.all(
     categories.map(async (category) => {
-      const subSnapshot = await db
-        .collection("sub_categories")
-        .where("placement.isActive", "==", true)
-        .get()
-        .catch(() => null);
-
       const categoryProducts = allProducts.filter(
         (item) => categoryMatches(item?.data?.grouping?.category, category.slug),
       );

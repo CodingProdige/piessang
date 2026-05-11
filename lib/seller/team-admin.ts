@@ -1,4 +1,5 @@
 import { getAdminDb } from "@/lib/firebase/admin";
+import { findSellerOwnerFromLookup, upsertSellerLookupForUser } from "@/lib/seller/lookup";
 import { normalizeSellerTeamRole, sanitizeInviteEmail } from "@/lib/seller/team";
 
 type SellerDoc = {
@@ -6,8 +7,37 @@ type SellerDoc = {
   data: Record<string, any>;
 };
 
+type CachedUsers = {
+  createdAt: number;
+  users: SellerDoc[];
+};
+
+const SELLER_LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedUsers: CachedUsers | null = null;
+const sellerOwnerBySlugCache = new Map<string, SellerDoc | null>();
+const sellerOwnerByCodeCache = new Map<string, SellerDoc | null>();
+
 function toStr(value: unknown, fallback = "") {
   return value == null ? fallback : String(value).trim();
+}
+
+async function getCachedUsers(): Promise<SellerDoc[]> {
+  const now = Date.now();
+  if (cachedUsers && now - cachedUsers.createdAt < SELLER_LOOKUP_CACHE_TTL_MS) {
+    return cachedUsers.users;
+  }
+
+  const db = getAdminDb();
+  if (!db) return [];
+  const snap = await db.collection("users").get();
+  const users = snap.docs.map((docSnap) => ({
+    id: docSnap.id,
+    data: docSnap.data() || {},
+  }));
+  cachedUsers = { createdAt: now, users };
+  sellerOwnerBySlugCache.clear();
+  sellerOwnerByCodeCache.clear();
+  return users;
 }
 
 function sellerMatchesSlug(seller: Record<string, any> | null | undefined, sellerSlug: string) {
@@ -40,12 +70,19 @@ export async function findSellerOwnerBySlug(sellerSlug: string): Promise<SellerD
   const needle = toStr(sellerSlug);
   if (!needle) return null;
 
-  const db = getAdminDb();
-  if (!db) return null;
-  const snap = await db.collection("users").get();
+  const cacheKey = needle.toLowerCase();
+  if (sellerOwnerBySlugCache.has(cacheKey)) return sellerOwnerBySlugCache.get(cacheKey) || null;
+
+  const lookupMatch = await findSellerOwnerFromLookup(needle);
+  if (lookupMatch) {
+    sellerOwnerBySlugCache.set(cacheKey, lookupMatch);
+    return lookupMatch;
+  }
+
+  const users = await getCachedUsers();
   const candidates: Array<{ doc: SellerDoc; score: number }> = [];
-  for (const docSnap of snap.docs) {
-    const data = docSnap.data() || {};
+  for (const user of users) {
+    const data = user.data || {};
     const seller = data?.seller && typeof data.seller === "object" ? data.seller : null;
     const team = seller?.team && typeof seller.team === "object" ? seller.team : null;
     if (!sellerIdentifierMatches(seller, needle) && !sellerIdentifierMatches(team, needle)) continue;
@@ -61,13 +98,18 @@ export async function findSellerOwnerBySlug(sellerSlug: string): Promise<SellerD
       (toStr(seller?.teamOwnerUid) ? 0 : 5);
 
     candidates.push({
-      doc: { id: docSnap.id, data },
+      doc: { id: user.id, data },
       score,
     });
   }
 
-  if (!candidates.length) return null;
+  if (!candidates.length) {
+    sellerOwnerBySlugCache.set(cacheKey, null);
+    return null;
+  }
   candidates.sort((a, b) => b.score - a.score);
+  sellerOwnerBySlugCache.set(cacheKey, candidates[0].doc);
+  await upsertSellerLookupForUser(candidates[0].doc.id, candidates[0].doc.data).catch(() => null);
   return candidates[0].doc;
 }
 
@@ -75,12 +117,19 @@ export async function findSellerOwnerByCode(sellerCode: string): Promise<SellerD
   const needle = toStr(sellerCode);
   if (!needle) return null;
 
-  const db = getAdminDb();
-  if (!db) return null;
-  const snap = await db.collection("users").get();
+  const cacheKey = needle.toUpperCase();
+  if (sellerOwnerByCodeCache.has(cacheKey)) return sellerOwnerByCodeCache.get(cacheKey) || null;
+
+  const lookupMatch = await findSellerOwnerFromLookup(needle);
+  if (lookupMatch) {
+    sellerOwnerByCodeCache.set(cacheKey, lookupMatch);
+    return lookupMatch;
+  }
+
+  const users = await getCachedUsers();
   const candidates: Array<{ doc: SellerDoc; score: number }> = [];
-  for (const docSnap of snap.docs) {
-    const data = docSnap.data() || {};
+  for (const user of users) {
+    const data = user.data || {};
     const seller = data?.seller && typeof data.seller === "object" ? data.seller : null;
     const team = seller?.team && typeof seller.team === "object" ? seller.team : null;
     if (!sellerMatchesCode(seller, needle) && !sellerMatchesCode(team, needle)) continue;
@@ -96,13 +145,18 @@ export async function findSellerOwnerByCode(sellerCode: string): Promise<SellerD
       (toStr(seller?.teamOwnerUid) ? 0 : 5);
 
     candidates.push({
-      doc: { id: docSnap.id, data },
+      doc: { id: user.id, data },
       score,
     });
   }
 
-  if (!candidates.length) return null;
+  if (!candidates.length) {
+    sellerOwnerByCodeCache.set(cacheKey, null);
+    return null;
+  }
   candidates.sort((a, b) => b.score - a.score);
+  sellerOwnerByCodeCache.set(cacheKey, candidates[0].doc);
+  await upsertSellerLookupForUser(candidates[0].doc.id, candidates[0].doc.data).catch(() => null);
   return candidates[0].doc;
 }
 

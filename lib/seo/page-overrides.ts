@@ -34,6 +34,9 @@ export type SeoPageOverride = {
   updatedAt?: string | null;
 };
 
+const SEO_OVERRIDE_CACHE_TTL_MS = 5 * 60 * 1000;
+const seoOverrideCache = new Map<string, { createdAt: number; value: SeoPageOverride | null }>();
+
 export const SEO_PAGE_DEFINITIONS: SeoPageDefinition[] = [
   {
     key: "about",
@@ -164,14 +167,22 @@ export function getSeoPageDefinition(pageKey: string) {
 }
 
 export async function getSeoPageOverride(pageKey: SeoPageKey): Promise<SeoPageOverride | null> {
+  const cached = seoOverrideCache.get(pageKey);
+  if (cached && Date.now() - cached.createdAt < SEO_OVERRIDE_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
   const db = getAdminDb();
   if (!db) return null;
   const definition = getSeoPageDefinition(pageKey);
   if (!definition) return null;
   const snap = await db.collection("seo_pages_v1").doc(pageKey).get().catch(() => null);
-  if (!snap?.exists) return null;
+  if (!snap?.exists) {
+    seoOverrideCache.set(pageKey, { createdAt: Date.now(), value: null });
+    return null;
+  }
   const data = snap.data() || {};
-  return {
+  const value = {
     key: pageKey,
     path: toStr(data.path, definition.path),
     title: toStr(data.title),
@@ -181,6 +192,8 @@ export async function getSeoPageOverride(pageKey: SeoPageKey): Promise<SeoPageOv
     ogImage: toStr(data.ogImage),
     updatedAt: toIso(data.updatedAt),
   };
+  seoOverrideCache.set(pageKey, { createdAt: Date.now(), value });
+  return value;
 }
 
 export async function buildSeoMetadata(
